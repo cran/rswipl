@@ -4,7 +4,7 @@
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
     Copyright (c)  2000-2022, University of Amsterdam
-                              VU University Amsterdam
+			      VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
@@ -57,19 +57,12 @@ particularly integer conversions.
 #define _SWI_CPP_H
 
 #include <SWI-Prolog.h>
-#include <cstdint>
 #include <climits>
+#include <cstdint>
 #include <cstring>
 #include <cwchar>
 #include <functional>
 #include <string>
-
-// TODO: Various compilers have problems with distinguishing int,
-//       long, int32_t, int64_t, unsigned, unsigned long, uint32_t,
-//       uint64_t, size_t. So, we limit the types to int, long,
-//       unsigned int, unsigned long, and size_t (if it's different
-//       from unsigned long). The following tests ensure that our
-//       assumptions are correct for the platform we're using.
 
 #if INT_MAX != 0x7fffffff
   #error "Unexpected value for INT_MAX"
@@ -88,18 +81,6 @@ particularly integer conversions.
   #error "Unexpected value for LONG_MAX"
 #endif
 
-#if SIZE_MAX > UINT64_MAX
-  #error "Unexpected values of SIZE_MAX, UINT64_MAX for unify_integer(size_t)"
-#endif
-
-#if UINT_MAX > UINT64_MAX
-#error Unexpected values of UINT_MAX, UINT64_MAX for unify_integer(unsigned int)
-#endif
-
-#if ULONG_MAX > UINT64_MAX
-#error Unexpected values of ULONG_MAX, UINT64_MAX for unify_integer(unsigned long)
-#endif
-
 #if !(defined(__APPLE__) || defined(__FreeBSD__))
 #include <malloc.h>
 #endif
@@ -107,8 +88,32 @@ particularly integer conversions.
 class PlAtom;
 class PlTerm;
 class PlTermv;
-void PlCheck(int rc);
-static void throw_PlException();
+
+
+// A pseudo-exception for quick exist on failure, for use by the unify
+// methods.  This is special-cased in the PREDICATE et al macros.
+// Note that it is *not* a subclass of PlException. See the
+// documentation for more details on how this works with returning
+// Prolog failure and returning exceptions.
+class PlFail
+{
+public:
+  explicit PlFail() {}
+};
+
+
+// Throw PlFail on failure or exception.  This exception is caught by
+// the PREDICATE, which simply returns false ... if the failure was
+// caused by an exception, SWI-Prolog will detect that and turn the
+// failure into a Prolog exception.  Therefore, there is no need for
+// calling PL_exception(0) and doing something different if there is
+// a pending Prolog exception (to call PL_exception(0), use
+// PlException_qid()).
+inline void
+PlCheck(int rc)
+{ if ( !rc )
+    throw PlFail();
+}
 
 
 		 /*******************************
@@ -120,31 +125,35 @@ template <typename C_t> class WrappedC
 public:
   C_t C_; // The wrapped value
 
-  static const C_t null = 0;
-  [[nodiscard]] bool is_null()  const { return C_ == null; }
-  [[nodiscard]] bool not_null() const { return C_ != null; }
-
-protected:
+  static constexpr C_t null = 0;
+  bool is_null()  const { return C_ == null; }
+  bool not_null() const { return C_ != null; }
   void verify() const; // Throw exception if is_null()
 
-public:
-  WrappedC<C_t>() : C_(null) { }
-  explicit WrappedC<C_t>(C_t v) : C_(v) { }
+  explicit WrappedC<C_t>(C_t v)
+    : C_(v) { }
   WrappedC<C_t>(const WrappedC<C_t>&) = default;
   // WrappedC<C_t>& operator =(const WrappedC<C_t>&) = default; // deprecated/deleted in PlTerm
   operator bool() const = delete; // Use not_null() instead
-  void reset() { C_ = null; }
-  void reset(C_t v) { C_ = v; }
+  // reset() is common with "smart pointers"; wrapped wrapped atom_t,
+  // term_t, etc. aren't "smart" in the same sense, but the objects
+  // they refer to are garbage collected and some care is needed to
+  // ensure they have appropriate reference counts (e.g.,
+  // PlAtom::register_ref() and PlTerm::record()).
+  void reset(C_t v = null) { C_ = v; }
 };
 
+// TODO: use PlEncoding wherever a method takes a char* or std::string.
+// TODO: #define SWI_DEFAULT_TEXT_ENCODING EncUTF8
+//       (set outside SWI-cpp2.h, with an appropriate default)
 // For the various "get/put/unify string" methods:
 typedef enum PlEncoding
 { EncLatin1 = REP_ISO_LATIN_1,
-  EncUTF8 = REP_UTF8,
+  EncUTF8   = REP_UTF8,
   EncLocale = REP_MB
 } PlEncoding;
-static const PlEncoding ENC_INPUT = EncLatin1; // TODO: EncUTF8?
-static const PlEncoding ENC_OUTPUT = EncLocale;
+static constexpr PlEncoding ENC_INPUT = EncLatin1; // TODO: EncUTF8?
+static constexpr PlEncoding ENC_OUTPUT = EncLocale;
 
 
 		 /*******************************
@@ -158,13 +167,11 @@ private:
 
 public:
   explicit PlStringBuffers()
-  { // TODO: use PL_STRINGS_MARK()
-    PL_mark_string_buffers(&__PL_mark);
+  { PL_mark_string_buffers(&__PL_mark); // TODO: modify PL_STRINGS_MARK() to be used here
   }
 
   ~PlStringBuffers()
-  { // TODO: use PL_STRINGS_RELEASE()
-    PL_release_string_buffers_from_mark(__PL_mark);
+  { PL_release_string_buffers_from_mark(__PL_mark); // TODO: modify PL_STRINGS_RELEASE() to be used here
   }
 };
 
@@ -176,25 +183,19 @@ public:
 class PlFunctor : public WrappedC<functor_t>
 {
 public:
-  PlFunctor() : WrappedC<functor_t>() { }
-  PlFunctor(functor_t v) : WrappedC<functor_t>(v) { }
-  explicit PlFunctor(const std::string& name, size_t arity)
-  { atom_t a = PL_new_atom(name.c_str());
-    C_ = PL_new_functor(a, arity);
-    verify();
-    PL_unregister_atom(a);
-  }
-
-  explicit PlFunctor(const std::wstring& name, size_t arity)
-    : WrappedC<functor_t>(PL_new_functor(PL_new_atom_wchars(name.size(), name.c_str()), arity))
-  { verify();
-  }
+  PlFunctor(functor_t v)
+    : WrappedC<functor_t>(v) { }
+  // PlFunctor(const char*) is handled by std::string constructor
+  explicit PlFunctor(const std::string& name, size_t arity);
+  explicit PlFunctor(const std::wstring& name, size_t arity);
 
   bool operator ==(functor_t to) = delete;
 
-  // TODO: use PlPredicate, PlModule when implemented:
-  predicate_t pred(module_t m) const {
-    return PL_pred(C_, m);
+  [[deprecated("use PlPredicate")]] predicate_t pred(module_t m) const {
+    predicate_t p = PL_pred(C_, m);
+    if ( p == nullptr )
+      throw PlFail();
+    return p;
   }
 
   PlAtom name() const;
@@ -208,8 +209,8 @@ public:
 class PlAtom : public WrappedC<atom_t>
 {
 public:
-  PlAtom() : WrappedC<atom_t>() { } // Make constructor public
-  explicit PlAtom(atom_t v) : WrappedC<atom_t>(v) { }
+  explicit PlAtom(atom_t v)
+    : WrappedC<atom_t>(v) { }
   explicit PlAtom(const std::string& text) // TODO: add encoding
     : WrappedC<atom_t>(PL_new_atom_nchars(text.size(), text.data()))
   { verify();
@@ -218,56 +219,62 @@ public:
     : WrappedC<atom_t>(PL_new_atom_wchars(text.size(), text.data()))
   { verify();
   }
-  // TODO: add PlAtom(const char*), which is slightly more efficient than implicitly converting to std::string first
-
-  explicit PlAtom(const PlTerm& t);
-
-  const std::string as_string(PlEncoding enc=ENC_OUTPUT) const;
-  const std::wstring as_wstring() const
-  { size_t len;
-    PlStringBuffers _string_buffers;
-    const wchar_t *s = PL_atom_wchars(C_, &len);
-    return std::wstring(s, len);
+  explicit PlAtom(const char *text)
+    : WrappedC<atom_t>(PL_new_atom_nchars(static_cast<size_t>(-1), text))
+  { verify();
   }
 
-  [[nodiscard]] bool operator ==(const char *s) const
+  const std::string get_mbchars(unsigned int flags) const
   { PlStringBuffers _string_buffers;
-    return strcmp(s, PL_atom_chars(C_)) == 0; // TODO: use PL_atom_mbchars()
+    size_t len;
+    char *s;
+    PlCheck(PL_atom_mbchars(C_, &len, &s, CVT_EXCEPTION|flags));
+    return std::string(s, len);
   }
-  [[nodiscard]] bool operator ==(const wchar_t *s) const
+
+  const std::string as_string(PlEncoding enc=ENC_OUTPUT) const
+  { return get_mbchars(static_cast<unsigned int>(enc));
+  }
+  const std::wstring as_wstring() const;
+
+  bool operator ==(const char *s) const
+  { PlStringBuffers _string_buffers;
+    return strcmp(s, PL_atom_nchars(C_, nullptr)) == 0; // TODO: use PL_atom_mbchars() or get_mbchars()
+  }
+  bool operator ==(const wchar_t *s) const
   { PlStringBuffers _string_buffers;
     return wcscmp(s, PL_atom_wchars(C_, nullptr)) == 0;
   }
-  [[nodiscard]] bool operator ==(const std::string& s) const
-  { size_t len;
-    PlStringBuffers _string_buffers;
-    const char* s0 = PL_atom_nchars(C_, &len); // TODO: use PL_atom_mbchars()
+  bool operator ==(const std::string& s) const
+  { PlStringBuffers _string_buffers;
+    size_t len;
+    const char* s0 = PL_atom_nchars(C_, &len); // TODO: use PL_atom_mbchars() or get_mbchars()
     return std::string(s0, len) == s;
   }
-  [[nodiscard]] bool operator ==(const std::wstring& s) const
-  { size_t len;
-    PlStringBuffers _string_buffers;
+  bool operator ==(const std::wstring& s) const
+  { PlStringBuffers _string_buffers;
+    size_t len;
     const wchar_t* s0 = PL_atom_wchars(C_, &len);
     return std::wstring(s0, len) == s;
   }
-  [[nodiscard]] bool operator ==(const PlAtom &a) const
+  bool operator ==(const PlAtom &a) const
   { return C_ == a.C_;
   }
-  [[nodiscard]] [[deprecated("use PlAtom instead of atomt_t")]] bool operator ==(atom_t to) const
+  [[deprecated("use PlAtom instead of atomt_t")]] bool operator ==(atom_t to) const
   { return C_ == to;
   }
 
-  [[nodiscard]] bool operator !=(const char *s) const
+  bool operator !=(const char *s) const
   { return !(*this == s);
   }
-  [[nodiscard]] bool operator !=(const wchar_t *s) const
+  bool operator !=(const wchar_t *s) const
   { return !(*this == s);
   }
   // TODO: add std::string, std::wstring
-  [[nodiscard]] bool operator !=(const PlAtom &a) const
+  bool operator !=(const PlAtom &a) const
   { return !(*this == a);
   }
-  [[nodiscard]] [[deprecated("use PlAtom instead of atom_t")]] bool operator !=(atom_t to) const
+  [[deprecated("use PlAtom instead of atom_t")]] bool operator !=(atom_t to) const
   { return C_ != to;
   }
 
@@ -289,29 +296,6 @@ public:
 		 *     GENERIC PROLOG TERM	*
 		 *******************************/
 
-
-// A pseudo-exception for quick exist on failure, for use by the unify
-// methods.  This is special-cased in the PREDICATE et al macros.
-// Note that it is *not* a subclass of PlException.
-class PlFail
-{
-public:
-  explicit PlFail() {}
-};
-
-
-// Throw PlFail on failure or exception.  This exception is caught by
-// the PREDICATE, which simply returns false ... if the failure was
-// caused by an exception, SWI-Prolog will detect that and turn the
-// failure into a Prolog exception.  Therefore, there is no need for
-// calling PL_exception(0) and doing something different if there is a
-// pending Prolog exception.
-inline void
-PlCheck(int rc)
-{ if ( !rc )
-    throw PlFail();
-}
-
 class PlTerm : public WrappedC<term_t>
 {
 protected:
@@ -325,79 +309,96 @@ protected:
 private:
   // Convenience methods for turning a SWI-Prolog exception into a C++
   // "throw".
-  [[nodiscard]] static bool chk(int rc); // if failed due to exception, throw exception
-  [[nodiscard]] static bool chk_throw(); // throw exception (either actual exception or PlFail)
+  [[nodiscard]] static bool chkex(int rc); // if failed due to exception, throw exception
 
 public:
   PlTerm(const PlTerm&) = default;
+  explicit PlTerm(const PlAtom& a)
+    : WrappedC<term_t>(PL_new_term_ref())
+  { verify();
+    PlCheck(PL_put_atom(C_, a.C_));
+  }
+
   // PlTerm& operator =(const PlTerm&) = delete; // see below
 
-  [[nodiscard]] int type()         const { return PL_term_type(C_); }
-  [[nodiscard]] bool is_variable() const { return PL_is_variable(C_); }
-  [[nodiscard]] bool is_ground()   const { return PL_is_ground(C_); }
-  [[nodiscard]] bool is_atom()     const { return PL_is_atom(C_); }
-  [[nodiscard]] bool is_integer()  const { return PL_is_integer(C_); }
-  [[nodiscard]] bool is_string()   const { return PL_is_string(C_); }
-  [[nodiscard]] bool is_float()    const { return PL_is_float(C_); }
-  [[nodiscard]] bool is_rational() const { return PL_is_rational(C_); }
-  [[nodiscard]] bool is_compound() const { return PL_is_compound(C_); }
-  [[nodiscard]] bool is_callable() const { return PL_is_callable(C_); }
-  [[nodiscard]] bool is_list()     const { return PL_is_list(C_); }
-  [[nodiscard]] bool is_dict()     const { return PL_is_dict(C_); }
-  [[nodiscard]] bool is_pair()     const { return PL_is_pair(C_); }
-  [[nodiscard]] bool is_atomic()   const { return PL_is_atomic(C_); }
-  [[nodiscard]] bool is_number()   const { return PL_is_number(C_); }
-  [[nodiscard]] bool is_acyclic()  const { return PL_is_acyclic(C_); }
-  [[nodiscard]] bool is_functor(const PlFunctor& f) const { return PL_is_functor(C_, f.C_); }
+  int type()         const { return PL_term_type(C_); } // PL_VARIABLE, PL_ATOM, etc.
+  bool is_variable() const { return PL_is_variable(C_); }
+  bool is_ground()   const { return PL_is_ground(C_); }
+  bool is_atom()     const { return PL_is_atom(C_); }
+  bool is_integer()  const { return PL_is_integer(C_); }
+  bool is_string()   const { return PL_is_string(C_); }
+  bool is_float()    const { return PL_is_float(C_); }
+  bool is_rational() const { return PL_is_rational(C_); }
+  bool is_compound() const { return PL_is_compound(C_); }
+  bool is_callable() const { return PL_is_callable(C_); }
+  bool is_list()     const { return PL_is_list(C_); }
+  bool is_dict()     const { return PL_is_dict(C_); }
+  bool is_pair()     const { return PL_is_pair(C_); }
+  bool is_atomic()   const { return PL_is_atomic(C_); }
+  bool is_number()   const { return PL_is_number(C_); }
+  bool is_acyclic()  const { return PL_is_acyclic(C_); }
+  bool is_functor(const PlFunctor& f) const { return PL_is_functor(C_, f.C_); }
 
   record_t record() const;
 
 					/* PlTerm --> C */
-  [[nodiscard]] [[deprecated("use as_long()")]]     explicit operator long()     const { return as_long(); }
-  [[nodiscard]] [[deprecated("use as_int()")]]      explicit operator int()      const { return as_int(); }
-  [[nodiscard]] [[deprecated("use as_uint32_t()")]] explicit operator uint32_t() const { return as_uint32_t(); }
-  [[nodiscard]] [[deprecated("use as_uint64_t()")]] explicit operator uint64_t() const { return as_uint64_t(); }
-  [[nodiscard]] [[deprecated("use as_float()")]]    explicit operator double()   const { return as_float(); }
-  [[nodiscard]] [[deprecated("use as_pointer()")]]  explicit operator void *()   const { return as_pointer(); }
-  [[nodiscard]] [[deprecated("use as_atom()")]]     explicit operator PlAtom()   const { return as_atom(); }
+  [[deprecated("use as_long()")]]     explicit operator long()     const { return as_long(); }
+  [[deprecated("use as_int()")]]      explicit operator int()      const { return as_int(); }
+  [[deprecated("use as_uint32_t()")]] explicit operator uint32_t() const { return as_uint32_t(); }
+  [[deprecated("use as_uint64_t()")]] explicit operator uint64_t() const { return as_uint64_t(); }
+  [[deprecated("use as_float()")]]    explicit operator double()   const { return as_float(); }
+  [[deprecated("use as_pointer()")]]  explicit operator void *()   const { return as_pointer(); }
+  [[deprecated("use as_atom()")]]     explicit operator PlAtom()   const { return as_atom(); }
 
-  // TODO: define the integer() method for int, long, etc. using
-  //       PL_cvt_i_int(), PL_cvt_i_uint(), etc.
-
-  void integer(int *v)           const { *v = as_int(); }
-  void integer(unsigned *v)      const { *v = as_uint(); }
-  void integer(long *v)          const { *v = as_long(); }
-  void integer(unsigned long *v) const { *v = as_ulong(); }
-  #if SIZE_MAX != ULONG_MAX && SIZE_MAX != UINT_MAX
-  void integer(size_t *v)        const { *v = as_size_t(); }
-  #endif
+  // No need for overloading int64_t, size_t, etc.; these are defined
+  // by the compiler in terms of one of the types below.
+  // TODO: add wchar_t, char16_t, char32_t
+  void integer(bool               *v) const { int v0; PlCheck(PL_cvt_i_bool(C_, &v0)); *v = v0; }
+  void integer(char               *v) const { PlCheck(PL_cvt_i_char(  C_, v)); }
+  void integer(int                *v) const { PlCheck(PL_cvt_i_int(   C_, v)); }
+  void integer(long               *v) const { PlCheck(PL_cvt_i_long(  C_, v)); }
+  void integer(long long          *v) const { PlCheck(PL_cvt_i_llong( C_, v)); }
+  void integer(short              *v) const { PlCheck(PL_cvt_i_short( C_, v)); }
+  void integer(signed char        *v) const { PlCheck(PL_cvt_i_schar( C_, v)); }
+  void integer(unsigned char      *v) const { PlCheck(PL_cvt_i_uchar( C_, v)); }
+  void integer(unsigned int       *v) const { PlCheck(PL_cvt_i_uint(  C_, v)); }
+  void integer(unsigned long      *v) const { PlCheck(PL_cvt_i_ulong( C_, v)); }
+  void integer(unsigned long long *v) const { PlCheck(PL_cvt_i_ullong(C_, v)); }
+  void integer(unsigned short     *v) const { PlCheck(PL_cvt_i_ushort(C_, v)); }
 
   // All the conversion functions throw a PlTypeError exception if
   // they fail (because of the wrong Prolog type). If you want to be
   // safe, use is_XXX() first to verify the type.
 
-  [[nodiscard]] std::string     as_string(PlEncoding enc=ENC_OUTPUT)  const;
-  [[nodiscard]] std::wstring    as_wstring() const;
-  [[nodiscard]] long            as_long()     const;
-  [[nodiscard]] int32_t         as_int32_t()  const;
-  [[nodiscard]] uint32_t        as_uint32_t() const;
-  [[nodiscard]] uint64_t        as_uint64_t() const;
-  [[nodiscard]] int64_t         as_int64_t()  const;
-  [[nodiscard]] size_t          as_size_t()   const;
-  [[nodiscard]] int             as_int()      const;
-  [[nodiscard]] unsigned        as_uint()     const;
-  [[nodiscard]] unsigned long   as_ulong()    const;
-  [[nodiscard]] bool            as_bool()     const; // atoms 'true', 'false'
-                void            as_nil()      const;
-  [[nodiscard]] double          as_float()    const;
-  [[nodiscard]] double          as_double()   const { return as_float(); }
-  [[nodiscard]] void *          as_pointer()  const; // TODO: replace with C++ interface to blobs
+  std::string   as_string(PlEncoding enc=ENC_OUTPUT) const;
+  std::wstring  as_wstring()  const;
+  long          as_long()     const { long          v; integer(&v); return v; }
+  int32_t       as_int32_t()  const { int32_t       v; integer(&v); return v; }
+  uint32_t      as_uint32_t() const { uint32_t      v; integer(&v); return v; }
+  uint64_t      as_uint64_t() const { uint64_t      v; integer(&v); return v; }
+  int64_t       as_int64_t()  const { int64_t       v; integer(&v); return v; }
+  size_t        as_size_t()   const { size_t        v; integer(&v); return v; }
+  int           as_int()      const { int           v; integer(&v); return v; }
+  unsigned      as_uint()     const { unsigned      v; integer(&v); return v; }
+  unsigned long as_ulong()    const { unsigned long v; integer(&v); return v; }
+  bool          as_bool()     const { bool          v; integer(&v); return v; }
+  void          as_nil()      const;
+  double        as_float()    const;
+  double        as_double()   const { return as_float(); }
+  void *        as_pointer()  const; // TODO: replace with C++ interface to blobs
 
   // TODO: PL_get_mpz(), PL_getr_mpq()
 
-  void nchars(size_t *len, char **s, unsigned int flags) const;
+  std::string get_nchars(unsigned int flags) const
+  { PlStringBuffers _string_buffers;
+    char  *s;
+    size_t len;
+    PlCheck(PL_get_nchars(C_, &len, &s, flags|CVT_EXCEPTION));
+    return std::string(s, len);
+  }
 
-  [[nodiscard]] PlAtom as_atom() const;
+
+  PlAtom as_atom() const;
   [[nodiscard]] bool get_if_atom(PlAtom *a) const
   { atom_t v;
     if (PL_get_atom(C_, &v) )
@@ -408,25 +409,25 @@ public:
   }
 
 					/* Compounds */
-  [[nodiscard]] PlTerm operator [](size_t index) const;
-  [[nodiscard]] size_t arity() const;
-  [[nodiscard]] PlAtom name() const;
-  [[nodiscard]] bool name_arity(PlAtom *name, size_t *arity) const;
-  [[nodiscard]] PlTerm copy_term_ref() const
-  { term_t t = PL_copy_term_ref(C_);
-    verify();
-    return PlTerm(t);
+  PlTerm operator [](size_t index) const;
+  size_t arity() const; // throws PlTypeError if not a "compound" or atom
+  PlAtom name() const; // throws PlTypeError if not a "compound" or atom
+  [[nodiscard]] bool name_arity(PlAtom *name, size_t *arity) const; // name and/or arity can be nullptr
+  PlTerm copy_term_ref() const
+  { PlTerm t(PL_copy_term_ref(C_));
+    t.verify();
+    return t;
   }
 
-  // The assignment operators have been removed because of possible
-  // confusion with the standard assignment and copy operators. Also,
-  // they have unusual semantics; normally an assignment operator
-  // would have the form
-  // PlTerm& PlTerm::operator =(const PlTerm&)
+  // The assignment operators from version 1 have been removed because
+  // of possible confusion with the standard assignment and copy
+  // operators. Also, they have unusual semantics; normally an
+  // assignment operator would have the form
+  //   PlTerm& PlTerm::operator =(const PlTerm&)
   // with implicit or explicit cast from, e.g. PlAtom to PlTerm
 
 						/* UNIFY */
-  // TODO: handle encoding
+  // TODO: handle encoding for char*, std::string
   [[deprecated("use unify_*()")]] [[nodiscard]] bool operator =(const PlTerm& t2)   const { return unify_term(t2); }
   [[deprecated("use unify_*()")]] [[nodiscard]] bool operator =(const PlAtom& a)    const { return unify_atom(a); }
   [[deprecated("use unify_*()")]] [[nodiscard]] bool operator =(const char *v)      const { return unify_atom(v); }
@@ -435,81 +436,90 @@ public:
   [[deprecated("use unify_*()")]] [[nodiscard]] bool operator =(double v)           const { return unify_float(v); }
   [[deprecated("use unify_*()")]] [[nodiscard]] bool operator =(const PlFunctor& f) const { return unify_functor(f); }
 
-  [[nodiscard]] bool unify_term(const PlTerm& t2)        const { return chk(PL_unify(C_, t2.C_)); }
-  [[nodiscard]] bool unify_atom(const PlAtom& a)         const { return chk(PL_unify_atom(C_, a.C_)); }
-  [[nodiscard]] bool unify_chars(int flags, size_t len, const char *s)   const { return chk(PL_unify_chars(C_, flags, len, s)); }
-  // TODO: replace PL_unify_*() with PL_unify_chars() with flags, where appropriate
-  [[nodiscard]] bool unify_atom(const char *v)           const { return chk(PL_unify_atom_chars(C_, v)); }
-  [[nodiscard]] bool unify_atom(const wchar_t *v)        const { return chk(PL_unify_wchars(C_, PL_ATOM, static_cast<size_t>(-1), v)); }
-  [[nodiscard]] bool unify_atom(const std::string& v)    const { return chk(PL_unify_atom_nchars(C_, v.size(), v.data())); }
-  [[nodiscard]] bool unify_atom(const std::wstring& v)   const { return chk(PL_unify_wchars(C_, PL_ATOM, v.size(), v.data())); }
-  [[nodiscard]] bool unify_list_codes(const char* v)     const { return chk(PL_unify_list_codes(C_, v)); }
-  [[nodiscard]] bool unify_list_chars(const char* v)     const { return chk(PL_unify_list_chars(C_, v)); }
-  [[nodiscard]] bool unify_integer(intptr_t v)           const { return chk(PL_unify_integer(C_, v)); }
-  // TODO: overload unify_integer for other types, such as uint64_t, size_t
-  [[nodiscard]] bool unify_int64(int64_t v)              const { return chk(PL_unify_int64(C_, v)); }
-  [[nodiscard]] bool unify_uint64(uint64_t v)            const { return chk(PL_unify_uint64(C_, v)); }
-  [[nodiscard]] bool unify_float(double v)               const { return chk(PL_unify_float(C_, v)); }
-  [[nodiscard]] bool unify_string(const std::string& v)  const { return chk(PL_unify_string_nchars(C_, v.size(), v.data())); }
-  [[nodiscard]] bool unify_string(const std::wstring& v) const { return chk(PL_unify_wchars(C_, PL_STRING, v.size(), v.data())); }
-  [[nodiscard]] bool unify_functor(const PlFunctor& f)   const { return chk(PL_unify_functor(C_, f.C_)); }
-  [[nodiscard]] bool unify_pointer(void *ptr)            const { return chk(PL_unify_pointer(C_, ptr)); } // TODO: replace with C++ interface to blobs
-  [[nodiscard]] bool unify_nil()                         const { return chk(PL_unify_nil(C_)); }
-  [[nodiscard]] bool unify_nil_ex()                      const { return chk(PL_unify_nil_ex(C_)); }
-  [[nodiscard]] bool unify_list(PlTerm h, PlTerm t)      const { return chk(PL_unify_list(C_, h.C_, t.C_)); }
-  [[nodiscard]] bool unify_list_ex(PlTerm h, PlTerm t)   const { return chk(PL_unify_list_ex(C_, h.C_, t.C_)); }
-  [[nodiscard]] bool unify_bool(bool val)                const { return chk(PL_unify_bool(C_, val)); }
-  [[nodiscard]] bool unify_bool_ex(bool val)             const { return chk(PL_unify_bool_ex(C_, val)); }
-  [[nodiscard]] bool unify_blob(void *blob, size_t len, PL_blob_t *type) const { return chk(PL_unify_blob(C_, blob, len, type)); }
+  // All the unify_*() methods check for an exception (and throw), so
+  // the return code is whether the unification succeeded or not.
+  // TODO: replace PL_unify_*() with PL_unify_chars() and flags, where appropriate
+  // TODO: handle encodings for char*, std::string
+  [[nodiscard]] bool unify_term(const PlTerm& t2)        const { return chkex(PL_unify(C_, t2.C_)); }
+  [[nodiscard]] bool unify_atom(const PlAtom& a)         const { return chkex(PL_unify_atom(C_, a.C_)); }
+  [[nodiscard]] bool unify_chars(int flags, size_t len, const char *s) const { return chkex(PL_unify_chars(C_, flags, len, s)); }
+  [[nodiscard]] bool unify_chars(int flags, const std::string& s) const { return chkex(PL_unify_chars(C_, flags, s.size(), s.data())); }
+  [[nodiscard]] bool unify_atom(const char*           v) const { return chkex(PL_unify_atom_chars(C_, v)); }
+  [[nodiscard]] bool unify_atom(const wchar_t*        v) const { return chkex(PL_unify_wchars(C_, PL_ATOM, static_cast<size_t>(-1), v)); }
+  [[nodiscard]] bool unify_atom(const std::string&    v) const { return chkex(PL_unify_atom_nchars(C_, v.size(), v.data())); }
+  [[nodiscard]] bool unify_atom(const std::wstring&   v) const { return chkex(PL_unify_wchars(C_, PL_ATOM, v.size(), v.data())); }
+  [[nodiscard]] bool unify_list_codes(const char*     v) const { return chkex(PL_unify_list_codes(C_, v)); } // TODO: [[deprecated]]
+  [[nodiscard]] bool unify_list_chars(const char*     v) const { return chkex(PL_unify_list_chars(C_, v)); } // TODO: [[deprecated]]
+  // See comment with PlTerm::integer() about the overloading.
+  [[nodiscard]] bool unify_integer(bool               v) const { return chkex(PL_unify_int64(C_, v)); }
+  [[nodiscard]] bool unify_integer(char               v) const { return chkex(PL_unify_int64(C_, v)); }
+  [[nodiscard]] bool unify_integer(int                v) const { return chkex(PL_unify_int64(C_, v)); }
+  [[nodiscard]] bool unify_integer(long               v) const { return chkex(PL_unify_int64(C_, v)); }
+  [[nodiscard]] bool unify_integer(long long          v) const { return chkex(PL_unify_int64(C_, v)); }
+  [[nodiscard]] bool unify_integer(short              v) const { return chkex(PL_unify_int64(C_, v)); }
+  [[nodiscard]] bool unify_integer(signed char        v) const { return chkex(PL_unify_int64(C_, v)); }
+  [[nodiscard]] bool unify_integer(unsigned char      v) const { return chkex(PL_unify_uint64(C_, v)); }
+  [[nodiscard]] bool unify_integer(unsigned int       v) const { return chkex(PL_unify_uint64(C_, v)); }
+  [[nodiscard]] bool unify_integer(unsigned long      v) const { return chkex(PL_unify_uint64(C_, v)); }
+  [[nodiscard]] bool unify_integer(unsigned long long v) const { return chkex(PL_unify_uint64(C_, v)); }
+  [[nodiscard]] bool unify_integer(unsigned short     v) const { return chkex(PL_unify_uint64(C_, v)); }
+  [[nodiscard]] bool unify_float(double               v) const { return chkex(PL_unify_float(C_, v)); }
+  [[nodiscard]] bool unify_string(const std::string&  v) const { return chkex(PL_unify_string_nchars(C_, v.size(), v.data())); }
+  [[nodiscard]] bool unify_string(const std::wstring& v) const { return chkex(PL_unify_wchars(C_, PL_STRING, v.size(), v.data())); }
+  [[nodiscard]] bool unify_functor(const PlFunctor&   f) const { return chkex(PL_unify_functor(C_, f.C_)); }
+  [[nodiscard]] bool unify_pointer(void *ptr)            const { return chkex(PL_unify_pointer(C_, ptr)); } // TODO: replace with C++ interface to blobs
+  [[nodiscard]] bool unify_nil()                         const { return chkex(PL_unify_nil(C_)); }
+  [[nodiscard]] bool unify_nil_ex()                      const { return chkex(PL_unify_nil_ex(C_)); }
+  [[nodiscard]] bool unify_list(PlTerm h, PlTerm t)      const { return chkex(PL_unify_list(C_, h.C_, t.C_)); }
+  [[nodiscard]] bool unify_list_ex(PlTerm h, PlTerm t)   const { return chkex(PL_unify_list_ex(C_, h.C_, t.C_)); }
+  [[nodiscard]] bool unify_bool(bool val)                const { return chkex(PL_unify_bool(C_, val)); }
+  [[nodiscard]] bool unify_bool_ex(bool val)             const { return chkex(PL_unify_bool_ex(C_, val)); }
+  [[nodiscard]] bool unify_blob(void *blob, size_t len, PL_blob_t *type) const { return chkex(PL_unify_blob(C_, blob, len, type)); }
 
   // TODO: handle PL_unify_mpz(), PL_unify_mpq()
 
 					/* Comparison standard order terms */
   [[nodiscard]] int compare(const PlTerm& t2)       const { return PL_compare(C_, t2.C_); }
-  [[nodiscard]] bool operator == (const PlTerm& t2) const { return compare(t2) == 0; }
-  [[nodiscard]] bool operator != (const PlTerm& t2) const { return compare(t2) != 0; }
-  [[nodiscard]] bool operator <  (const PlTerm& t2) const { return compare(t2) <  0; }
-  [[nodiscard]] bool operator >  (const PlTerm& t2) const { return compare(t2) >  0; }
-  [[nodiscard]] bool operator <= (const PlTerm& t2) const { return compare(t2) <= 0; }
-  [[nodiscard]] bool operator >= (const PlTerm& t2) const { return compare(t2) >= 0; }
+  bool operator == (const PlTerm& t2) const { return compare(t2) == 0; }
+  bool operator != (const PlTerm& t2) const { return compare(t2) != 0; }
+  bool operator <  (const PlTerm& t2) const { return compare(t2) <  0; }
+  bool operator >  (const PlTerm& t2) const { return compare(t2) >  0; }
+  bool operator <= (const PlTerm& t2) const { return compare(t2) <= 0; }
+  bool operator >= (const PlTerm& t2) const { return compare(t2) >= 0; }
 					/* comparison (long) */
-  [[nodiscard]] bool operator == (int64_t v) const;
-  [[nodiscard]] bool operator != (int64_t v) const;
-  [[nodiscard]] bool operator <  (int64_t v) const;
-  [[nodiscard]] bool operator >  (int64_t v) const;
-  [[nodiscard]] bool operator <= (int64_t v) const;
-  [[nodiscard]] bool operator >= (int64_t v) const;
+  /* TODO: uint64_t; but that requires adding a lot of overloaded methods */
+  bool operator == (int64_t v) const;
+  bool operator != (int64_t v) const;
+  bool operator <  (int64_t v) const;
+  bool operator >  (int64_t v) const;
+  bool operator <= (int64_t v) const;
+  bool operator >= (int64_t v) const;
 
 					/* comparison (atom, string) */
   // TODO: deprecate comparison with char*s, std::string, etc. and instead
   //       make a new method that includes the encoding. For now, these
   //       are safe only with ASCII (EncLatin1):
-  [[nodiscard]] bool operator ==(const char *s) const;
-  [[nodiscard]] bool operator ==(const wchar_t *s) const;
-  [[nodiscard]] bool operator ==(const std::string& s) const;
-  [[nodiscard]] bool operator ==(const std::wstring& s) const;
-  [[nodiscard]] bool operator ==(const PlAtom& a) const;
+  bool operator ==(const char *s) const;
+  bool operator ==(const wchar_t *s) const;
+  bool operator ==(const std::string& s) const;
+  bool operator ==(const std::wstring& s) const;
+  bool operator ==(const PlAtom& a) const;
 
-  [[nodiscard]] bool operator !=(const char *s)         const { return !(*this == s); }
-  [[nodiscard]] bool operator !=(const wchar_t *s)      const { return !(*this == s); }
-  [[nodiscard]] bool operator !=(const std::string& s)  const { return !(*this == s); }
-  [[nodiscard]] bool operator !=(const std::wstring& s) const { return !(*this == s); }
-  [[nodiscard]] bool operator !=(const PlAtom& a)       const { return !(*this == a); }
-
-  bool raise_exception() { return PL_raise_exception(C_); }
-
-  static PlTerm exception(qid_t qid) { return PlTerm(PL_exception(qid)); }
+  bool operator !=(const char *s)         const { return !(*this == s); }
+  bool operator !=(const wchar_t *s)      const { return !(*this == s); }
+  bool operator !=(const std::string& s)  const { return !(*this == s); }
+  bool operator !=(const std::wstring& s) const { return !(*this == s); }
+  bool operator !=(const PlAtom& a)       const { return !(*this == a); }
 
   // E.g.: t.write(Serror, 1200, PL_WRT_NEWLINE|PL_WRT_QUOTED);
   void write(IOSTREAM *s, int precedence, int flags) const { PlCheck(PL_write_term(s, C_, precedence, flags)); }
-
 };
 
 
 class PlTerm_atom : public PlTerm
 {
 public:
-  // TODO: Use the fact that PL_put_atom() always returns TRUE
+  // TODO: Use the fact that PL_put_atom() always returns true
   // TODO: Add encoding for char*, std::string.
   //       For now, these are safe only with ASCII (EncLatin1):
   explicit PlTerm_atom(atom_t a)                 { PlCheck(PL_put_atom(C_, a)); }
@@ -523,43 +533,31 @@ public:
 class PlTerm_var : public PlTerm
 {
 public:
-  explicit PlTerm_var() : PlTerm() {}
+  explicit PlTerm_var() { } // PlTerm() calls Pl_new_term_ref()
 };
 
 class PlTerm_term_t : public PlTerm
 {
 public:
-  explicit PlTerm_term_t() : PlTerm(null) {}
-  explicit PlTerm_term_t(term_t t) : PlTerm(t) {}
+  explicit PlTerm_term_t(term_t t)
+    : PlTerm(t) {}
 };
 
 class PlTerm_integer : public PlTerm
 {
 public:
-  explicit PlTerm_integer(long v) // TODO: PL_put_integer(term_t, long) but PL_unify_integer(term_t, intptr_t)
-  { PlCheck(PL_put_integer(C_, v));
-  }
-};
-
-// TODO: Can this be folded into PlTerm_integer?
-class PlTerm_int64 : public PlTerm
-{
-public:
-  explicit PlTerm_int64(int64_t v)  { PlCheck(PL_put_int64(C_, v));  }
-};
-
-// TODO: Can this be folded into PlTerm_integer?
-class PlTerm_uint64 : public PlTerm
-{
-public:
-  explicit PlTerm_uint64(uint64_t v) { PlCheck(PL_put_uint64(C_, v)); }
-};
-
-// TODO: Can this be folded into PlTerm_integer?
-class PlTerm_size_t : public PlTerm
-{
-public:
-  explicit PlTerm_size_t(size_t v) { PlCheck(PL_put_uint64(C_, v)); }
+  // See comment with PlTerm::integer() about the overloading.
+  explicit PlTerm_integer(char               v) { PlCheck(PL_put_int64(C_, v)); }
+  explicit PlTerm_integer(int                v) { PlCheck(PL_put_int64(C_, v)); }
+  explicit PlTerm_integer(long               v) { PlCheck(PL_put_int64(C_, v)); }
+  explicit PlTerm_integer(long long          v) { PlCheck(PL_put_int64(C_, v)); }
+  explicit PlTerm_integer(short              v) { PlCheck(PL_put_int64(C_, v)); }
+  explicit PlTerm_integer(signed char        v) { PlCheck(PL_put_int64(C_, v)); }
+  explicit PlTerm_integer(unsigned char      v) { PlCheck(PL_put_uint64(C_, v)); }
+  explicit PlTerm_integer(unsigned int       v) { PlCheck(PL_put_uint64(C_, v)); }
+  explicit PlTerm_integer(unsigned long      v) { PlCheck(PL_put_uint64(C_, v)); }
+  explicit PlTerm_integer(unsigned long long v) { PlCheck(PL_put_uint64(C_, v)); }
+  explicit PlTerm_integer(unsigned short     v) { PlCheck(PL_put_uint64(C_, v)); }
 };
 
 class PlTerm_float : public PlTerm
@@ -568,6 +566,8 @@ public:
   explicit PlTerm_float(double v) { PlCheck(PL_put_float(C_, v));  }
 };
 
+// TODO: deprecate PlTerm_pointer and replace by C++ interface to blobs
+//       (see also PlAtom::blob_data(), PlTerm::as_pointer())
 class PlTerm_pointer : public PlTerm
 {
 public:
@@ -578,6 +578,36 @@ class PlTerm_recorded : public PlTerm
 {
 public:
   explicit PlTerm_recorded(record_t r) { PlCheck(PL_recorded(r, C_)); }
+};
+
+class PlModule : public WrappedC<module_t>
+{
+public:
+  explicit PlModule(module_t m)
+    : WrappedC<module_t>(m) { }
+  explicit PlModule(const std::string& name)
+    : WrappedC<module_t>(PL_new_module(PlAtom(name).C_))
+  { verify();
+  }
+  explicit PlModule(PlAtom name)
+    : WrappedC<module_t>(PL_new_module(name.C_))
+  { verify();
+  }
+};
+
+class PlPredicate : public WrappedC<predicate_t>
+{
+public:
+  explicit PlPredicate(predicate_t p)
+    : WrappedC<predicate_t>(p) { }
+  explicit PlPredicate(PlFunctor f)
+    : WrappedC<predicate_t>(PL_pred(f.C_, static_cast<module_t>(PlModule::null)))
+  { verify();
+  }
+  explicit PlPredicate(PlFunctor f, PlModule m)
+    : WrappedC<predicate_t>(PL_pred(f.C_, m.C_))
+  { verify();
+  }
 };
 
 
@@ -592,15 +622,22 @@ private:
   term_t a0_; // A vector of term_t
 
 public:
-  explicit PlTermv(size_t n)
+  explicit PlTermv(size_t n = 0)
     : size_(n),
-      a0_(PL_new_term_refs(static_cast<int>(n))) {}
+      a0_(n ? PL_new_term_refs(static_cast<int>(n)) : PlTerm::null)
+  { if ( size_ && a0_ == PlTerm::null )
+      throw PlFail();
+  }
   explicit PlTermv(size_t n, const PlTerm& t0)
     : size_(n),
-      a0_(t0.C_) {}
+      a0_(t0.C_)
+  { if ( size_ && a0_ == PlTerm::null )
+      throw PlFail();
+  }
 
   term_t termv() const
-  { return a0_;
+  { // Note that a0_ can be PlTerm::null if size_ == 0
+    return a0_;
   }
 
   size_t size() const
@@ -674,50 +711,49 @@ public:
 class PlException : public PlTerm
 {
 public:
-  // TODO: test for a pending exception? Do we need to do this?
-  explicit PlException()
-    : PlTerm(PL_exception(0))
-  { if ( is_null() )
-      PL_fatal_error("No exception");
-  }
   explicit PlException(const PlAtom& a)
-    : PlTerm(PlTerm_atom(a).C_) {}
+    : PlTerm(PlTerm_atom(a).C_)
+  { verify();
+  }
   explicit PlException(const PlTerm& t)
-    : PlTerm(t) {}
-  explicit PlException(term_t ex)
-    : PlTerm(ex) {}
+    : PlTerm(t)
+  { verify();
+  }
 
-  // The following methods override PlTerm, but we can't use the
-  // "override" keyword because the method isn't virtual and we don't
-  // want the overhead of virtual methods - we want PlTerm to be a
-  // thin wrapper on term_t.
-  [[nodiscard]] const std::string  as_string(PlEncoding enc=ENC_OUTPUT) const { return string_term().as_string(enc); }
-  [[nodiscard]] const std::wstring as_wstring() const { return string_term().as_wstring(); }
+  // The following methods override PlTerm, but do not use the
+  // "override" keyword because the method isn't virtual. Because
+  // the API has PlTerm as a thin wrapper on term_t, with minimal
+  // overhead, there are no virtual methods.
+  const std::string  as_string(PlEncoding enc=ENC_OUTPUT) const { return string_term().as_string(enc); }
+  const std::wstring as_wstring() const { return string_term().as_wstring(); }
 
   // plThrow() is for the try-catch in PREDICATE - returns the result
-  // of PL_raise_exception() as a foreign_t (which is always `false`).
+  // of PL_raise_exception(), which is always `false`, as a foreign_t.
   foreign_t plThrow()
   { return static_cast<foreign_t>(PL_raise_exception(C_));
   }
+
+protected:
+  explicit PlException(term_t ex)
+    : PlTerm(ex) {}
 
 private:
   PlTerm string_term() const;
 };
 
-static inline void
-throw_PlException()
-{ throw PlException();
-}
+class PlException_qid : public PlException
+{
+public:
+  explicit PlException_qid(qid_t qid = 0)
+    : PlException(PL_exception(qid)) { }
+};
 
 
 class PlTypeError : public PlException
 {
 public:
-  explicit PlTypeError(const PlTerm& t)
-    : PlException(t) {}
-
   explicit PlTypeError(const char *expected, const PlTerm& actual) :
-    // TODO: PL_type_error() or lazy PlTerm_atom()
+    // TODO: use PL_type_error() or lazy PlTerm_atom()
     PlException(PlCompound("error",
 			   PlTermv(actual.is_variable() ?
 				   static_cast<PlTerm>(PlTerm_atom("instantiation_error")) :
@@ -731,11 +767,8 @@ public:
 class PlDomainError : public PlException
 {
 public:
-  explicit PlDomainError(const PlTerm& t)
-    : PlException(t) {}
-
   explicit PlDomainError(const char *expected, const PlTerm& actual) :
-    // TODO: PL_domain_error() or lazy PlTerm_atom()
+    // TODO: Use PL_domain_error() or lazy PlTerm_atom()
     PlException(PlCompound("error",
 			   PlTermv(PlCompound("domain_error",
 					      PlTermv(PlTerm_atom(expected), actual)),
@@ -749,12 +782,12 @@ class PlTermvDomainError : public PlException
 {
 public:
   explicit PlTermvDomainError(size_t size, size_t n) :
-    // TODO: PL_domain_error() or lazy PlTerm_atom()
+    // TODO: Use PL_domain_error() or lazy PlTerm_atom()
     PlException(PlCompound("error",
 			   PlTermv(PlCompound("domain_error",
 					      PlTermv(PlCompound("argv",
-								 PlTermv(PlTerm_size_t(size))),
-						      PlTerm_size_t(n))),
+								 PlTermv(PlTerm_integer(size))),
+						      PlTerm_integer(n))),
 				   PlTerm_var())))
   {
   }
@@ -765,18 +798,11 @@ class PlInstantiationError : public PlException
 {
 public:
   explicit PlInstantiationError(const PlTerm& t) :
+    // TODO: Use PL_instantiation_error() or lazy PlTerm_atom()
     PlException(t.is_variable() ?
 	      PlCompound("error",
 			 PlTermv(PlTerm_atom("instantiation_error"), t))
 		: t) {}
-
-  explicit PlInstantiationError() :
-    // TODO: PL_instantiation_error() or lazy PlTerm_atom()
-    PlException(PlCompound("error",
-			   PlTermv(PlTerm_atom("instantiation_error"),
-				   PlTerm_var())))
-  {
-  }
 };
 
 
@@ -787,7 +813,7 @@ public:
     : PlException(t) {}
 
   explicit PlExistenceError(const char *type, PlTerm actual) :
-    // TODO: PL_existence_error() or lazy PlTerm_atom()
+    // TODO: Use PL_existence_error() or lazy PlTerm_atom()
     PlException(PlCompound("error",
 			   PlTermv(PlCompound("existence_error",
 					      PlTermv(PlTerm_atom(type), actual)),
@@ -804,7 +830,7 @@ public:
     : PlException(t) {}
 
   explicit PlPermissionError(const char *op, const char *type, const PlTerm& obj) :
-    // TODO: PL_permission_error() or lazy PlTerm_atom()
+    // TODO: Use PL_permission_error() or lazy PlTerm_atom()
     PlException(PlCompound("error",
 			   PlTermv(PlCompound("permission_error",
 					      PlTermv(PlTerm_atom(op), PlTerm_atom(type), obj)),
@@ -817,16 +843,8 @@ public:
 class PlResourceError : public PlException
 {
 public:
-  explicit PlResourceError() : PlException() {}
-
-  explicit PlResourceError(const PlTerm& t)
-    : PlException(t) {}
-
-  explicit PlResourceError(term_t ex)
-    : PlException(ex) {}
-
   explicit PlResourceError(const char *resource) :
-    // TODO: PL_resource_error() or lazy PlTerm_atom()
+    // TODO: Use PL_resource_error() or lazy PlTerm_atom()
     PlException(PlCompound("error",
 			   PlTermv(PlCompound("resource_error",
 					      PlTermv(PlTerm_atom(resource))),
@@ -843,7 +861,25 @@ public:
 template<typename C_t> inline void
 WrappedC<C_t>::verify() const
 { if ( is_null() ) // For PlFunctor, no need to check name().is_null()
-    throw PlResourceError();
+    throw PlFail(); // Gets fatal error or PlResourceError("memory")
+}
+
+inline
+PlFunctor::PlFunctor(const std::string& name, size_t arity)
+  : WrappedC<functor_t>(null)
+{ PlAtom a(name);
+  C_ = PL_new_functor(a.C_, arity);
+  PL_unregister_atom(a.C_);
+  verify();
+}
+
+inline
+PlFunctor::PlFunctor(const std::wstring& name, size_t arity)
+  : WrappedC<functor_t>(null)
+{ PlAtom a(name);
+  C_ = PL_new_functor(a.C_, arity);
+  PL_unregister_atom(a.C_);
+  verify();
 }
 
 inline PlAtom
@@ -856,18 +892,13 @@ PlFunctor::name() const
 		 *	ATOM IMPLEMENTATION	*
 		 *******************************/
 
-inline
-PlAtom::PlAtom(const PlTerm& t)
-  : WrappedC<atom_t>(t.as_atom().C_) {}
-
-inline const std::string
-PlAtom::as_string(PlEncoding enc) const
+inline const std::wstring
+PlAtom::as_wstring() const
 { PlStringBuffers _string_buffers;
   size_t len;
-  char *s;
-  PlCheck( PL_atom_mbchars(C_, &len, &s, CVT_EXCEPTION|static_cast<unsigned int>(enc)) );
-  return std::string(s, len);
-}
+  const wchar_t *s = PL_atom_wchars(C_, &len);
+  return std::wstring(s, len);
+  }
 
 
 		 /*******************************
@@ -878,131 +909,43 @@ PlAtom::as_string(PlEncoding enc) const
 
 inline std::string
 PlTerm::as_string(PlEncoding enc) const
-{ char *s;
-  size_t len;
-  nchars(&len, &s, CVT_ALL|CVT_WRITEQ|BUF_STACK);
-  return std::string(s, len);
+{ return get_nchars(CVT_ALL|CVT_WRITEQ|BUF_STACK|static_cast<unsigned int>(enc));
 }
 
 inline std::wstring
 PlTerm::as_wstring() const
 { wchar_t *s;
   size_t len;
+  PlStringBuffers _string_buffers;
   if ( PL_get_wchars(C_, &len, &s, CVT_ALL|CVT_WRITEQ|BUF_STACK|CVT_EXCEPTION) )
     return std::wstring(s, len);
-  throw PlException();
-}
-
-inline long
-PlTerm::as_long() const
-{ long v;
-  if ( PL_get_long_ex(C_, &v) )
-    return v;
-  return chk_throw(); // always throws
-}
-
-inline int32_t
-PlTerm::as_int32_t() const
-{ int32_t v;
-  if ( PL_get_integer_ex(C_, &v) ) // TODO: use cvt_i_int32()?
-    return v;
-  return chk_throw(); // always throws
-}
-
-inline uint32_t
-PlTerm::as_uint32_t() const
-{ uint32_t v;
-  if ( PL_cvt_i_uint32(C_, &v) )
-    return v;
-  return chk_throw(); // always throws
-}
-
-inline int64_t
-PlTerm::as_int64_t() const
-{ int64_t v;
-  if ( PL_get_int64_ex(C_, &v) )
-    return v;
-  return chk_throw(); // always throws
-}
-
-inline uint64_t
-PlTerm::as_uint64_t() const
-{ uint64_t v;
-  if ( PL_get_uint64_ex(C_, &v) )
-    return v;
-  return chk_throw(); // always throws
-}
-
-inline size_t
-PlTerm::as_size_t() const
-{ size_t v;
-  if ( PL_get_size_ex(C_, &v) )
-    return v;
-  return chk_throw(); // always throws
-}
-
-inline int
-PlTerm::as_int() const
-{ int v;
-  PlCheck(PL_cvt_i_int(C_, &v));
-  return v;
-}
-
-inline unsigned
-PlTerm::as_uint() const
-{ unsigned v;
-  PlCheck(PL_cvt_i_uint(C_, &v));
-  return v;
-}
-
-inline unsigned long
-PlTerm::as_ulong() const
-{ unsigned long v;
-  PlCheck(PL_cvt_i_ulong(C_, &v));
-  return v;
-}
-
-
-inline bool
-PlTerm::as_bool() const
-{ int v;
-  if ( PL_get_bool_ex(C_, &v) )
-    return v;
-  // TODO: we know that ex is set, so just do throw PlException(ex)?
-  return chk_throw(); // always throws
+  throw PlFail();
 }
 
 inline void
 PlTerm::as_nil() const
-{ if ( PL_get_nil_ex(C_) )
-    return;
-  (void)chk_throw(); // always throws
+{ PlCheck(PL_get_nil_ex(C_));
 }
 
 inline double
 PlTerm::as_float() const
 { double v;
-  if ( PL_get_float_ex(C_, &v) )
-    return v;
-  return chk_throw(); // always throws
+  PlCheck(PL_get_float_ex(C_, &v));
+  return v;
 }
 
 inline PlAtom
 PlTerm::as_atom() const
 { atom_t v;
-  if ( PL_get_atom_ex(C_, &v) )
-    return PlAtom(v);
-  (void)chk_throw(); // always throws
-  return PlAtom();   // make the compiler happy
+  PlCheck(PL_get_atom_ex(C_, &v));
+  return PlAtom(v);
 }
 
 inline void *
 PlTerm::as_pointer() const
 { void *ptr;
-  if ( PL_get_pointer_ex(C_, &ptr) )
-    return ptr;
-  (void)chk_throw(); // always throws
-  return nullptr;    // make the compiler happy
+  PlCheck(PL_get_pointer_ex(C_, &ptr));
+  return ptr;
 }
 
 inline record_t
@@ -1010,15 +953,7 @@ PlTerm::record() const
 { record_t rec = PL_record(C_);
   if ( rec )
     return rec;
-  (void)chk_throw(); // always throws
-  return nullptr;    // make the compiler happy
-}
-
-inline void
-PlTerm::nchars(size_t *len, char **s, unsigned int flags) const
-{ if ( PL_get_nchars(C_, len, s, flags|CVT_EXCEPTION) )
-    return;
-  (void)chk_throw(); // always throws
+  throw PlFail();
 }
 
 		 /*******************************
@@ -1030,39 +965,38 @@ class PlTerm_tail : public PlTerm
 public:
   explicit PlTerm_tail(const PlTerm& l)
   { if ( l.is_variable() || l.is_list() )
-    { if ( !(C_ = l.copy_term_ref().C_) )
-	throw PlResourceError();
+    { C_ = l.copy_term_ref().C_;
+      if ( is_null() )
+	throw PlFail(); // Raises resource exception
     } else
       throw PlTypeError("list", l);
   }
 
 					/* building */
-  bool append(const PlTerm& e)
-  { term_t tmp, ex;
-
+  [[nodiscard]] bool append(const PlTerm& e)
+  { // TODO: PlTerm_var tmp, ex; replace PL_unify_*() with unify_*() methods
+    term_t tmp;
     if ( (tmp = PL_new_term_ref()) &&
 	 PL_unify_list(C_, tmp, C_) &&
 	 PL_unify(tmp, e.C_) )
     { PL_reset_term_refs(tmp);
-      return TRUE;
+      return true;
     }
 
-    if ( (ex = PL_exception(0)) ) // TODO: use PlCheck()?
-      throw PlResourceError(ex);
-
-    return FALSE;
+    return false;
   }
-  bool close()
-  { return PL_unify_nil(C_);
+
+  [[nodiscard]] bool close()
+  { return unify_nil();
   }
 
 					/* enumerating */
-  bool next(PlTerm& t)
+  [[nodiscard]] bool next(PlTerm& t)
   { if ( PL_get_list(C_, t.C_, C_) )
-      return TRUE;
+      return true;
 
     if ( PL_get_nil(C_) )
-      return FALSE;
+      return false;
 
     throw PlTypeError("list", *this);
   }
@@ -1079,28 +1013,28 @@ class PlRegister
 public:
   PlRegister(const char *module, const char *name, int arity,
 	    foreign_t (f)(term_t t0, int a, control_t ctx))
-  { PL_register_foreign_in_module(module, name, arity, reinterpret_cast<pl_function_t>(f), PL_FA_VARARGS);
+  { PlCheck(PL_register_foreign_in_module(module, name, arity, reinterpret_cast<pl_function_t>(f), PL_FA_VARARGS));
   }
 
   PlRegister(const char *module, const char *name, foreign_t (*f)(PlTerm a0))
-  { PL_register_foreign_in_module(module, name, 1, reinterpret_cast<pl_function_t>(f), 0);
+  { PlCheck(PL_register_foreign_in_module(module, name, 1, reinterpret_cast<pl_function_t>(f), 0));
   }
   PlRegister(const char *module, const char *name, foreign_t (*f)(PlTerm a0, PlTerm a1))
-  { PL_register_foreign_in_module(module, name, 2, reinterpret_cast<pl_function_t>(f), 0);
+  { PlCheck(PL_register_foreign_in_module(module, name, 2, reinterpret_cast<pl_function_t>(f), 0));
   }
   PlRegister(const char *module, const char *name, foreign_t (*f)(PlTerm a0, PlTerm a1, PlTerm a2))
-  { PL_register_foreign_in_module(module, name, 3, reinterpret_cast<pl_function_t>(f), 0);
+  { PlCheck(PL_register_foreign_in_module(module, name, 3, reinterpret_cast<pl_function_t>(f), 0));
   }
 
   // For C-style calls - needed to support a test case
   PlRegister(const char *module, const char *name, foreign_t (*f)(term_t a0))
-  { PL_register_foreign_in_module(module, name, 1, reinterpret_cast<pl_function_t>(f), 0);
+  { PlCheck(PL_register_foreign_in_module(module, name, 1, reinterpret_cast<pl_function_t>(f), 0));
   }
 
   // for non-deterministic calls
   PlRegister(const char *module, const char *name, int arity,
 	     foreign_t (f)(term_t t0, int a, control_t ctx), short flags)
-  { PL_register_foreign_in_module(module, name, arity, reinterpret_cast<pl_function_t>(f), flags);
+  { PlCheck(PL_register_foreign_in_module(module, name, arity, reinterpret_cast<pl_function_t>(f), flags));
   }
 };
 
@@ -1116,7 +1050,8 @@ private:
 
 public:
   PlFrame()
-  { fid_ = PL_open_foreign_frame();
+    : fid_(PL_open_foreign_frame())
+  { verify();
   }
 
   ~PlFrame()
@@ -1126,9 +1061,15 @@ public:
   void rewind()
   { PL_rewind_foreign_frame(fid_);
   }
+
+private:
+  void verify()
+  { if ( fid_ == static_cast<fid_t>(0) )
+      throw PlFail();
+  }
 };
 
-inline bool PlRewindOnFail(std::function<bool()> f)
+[[nodiscard]] inline bool PlRewindOnFail(std::function<bool()> f)
 { PlFrame frame;
   bool rc = f();
   if ( !rc )
@@ -1136,77 +1077,105 @@ inline bool PlRewindOnFail(std::function<bool()> f)
   return rc;
 }
 
-
 class PlQuery
 {
 private:
   qid_t qid_;
 
 public:
-  PlQuery(predicate_t pred, const PlTermv& av)
-    : qid_(PL_open_query(static_cast<module_t>(0), PL_Q_PASS_EXCEPTION, pred, av.termv()))
-  { if ( !qid_ ) // TODO: use PlCheck()?
-      throw PlResourceError();
+  PlQuery(PlPredicate pred, const PlTermv& av, int flags = PL_Q_PASS_EXCEPTION)
+    : qid_(PL_open_query(static_cast<module_t>(0), flags, pred.C_, av.termv()))
+  { verify();
   }
   // TODO: PlQuery(const wstring& ...)
-  PlQuery(const char *name, const PlTermv& av)
-    : qid_(PL_open_query(static_cast<module_t>(0), PL_Q_PASS_EXCEPTION,
-			 PL_predicate(name, static_cast<int>(av.size()), "user"),
+  // TODO: PlQuery({PlAtom,PlFunctor,PlPredicate} ...)
+  PlQuery(const std::string& name, const PlTermv& av, int flags = PL_Q_PASS_EXCEPTION)
+    : qid_(PL_open_query(static_cast<module_t>(0),
+			 flags,
+			 PlPredicate(PlFunctor(name, av.size())).C_,
 			 av.termv()))
-  { if ( !qid_ ) // TODO: use PlCheck()?
-      throw PlResourceError();
+  { verify();
   }
-  PlQuery(const std::string& module, const std::string& name, const PlTermv& av)
-  { // TODO: predicate_t p = PL_predicate(name.c_str(), av.size(), module.c_str());
-    // TODO: need test cases
-
-    atom_t ma = PL_new_atom(module.c_str());
-    atom_t na = PL_new_atom(name.c_str());
-    module_t m = PL_new_module(ma);
-    predicate_t p = PL_pred(PL_new_functor(na, av.size()), m);
-
-    PL_unregister_atom(ma);
-    PL_unregister_atom(na);
-
-    qid_ = PL_open_query(m, PL_Q_PASS_EXCEPTION, p, av.termv());
-    if ( !qid_ ) // TODO: use PlCheck()?
-      throw PlResourceError();
+  // TODO; Should resolve module only once.
+  PlQuery(const std::string& module, const std::string& name, const PlTermv& av, int flags = PL_Q_PASS_EXCEPTION)
+    : qid_(PL_open_query(PlModule(module).C_,
+			 flags,
+			 PlPredicate(PlFunctor(name, av.size()),
+				     PlModule(module)).C_,
+			 av.termv()))
+  { verify();
   }
-  ~PlQuery()
-  { if ( qid_ )
-      PL_cut_query(qid_);
+
+  // The return code from next_solution can be (if called with PL_Q_EXT_STATUS):
+  //    TRUE
+  //    FALSE
+  //    PL_S_EXCEPTION
+  //    PL_S_FALSE
+  //    PL_S_TRUE
+  //    PL_S_LAST
+  // Because of this, you shouldn't use PlCheck(q.next_solution())
+  [[nodiscard]] int next_solution();
+
+  void cut()
+  { qid_t qid_orig =  qid_;
+    qid_ = 0;
+    if ( qid_orig )
+      PlCheck(PL_cut_query(qid_orig));  // rc: exception occurred in a cleanup handler
   }
-  bool next_solution();
+
+  void close_destroy()
+  { qid_t qid_orig =  qid_;
+    qid_ = 0;
+    if ( qid_orig )
+      PlCheck(PL_close_query(qid_orig));  // rc: exception occurred in a cleanup handler
+  }
+
+  ~PlQuery() noexcept(false)
+  { // cut() can throw a C++ exception - throwing an exception from a
+    // destructor is "potentially dangerous" but it's necessary to
+    // ensure proper behaviour in Prolog.
+    cut(); // *not* close() - which destroys data&bindings from query
+  }
+
+private:
+  void verify()
+  { if ( qid_ == static_cast<qid_t>(0) )
+      throw PlFail();
+  }
 };
 
 
-// TODO: add std::string, std::wstring versions of PlCall
-
+// See comment about possible return values from
+// PlQuery::next_solution(), which is used by PlCall().
 inline int
-PlCall(const char *predicate, const PlTermv& args)
-{ PlQuery q(predicate, args);
+PlCall(const std::string& predicate, const PlTermv& args, int flags = PL_Q_PASS_EXCEPTION)
+{ PlQuery q(predicate, args, flags);
   return q.next_solution();
 }
 
 inline int
-PlCall(const char *module, const char *predicate, const PlTermv& args)
-{ PlQuery q(module, predicate, args);
+PlCall(const std::string& module, const std::string& predicate, const PlTermv& args, int flags = PL_Q_PASS_EXCEPTION)
+{ PlQuery q(module, predicate, args, flags);
   return q.next_solution();
 }
 
 inline int
-PlCall(const char *goal)
-{ PlQuery q("call", PlTermv(PlCompound(goal)));
+PlCall(const std::string& goal, int flags = PL_Q_PASS_EXCEPTION)
+{ PlQuery q("call", PlTermv(PlCompound(goal)), flags);
   return q.next_solution();
 }
 
 inline int
-PlCall(const wchar_t *goal)
-{ PlQuery q("call", PlTermv(PlCompound(goal)));
+PlCall(const std::wstring& goal, int flags = PL_Q_PASS_EXCEPTION)
+{ PlQuery q("call", PlTermv(PlCompound(goal)), flags);
   return q.next_solution();
 }
 
-// TODO: PlCall(const std::string& goal)
+inline int
+PlCall(PlTerm goal, int flags = PL_Q_PASS_EXCEPTION)
+{ PlQuery q("call", PlTermv(goal), flags);
+  return q.next_solution();
+}
 
 
 
@@ -1254,30 +1223,18 @@ inline bool
 PlTerm::name_arity(PlAtom *name, size_t *arity) const
 { atom_t name_a;
   if ( PL_get_name_arity(C_, &name_a, arity) )
-  { *name = PlAtom(name_a);
+  { if ( name )
+      *name = PlAtom(name_a);
     return true;
   }
-  // throw PlTypeError("compound", *this);
   return false;
 }
 
 inline bool
-PlTerm::chk(int rc)
+PlTerm::chkex(int rc)
 { if ( rc )
     return rc;
-  term_t ex = PL_exception(0);
-  if ( ex )
-    throw PlException(ex);
-  return rc;
-}
-
-inline bool
-PlTerm::chk_throw()
-{ term_t ex = PL_exception(0);
-  if ( ex )
-    throw PlException(ex);
   throw PlFail();
-  return false;
 }
 
 
@@ -1390,8 +1347,7 @@ inline
 PlCompound::PlCompound(const wchar_t *text)
 { term_t t = PL_new_term_ref();
 
-  if ( !PL_wchars_to_term(text, t) )
-    throw PlException(t);
+  PlCheck(PL_wchars_to_term(text, t));
 
   PlPutTerm(C_, t);
 }
@@ -1399,10 +1355,11 @@ PlCompound::PlCompound(const wchar_t *text)
 inline
 PlCompound::PlCompound(const std::string& text, PlEncoding enc)
 { term_t t = PL_new_term_ref();
+  if ( t == PlTerm::null )
+    throw PlFail();
 
   // TODO: PL_put_term_from_chars() should take an unsigned int flags
-  if ( !PL_put_term_from_chars(t, enc, text.size(), text.data()) )
-    throw PlException(t);
+  PlCheck(PL_put_term_from_chars(t, enc, text.size(), text.data()));
 
   PlPutTerm(C_, t);
 }
@@ -1410,10 +1367,11 @@ PlCompound::PlCompound(const std::string& text, PlEncoding enc)
 inline
 PlCompound::PlCompound(const std::wstring& text)
 { term_t t = PL_new_term_ref();
+  if ( ! t )
+    throw PlFail();
 
   // TODO: what is wchar_t equivalent of PL_put_term_from_chars()?
-  if ( !PL_wchars_to_term(text.c_str(), t) ) // TODO: use text.size()
-    throw PlException(t);
+  PlCheck(PL_wchars_to_term(text.c_str(), t)); // TODO: use text.size()
 
   PlPutTerm(C_, t);
 }
@@ -1421,31 +1379,35 @@ PlCompound::PlCompound(const std::wstring& text)
 inline
 PlCompound::PlCompound(const char *functor, const PlTermv& args)
 { PlCheck(PL_cons_functor_v(C_,
-                            PL_new_functor(PL_new_atom(functor), args.size()),
-                            args.termv()));
+			    // TODO: throw if PL_new_functor() returns 0
+			    PL_new_functor(PL_new_atom(functor), args.size()),
+			    args.termv()));
 }
 
 inline
 PlCompound::PlCompound(const wchar_t *functor, const PlTermv& args)
 { PlCheck(PL_cons_functor_v(
-                            C_,
-                            PL_new_functor(PL_new_atom_wchars(wcslen(functor), functor),
-                                           args.size()),
-                            args.termv()));
+			    C_,
+			    // TODO: throw if PL_new_functor() returns 0
+			    PL_new_functor(PL_new_atom_wchars(wcslen(functor), functor),
+					   args.size()),
+			    args.termv()));
 }
 
 inline
 PlCompound::PlCompound(const std::string& functor, const PlTermv& args)
 { PlCheck(PL_cons_functor_v(C_,
-                            PL_new_functor(PL_new_atom_nchars(functor.size(), functor.data()), args.size()),
-                            args.termv()));
+			    // TODO: throw if PL_new_functor() returns 0
+			    PL_new_functor(PL_new_atom_nchars(functor.size(), functor.data()), args.size()),
+			    args.termv()));
 }
 
 inline
 PlCompound::PlCompound(const std::wstring& functor, const PlTermv& args)
 { PlCheck(PL_cons_functor_v(C_,
-                            PL_new_functor(PL_new_atom_wchars(functor.size(), functor.data()), args.size()),
-                            args.termv()));
+			    // TODO: throw if PL_new_functor() returns 0
+			    PL_new_functor(PL_new_atom_wchars(functor.size(), functor.data()), args.size()),
+			    args.termv()));
 }
 
 		 /*******************************
@@ -1455,17 +1417,23 @@ PlCompound::PlCompound(const std::wstring& functor, const PlTermv& args)
 
 inline PlTermv::PlTermv(const PlAtom& a)
   : size_(1),
-    a0_(PlTerm_atom(a).C_) {}
+    a0_(PlTerm_atom(a).C_)
+{ if ( !a0_ )
+    throw PlFail();
+}
 
 inline PlTermv::PlTermv(const PlTerm& m0)
   : size_(1),
-    a0_(m0.C_) {}
+    a0_(m0.C_)
+{ if ( !a0_ )
+    throw PlFail();
+}
 
 inline PlTermv::PlTermv(const PlTerm& m0, const PlTerm& m1)
   : size_(2),
     a0_(PL_new_term_refs(2))
 { if ( !a0_ )
-    throw PlResourceError();
+    throw PlFail();
   PlPutTerm(a0_+0, m0.C_);
   PlPutTerm(a0_+1, m1.C_);
 }
@@ -1474,7 +1442,7 @@ inline PlTermv::PlTermv(const PlTerm& m0, const PlTerm& m1, const PlTerm& m2)
   : size_(3),
     a0_(PL_new_term_refs(3))
 { if ( !a0_ )
-    throw PlResourceError();
+    throw PlFail();
   PlPutTerm(a0_+0, m0.C_);
   PlPutTerm(a0_+1, m1.C_);
   PlPutTerm(a0_+2, m2.C_);
@@ -1484,7 +1452,7 @@ inline PlTermv::PlTermv(const PlTerm& m0, const PlTerm& m1, const PlTerm& m2, co
   : size_(4),
     a0_(PL_new_term_refs(4))
 { if ( !a0_ )
-    throw PlResourceError();
+    throw PlFail();
   PlPutTerm(a0_+0, m0.C_);
   PlPutTerm(a0_+1, m1.C_);
   PlPutTerm(a0_+2, m2.C_);
@@ -1496,7 +1464,7 @@ inline PlTermv::PlTermv(const PlTerm& m0, const PlTerm& m1, const PlTerm& m2,
   : size_(5),
     a0_(PL_new_term_refs(5))
 { if ( !a0_ )
-    throw PlResourceError();
+    throw PlFail();
   PlPutTerm(a0_+0, m0.C_);
   PlPutTerm(a0_+1, m1.C_);
   PlPutTerm(a0_+2, m2.C_);
@@ -1524,7 +1492,7 @@ PlException::string_term() const
   PlTermv av(2);
 
   PlCheck(av[0].unify_term(PlCompound("print_message",
-                                      PlTermv("error", *this))));
+				      PlTermv("error", *this))));
   PlQuery q("$write_on_string", av);
   if ( q.next_solution() )
     return av[1];
@@ -1543,19 +1511,12 @@ PlException::string_term() const
 		 *	    QUERY (BODY)	*
 		 *******************************/
 
-inline bool
+inline int
 PlQuery::next_solution()
-{ int rval;
+{ int rval = PL_next_solution(qid_);
 
-  if ( !(rval = PL_next_solution(qid_)) )
-  { term_t ex;
-
-    PL_close_query(qid_);
-    qid_ = 0;
-
-    if ( (ex = PL_exception(0)) )
-      throw PlException(ex);
-  }
+  if ( !rval )
+    (void)close_destroy(); // TODO: what if this creates an exception?
   return rval;
 }
 
@@ -1564,53 +1525,44 @@ PlQuery::next_solution()
 		 *	      ENGINE		*
 		 *******************************/
 
-class PlError
-{
-private:
-  char *message_;
-
-public:
-  PlError(const char *msg)
-  { size_t len = strlen(msg)+1;
-    message_ = new char[len];
-#ifdef _MSC_VER				/* Yek */
-#pragma warning( push )
-#pragma warning (disable:4996)
-#endif
-    strncpy(message_, msg, len);
-#ifdef _MSC_VER
-#pragma warning( pop )
-#endif
-  }
-
-  ~PlError()
-  { delete[] message_;
-  }
-};
-
-
 class PlEngine
 {
 public:
   PlEngine(int argc, char **argv)
-  { if ( !PL_initialise(argc, argv) )
-      throw PlError("failed to initialise");
+  { PlCheck(PL_initialise(argc, argv));
+  }
+  PlEngine(int argc, wchar_t **argv)
+  { PlCheck(PL_winitialise(argc, argv));
   }
 
   PlEngine(char *av0)
-  { int ac = 0;
-    char **av = static_cast<char**>(malloc(sizeof(char *) * 2));
+  { av[0] = av0;
+    av[1] = nullptr;
 
-    av[ac++] = av0;
-    av[ac] = nullptr;
-
-    if ( !PL_initialise(1, av) )
-      throw PlError("failed to initialise");
+    PlCheck(PL_initialise(1, av));
   }
 
-  ~PlEngine()
-  { PL_cleanup(0);
+  PlEngine(wchar_t *av0)
+  { w_av[0] = av0;
+    w_av[1] = nullptr;
+
+    PlCheck(PL_winitialise(1, w_av));
   }
+
+  void cleanup(int status_and_flags = 0) {
+    PlCheck(PL_cleanup(status_and_flags));
+  }
+
+  ~PlEngine() noexcept(false)
+  { // cleanup() can throw a C++ exception - throwing an exception
+    // from a destructor is "potentially dangerous" but it's necessary
+    // to ensure proper behaviour in Prolog.
+      cleanup();
+  }
+
+private:
+  char *av[2];
+  wchar_t *w_av[2];
 };
 
 

@@ -190,6 +190,27 @@ test_that("function bodies are properly translated",
   expect_identical(sapply(FUN=as.character, bf), sapply(FUN=as.character, bq))
 })
 
+test_that("matrices are properly translated",
+{
+  m <- matrix(1:6, nrow=2)
+
+  query(call("member", expression(X), list(quote(a), "b", 3L, 4, TRUE, expression(Y), NA, NaN, Inf, NULL, m)))
+  submit()
+  submit()
+  submit()
+  submit()
+  submit()
+  submit()
+  submit()
+  submit()
+  submit()
+  submit()
+  q <- submit()
+  clear()
+
+  expect_identical(q$X, m)
+})
+
 test_that("check_installation works",
 {
   query(call("check_installation"))

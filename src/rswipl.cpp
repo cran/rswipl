@@ -10,15 +10,16 @@ using namespace Rcpp ;
 // integer -> IntegerVector
 // %(i1, i2, i3) -> IntegerVector
 // string -> CharacterVector
-// $(s1, s2, s3) CharacterVector
+// $$(s1, s2, s3) CharacterVector
 // na (atom) -> NA
 // true, false (atoms) -> LogicalVector
 // !(l1, l2, l3) -> LogicalVector
-// the empty atom -> ""
+// the empty atom -> empty R symbol (see below)
 // other atoms -> symbol/name
 // variable -> expression(variable name)
 // compound -> call (aka. "language")
 // list -> list
+// ##, %%, $$$, !! -> R matrices
 //
 RObject pl2r(PlTerm pl, CharacterVector& names, PlTerm& vars) ;
 
@@ -30,13 +31,15 @@ RObject pl2r(PlTerm pl, CharacterVector& names, PlTerm& vars) ;
 // integer vector of length 1 -> integer
 // integer vector of length > 1 -> %(1, 2, 3)
 // character vector of length 1 -> string
-// character vector of length > 1 -> $("a", "b", "c")
+// character vector of length > 1 -> $$("a", "b", "c")
 // logical vector of length 1 -> the atoms true, false or na
-// logical vector of length > 1 -> $(true, false, na)
+// logical vector of length > 1 -> !(true, false, na)
+// matrices -> ##, %%, $$$, !! with vectors as elements
 // other symbols/name -> atom
 // expression -> variable
 // call/language -> compound
 // list -> list
+// functions -> :-/2
 //
 PlTerm r2pl(SEXP r, CharacterVector& names, PlTerm& vars) ;
 
@@ -82,6 +85,30 @@ DoubleVector pl2r_realvec(PlTerm pl)
   return r ;
 }
 
+// Convert matrix of reals (e.g., ##(#(1.0, 2.0), #(na, ...), ...))
+NumericMatrix pl2r_realmat(PlTerm pl)
+{
+  size_t nrow = pl.arity() ;
+  size_t ncol = 0 ;
+  if(nrow > 0)
+  {
+    for(size_t i=0; i<pl.arity(); i++)
+      if(i == 0)
+        ncol = pl[1].arity() ;
+      else
+      {
+        if(pl[i+1].arity() != ncol)
+          stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
+      }
+  }
+
+  NumericMatrix r(nrow, ncol) ;
+  for(size_t i=0; i<nrow; i++)
+    r.row(i) = pl2r_realvec(pl[i+1]) ;
+
+  return r ;
+}
+
 // See above for pl2r_double
 long pl2r_int(PlTerm pl)
 {
@@ -115,6 +142,29 @@ IntegerVector pl2r_intvec(PlTerm pl)
   return r ;
 }
 
+IntegerMatrix pl2r_intmat(PlTerm pl)
+{
+  size_t nrow = pl.arity() ;
+  size_t ncol = 0 ;
+  if(nrow > 0)
+  {
+    for(size_t i=0; i<pl.arity(); i++)
+      if(i == 0)
+        ncol = pl[1].arity() ;
+      else
+      {
+        if(pl[i+1].arity() != ncol)
+          stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
+      }
+  }
+
+  IntegerMatrix r(nrow, ncol) ;
+  for(size_t i=0; i<nrow; i++)
+    r.row(i) = pl2r_intvec(pl[i+1]) ;
+
+  return r ;
+}
+
 // See above for pl2r_double
 String pl2r_string(PlTerm pl)
 {
@@ -138,6 +188,29 @@ CharacterVector pl2r_charvec(PlTerm pl)
   return r ;
 }
 
+CharacterMatrix pl2r_charmat(PlTerm pl)
+{
+  size_t nrow = pl.arity() ;
+  size_t ncol = 0 ;
+  if(nrow > 0)
+  {
+    for(size_t i=0; i<pl.arity(); i++)
+      if(i == 0)
+        ncol = pl[1].arity() ;
+      else
+      {
+        if(pl[i+1].arity() != ncol)
+          stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
+      }
+  }
+
+  CharacterMatrix r(nrow, ncol) ;
+  for(size_t i=0; i<nrow; i++)
+    r.row(i) = pl2r_charvec(pl[i+1]) ;
+
+  return r ;
+}
+
 // Convert prolog atom to R symbol (handle na, true, false)
 RObject pl2r_symbol(PlTerm pl)
 {
@@ -150,7 +223,7 @@ RObject pl2r_symbol(PlTerm pl)
   if(pl == "false")
     return wrap(false) ;
 
-  // R does not accept empty symbols
+  // empty symbols
   if(pl == "")
     return Function("substitute")() ;
 
@@ -187,6 +260,29 @@ LogicalVector pl2r_boolvec(PlTerm pl)
     warning("r2pl_logical: invalid item %s, returning NA", (char*) t) ;
     r(i) = NA_LOGICAL ;
   }
+
+  return r ;
+}
+
+LogicalMatrix pl2r_boolmat(PlTerm pl)
+{
+  size_t nrow = pl.arity() ;
+  size_t ncol = 0 ;
+  if(nrow > 0)
+  {
+    for(size_t i=0; i<pl.arity(); i++)
+      if(i == 0)
+        ncol = pl[1].arity() ;
+      else
+      {
+        if(pl[i+1].arity() != ncol)
+          stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
+      }
+  }
+
+  LogicalMatrix r(nrow, ncol) ;
+  for(size_t i=0; i<nrow; i++)
+    r.row(i) = pl2r_boolvec(pl[i+1]) ;
 
   return r ;
 }
@@ -263,17 +359,33 @@ RObject pl2r_compound(PlTerm pl, CharacterVector& names, PlTerm& vars)
   if(!PL_is_acyclic(pl))
     stop("pl2r: Cannot convert cyclic term %s", (char*) pl) ;
 
+  // Convert ##(#(...), ...) to NumericMatrix
+  if(!strcmp(pl.name(), "##"))
+    return pl2r_realmat(pl) ;
+
   // Convert #(1.0, 2.0, 3.0) to DoubleVectors
   if(!strcmp(pl.name(), "#"))
     return pl2r_realvec(pl) ;
+
+  // Convert %%(%(...), ...) to IntegerMatrix
+  if(!strcmp(pl.name(), "%%"))
+    return pl2r_intmat(pl) ;
 
   // Convert %(1.0, 2.0, 3.0) to IntegerVectors
   if(!strcmp(pl.name(), "%"))
     return pl2r_intvec(pl) ;
 
+  // Convert $$$($$(...), ...) to StringMatrix
+  if(!strcmp(pl.name(), "$$$"))
+    return pl2r_charmat(pl) ;
+
   // Convert $(1.0, 2.0, 3.0) to CharacterVectors
   if(!strcmp(pl.name(), "$$"))
     return pl2r_charvec(pl) ;
+
+  // Convert !!(!(...), ...) to LogicalMatrix
+  if(!strcmp(pl.name(), "!!"))
+    return pl2r_boolmat(pl) ;
 
   // Convert !(1.0, 2.0, 3.0) to LogicalVectors
   if(!strcmp(pl.name(), "!"))
@@ -399,6 +511,12 @@ RObject pl2r(PlTerm pl, CharacterVector& names, PlTerm& vars)
 
 // Translate R expression to prolog
 //
+// Forward declarations
+PlTerm r2pl_real(NumericVector r, bool ascalar=TRUE) ;
+PlTerm r2pl_logical(LogicalVector r, bool ascalar=TRUE) ;
+PlTerm r2pl_integer(IntegerVector r, bool ascalar=TRUE) ;
+PlTerm r2pl_string(CharacterVector r, bool ascalar=TRUE) ;
+
 // This returns an empty list
 PlTerm r2pl_null()
 {
@@ -413,9 +531,22 @@ PlTerm r2pl_na()
   return PlAtom("na") ;
 }
 
-// Translate to (scalar) real or compounds like #(1.0, 2.0, 3.0)
-PlTerm r2pl_real(NumericVector r)
+// Translate to matrix ##(#(1.0, 2.0, 3.0), #(4.0, 5.0, 6.0))
+PlTerm r2pl_matrix(Matrix<REALSXP> r)
 {
+  PlTermv rows(r.nrow()) ;
+  for(int i=0 ; i<r.nrow() ; i++)
+    rows[i] = r2pl_real(r.row(i), FALSE) ;
+
+  return PlCompound("##", rows) ;
+}
+
+// Translate to (scalar) real or compounds like #(1.0, 2.0, 3.0)
+PlTerm r2pl_real(NumericVector r, bool ascalar)
+{
+  if(Rf_isMatrix(r))
+    return r2pl_matrix(as<Matrix<REALSXP>>(r)) ;
+
   if(r.length() == 0)
     return r2pl_null() ;
 
@@ -423,13 +554,14 @@ PlTerm r2pl_real(NumericVector r)
   LogicalVector na = is_na(r) ;
   
   // Translate to scalar
-  if(r.length() == 1)
-  {
-    if(na[0] && !nan[0])
-      return r2pl_na() ;
+  if(ascalar)
+    if(r.length() == 1)
+    {
+      if(na[0] && !nan[0])
+        return r2pl_na() ;
     
-    return PlTerm((double) r[0]) ;
-  }
+      return PlTerm((double) r[0]) ;
+    }
 
   // Translate to vector #(1.0, 2.0, 3.0)
   size_t len = (size_t) r.length() ;
@@ -445,22 +577,37 @@ PlTerm r2pl_real(NumericVector r)
   return PlCompound("#", args) ;
 }
 
-// Translate to (scalar) boolean or compounds like !(true, false, na)
-PlTerm r2pl_logical(LogicalVector r)
+
+// Translate to matrix !!(!(true, false), !(false, true))
+PlTerm r2pl_matrix(Matrix<LGLSXP> r)
 {
+  PlTermv rows(r.nrow()) ;
+  for(int i=0 ; i<r.nrow() ; i++)
+    rows[i] = r2pl_logical(r.row(i), FALSE) ;
+
+  return PlCompound("!!", rows) ;
+}
+
+// Translate to (scalar) boolean or compounds like !(true, false, na)
+PlTerm r2pl_logical(LogicalVector r, bool ascalar)
+{
+  if(Rf_isMatrix(r))
+    return r2pl_matrix(as<Matrix<LGLSXP>>(r)) ;
+
   if(r.length() == 0)
     return r2pl_null() ;
   
   LogicalVector na = is_na(r) ;
   
   // scalar boolean
-  if(r.length() == 1)
-  {
-    if(na[0])
-      return r2pl_na() ;
+  if(ascalar)
+    if(r.length() == 1)
+    {
+      if(na[0])
+        return r2pl_na() ;
     
-    return PlTerm(r[0] ? "true" : "false") ;
-  }
+      return PlTerm(r[0] ? "true" : "false") ;
+    }
 
   // LogicalVector !(true, false, na)
   size_t len = (size_t) r.length() ;
@@ -476,22 +623,36 @@ PlTerm r2pl_logical(LogicalVector r)
   return PlCompound("!", args) ;
 }
 
-// Translate to (scalar) integer or compounds like %(1, 2, 3)
-PlTerm r2pl_integer(IntegerVector r)
+// Translate to matrix %%(%(1, 2), %(3, 4))
+PlTerm r2pl_matrix(Matrix<INTSXP> r)
 {
+  PlTermv rows(r.nrow()) ;
+  for(int i=0 ; i<r.nrow() ; i++)
+    rows[i] = r2pl_integer(r.row(i), FALSE) ;
+
+  return PlCompound("%%", rows) ;
+}
+
+// Translate to (scalar) integer or compounds like %(1, 2, 3)
+PlTerm r2pl_integer(IntegerVector r, bool ascalar)
+{
+  if(Rf_isMatrix(r))
+    return r2pl_matrix(as<Matrix<INTSXP>>(r)) ;
+
   if(r.length() == 0)
     return r2pl_null() ;
   
   LogicalVector na = is_na(r) ;
   
   // scalar integer
-  if(r.length() == 1)
-  {
-    if(na[0])
-      return r2pl_na() ;
+  if(ascalar)
+    if(r.length() == 1)
+    {
+      if(na[0])
+        return r2pl_na() ;
     
-    return PlTerm((long) r(0)) ;
-  }
+      return PlTerm((long) r(0)) ;
+    }
   
   // IntegerVector %(1, 2, 3)
   size_t len = (size_t) r.length() ;
@@ -546,22 +707,36 @@ PlTerm r2pl_atom(Symbol r)
   return PlAtom(r.c_str()) ;
 }
 
-// Translate CharacterVector to (scalar) string or things like $("a", "b", "c")
-PlTerm r2pl_string(CharacterVector r)
+// Translate to matrix $$$($$(1, 2), $$(3, 4))
+PlTerm r2pl_matrix(Matrix<STRSXP> r)
 {
+  PlTermv rows(r.nrow()) ;
+  for(int i=0 ; i<r.nrow() ; i++)
+    rows[i] = r2pl_string(r.row(i), FALSE) ;
+
+  return PlCompound("$$$", rows) ;
+}
+
+// Translate CharacterVector to (scalar) string or things like $("a", "b", "c")
+PlTerm r2pl_string(CharacterVector r, bool ascalar)
+{
+  if(Rf_isMatrix(r))
+    return r2pl_matrix(as<Matrix<STRSXP>>(r)) ;
+
   if(r.length() == 0)
     return r2pl_null() ;
   
   LogicalVector na = is_na(r) ;
   
   // scalar string
-  if(r.length() == 1)
-  {
-    if(na[0])
-      return r2pl_na() ;
+  if(ascalar)
+    if(r.length() == 1)
+    {
+      if(na[0])
+        return r2pl_na() ;
     
-    return PlString(r(0)) ;
-  }
+      return PlString(r(0)) ;
+    }
 
   // compound like $("a", "b", "c")
   size_t len = (size_t) r.length() ;
@@ -678,13 +853,13 @@ PlTerm r2pl(SEXP r, CharacterVector& names, PlTerm& vars)
     return r2pl_compound(r, names, vars) ;
 
   if(TYPEOF(r) == REALSXP)
-    return r2pl_real(r) ;
+    return r2pl_real(r, TRUE) ;
   
   if(TYPEOF(r) == LGLSXP)
-    return r2pl_logical(r) ;
+    return r2pl_logical(r, TRUE) ;
   
   if(TYPEOF(r) == INTSXP)
-    return r2pl_integer(r) ;
+    return r2pl_integer(r, TRUE) ;
   
   if(TYPEOF(r) == EXPRSXP)
     return r2pl_var(r, names, vars) ;
@@ -693,7 +868,7 @@ PlTerm r2pl(SEXP r, CharacterVector& names, PlTerm& vars)
     return r2pl_atom(r) ;
 
   if(TYPEOF(r) == STRSXP)
-    return r2pl_string(r) ;
+    return r2pl_string(r, TRUE) ;
 
   if(TYPEOF(r) == VECSXP)
     return r2pl_list(r, names, vars) ;

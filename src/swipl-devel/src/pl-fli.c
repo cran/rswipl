@@ -4,7 +4,7 @@
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
     Copyright (c)  1996-2022, University of Amsterdam
-                              VU University Amsterdam
+			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -1048,6 +1048,11 @@ _PL_cvt_i_short(term_t p, short *s, int mn, int mx)
 }
 
 bool
+PL_cvt_i_bool(term_t p, int *s)
+{ return PL_get_bool_ex(p, s);
+}
+
+bool
 PL_cvt_i_short(term_t p, short *s)
 { return _PL_cvt_i_short(p, s, SHORT_MIN, SHORT_MAX);
 }
@@ -1117,6 +1122,25 @@ PL_cvt_i_size_t(term_t p, size_t *c)
   return PL_get_size_ex(p, c);
 }
 
+bool
+PL_cvt_i_llong(term_t p, long long *c)
+{
+#if SIZEOF_LONG_LONG == 8
+  return PL_cvt_i_int64(p, (int64_t*)c);
+#else
+  #error "Unsupported size for long long"
+#endif
+}
+
+bool
+PL_cvt_i_ullong(term_t p, unsigned long long *c)
+{
+#if SIZEOF_LONG_LONG == 8
+  return PL_cvt_i_uint64(p, (uint64_t*)c);
+#else
+  #error "Unsupported size for long long"
+#endif
+}
 
 bool
 PL_cvt_i_float(term_t p, double *c)
@@ -1399,7 +1423,7 @@ PL_cons_list_v(term_t list, size_t count, term_t elems)
 
 static const int type_map[8] = { PL_VARIABLE,
 				 PL_VARIABLE,  /* attributed variable */
-			         PL_FLOAT,
+				 PL_FLOAT,
 				 PL_INTEGER,
 				 PL_STRING,
 				 PL_ATOM,
@@ -1465,6 +1489,16 @@ PL_get_bool(term_t t, int *b)
     { *b = FALSE;
       succeed;
     }
+    fail;
+  }
+  if ( isInteger(w) )
+  { if ( w == consInt(0) )
+      *b = FALSE;
+    else if ( w == consInt(1) )
+      *b = TRUE;
+    else
+      fail;
+    succeed;
   }
 
   fail;
@@ -3233,7 +3267,7 @@ PL_unify_uint64(term_t t, uint64_t i)
     { switch(n.type)
       { case V_INTEGER:
 	  return FALSE;			/* we have a too big integer */
-#ifdef O_GMP
+#if O_BIGNUM
 	case V_MPZ:
 	{ uint64_t v;
 
@@ -4527,7 +4561,7 @@ resolveModule(const char *module)
   else
   { GET_LD
     return (HAS_LD && environment_frame ? contextModule(environment_frame)
-                                        : MODULE_user);
+					: MODULE_user);
   }
 }
 
@@ -5008,7 +5042,7 @@ PL_dispatch(int fd, int wait)
 { if ( wait == PL_DISPATCH_INSTALLED )
     return GD->foreign.dispatch_events ? TRUE : FALSE;
 
-  if ( GD->foreign.dispatch_events && PL_thread_self() == 1 )
+  if ( GD->foreign.dispatch_events && PL_thread_self() <= 1 )
   { if ( wait == PL_DISPATCH_WAIT )
     { while( !input_on_fd(fd) )
       { if ( PL_handle_signals() < 0 )

@@ -40,9 +40,9 @@ else()				# Outside pack_install
   set(swipl_home_dir   ${PLBASE})
   set(swipl_version    ${PLVERSION})
   if(CMAKE_EXECUTABLE_FORMAT MATCHES ELF)
-    set(swipl_module_lib ${PLLIB})
+    set(swipl_module_lib})
   else()
-    set(swipl_module_lib)
+    set(swipl_module_lib ${PLLIB)
   endif()
 endif()
 
@@ -105,6 +105,8 @@ function(target_link_swipl target)
     target_include_directories(${target}
       PRIVATE ${swipl_include_dir})
   endif()
+  set_target_properties(${target} PROPERTIES
+    OUTPUT_NAME ${target} PREFIX "")
 endfunction()
 
 # Avoid message on unused variable

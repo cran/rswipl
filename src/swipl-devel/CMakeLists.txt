@@ -17,8 +17,20 @@ option(USE_SIGNALS
        "Enable signal handling"
        ON)
 option(USE_GMP
-       "Use GNU MP Bignum library (GPL)"
+       "Use GNU MP Bignum library (LGPL)"
        ON)
+if(USE_GMP)
+  set(DEFAULT_USE_LIBBF OFF)
+else()
+  set(DEFAULT_USE_LIBBF ON)
+endif()
+option(USE_LIBBF
+       "Use LibBF for bignums (MIT)"
+       ${DEFAULT_USE_LIBBF})
+if(USE_GMP AND USE_LIBBF)
+  message(WARNING "Cannot use both libGMP and LibBF; using LibBF")
+  set(USE_GMP OFF)
+endif()
 if(APPLE)
 # tcmalloc breaks setlocale() on MacOS 12 (Monterey)
 option(USE_TCMALLOC
@@ -188,6 +200,17 @@ if(MSVC)
   add_compile_options(/W3)
 else()
   add_compile_options(-Wall)
+endif()
+
+# on ARM, backtrace() requires -funwind-tables. See
+# https://stackoverflow.com/questions/24700150/on-raspberry-pi-backtrace-returns-0-frames
+# We must do this at the toplevel to ensure all packages use this as well.
+if(CMAKE_COMPILER_IS_GNUCC AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
+  include(CheckFunctionExists)
+  check_function_exists(backtrace HAVE_BACKTRACE)
+  if(HAVE_BACKTRACE)
+    add_compile_options(-funwind-tables)
+  endif()
 endif()
 
 if(MACOS_UNIVERSAL_BINARY)

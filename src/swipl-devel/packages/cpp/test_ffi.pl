@@ -40,12 +40,15 @@
 :- module(test_ffi,
           [ test_ffi/0
           ]).
-
-:- encoding(utf8).
-
+:- use_module(library(debug)).
+:- use_module(library(lists)).
+:- use_module(library(apply)).
+:- autoload(library(aggregate)).
 :- use_module(library(plunit)).
 
-:- use_foreign_library(foreign(ffi4pl)).
+:- use_foreign_library(foreign(test_ffi)).
+
+:- encoding(utf8).
 
 test_ffi :-
     run_tests([ ffi,
@@ -156,6 +159,29 @@ test(char_1, all(Result == ["//", "/ /", "/abC/", "/Hello World!/"])) :-
     ;   atom_ffi('Hello World!',   Result)
     ).
 
+test(scan_options, [Options == options(true, 5, foo(bar), [], "")]) :-
+    ffi_options(Options, [quoted(true), length(5), callback(foo(bar))]).
+test(scan_options, [Options == options(true, 5, foo(bar), qqsv, "DESCR")]) :-
+    ffi_options(Options, [token(qqsv), descr("DESCR"), quoted(true), length(5), callback(foo(bar))]).
+test(scan_options, [Options == options(true, 5, foo(bar), qqsv, "DESCR")]) :-
+    ffi_options(Options, [token(qqsv), descr("DESCR"), quoted(true), length(5), callback(foo(bar)), unknown_option(blah)]).
+test(scan_options, [Options == options(true, 5, foo(bar), qqsv, "DESCR")]) :-
+    ffi_options(Options, options{token:qqsv, descr:"DESCR", quoted:true, length:5, callback:foo(bar)}).
+test(scan_options, [Options == options(true, 5, foo(bar), qqsv, "DESCR")]) :-
+    ffi_options(Options, [token(qqsv), descr("DESCR"), quoted, length(5), callback(foo(bar))]).
+test(scan_options, [Options == options(false, 5, foo(bar), qqsv, "DESCR")]) :-
+    ffi_options(Options, [token(qqsv), descr("DESCR"), length(5), callback(foo(bar))]).
+test(scan_options, [error(instantiation_error)]) :-
+    ffi_options(_Options, [token(qqsv), _, descr("DESCR"), length(5), callback(foo(bar))]).
+test(scan_options, [error(type_error(option,123))]) :- % TODO: is this intended behavior?
+    ffi_options(_Options, [token(qqsv), descr("DESCR"), 123, length(5), callback(foo(bar))]).
+test(scan_options, [error(type_error(option,123))]) :- % TODO: is this intended behavior?
+    ffi_options(_Options, [token(qqsv), 123, descr("DESCR"), length(5), callback(foo(bar))]).
+
+ffi_call(Goal, Flags) :-
+    query_flags(Flags, CombinedFlag),
+    ffi_call_(Goal, CombinedFlag).
+
 :- end_tests(wchar).
 
 
@@ -164,3 +190,22 @@ w_atom_ffi(Atom, String) :-
 
 atom_ffi(Atom, String) :-
     with_output_to(string(String), atom_ffi_(current_output, Atom)).
+
+%!  query_flag(?Name, ?Bit)
+%
+%   Flags for  PL_open_query().  Check  with SWI-Prolog.h.   Same code
+%   appears   in  test_ffi.pl.    This  is   duplicated  to   simplify
+%   installation of these tests in the binary version.
+
+% query_flag(debug,		I) => I =0x0001.
+% query_flag(deterministic,	I) => I =0x0100.
+query_flag(normal,		I) => I =0x0002.
+query_flag(nodebug,		I) => I =0x0004.
+query_flag(catch_exception,	I) => I =0x0008.
+query_flag(pass_exception,	I) => I =0x0010.
+query_flag(allow_yield,		I) => I =0x0020.
+query_flag(ext_status,		I) => I =0x0040.
+
+query_flags(Flags, CombinedFlag) :-
+    maplist(query_flag, Flags, Ints),
+    aggregate_all(sum(I), member(I, Ints), CombinedFlag).

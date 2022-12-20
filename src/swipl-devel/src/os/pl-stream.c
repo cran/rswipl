@@ -4,7 +4,7 @@
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
     Copyright (c)  2011-2022, University of Amsterdam
-                              VU University Amsterdam
+			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -1239,7 +1239,7 @@ out:
   { switch(s->newline)
     { case SIO_NL_DETECT:
 	s->newline = SIO_NL_DOS;
-        /*FALLTHROUGH*/
+	/*FALLTHROUGH*/
       case SIO_NL_DOS:
 	goto retry;
     }
@@ -2400,15 +2400,15 @@ Svfprintf(IOSTREAM *s, const char *fm, va_list args)
 	    switch( islong )
 	    { case INT_INT:
 		vi = va_arg(args, int);
-	        break;
+		break;
 	      case INT_LONG:
 		vl = va_arg(args, long);
-	        break;
+		break;
 	      case INT_LONG_LONG:
-	        vll = va_arg(args, int64_t);
+		vll = va_arg(args, int64_t);
 		break;
 	      case INT_SIZE_T:
-	        vll = va_arg(args, size_t);
+		vll = va_arg(args, size_t);
 		break;
 	      default:
 		assert(0);
@@ -2420,28 +2420,28 @@ Svfprintf(IOSTREAM *s, const char *fm, va_list args)
 	    switch( islong )
 	    { case INT_INT:
 		*fp++ = *fm;
-	        *fp   = '\0';
+		*fp   = '\0';
 		SNPRINTF3(fmbuf, vi);
 		break;
 	      case INT_LONG:
 		*fp++ = 'l';
-	        *fp++ = *fm;
+		*fp++ = *fm;
 		*fp   = '\0';
 		SNPRINTF3(fmbuf, vl);
 		break;
 	      case INT_LONG_LONG:
 	      case INT_SIZE_T:
 #ifdef __WINDOWS__
-	        *fp++ = 'I';		/* Synchronise with INT64_FORMAT! */
-	        *fp++ = '6';
+		*fp++ = 'I';		/* Synchronise with INT64_FORMAT! */
+		*fp++ = '6';
 		*fp++ = '4';
 #else
-	        *fp++ = 'l';
-	        *fp++ = 'l';
+		*fp++ = 'l';
+		*fp++ = 'l';
 #endif
-	        *fp++ = *fm;
-	        *fp   = '\0';
-	        SNPRINTF3(fmbuf, vll);
+		*fp++ = *fm;
+		*fp   = '\0';
+		SNPRINTF3(fmbuf, vll);
 		break;
 	    }
 
@@ -2483,7 +2483,7 @@ Svfprintf(IOSTREAM *s, const char *fm, va_list args)
 	}
 
 	/* Now `fs` is either the result of some sub-formatting or the
-           argument of `%s`.  In the latter case it is by definition
+	   argument of `%s`.  In the latter case it is by definition
 	   0-terminated.  In the former case it may hold 0-bytes, e.g.,
 	   `%c` using a 0 argument.  `fe` points at the end.
 	*/
@@ -2604,7 +2604,7 @@ Svsprintf(char *buf, const char *fm, va_list args)
   s.limitp    = (char *)(~0L);
   s.buffer    = buf;
   s.flags     = SIO_FBUF|SIO_OUTPUT;
-  s.encoding  = ENC_ISO_LATIN_1;
+  s.encoding  = ENC_UTF8;
 
   if ( (rval = Svfprintf(&s, fm, args)) >= 0 )
     *s.bufp = '\0';
@@ -3108,7 +3108,7 @@ Scontrol_file(void *handle, int action, void *arg)
 
       if ( fstat(fd, &buf) == 0 )
       {	*rval = buf.st_size;
-        return 0;
+	return 0;
       }
       return -1;
     }
@@ -3330,23 +3330,23 @@ Sopen_file(const char *path, const char *how)
     { case 'b':				/* binary */
 	flags &= ~SIO_TEXT;
 	enc = ENC_OCTET;
-        break;
+	break;
       case 'r':				/* no record */
 	flags &= ~SIO_RECORDPOS;
-        break;
+	break;
       case 'L':				/* lock r: read, w: write */
 	wait = FALSE;
-        /*FALLTHROUGH*/
+	/*FALLTHROUGH*/
       case 'l':				/* lock r: read, w: write */
 	if ( *++how == 'r' )
 	  lock = lread;
-        else if ( *how == 'w' )
+	else if ( *how == 'w' )
 	  lock = lwrite;
-        else
+	else
 	{ errno = EINVAL;
 	  return NULL;
 	}
-        break;
+	break;
       case 'm':
 	if ( get_mode(how+1, &mode) )
 	{ how += 3;
@@ -3357,7 +3357,7 @@ Sopen_file(const char *path, const char *how)
 	}
       default:
 	errno = EINVAL;
-        return NULL;
+	return NULL;
     }
   }
 
@@ -3577,6 +3577,10 @@ Swinsock(IOSTREAM *s)
 		 *******************************/
 
 #ifdef HAVE_POPEN
+#ifdef __WINDOWS__
+#define popen _popen
+#define pclose _pclose
+#endif
 
 static ssize_t
 Sread_pipe(void *handle, char *buf, size_t size)
@@ -3660,7 +3664,7 @@ Sopen_pipe(const char *command, const char *type)
       { case 'r':
 	  flags |= SIO_INPUT;
 	  break;
-        case 'w':
+	case 'w':
 	  flags |= SIO_OUTPUT;
 	  break;
 	case 'b':
@@ -3953,10 +3957,10 @@ Sopenmem(char **bufp, size_t *sizep, const char *mode)
 	break;
       case 'b':
 	flags &= ~SIO_TEXT;
-        break;
+	break;
       case 'F':
 	mf->free_on_close = TRUE;
-        break;
+	break;
       default:
 	free(mf);
 	errno = EINVAL;
@@ -4085,11 +4089,6 @@ IOFUNCTIONS Sbufferfunctions =
   NULL  /* close */
 };
 
-/*
-   FIXME: this should probably use UTF-8 encoding rather than
-   ENC_ISO_LATIN_1.
-*/
-
 static IOSTREAM *
 Sopen_buffer(IOSTREAM *s, char *buf, size_t size)
 {
@@ -4099,7 +4098,7 @@ Sopen_buffer(IOSTREAM *s, char *buf, size_t size)
   s->buffer    = buf;
   s->flags     = SIO_FBUF|SIO_OUTPUT;
   s->functions = &Sbufferfunctions;
-  s->encoding  = ENC_ISO_LATIN_1;
+  s->encoding  = ENC_UTF8;
   s->magic     = SIO_MAGIC;
 
   return s;
@@ -4115,12 +4114,12 @@ Sclose_buffer(IOSTREAM *s)
 		 *	 STANDARD HANDLES	*
 		 *******************************/
 
-#define STDIO(n, f) { NULL, NULL, NULL, NULL, \
-		      EOF, SIO_MAGIC, 0, f, {0, 0, 0}, NULL, \
-		      (void *)(n), &Sttyfunctions, \
-		      -1, \
-		      ENC_ISO_LATIN_1 \
-		    }
+#define STDIO(n, f) \
+	{ .bufp = NULL, .limitp = NULL, .buffer = NULL, .unbuffer = NULL, \
+	  .lastc = EOF, .magic = SIO_MAGIC, .flags = (f),		  \
+	  .handle = (void *)(n), .functions = &Sttyfunctions,		  \
+	  .timeout = -1, .encoding = ENC_ISO_LATIN_1			  \
+	}
 
 #define SIO_STDIO (SIO_FILE|SIO_STATIC|SIO_NOCLOSE|SIO_ISATTY|SIO_TEXT)
 #define STDIO_STREAMS \

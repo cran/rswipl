@@ -4,7 +4,7 @@
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
     Copyright (c)  1985-2022, University of Amsterdam,
-                              VU University Amsterdam
+			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -49,11 +49,11 @@
 #include <parms.h>			/* pick from the working dir */
 
 /* gmp.h must be included PRIOR to SWI-Prolog.h to enable the API prototypes */
-#ifdef HAVE_GMP_H
-#define O_GMP			1
+#if O_GMP || O_BF
+#define O_BIGNUM			1
 #endif
 
-#ifdef O_GMP
+#if O_GMP
 # ifdef _MSC_VER			/* ignore warning in gmp 5.0.2 header */
 # pragma warning( disable : 4146 )
 # endif
@@ -61,6 +61,8 @@
 # ifdef _MSC_VER
 # pragma warning( default : 4146 )
 # endif
+#elif O_BF
+#include "libbf/bf_gmp_types.h"
 #endif
 
 #define PL_KERNEL		1
@@ -111,6 +113,10 @@
  * default visibility for library symbols, so it is no longer necessary.
  */
 #define COMMON(type) type
+
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(PEDANTIC)
+#define O_EMPY_STRUCTS 1
+#endif
 
 #include "pl-macros.h"
 
@@ -286,10 +292,8 @@ The ia64 says setjmp()/longjmp() buffer must be aligned at 128 bits
 #endif
 #endif
 
-#ifndef O_LABEL_ADDRESSES
-#if __GNUC__ == 2
-#define O_LABEL_ADDRESSES	1
-#endif
+#if defined(O_LABEL_ADDRESSES) && defined(PEDANTIC)
+#undef O_LABEL_ADDRESSES
 #endif
 
 /* clang as of version 11 performs about 30% worse with this option */
@@ -452,7 +456,7 @@ typedef _sigset_t sigset_t;
  * We do not need this stuff on Windows as it is used for internal signal
  * handling if no true signals are available.
  */
-#if __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__) && !defined(__WINDOWS__)
+#if __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__) && defined(HAVE_THREADS_H)
 # include <threads.h>
 # undef thread_local /* we use this as an identifier, it's not in the C11 spec anyway */
 # define HAVE_STDC_THREADS	1
@@ -845,7 +849,7 @@ typedef struct pl_mutex		pl_mutex;
 
 typedef enum
 { V_INTEGER,				/* integer (64-bit) value */
-#ifdef O_GMP
+#ifdef O_BIGNUM
   V_MPZ,				/* mpz_t */
   V_MPQ,				/* mpq_t */
 #endif
@@ -857,7 +861,7 @@ typedef struct
   union { double f;			/* value as a floating point number */
 	  int64_t i;			/* value as integer */
 	  word  w[WORDS_PER_DOUBLE];	/* for packing/unpacking the double */
-#ifdef O_GMP
+#ifdef O_BIGNUM
 	  mpz_t mpz;			/* GMP integer */
 	  mpq_t mpq;			/* GMP rational */
 #endif
@@ -867,7 +871,7 @@ typedef struct
 #define TOINT_CONVERT_FLOAT	0x1	/* toIntegerNumber() */
 #define TOINT_TRUNCATE		0x2
 
-#ifdef O_GMP
+#ifdef O_BIGNUM
 #define intNumber(n)	((n)->type <=  V_MPZ)
 #define ratNumber(n)	((n)->type <=  V_MPQ)
 #else
@@ -1115,8 +1119,10 @@ Macros for environment frames (local stack frames)
 #define varFrameP(f, n)		((Word)(f) + (n))
 #define varFrame(f, n)		(*varFrameP((f), (n)) )
 #define refFliP(f, n)		((Word)((f)+1) + (n))
-#define parentFrame(f)		((f)->parent ? (f)->parent\
-					     : (LocalFrame)varFrame((f), -1))
+#define parentFrame(f)		((f)->parent \
+				  ? (f)->parent \
+				  : (LocalFrame)varFrame( \
+				    (f), -QF_PARENT_ENV_OFFSET))
 #define slotsFrame(f)		(true((f)->predicate, P_FOREIGN) ? \
 				      (f)->predicate->functor->arity : \
 				      (f)->clause->clause->prolog_vars)
@@ -1510,8 +1516,8 @@ typedef struct gc_stats
 #define CA1_INT64	5	/* int64 value */
 #define CA1_FLOAT	6	/* next WORDS_PER_DOUBLE are double */
 #define CA1_STRING	7	/* inlined string */
-#define CA1_MPZ	        8	/* GNU mpz number */
-#define CA1_MPQ	        9	/* GNU mpq number */
+#define CA1_MPZ		8	/* GNU mpz number */
+#define CA1_MPQ		9	/* GNU mpq number */
 #define CA1_MODULE     10	/* a module */
 #define CA1_VAR	       11	/* a variable(-offset) */
 #define CA1_FVAR       12	/* a variable(-offset), used as `firstvar' */
@@ -1539,12 +1545,22 @@ typedef struct
   code		merge_av[1];	/* Argument vector */
 } vmi_merge;
 
+#if O_EMPY_STRUCTS
+#define VM_ARGC 4
+#define VM_ARGTYPES(ci) (ci)->_argtype
+#define VM_ARTYPE_PREFIX
+#else
+#define VM_ARGC 5
+#define VM_ARGTYPES(ci) &(ci)->_argtype[1]
+#define VM_ARTYPE_PREFIX 0,
+#endif
+
 typedef struct
 { char	       *name;		/* name of the code */
   vmi		code;		/* number of the code */
   unsigned char flags;		/* Addional flags (VIF_*) */
   unsigned char	arguments;	/* #args code takes (or VM_DYNARGC) */
-  char		argtype[4];	/* Argument type(s) code takes */
+  char	       _argtype[VM_ARGC]; /* Argument type(s) code takes */
 } code_info;
 
 struct mark
@@ -1806,6 +1822,10 @@ struct queryFrame
   struct localFrame frame;		/* The initial frame */
 };
 
+#define QF_PARENT_ENV_OFFSET \
+	((ssize_t)((offsetof(struct queryFrame, top_frame) - \
+		    offsetof(struct queryFrame, saved_environment)) / sizeof(word)))
+
 
 #define FLI_MAGIC		82649821
 #define FLI_MAGIC_CLOSED	42424242
@@ -2014,7 +2034,7 @@ struct gc_trail_entry
 			     } \
 			     tTop = tt; \
 			     gTop = (LD->frozen_bar > (b).globaltop ? \
-			             LD->frozen_bar : (b).globaltop); \
+				     LD->frozen_bar : (b).globaltop); \
 			    } while(0)
 #endif /*O_DESTRUCTIVE_ASSIGNMENT*/
 
@@ -2058,7 +2078,7 @@ at least one free cell on the trail-stack.
 					/* trail global stack pointer */
 #define GTrail(p) \
   do { if ( p < LD->mark_bar ) \
-         (tTop++)->address = p; \
+	 (tTop++)->address = p; \
      } while(0)
 
 
@@ -2296,7 +2316,7 @@ this to enlarge the runtime stacks.  Otherwise use the stack-shifter.
 	  bool		gc;		/* Can be GC'ed? */		    \
 	  int		factor;		/* How eager we are */		    \
 	  int		policy;		/* Time, memory optimization */	    \
-	  int	        overflow_id;	/* OVERFLOW_* */		    \
+	  int		overflow_id;	/* OVERFLOW_* */		    \
 	  const char   *name;		/* Symbolic name of the stack */    \
 	}
 
@@ -2432,7 +2452,7 @@ typedef struct
 	  { _savedf = 0; /* avoid (false) uninitialized */  \
 	  }
 #define END_NUMBERVARS(save) \
-          if ( save ) \
+	  if ( save ) \
 	  { PL_discard_foreign_frame(LD->var_names.numbervars_frame); \
 	    LD->var_names.numbervars_frame = _savedf; \
 	  } \
@@ -2615,7 +2635,7 @@ typedef struct debuginfo
   bool		tracing;		/* are we tracing? */
   debug_type	debugging;		/* are we debugging? */
   int		leashing;		/* ports we are leashing */
-  int	        visible;		/* ports that are visible */
+  int		visible;		/* ports that are visible */
   bool		showContext;		/* tracer shows context module */
   int		styleCheck;		/* source style checking */
   int		suspendTrace;		/* tracing is suspended now */
@@ -2812,16 +2832,17 @@ weak function, you should (e.g. for weak-importing malloc):
 4b. WEAK_TRY_CALL(malloc, sizeof(x)) to combine check and call.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-static inline int __ptr_to_bool(const void *ptr) { return ptr != NULL; }
+static inline int __ptr_to_bool(const intptr_t ptr) { return ptr != 0; }
 #if HAVE_WEAK_ATTRIBUTE
 # define WEAK_DECLARE(RType, Name, Params) \
 	extern RType __attribute__((weak)) Name Params
-# define WEAK_IMPORT(Name) __ptr_to_bool(&Name)
+# define WEAK_IMPORT(Name) __ptr_to_bool((intptr_t)Name)
 # define WEAK_FUNC(Name) (&Name)
 #elif defined(HAVE_DLOPEN) || defined(HAVE_SHL_LOAD) || defined(EMULATE_DLOPEN)
 # define WEAK_DECLARE(RType, Name, Params) \
 	static RType (*wf##Name) Params = NULL
-# define WEAK_IMPORT(Name) __ptr_to_bool((wf##Name = PL_dlsym(NULL, #Name)))
+# define WEAK_IMPORT(Name) \
+	__ptr_to_bool((intptr_t)(wf##Name = PL_dlsym(NULL, #Name)))
 # define WEAK_FUNC(Name) (wf##Name)
 #else
 # define WEAK_DECLARE(RType, Name, Params) \
@@ -2829,7 +2850,10 @@ static inline int __ptr_to_bool(const void *ptr) { return ptr != NULL; }
 # define WEAK_IMPORT(Name) 0
 # define WEAK_FUNC(Name) 0
 #endif
-#define WEAK_TRY_CALL(Name, ...) (WEAK_FUNC(Name) != NULL ? WEAK_FUNC(Name)(__VA_ARGS__) : 0)
+#define WEAK_TRY_CALL(Name, ...) \
+	(WEAK_FUNC(Name) != NULL ? WEAK_FUNC(Name)(__VA_ARGS__) : 0)
+#define WEAK_TRY_CALL_VOID(Name, ...) \
+	(WEAK_FUNC(Name) != NULL ? WEAK_FUNC(Name)(__VA_ARGS__) : (void)0)
 
 #include "pl-util.h"			/* (Debug) utilities */
 #include "pl-alloc.h"			/* Allocation primitives */

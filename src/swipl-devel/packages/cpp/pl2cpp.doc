@@ -1,4 +1,4 @@
-\documentclass[11pt,a4paper]{article}
+\documentclass[11pt,a4paper]{report}
 \usepackage{times}
 \usepackage{pl}
 \usepackage{plpage}
@@ -316,7 +316,7 @@ PREDICATE(free_my_object, 1)
 \subsection{Casting PlTerm to native C-types}
 \label{sec:cpp-plterm-casting}
 
-\class{PlTerm} can be casted to the following types:
+\ctype{PlTerm} can be cast to the following types:
 
 \begin{description}
     \cppcast{PlTerm}{term_t}
@@ -414,7 +414,7 @@ conversion was successful, but the strings are not equal and an
 \except{type_error} exception if the conversion failed.
 \end{description}
 
-Below are some typical examples.  See \secref{dirplatom} for direct
+Below are some typical examples.  See \secref{cpp-dirplatom} for direct
 manipulation of atoms in their internal representation.
 
 \begin{center}
@@ -695,7 +695,7 @@ critical and only a few comparisons have to be made. It validates
 or float) extracts the represented text and uses strcmp() to match the
 strings.
 
-\subsection*{Direct comparision to PlAtom}		\label{sec:dirplatom}
+\subsection*{Direct comparision to PlAtom}		\label{sec:cpp-dirplatom}
 
 Example:
 
@@ -726,7 +726,7 @@ PREDICATE(test, 1)
     ...;
 \end{code}
 
-This approach is basically the same as \secref{dirplatom}, but in
+This approach is basically the same as \secref{cpp-dirplatom}, but in
 nested if-then-else the extraction of the atom from the term is
 done only once.
 
@@ -1034,9 +1034,7 @@ of these exceptions as well as selective trapping in C++.  Currently,
 these are \class{PlTypeEror} and \class{PlDomainError}.
 
 To throw an exception, create an instance of \class{PlException} and
-use throw() or PlException::cppThrow().  The latter refines the C++
-exception class according to the represented Prolog exception before
-calling throw().
+use throw().
 
 \begin{code}
   char *data = "users";
@@ -1047,12 +1045,24 @@ calling throw().
 \subsection{The class PlException}
 \label{sec:cpp-plexception}
 
+The C++ model of exceptions and the Prolog model of exceptions are
+different. Wherever the underlying function returns a "fail" return
+code, the C++ API does a further check for whether there's an
+exception and, if so, does a C++ \exam{throw} of a \class{PlException}
+object. You can use C++ try-catch to intercept this and examine the
+
+
 This subclass of \class{PlTerm} is used to represent exceptions.
 Currently defined methods are:
 
 \begin{description}
+    \constructor{PlException}{}
+Create an exception term using PL_exception(0). The method is_null()
+succeeds if there was simple failure (e.g., from unification failing)
+and not_null() succeeds if there was an exception.
+
     \constructor{PlException}{const PlTerm \&t}
-Create an exception from a general Prolog term.  This is provides the
+Create an exception from a general Prolog term.  This provides the
 interface for throwing any Prolog terms as an exception.
     \cppcast{PlException}{wchar_t *}
     \nodescription
@@ -1100,6 +1110,7 @@ PREDICATE(call_atom, 1)
 \end{code}
 
 \end{description}
+
 
 
 \subsection{The class PlTypeError}

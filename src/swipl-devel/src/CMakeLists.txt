@@ -49,7 +49,12 @@ include(Install)
 set(SRC_OS pl-buffer.c pl-ctype.c pl-file.c pl-files.c pl-glob.c pl-os.c
     pl-stream.c pl-string.c pl-table.c pl-text.c pl-utf8.c pl-fmt.c
     pl-dtoa.c pl-option.c pl-cstack.c pl-codelist.c pl-prologflag.c pl-tai.c
-    pl-locale.c pl-apple.c)
+    pl-locale.c)
+if(APPLE)
+  list(APPEND SRC_OS pl-apple.c)
+elseif(BEOS)
+  list(APPEND SRC_OS pl-beos.c)
+endif()
 prepend(SRC_OS os/ ${SRC_OS})
 
 
@@ -57,6 +62,11 @@ set(SRC_TAI caltime_utc.c caltime_tai.c leapsecs_sub.c leapsecs_add.c
     caldate_fmjd.c caldate_mjd.c leapsecs_init.c leapsecs_read.c tai_pack.c
     tai_unpack.c)
 prepend(SRC_TAI libtai/ ${SRC_TAI})
+
+if(USE_LIBBF)
+  set(SRC_BF pl-bf.c libbf/bf_gmp.c libbf/libbf.c libbf/cutils.c
+      libbf/mersenne-twister.c)
+endif()
 
 set(SRC_MINIZIP zip.c unzip.c ioapi.c)
 prepend(SRC_MINIZIP minizip/ ${SRC_MINIZIP})
@@ -68,7 +78,7 @@ set(SRC_CORE pl-atom.c pl-wam.c pl-arith.c pl-bag.c pl-error.c
     pl-proc.c pl-prof.c pl-read.c pl-rec.c pl-setup.c
     pl-sys.c pl-trace.c pl-util.c pl-wic.c pl-write.c
     pl-term.c pl-thread.c pl-xterm.c pl-srcfile.c
-    pl-beos.c pl-attvar.c pl-gvar.c pl-btree.c
+    pl-attvar.c pl-gvar.c pl-btree.c
     pl-init.c pl-gmp.c pl-segstack.c pl-hash.c
     pl-version.c pl-codetable.c pl-supervisor.c
     pl-dbref.c pl-termhash.c pl-variant.c pl-assert.c
@@ -77,11 +87,13 @@ set(SRC_CORE pl-atom.c pl-wam.c pl-arith.c pl-bag.c pl-error.c
     pl-allocpool.c pl-wrap.c pl-event.c pl-transaction.c
     pl-undo.c pl-alloc.c pl-index.c pl-fli.c pl-coverage.c)
 
+
 set(LIBSWIPL_SRC
     ${SRC_CORE}
     ${SRC_OS}
     ${SRC_OS_SPECIFIC}
     ${SRC_TAI}
+    ${SRC_BF}
     ${SRC_MINIZIP})
 set(SWIPL_SRC pl-main.c)
 
@@ -123,12 +135,12 @@ set(SWIPL_DATA_library explain.pl sort.pl prolog_config.pl
     tty.pl readln.pl readutil.pl make.pl hotfix.pl option.pl
     oset.pl ordsets.pl occurs.pl lists.pl pprint.pl atom.pl
     www_browser.pl url.pl utf8.pl main.pl assoc.pl nb_set.pl
-    threadutil.pl qpforeign.pl dif.pl when.pl ugraphs.pl
+    qpforeign.pl dif.pl when.pl ugraphs.pl streams.pl
     checklast.pl checkselect.pl operators.pl date.pl
     prolog_stack.pl prolog_clause.pl prolog_xref.pl prolog_source.pl
     broadcast.pl pairs.pl base64.pl record.pl rbtrees.pl settings.pl
-    thread.pl dialect.pl apply_macros.pl apply.pl nb_rbtrees.pl
-    aggregate.pl pure_input.pl pio.pl thread_pool.pl terms.pl
+    dialect.pl apply_macros.pl apply.pl nb_rbtrees.pl
+    aggregate.pl pure_input.pl pio.pl terms.pl
     charsio.pl portray_text.pl csv.pl persistency.pl fastrw.pl
     coinduction.pl ansi_term.pl base32.pl prolog_history.pl
     optparse.pl arithmetic.pl writef.pl predicate_options.pl
@@ -159,6 +171,9 @@ endif()
 if(NOT STATIC_EXTENSIONS)
   set(SWIPL_DATA_library ${SWIPL_DATA_library} shlib.pl)
 endif()
+if(MULTI_THREADED)
+  list(APPEND SWIPL_DATA_library threadutil.pl thread.pl thread_pool.pl)
+endif()
 
 set(SWIPL_DATA_library_lynx format.pl html_style.pl html_text.pl
     pldoc_style.pl)
@@ -169,7 +184,7 @@ set(SWIPL_DATA_library_iri_scheme file.pl)
 
 set(SWIPL_DATA_library_clp bounds.pl clp_events.pl clp_distinct.pl
     clpfd.pl clpb.pl)
-if(GMP_FOUND)
+if(USE_GMP OR USE_LIBBF)
   set(SWIPL_DATA_library_clp ${SWIPL_DATA_library_clp} simplex.pl)
 endif()
 
@@ -568,7 +583,11 @@ install_tests()
 endif()
 
 if(SWIPL_INSTALL_IN_LIB)
-  set(LIBSWIPL_DIR ${CMAKE_INSTALL_PREFIX}/lib)
+  if(CMAKE_INSTALL_LIBDIR)
+    set(LIBSWIPL_DIR ${CMAKE_INSTALL_LIBDIR})
+  else()
+    set(LIBSWIPL_DIR lib)
+  endif()
 else()
   set(LIBSWIPL_DIR ${SWIPL_INSTALL_ARCH_LIB})
 endif()

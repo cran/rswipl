@@ -37,32 +37,62 @@
 /* This tests the examples in the SWI-cpp2.h documentation. */
 
 :- module(test_cpp,
-          [ test_cpp/0
-          ]).
+	  [ test_cpp/0
+	  ]).
+:- use_module(library(debug)).
+:- use_module(library(lists)).
+:- use_module(library(apply)).
+:- autoload(library(aggregate)).
+:- use_module(library(plunit)).
 
 :- encoding(utf8).
 
-:- use_module(library(plunit)).
-
-:- use_foreign_library(foreign(cpp4pl)).
+:- use_foreign_library(foreign(test_cpp)).
 
 test_cpp :-
     run_tests([ cpp
-              ]).
+	      ]).
 
 :- begin_tests(cpp).
 
-test(hello_1) :-
-    % TODO: this outputs to cout ... make a version that checks the output?
-    hello(world).
+test(hello, Out == "Hello world\nHello world\nHello world\nHello world\nHello world\n") :-
+    hello(world, Out).
 
-test(hello2_1) :-
-    % TODO: this outputs to cout ... make a version that checks the output?
-    hello2(world2).
+test(hello2, Out == "Hello2 world2\nHello2 world2\nHello2 world2\nHello2 world2\nHello2 world2\n") :-
+    hello2(world2, Out).
 
-test(hello3_1) :-
-    % TODO: this outputs to cout ... make a version that checks the output?
-    hello3('世界弐').
+test(hello3, Out == "Hello3 世界弐\n") :-
+    hello3(世界弐, Out).
+
+test(hello_call, Out == "hello(foo)\n") :-
+    with_output_to(string(Out), hello_call(writeln(hello(foo)))).
+test(hello_call, Out == "hello(世界四)\n") :-
+    with_output_to(string(Out), hello_call(writeln(hello(世界四)))).
+test(hello_call, error(existence_error(procedure,writeln_wrong/1))) :-
+    hello_call(writeln_wrong(hello(世界四))).
+test(hello_call, fail) :-
+    hello_call(atom(hello(foo))).
+
+test(hello_query, Out == "hello(世界四)\n") :-
+    with_output_to(string(Out), hello_query(writeln, hello(世界四))).
+test(hello_query, error(existence_error(procedure,writeln_wrong/1))) :-
+    hello_query(writeln_wrong, hello(世界四)).
+test(hello_query, fail) :-
+    hello_query(atom, hello(foo)).
+
+test(as_string, S == "foo") :-
+    atom_to_string(foo, S).
+test(as_string, S = "foo(bar)") :-
+    term_to_string(foo(bar), S).
+
+% Note: atom_to_string/2 and term_to_string/2 translate the data
+% to a UTF-8 string.  We currenly do not support encoding for
+% PlTerm.unify_string(), so we get as result the byte encoding
+% of the UTF8 data.
+test(as_string, S == "ä¸\u0096ç\u0095\u008Cå\u009B\u009B") :-
+    atom_to_string(世界四, S).
+test(as_string, S = "hello(ä¸\u0096ç\u0095\u008Cå\u009B\u009B)") :-
+    term_to_string(hello(世界四), S).
 
 test(add_3, Result == 666) :-
     add(667, -1, Result).
@@ -82,12 +112,22 @@ testing:p(1).  % For average/3 test
 testing:p(10).
 testing:p(20).
 
-test(average_3, Average == Expected) :-
+test(average_3, Average =:= Expected) :-
     average(X, testing:p(X), Average),
     Expected is (1+10+20)/3 .
 
-test(hello_0) :-
-    hello.
+test(hello_0, Out == "hello world\n") :-
+    with_output_to(string(Out), hello).
+
+call_cut_test :-
+    setup_call_cleanup(true,
+		       between(1, 5, _X),
+		       atom_codes(_,_)).
+
+test(call_cut, error(existence_error(procedure,call_cut_test/0))) :-
+    % This tests that an error in ~PlQuery() is handled properly
+    % See discussion: https://github.com/SWI-Prolog/packages-cpp/pull/27
+    call_cut("call_cut_test").
 
 test(term_1, Term = hello(world)) :-
     term(Term).
@@ -164,42 +204,65 @@ test(hostname_1, [Host == Host2]) :-
 test(cappend, Result = [a,b,c,d,e]) :-
     cappend([a,b,c], [d,e], Result).
 
-test(call_atom_1) :-
-    call_atom('writeln(abc)'). % smoke test
+test(cpp_call, Out == "abc\n") :-
+    with_output_to(string(Out),
+		   cpp_call(writeln(abc), [normal])).
+
+cpp_call(Goal, Flags) :-
+    query_flags(Flags, CombinedFlag),
+    cpp_call_(Goal, CombinedFlag, false).
+
 
 test(square_roots_2a, Result == [0.0, 1.0, 1.4142135623730951, 1.7320508075688772, 2.0]) :-
     square_roots(5, Result).
-test(square_roots_2b, error(resource_error(stack))) :-
-    square_roots(1000000000, _).
 
-test(malloc_1) :-
+:- meta_predicate with_small_stacks(+, 0).
+with_small_stacks(Free, Goal) :-
+    garbage_collect,
+    statistics(globalused, G),
+    statistics(trailused, T),
+    statistics(localused, L),
+    NewLimit is G+L+T+Free,
+    current_prolog_flag(stack_limit, Old),
+    setup_call_cleanup(
+	set_prolog_flag(stack_limit, NewLimit),
+	Goal,
+	set_prolog_flag(stack_limit, Old)).
+
+test(square_roots_2b, error(resource_error(stack))) :-
+    with_small_stacks(5 000 000, % 400 000 seems to be about the smallest allowed value
+		      square_roots(1000000000, _)).
+
+test(malloc) :-
     malloc(1000, Result), % smoke test
     free(Result).
 
+:- if(\+ current_prolog_flag(asan, true)).
 too_big_alloc_request(Request) :-
     current_prolog_flag(address_bits, Bits),
     (   Bits == 32
-    ->  Request = 0x7fffffff
+    ->  Request = 0xffffffff
     ;   Bits == 64
-    ->  Request = 0x7fffffffffffffff
-        %         0x10000000000 is ASAN maximum on 64-bit machines
+    ->  Request = 0xffffffffffffffff
+	%         0x10000000000 is ASAN maximum on 64-bit machines
     ;   assertion(memberchk(Bits, [32,64]))
     ).
 
 :- if(current_prolog_flag(bounded,false)).
 
 too_many_bits_alloc_request(Request) :-
+    % This assumes size_t is no more than 64 bits:
     current_prolog_flag(address_bits, Bits),
     (   Bits == 32
-    ->  Request is 0x7fffffffffffffffff
+    ->  Request is 0xffffffff + 1
     ;   Bits == 64
-    ->  Request is 0x7fffffffffffffffff
+    ->  Request is 0xffffffffffffffff + 1
     ;   assertion(memberchk(Bits, [32,64]))
     ).
 
 :- endif.
 
-test(malloc_2) :-
+test(malloc) :-
     too_big_alloc_request(Request),
     malloc(Request, Result),
     assertion(Result == 0),
@@ -207,23 +270,17 @@ test(malloc_2) :-
 
 :- if(current_prolog_flag(bounded,false)).
 
-test(malloc_3) :-
-    % This assumes size_t is no more than 64 bits:
+test(malloc) :-
     too_many_bits_alloc_request(Request),
     catch( ( malloc(Request, Result),
-             free(Result)
-           ),
-           error(E,_), true),
-    assertion(memberchk(E, [representation_error(size_t),
-                            type_error(integer,_)])).
+	     free(Result)
+	   ),
+	   error(E,_), true),
+    assertion(memberchk(E, [representation_error(_),
+			    type_error(integer,_)])).
 
 :- endif.
 
-test(new_chars_1) :-
-    new_chars(1000, Result), % smoke test
-    delete_chars(Result).
-
-:- if(\+ address_sanitizer).
 % ASAN has maximum 0x10000000000
 %   see ASAN_OPTIONS=allocator_may_return_null=1:soft_rss_limit_mb=...:hard_rss_limit_mb=...
 % https://github.com/google/sanitizers/issues/295
@@ -234,24 +291,26 @@ test(new_chars_2, error(resource_error(memory))) :-
     new_chars(Request, Result),
     delete_chars(Result).
 
-:- endif.
-
 :- if(current_prolog_flag(bounded,false)).
 
 test(new_chars_3) :-
-    % This assumes size_t is no more than 64 bits:
     too_many_bits_alloc_request(Request),
     catch( ( new_chars(Request, Result),
-             delete_chars(Result)
-           ),
-           error(E,_), true),
-    assertion(memberchk(E, [representation_error(size_t),
-                            type_error(integer,_)])).
+	     delete_chars(Result)
+	   ),
+	   error(E,_), true),
+    assertion(memberchk(E, [representation_error(_),
+			    type_error(integer,_)])).
 
 :- endif.
+:- endif.
 
-test(name_arity_1) :-
-    name_arity(foo(bar,zot)).
+test(new_chars_1) :-
+    new_chars(1000, Result), % smoke test
+    delete_chars(Result).
+
+test(name_arity_1, Out == "name = foo, arity = 2\n") :-
+    name_arity(foo(bar,zot), Out).
 
 test(name_arity_3) :-
     name_arity(foo(bar,zot), Name, Arity),
@@ -260,7 +319,11 @@ test(name_arity_3) :-
 
 test(list_modules_0) :-
     % TODO: this outputs to cout ... make a version that checks the output?
-    list_modules.
+    list_modules(Text),
+    split_string(Text, "\n", "", Strings),
+    forall(( member(S, Strings), S \== ""),
+	   ( atom_string(M, S),
+	     current_module(M))).
 
 test(my_object, Contents == "foo-bar") :-
     make_my_object(MyObject),
@@ -297,61 +360,61 @@ test(c_PL_unify_nil_ex) :-
 % eq3/2.
 
 test(unify_error, [ setup(( current_prolog_flag(occurs_check, OCF),
-                                set_prolog_flag(occurs_check, error) )),
-                    cleanup(    set_prolog_flag(occurs_check, OCF) ),
-                    error(occurs_check(B,f(B))) ]) :-
+				set_prolog_flag(occurs_check, error) )),
+		    cleanup(    set_prolog_flag(occurs_check, OCF) ),
+		    error(occurs_check(B,f(B))) ]) :-
     eq1(X, f(X)).
 
 test(unify_error, [ setup(( current_prolog_flag(occurs_check, OCF),
-                                set_prolog_flag(occurs_check, true) )),
-                    cleanup(    set_prolog_flag(occurs_check, OCF) ),
-                    fail]) :-
+				set_prolog_flag(occurs_check, true) )),
+		    cleanup(    set_prolog_flag(occurs_check, OCF) ),
+		    fail]) :-
     eq1(X, f(X)).
 
 test(unify_error, [ setup(( prolog_flag(occurs_check, OCF),
-                               set_prolog_flag(occurs_check, false) )),
-                    cleanup(   set_prolog_flag(occurs_check, OCF) ),
-                    true]) :-
+			       set_prolog_flag(occurs_check, false) )),
+		    cleanup(   set_prolog_flag(occurs_check, OCF) ),
+		    true]) :-
     eq1(X, f(X)).
 
 % Repeat the unify_error test, using eq2/2:
 
 test(unify_error, [ setup(( current_prolog_flag(occurs_check, OCF),
-                                set_prolog_flag(occurs_check, error) )),
-                    cleanup(    set_prolog_flag(occurs_check, OCF) ),
-                    error(occurs_check(B,f(B))) ]) :-
+				set_prolog_flag(occurs_check, error) )),
+		    cleanup(    set_prolog_flag(occurs_check, OCF) ),
+		    error(occurs_check(B,f(B))) ]) :-
     eq2(X, f(X)).
 
 test(unify_error, [ setup(( current_prolog_flag(occurs_check, OCF),
-                                set_prolog_flag(occurs_check, true) )),
-                    cleanup(    set_prolog_flag(occurs_check, OCF) ),
-                    fail]) :-
+				set_prolog_flag(occurs_check, true) )),
+		    cleanup(    set_prolog_flag(occurs_check, OCF) ),
+		    fail]) :-
     eq2(X, f(X)).
 
 test(unify_error, [ setup(( prolog_flag(occurs_check, OCF),
-                               set_prolog_flag(occurs_check, false) )),
-                    cleanup(   set_prolog_flag(occurs_check, OCF) ),
-                    true]) :-
+			       set_prolog_flag(occurs_check, false) )),
+		    cleanup(   set_prolog_flag(occurs_check, OCF) ),
+		    true]) :-
     eq2(X, f(X)).
 
 % Repeat the unify_error test, using eq3/2:
 
 test(unify_error, [ setup(( current_prolog_flag(occurs_check, OCF),
-                                set_prolog_flag(occurs_check, error) )),
-                    cleanup(    set_prolog_flag(occurs_check, OCF) ),
-                    error(occurs_check(B,f(B))) ]) :-
+				set_prolog_flag(occurs_check, error) )),
+		    cleanup(    set_prolog_flag(occurs_check, OCF) ),
+		    error(occurs_check(B,f(B))) ]) :-
     eq3(X, f(X)).
 
 test(unify_error, [ setup(( current_prolog_flag(occurs_check, OCF),
-                                set_prolog_flag(occurs_check, true) )),
-                    cleanup(    set_prolog_flag(occurs_check, OCF) ),
-                    fail]) :-
+				set_prolog_flag(occurs_check, true) )),
+		    cleanup(    set_prolog_flag(occurs_check, OCF) ),
+		    fail]) :-
     eq3(X, f(X)).
 
 test(unify_error, [ setup(( prolog_flag(occurs_check, OCF),
-                               set_prolog_flag(occurs_check, false) )),
-                    cleanup(   set_prolog_flag(occurs_check, OCF) ),
-                    true]) :-
+			       set_prolog_flag(occurs_check, false) )),
+		    cleanup(   set_prolog_flag(occurs_check, OCF) ),
+		    true]) :-
     eq3(X, f(X)).
 
 % TODO: Add tests for as_string(enc), such as enc=EncLatin1 and atom is non-ascii
@@ -387,11 +450,11 @@ test(range_cpp6b, error(type_error(integer,foo))) :-
 
 % This is test wchar_1 in test_ffi.pl:
 test(wchar_1, all(Result == ["//0", "/ /1",
-                             "/abC/3",
-                             "/Hello World!/12",
-                             "/хелло/5",
-                             "/хелло 世界/8",
-                             "/網目錦へび [àmímé níshíkíhéꜜbì]/26"])) :-
+			     "/abC/3",
+			     "/Hello World!/12",
+			     "/хелло/5",
+			     "/хелло 世界/8",
+			     "/網目錦へび [àmímé níshíkíhéꜜbì]/26"])) :-
     (   w_atom_cpp('',             Result)
     ;   w_atom_cpp(' ',            Result)
     ;   w_atom_cpp('abC',          Result)
@@ -410,7 +473,89 @@ test(type_error_string, S == "Type error: `foofoo' expected, found `'foo-bar'' (
     assertion(var(B)),
     assertion(A\==B).
 
+test(int_info) :-
+    findall(Name:Info, int_info(Name, Info), Infos),
+    assertion(memberchk(uint32_t:int_info(uint32_t,4,0,4294967295), Infos)).
+% int_info_cut test checks that PL_PRUNED works as expected:
+test(int_info_cut, Name:Info == bool:int_info(bool, 1, 0, 1)) :-
+    int_info(Name, Info), !.
+
+test(cvt_i_bool, R == 1) :- cvt_i_bool(true, R).
+test(cvt_i_bool, R == 1) :- cvt_i_bool(on, R).
+test(cvt_i_bool, R == 1) :- cvt_i_bool(1, R).
+test(cvt_i_bool, error(type_error(bool,666))) :- cvt_i_bool(666, _R).
+test(cvt_i_bool, error(type_error(bool,-666))) :- cvt_i_bool(-666, _R).
+:- if(current_prolog_flag(bounded,false)).
+test(cvt_i_bool, error(type_error(bool,18446744073709552614))) :-
+    Val is 0xffffffffffffffff + 999, % uses extended integers
+    cvt_i_bool(Val, _R).
+:- endif.
+test(cvt_i_bool, R == 0) :- cvt_i_bool(false, R).
+test(cvt_i_bool, R == 0) :- cvt_i_bool(off, R).
+test(cvt_i_bool, R == 0) :- cvt_i_bool(0, R).
+test(cvt_i_bool, error(type_error(bool,'FALSE')))  :- cvt_i_bool('FALSE', _R).
+test(cvt_i_bool, error(type_error(bool,0.0)))      :- cvt_i_bool(0.0, _R).
+test(cvt_i_bool, error(type_error(bool,"false")))  :- cvt_i_bool("false", _R).
+
+% TODO: the following sometimes causes a crash:
+test(scan_options, [R = options(1, 5, foo(bar), _, "")]) :- % Note use of (=)/2 because of uninstantiated variable
+    cpp_options([quoted(true), length(5), callback(foo(bar))], false, R).
+test(scan_options, [R == options(1, 5, foo(bar), qqsv, "DESCR")]) :-
+    cpp_options([token(qqsv), descr("DESCR"), quoted(true), length(5), callback(foo(bar))], false, R).
+test(scan_options, [R == options(1, 5, foo(bar), qqsv, "DESCR")]) :-
+    cpp_options([token(qqsv), descr("DESCR"), quoted(true), length(5), callback(foo(bar)), unknown_option(blah)], false, R).
+test(scan_options, [error(domain_error(cpp_options,unknown_option(blah)))]) :-
+    cpp_options([token(qqsv), descr("DESCR"), quoted(true), length(5), callback(foo(bar)), unknown_option(blah)], true, _).
+test(scan_options, [R == options(1, 5, foo(bar), qqsv, "DESCR")]) :-
+    cpp_options(options{token:qqsv, descr:"DESCR", quoted:true, length:5, callback:foo(bar)}, false, R).
+test(scan_options, [R == options(1, 5, foo(bar), qqsv, "DESCR")]) :-
+    cpp_options([token(qqsv), descr("DESCR"), quoted, length(5), callback(foo(bar))], false, R).
+test(scan_options, [R == options(0, 5, foo(bar), qqsv, "DESCR")]) :-
+    cpp_options([token(qqsv), descr("DESCR"), length(5), callback(foo(bar))], false, R).
+test(scan_options, [error(instantiation_error)]) :-
+    cpp_options([token(qqsv), _, descr("DESCR"), length(5), callback(foo(bar))], false, _).
+test(scan_options, [error(type_error(option,123))]) :- % TODO: is this intended behavior?
+    cpp_options([token(qqsv), descr("DESCR"), 123, length(5), callback(foo(bar))], false, _R).
+test(scan_options, [error(type_error(option,123))]) :- % TODO: is this intended behavior?
+    cpp_options([token(qqsv), 123, descr("DESCR"), length(5), callback(foo(bar))], false, _R).
+test(scan_options, [error(domain_error(cpp_options,unknown_option:blah))]) :-
+    cpp_options(options{token:qqsv, descr:"DESCR", quoted:true, length:5, callback:foo(bar), unknown_option:blah}, true, _).
+
+test(error_term, error(domain_error(footype,qqsv("ABC")),context(throw_domain_ffi/1,_Msg))) :-
+    throw_domain_ffi(qqsv("ABC")).
+
+test(error_term, [error(domain_error(footype,qqsv("ABC")),_)]) :-
+    throw_domain_cpp1(qqsv("ABC")).
+
+test(error_term, error(domain_error(footype,qqsv("ABC")),context(throw_domain_cpp2/1,_Msg))) :-
+    throw_domain_cpp2(qqsv("ABC")).
+
+test(error_term, error(domain_error(footype,qqsv("ABC")),context(throw_domain_cpp3/1,_Msg))) :-
+    throw_domain_cpp3(qqsv("ABC")).
+
+test(error_term, [error(domain_error(footype,qqsv("ABC")),_)]) :-
+    throw_domain_cpp4(qqsv("ABC")).
+
 :- end_tests(cpp).
 
 w_atom_cpp(Atom, String) :-
     with_output_to(string(String), w_atom_cpp_(current_output, Atom)).
+
+%!  query_flag(?Name, ?Bit)
+%
+%   Flags for  PL_open_query().  Check  with SWI-Prolog.h.   Same code
+%   appears   in  test_ffi.pl.    This  is   duplicated  to   simplify
+%   installation of these tests in the binary version.
+
+% query_flag(debug,		I) => I =0x0001.
+% query_flag(deterministic,	I) => I =0x0100.
+query_flag(normal,		I) => I =0x0002.
+query_flag(nodebug,		I) => I =0x0004.
+query_flag(catch_exception,	I) => I =0x0008.
+query_flag(pass_exception,	I) => I =0x0010.
+query_flag(allow_yield,		I) => I =0x0020.
+query_flag(ext_status,		I) => I =0x0040.
+
+query_flags(Flags, CombinedFlag) :-
+    maplist(query_flag, Flags, Ints),
+    aggregate_all(sum(I), member(I, Ints), CombinedFlag).

@@ -1,6 +1,6 @@
-e760ce4b605d7e0acf746a68acee2d79 *DESCRIPTION
+5de31426b4ce3a30cbe7b03d8be71e59 *DESCRIPTION
 2b4163c9fb2bbb98b2adbdc0551a683e *NAMESPACE
-9014f60324764ac43b6dc95e1f990a39 *NEWS.md
+9f9684dd966ecaf5bef0f77f7e75cf5c *NEWS.md
 5c8deab0264a6a89fb9ab02745a74d1d *R/RcppExports.R
 7e8cae35eb0cabb4a64c8dabcf60ad94 *R/query.R
 6087f035996fe21f523590f67575aeae *R/rswipl.R
@@ -151,9 +151,9 @@ d58a8d2d815b02b44f59484ba4f0ce70 *src/swipl-devel/customize/edit
 f1bcf20ac7c751f4dfd898e1234cb559 *src/swipl-devel/customize/init.pl
 d2cc9f154038cd974e1ef444b70d319f *src/swipl-devel/debian/README.Debian
 07a77379751c35aabe3ceec906ff4467 *src/swipl-devel/debian/autoreconf
-9a0f6c292f9bb55ae06e948560b0785d *src/swipl-devel/debian/changelog
+0e384eb7f3ef4b70939f5459cb0dc7d6 *src/swipl-devel/debian/changelog
 7c5aba41f53293b712fd86d08ed5b36e *src/swipl-devel/debian/compat
-a35d2aa4ae9fbe954de1e132dcb06171 *src/swipl-devel/debian/control
+3dfed6a36bd9cccbce6eea608d601512 *src/swipl-devel/debian/control
 40bddb2debe6f2bfbcb053452ccd3cae *src/swipl-devel/debian/copyright
 5fedf52fff1bdc5eddd3fac36baf60bf *src/swipl-devel/debian/gbp.conf
 dee66426897316e79d6a9dcfebcd627d *src/swipl-devel/debian/rules
@@ -168,9 +168,8 @@ f0d9bb90b97b4e30e03b806cc451032d *src/swipl-devel/debian/swi-prolog-nox.postinst
 cbc069f13a709a2ce36edd36d81a1a98 *src/swipl-devel/debian/swi-prolog-x.docs
 7eecf3df197edd068ddd14ddd7424d61 *src/swipl-devel/debian/swi-prolog-x.links
 12f7925b307e4e2dee5978a960b10826 *src/swipl-devel/debian/swi-prolog-x.lintian-overrides
-51365095dcc77ccd3774cdd09f132381 *src/swipl-devel/debian/swi-prolog-x.manpages
 2a741a742a0e0775b66038cb9285a432 *src/swipl-devel/debian/swi-prolog-x.preinst
-a4c56025b9ca81777768cbfbbc8afe13 *src/swipl-devel/debian/watch
+3cdee8b4a8a5337e4ee7b2beefd98abd *src/swipl-devel/debian/watch
 62d4f092667234cf9bf90d1cbd7a2388 *src/swipl-devel/demo/README.md
 c0a0c80d5eb3a4d8508dc626c5873a16 *src/swipl-devel/demo/likes.pl
 42e474817e81c373c82353d47701bb95 *src/swipl-devel/doc/README.md
@@ -478,7 +477,7 @@ bd2a0607280f181a4e7e1af3456ff228 *src/swipl-devel/packages/clib/hash_stream.pl
 8a4120bb959ed223b5269a85eb533685 *src/swipl-devel/packages/clib/memfile.pl
 0526020315fc40dc9efcf85a22ffc394 *src/swipl-devel/packages/clib/nonblockio.c
 b9dcf2fa81fd2dd59ac58fc862193617 *src/swipl-devel/packages/clib/nonblockio.h
-8535eed309329514be1a216690783627 *src/swipl-devel/packages/clib/process.c
+836585dd2f7d4f1a602f430d0cb2f430 *src/swipl-devel/packages/clib/process.c
 2a894c82bffe5630c600cc62081c2211 *src/swipl-devel/packages/clib/process.pl
 64e647480ac862474d26c4cb7e2d189b *src/swipl-devel/packages/clib/prolog_server.pl
 aa104bafe87c52ddb32a7fd2901f227b *src/swipl-devel/packages/clib/prolog_stream.c

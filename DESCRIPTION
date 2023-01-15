@@ -1,9 +1,9 @@
 Package: rswipl
 Type: Package
 Title: Embed 'SWI'-'Prolog'
-Version: 9.1.2
-Date: 2022-12-19
-Authors@R: c(person("Matthias", "Gondan", role = c("aut", "com", "cre"), email = "Matthias.Gondan-Rochon@uibk.ac.at"),
+Version: 9.1.3
+Date: 2023-01-14
+Authors@R: c(person("Matthias", "Gondan", role = c("aut", "com", "cre"), email = "Matthias.Gondan-Rochon@uibk.ac.at", comment = "Universität Innsbruck"),
   person("Jan", "Wielemaker", role = c("ctb", "cph"), email = "jan@swi-prolog.org", comment = "JW is the lead developer of SWI-Prolog. See https://www.swi-prolog.org/Contributors.html for a list of contributors."))
 Maintainer: Matthias Gondan <Matthias.Gondan-Rochon@uibk.ac.at>
 Description: Interface to 'SWI'-'Prolog', <https://www.swi-prolog.org/>. This package is normally not loaded directly, please refer to package 'rolog' instead. The purpose of this package is to provide the 'Prolog' runtime on systems that do not have a software installation of 'SWI'-'Prolog'.
@@ -21,10 +21,10 @@ SystemRequirements: GNU make, CMake (>= 3.10), pandoc, libarchive,
 Suggests: testthat (>= 3.0.0)
 Config/testthat/edition: 3
 NeedsCompilation: yes
-Packaged: 2022-12-19 16:59:56 UTC; gondan
-Author: Matthias Gondan [aut, com, cre],
+Packaged: 2023-01-15 15:29:46 UTC; matthias
+Author: Matthias Gondan [aut, com, cre] (Universität Innsbruck),
   Jan Wielemaker [ctb, cph] (JW is the lead developer of SWI-Prolog. See
     https://www.swi-prolog.org/Contributors.html for a list of
     contributors.)
 Repository: CRAN
-Date/Publication: 2022-12-20 13:50:02 UTC
+Date/Publication: 2023-01-15 18:10:02 UTC

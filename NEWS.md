@@ -1,8 +1,7 @@
-# rswipl 9.1.2
+# swipl 9.1.3
 
-* swipl-devel version 9.1.2
-* add package pcre
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-1-3/6090
 
-# rswipl 8.5.20
+# swipl 8.5.20
 
 * swipl-devel version 8.5.20

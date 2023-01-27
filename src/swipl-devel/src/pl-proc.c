@@ -672,7 +672,7 @@ get_head_functor(DECL_LD term_t head, functor_t *fdef, int how)
     } else
     { char buf[100];
 
-      Ssprintf(buf, "limit is %d, request = %d", MAXARITY, fd->arity);
+      Ssprintf(buf, "limit is %d, request = %zd", MAXARITY, fd->arity);
 
       return PL_error(NULL, 0, buf,
 		      ERR_REPRESENTATION, ATOM_max_procedure_arity);
@@ -2986,7 +2986,8 @@ trapUndefined(DECL_LD Definition def)
        getUnknownModule(module) == UNKNOWN_FAIL )
     return def;
 
-  DEBUG(5, Sdprintf("trapUndefined(%s)\n", predicateName(def)));
+  DEBUG(MSG_AUTOLOAD, Sdprintf("[%d] trapUndefined(%s)\n",
+			       PL_thread_self(), predicateName(def)));
 
 					/* Trap via exception/3 */
   if ( truePrologFlag(PLFLAG_AUTOLOAD) && !GD->bootsession )

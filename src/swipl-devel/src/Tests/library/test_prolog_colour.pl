@@ -1,9 +1,9 @@
 /*  Part of SWI-Prolog
 
-    Author:        Jan Wielemaker
-    E-mail:        jan@swi-prolog.org
-    WWW:           http://www.swi-prolog.org
-    Copyright (c)  2022-2023, SWI-Prolog Solutions b.v.
+    Author:        Eshel Yaron
+    E-mail:        eshel@swi-prolog.org
+    WWW:           www.swi-prolog.org
+    Copyright (c)  2023, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -32,49 +32,46 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-:- module(test_unicode,
-          [ test_unicode/0
+:- module(test_prolog_colour,
+          [ test_prolog_colour/0
           ]).
-:- use_module(library(plunit)).
-:- encoding(utf8).
 
-/** <module> Unicode parsing tests
+:- use_module(library(debug), [assertion/1]).
+:- use_module(library(plunit)).
+
+/** <module> Test set for library(prolog_colour)
 
 */
 
-test_unicode :-
-    run_tests([ numbers,
-		unicode_preds
-	      ]).
+test_prolog_colour :-
+        run_tests([ prolog_colour
+                  ]).
 
-:- begin_tests(numbers).
+:- begin_tests(prolog_colour).
+:- use_module(library(prolog_colour)).
 
-test(read, N == 0123456789) :-
-    term_string(N, ٠١٢٣٤٥٦٧٨٩).
-:- if(current_prolog_flag(bounded, false)).
-test(read, N == 0123456789r23) :-
-    term_string(N, ٠١٢٣٤٥٦٧٨٩r٢٣).
-:- endif.
-test(number_codes, N == 0123456789) :-
-    number_codes(N, `٠١٢٣٤٥٦٧٨٩`).
-test(atom_number, N == 0123456789) :-
-    atom_number('٠١٢٣٤٥٦٧٨٩', N).
-test(string_number, N == 0123456789) :-
-    number_string(N, "٠١٢٣٤٥٦٧٨٩").
-test(string_number, N == 12.3456789) :-
-    number_string(N, "١٢.٣٤٥٦٧٨٩").
-test(string_number, N == -12.34567e89) :-
-    number_string(N, "-١٢.٣٤٥٦٧e٨٩").
-test(string_number, N == -12.34567e-89) :-
-    number_string(N, "-١٢.٣٤٥٦٧e-٨٩").
+:- dynamic range_class/3.
 
-:- end_tests(numbers).
+assert_range_class(Class, Beg, Len) :-
+    asserta(range_class(Beg, Len, Class)).
 
-:- begin_tests(unicode_preds).
+test(function) :-
+    retractall(range_class(_, _, _)),
+    prolog_colourise_query("cos(pi) =:= - sin(pi/2) * _{foo:1}.foo / bar",
+                           user,
+                           assert_range_class),
+    !,
+    assertion(range_class(0,  3, function)),
+    assertion(range_class(4,  2, function)),
+    assertion(range_class(12, 1, function)),
+    assertion(range_class(14, 3, function)),
+    assertion(range_class(18, 2, function)),
+    assertion(range_class(20, 1, function)),
+    assertion(range_class(24, 1, function)),
+    assertion(range_class(26, 8, dict)),
+    assertion(range_class(34, 1, functor)),
+    assertion(range_class(35, 3, atom)),
+    assertion(range_class(39, 1, function)),
+    assertion(range_class(41, 3, no_function)).
 
-test(atom_length, Len == 1) :-
-    atom_length('\U0001F600', Len).
-test(string_length, Len == 1) :-
-    atom_length('\U0001F600', Len).
-
-:- end_tests(unicode_preds).
+:- end_tests(prolog_colour).

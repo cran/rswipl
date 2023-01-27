@@ -1,9 +1,9 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        jan@swi-prolog.org
+    E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2022-2023, SWI-Prolog Solutions b.v.
+    Copyright (c)  2023, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -32,49 +32,54 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-:- module(test_unicode,
-          [ test_unicode/0
+:- module(test_transaction_deadlock,
+          [ test_transaction_deadlock/0
           ]).
 :- use_module(library(plunit)).
-:- encoding(utf8).
 
-/** <module> Unicode parsing tests
-
-*/
-
-test_unicode :-
-    run_tests([ numbers,
-		unicode_preds
+test_transaction_deadlock :-
+    run_tests([ transaction_deadlock
 	      ]).
 
-:- begin_tests(numbers).
+:- begin_tests(transaction_deadlock).
 
-test(read, N == 0123456789) :-
-    term_string(N, ٠١٢٣٤٥٦٧٨٩).
-:- if(current_prolog_flag(bounded, false)).
-test(read, N == 0123456789r23) :-
-    term_string(N, ٠١٢٣٤٥٦٧٨٩r٢٣).
-:- endif.
-test(number_codes, N == 0123456789) :-
-    number_codes(N, `٠١٢٣٤٥٦٧٨٩`).
-test(atom_number, N == 0123456789) :-
-    atom_number('٠١٢٣٤٥٦٧٨٩', N).
-test(string_number, N == 0123456789) :-
-    number_string(N, "٠١٢٣٤٥٦٧٨٩").
-test(string_number, N == 12.3456789) :-
-    number_string(N, "١٢.٣٤٥٦٧٨٩").
-test(string_number, N == -12.34567e89) :-
-    number_string(N, "-١٢.٣٤٥٦٧e٨٩").
-test(string_number, N == -12.34567e-89) :-
-    number_string(N, "-١٢.٣٤٥٦٧e-٨٩").
+test(deadlock) :-
+    dl_loop(1000).
 
-:- end_tests(numbers).
+:- dynamic p/1, q/1, done/0.
 
-:- begin_tests(unicode_preds).
+%!  dl_loop(N) is det.
+%
+%   Test  mutual deadlock  between L_PREDICATE  and L_GENERATION  that
+%   could occur because comitting a transaction locks L_GENERATION and
+%   then  updates  the  clauses   which  may  lock  L_PREDICATE  while
+%   e.g.  abolish/1 locks  L_PREDICATE and  may update  the generation
+%   when clauses are removed.
+%
+%   We now  move actual removing  of the clauses during  a transaction
+%   commit to outside the L_GENERATION locked area.
 
-test(atom_length, Len == 1) :-
-    atom_length('\U0001F600', Len).
-test(string_length, Len == 1) :-
-    atom_length('\U0001F600', Len).
+dl_loop(N) :-
+    retractall(done),
+    thread_create(tr_on_p, Id, []),
+    loop_on_q(N),
+    thread_join(Id).
 
-:- end_tests(unicode_preds).
+tr_on_p :-
+    done,
+    !.
+tr_on_p :-
+    assert(p(1)),
+    transaction(retract(p(1))),
+    tr_on_p.
+
+loop_on_q(0) :-
+    !,
+    asserta(done).
+loop_on_q(N) :-
+    assert(q(aap)),
+    abolish(q/1),
+    N2 is N - 1,
+    loop_on_q(N2).
+
+:- end_tests(transaction_deadlock).

@@ -622,6 +622,7 @@ S__fillbuf(IOSTREAM *s)
   { char chr;
     ssize_t n;
 
+  again:
     n = (*s->functions->read)(s->handle, &chr, 1);
     if ( n == 1 )
     { c = char_to_int(chr);
@@ -631,7 +632,15 @@ S__fillbuf(IOSTREAM *s)
 	s->flags |= SIO_FEOF;
       return -1;
     } else
-    { S__seterror(s);
+    { if ( errno == EINTR )
+      { if ( PL_handle_signals() < 0 )
+	{ Sset_exception(s, PL_exception(0));
+	  errno = EPLEXCEPTION;
+	  return -1;
+	}
+	goto again;
+      }
+      S__seterror(s);
       return -1;
     }
   } else
@@ -658,6 +667,7 @@ S__fillbuf(IOSTREAM *s)
       len = s->bufsize;
     }
 
+  again2:
     n = (*s->functions->read)(s->handle, s->limitp, len);
     if ( n > 0 )
     { s->limitp += n;
@@ -675,6 +685,13 @@ S__fillbuf(IOSTREAM *s)
 	S__seterror(s);
 	return -1;
 #endif
+      } else if ( errno == EINTR )
+      { if ( PL_handle_signals() < 0 )
+	{ Sset_exception(s, PL_exception(0));
+	  errno = EPLEXCEPTION;
+	  return -1;
+	}
+	goto again2;
       } else
       {	S__seterror(s);
 	return -1;
@@ -2172,6 +2189,21 @@ Sfprintf(IOSTREAM *s, const char *fm, ...)
   return rval;
 }
 
+/* SfprintfX() is identical to Sfprintf() but its definition in
+   SWI-Stream.h doesn't have the "check format" attribute. */
+
+int
+SfprintfX(IOSTREAM *s, const char *fm, ...)
+{ va_list args;
+  int rval;
+
+  va_start(args, fm);
+  rval = Svfprintf(s, fm, args);
+  va_end(args);
+
+  return rval;
+}
+
 
 int
 Sprintf(const char *fm, ...)
@@ -2269,7 +2301,8 @@ typedef enum
 { INT_INT       = 0,
   INT_LONG      = 1,
   INT_LONG_LONG = 2,
-  INT_SIZE_T    = 3
+  INT_SIZE_T    = 3,
+  INT_PTRDIFF_T = 4
 } int_type;
 
 int
@@ -2353,6 +2386,10 @@ Svfprintf(IOSTREAM *s, const char *fm, va_list args)
 	    islong = INT_SIZE_T;
 	    fm++;
 	    break;
+	  case 't':
+	    islong = INT_PTRDIFF_T;
+	    fm++;
+	    break;
 	  case 'L':			/* %Ls: ISO-Latin-1 string */
 	    enc = ENC_ISO_LATIN_1;
 	    fm++;
@@ -2410,6 +2447,9 @@ Svfprintf(IOSTREAM *s, const char *fm, va_list args)
 	      case INT_SIZE_T:
 		vll = va_arg(args, size_t);
 		break;
+	      case INT_PTRDIFF_T:
+		vll = va_arg(args, ptrdiff_t);
+		break;
 	      default:
 		assert(0);
 	    }
@@ -2431,6 +2471,7 @@ Svfprintf(IOSTREAM *s, const char *fm, va_list args)
 		break;
 	      case INT_LONG_LONG:
 	      case INT_SIZE_T:
+	      case INT_PTRDIFF_T:
 #ifdef __WINDOWS__
 		*fp++ = 'I';		/* Synchronise with INT64_FORMAT! */
 		*fp++ = '6';
@@ -2594,6 +2635,22 @@ Ssnprintf(char *buf, size_t size, const char *fm, ...)
 }
 
 
+/* SsnprintfX() is identical to Ssnprintf() but its definition in
+   SWI-Stream.h doesn't have the "check format" attribute. */
+
+int
+SsnprintfX(char *buf, size_t size, const char *fm, ...)
+{ va_list args;
+  int rval;
+
+  va_start(args, fm);
+  rval = Svsnprintf(buf, size, fm, args);
+  va_end(args);
+
+  return rval;
+}
+
+
 int
 Svsprintf(char *buf, const char *fm, va_list args)
 { IOSTREAM s;
@@ -2656,6 +2713,21 @@ Svdprintf(const char *fm, va_list args)
 
 int
 Sdprintf(const char *fm, ...)
+{ va_list args;
+  int rval;
+
+  va_start(args, fm);
+  rval = Svdprintf(fm, args);
+  va_end(args);
+
+  return rval;
+}
+
+/* SdprintfX() is identical to Sdprintf() but its definition in
+   SWI-Stream.h doesn't have the "check format" attribute. */
+
+int
+SdprintfX(const char *fm, ...)
 { va_list args;
   int rval;
 

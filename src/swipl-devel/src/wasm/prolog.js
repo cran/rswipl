@@ -580,7 +580,7 @@ class Prolog
   url_properties(url)
   { return fetch(url, {method: 'HEAD'}).then((r) =>
     { if ( r.status == 200 )
-      { const size = parseInt(r.headers.get("content-length"));
+      { let size = parseInt(r.headers.get("content-length"));
 	const mods = r.headers.get("last-modified");
 	const time = Date.parse(mods) || 0;
 
@@ -1691,14 +1691,14 @@ function release_registered_object(id)
 }
 
 
-if ( BigInt.prototype.toJSON === undefined )
-{ BigInt.prototype.toJSON = function ()
+if ( globalThis.BigInt.prototype.toJSON === undefined )
+{ globalThis.BigInt.prototype.toJSON = function ()
   { return this.toString();
   }
 }
 
-if ( HTMLCollection && HTMLCollection.prototype && !HTMLCollection.prototype.toList )
-{ HTMLCollection.prototype.toList = function()
+if ( globalThis.HTMLCollection && globalThis.HTMLCollection.prototype && !globalThis.HTMLCollection.prototype.toList )
+{ globalThis.HTMLCollection.prototype.toList = function()
   { const ar = [];
 
     for(let i=0; i<this.length; i++)

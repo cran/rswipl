@@ -1573,26 +1573,33 @@ prolog_message(spying(Heads)) -->
     predicate_list(Heads).
 prolog_message(trace(Head, [])) -->
     !,
-    { goal_to_predicate_indicator(Head, Pred)
-    },
-    [ '        ~p: Not tracing'-[Pred], nl].
+    [ '    ' ], goal_predicate(Head), [ ' Not tracing'-[], nl].
 prolog_message(trace(Head, Ports)) -->
-    { goal_to_predicate_indicator(Head, Pred)
-    },
-    [ '        ~p: ~w'-[Pred, Ports], nl].
+    [ '    ' ], goal_predicate(Head), [ ': ~w'-[Ports], nl].
 prolog_message(tracing([])) -->
     !,
-    [ 'No traced predicates (see trace/1)' ].
+    [ 'No traced predicates (see trace/1,2)' ].
 prolog_message(tracing(Heads)) -->
-    [ 'Trace points (see trace/1) on:', nl ],
+    [ 'Trace points (see trace/1,2) on:', nl ],
     tracing_list(Heads).
+
+goal_predicate(Head) -->
+    { predicate_property(Pred, file(File)),
+      predicate_property(Pred, line_count(Line)),
+      goal_to_predicate_indicator(Head, PI),
+      term_string(PI, PIS, [quoted(true)])
+    },
+    [ url(File:Line, PIS) ].
+goal_predicate(Head) -->
+    { goal_to_predicate_indicator(Head, PI)
+    },
+    [ '~p'-[PI] ].
+
 
 predicate_list([]) -->                  % TBD: Share with dwim, etc.
     [].
 predicate_list([H|T]) -->
-    { goal_to_predicate_indicator(H, Pred)
-    },
-    [ '        ~p'-[Pred], nl],
+    [ '    ' ], goal_predicate(H), [nl],
     predicate_list(T).
 
 tracing_list([]) -->
@@ -1678,9 +1685,20 @@ frame_flags(Frame) -->
     },
     [ '~w~w '-[T, S] ].
 
-% trace/1,2 context handling
+% trace/1 context handling
+port(Port, Dict) -->
+    { _{level:Level, start:Time} :< Dict
+    },
+    (   { Port \== call,
+          get_time(Now),
+          Passed is (Now - Time)*1000.0
+        }
+    ->  [ '[~d +~1fms] '-[Level, Passed] ]
+    ;   [ '[~d] '-[Level] ]
+    ),
+    port(Port).
 port(Port, _Id-Level) -->
-    [ '[~d] '-Level ],
+    [ '[~d] '-[Level] ],
     port(Port).
 
 port(Port) -->

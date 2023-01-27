@@ -3391,7 +3391,7 @@ compileArithArgument(DECL_LD Word arg, compileInfo *ci)
 	  }
 #endif
 	}
-#ifdef O_GMP
+#ifdef O_BIGNUM
       } else if ( p[1]&MP_RAT_MASK )
       { Output_n(ci, A_MPQ, p, n+1);
       } else
@@ -4786,7 +4786,7 @@ argKey(Code PC, int skip, word *key)
 	goto again;
 #endif
       default:
-	Sdprintf("Unexpected VM code %d at %p\n", c, PC);
+	Sdprintf("Unexpected VM code %" PRIuPTR " at %p\n", c, PC);
 	Sdprintf("\topcode=%s\n", codeTable[c].name);
 	assert(0);
 	fail;
@@ -5724,6 +5724,7 @@ decompileBodyNoShift(DECL_LD decompileInfo *di, code end, Code until)
 			  }
 	case H_STRING:
 	case H_MPZ:
+        case H_MPQ:
 	case B_STRING:
 	case A_MPZ:
 	case B_MPZ:
@@ -7080,7 +7081,7 @@ vm_list(Code start, Code end)
   { code op = fetchop(PC);
     const code_info *ci = &codeTable[op];
 
-    Sdprintf("%-3d %s\n", PC-start, ci->name);
+    Sdprintf("%-3zd %s\n", (size_t)(PC-start), ci->name);
     if ( !end )
     { switch(op)
       { case I_EXIT:

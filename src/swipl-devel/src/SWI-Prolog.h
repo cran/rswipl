@@ -60,7 +60,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 90104
+#define PLVERSION 90106
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -829,9 +829,22 @@ PL_EXPORT(int)		PL_same_compound(term_t t1, term_t t2);
 		 /*******************************
 		 *	     MESSAGES		*
 		 *******************************/
+#if !defined(WPRINTF12)
+/* these macros are duplicated in SWI-Streams.h */
+#if defined(CHECK_FORMAT)
+#define WPRINTF12  __attribute__ ((format (printf, 1, 2)))
+#define WPRINTF23  __attribute__ ((format (printf, 2, 3)))
+#define WPRINTF34  __attribute__ ((format (printf, 3, 4)))
+#else
+#define WPRINTF12
+#define WPRINTF23
+#define WPRINTF34
+#endif
+#endif
 
-PL_EXPORT(int)		PL_warning(const char *fmt, ...);
-PL_EXPORT(void)		PL_fatal_error(const char *fmt, ...);
+PL_EXPORT(int)		PL_warning(const char *fmt, ...) WPRINTF12;
+PL_EXPORT(int)		PL_warningX(const char *fmt, ...);
+PL_EXPORT(void)		PL_fatal_error(const char *fmt, ...) WPRINTF12;
 
 		 /*******************************
 		 *      RECORDED DATABASE	*

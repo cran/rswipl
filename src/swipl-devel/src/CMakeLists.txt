@@ -174,6 +174,9 @@ endif()
 if(MULTI_THREADED)
   list(APPEND SWIPL_DATA_library threadutil.pl thread.pl thread_pool.pl)
 endif()
+if(O_PROFILE)
+  list(APPEND SWIPL_DATA_library prolog_profile.pl)
+endif()
 
 set(SWIPL_DATA_library_lynx format.pl html_style.pl html_text.pl
     pldoc_style.pl)

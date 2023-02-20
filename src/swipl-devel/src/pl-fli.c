@@ -4365,6 +4365,8 @@ classify_exception_p(DECL_LD Word p)
     }
 
     return EXCEPT_ERROR;
+  } else if ( hasFunctor(*p, FUNCTOR_time_limit_exceeded1) )
+  { return EXCEPT_TIMEOUT;
   }
 
   return EXCEPT_OTHER;
@@ -4713,7 +4715,7 @@ PL_halt(int status)
 
 void
 PL_abort_process(void)
-{ haltProlog(128+SIGABRT);
+{ haltProlog((128+SIGABRT)|PL_CLEANUP_NO_CANCEL);
   abort();
 }
 
@@ -5179,6 +5181,17 @@ PL_set_prolog_flag(const char *name, int type, ...)
 
 int
 PL_warning(const char *fm, ...)
+{ va_list args;
+
+  va_start(args, fm);
+  vwarning(fm, args);
+  va_end(args);
+
+  fail;
+}
+
+int
+PL_warningX(const char *fm, ...)
 { va_list args;
 
   va_start(args, fm);

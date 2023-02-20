@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2019, University of Amsterdam
+    Copyright (c)  1985-2023, University of Amsterdam
                               VU University Amsterdam
 			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -163,7 +164,7 @@ static int
 thread_prof_ticks(DECL_LD)
 { double t0 = LD->profile.time_at_last_tick;
   double t1 = LD->profile.active == PROF_CPU ? ThreadCPUTime(CPU_USER)
-				             : WallTime();
+					     : WallTime();
 
   LD->profile.time_at_last_tick = t1;
 
@@ -431,7 +432,7 @@ static int
 unify_node(DECL_LD term_t t, call_node *node)
 { return PL_unify_term(t,
 		       PL_FUNCTOR, FUNCTOR_dprof_node1,
-		         PL_POINTER, node);
+			 PL_POINTER, node);
 }
 
 
@@ -729,7 +730,7 @@ unify_relatives(DECL_LD term_t list, prof_ref *r)
 			PL_LONG, r->sibling_ticks,
 			PL_LONG, r->calls,
 			PL_LONG, r->redos,
-		        PL_LONG, r->exits) )
+			PL_LONG, r->exits) )
       fail;
   }
 
@@ -1314,93 +1315,14 @@ freeProfileData(void)
   assert(LD->profile.nodes == 0);
 }
 
-#else /* O_PROFILE */
-
-		 /*******************************
-		 *	    NO PROFILER		*
-		 *******************************/
-
-void
-stopItimer(void)
-{
-}
-
-static
-PRED_IMPL("profiler", 2, profiler, 0)
-{ return notImplemented("profile", 2);
-}
-
-static
-PRED_IMPL("reset_profiler", 0, reset_profiler, 0)
-{ return notImplemented("reset_profile", 0);
-}
-
-static
-PRED_IMPL("$prof_node", 8, prof_node, 0)
-{ return notImplemented("profile_node", 8);
-}
-
-static
-PRED_IMPL("$prof_sibling_of", 2, prof_sibling_of, PL_FA_NONDETERMINISTIC)
-{ return notImplemented("profile_sibling_of", 2);
-}
-
-static
-PRED_IMPL("$profile", 2, profile, PL_FA_TRANSPARENT)
-{ return notImplemented("$profile", 2);
-}
-
-static
-PRED_IMPL("$prof_procedure_data", 8, prof_procedure_data, PL_FA_TRANSPARENT)
-{ return notImplemented("$prof_procedure_data", 8);
-}
-
-static
-PRED_IMPL("$prof_statistics", 5, prof_statistics, 0)
-{ return notImplemented("$prof_statistics", 5);
-}
-
-/* Foreign interface of the profiler
-*/
-
-int
-PL_register_profile_type(PL_prof_type_t *type)
-{ return FALSE;				/* not supported */
-}
-
-void *
-PL_prof_call(void *handle, PL_prof_type_t *type)
-{ return NULL;
-}
-
-void
-PL_prof_exit(void *node)
-{
-}
-
 #endif /* O_PROFILE */
-
-#ifdef O_PROF_PENTIUM
-#include "pentium.c"
-
-PRED_IMPL("show_pentium_profile", 0, show_pentium_profile, 0)
-{ prof_report();
-
-  succeed;
-}
-
-PRED_IMPL("reset_pentium_profile", 0, reset_pentium_profile, 0)
-{ prof_reset();
-
-  succeed;
-}
-#endif
 
 		 /*******************************
 		 *      PUBLISH PREDICATES	*
 		 *******************************/
 
 BeginPredDefs(profile)
+#if O_PROFILE
   PRED_DEF("$profile", 2, profile, PL_FA_TRANSPARENT)
   PRED_DEF("profiler", 2, profiler, 0)
   PRED_DEF("reset_profiler", 0, reset_profiler, 0)
@@ -1408,8 +1330,5 @@ BeginPredDefs(profile)
   PRED_DEF("$prof_sibling_of", 2, prof_sibling_of, PL_FA_NONDETERMINISTIC)
   PRED_DEF("$prof_procedure_data", 8, prof_procedure_data, PL_FA_TRANSPARENT)
   PRED_DEF("$prof_statistics", 5, prof_statistics, 0)
-#ifdef O_PROF_PENTIUM
-  PRED_DEF("show_pentium_profile", 0, show_pentium_profile, 0)
-  PRED_DEF("reset_pentium_profile", 0, reset_pentium_profile, 0)
 #endif
 EndPredDefs

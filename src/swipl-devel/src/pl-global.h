@@ -318,7 +318,7 @@ struct PL_global_data
     Procedure	strict_equal2;		/* ==/2 */
     Procedure	not_strict_equal2;	/* \==/2 */
     Procedure   arg3;			/* arg/3 */
-    Procedure	exception_hook4;
+    Procedure	exception_hook5;
     Procedure	print_message2;
     Procedure	foreign_registered2;	/* $foreign_registered/2 */
     Procedure	prolog_trace_interception4;
@@ -327,7 +327,6 @@ struct PL_global_data
     Procedure   dcall1;			/* $call/1 */
     Procedure   call1;			/* call/1 */
     Procedure   call3;			/* call/3 */
-    Procedure	setup_call_catcher_cleanup4; /* setup_call_catcher_cleanup/4 */
     Procedure	undefinterc4;		/* $undefined_procedure/4 */
     Procedure   dthread_init0;		/* $thread_init/0 */
     Procedure   dc_call_prolog0;	/* $c_call_prolog/0 */
@@ -398,8 +397,9 @@ struct PL_global_data
 #ifdef HAVE_TGETENT
   struct
   { int    initialised;			/* initialisation status */
-    char  *_string_area;		/* static area for tgetent */
-    char  *_buf_area;			/* another one */
+    char  *_string_area;		/* static area for tgetstr */
+    char  *_string_area_end;		/* end of _string_area */
+    char  *_buf_area;			/* static area for tgetent */
     Table  _capabilities;		/* User-level capability table */
   } terminal;
 #endif
@@ -597,10 +597,10 @@ struct PL_local_data
     int		sum_ok;			/* siblings are counted */
     struct call_node *current;		/* `current' node */
     struct call_node *roots;		/* list of root-nodes */
-    uintptr_t	samples;		/* profile samples */
-    uintptr_t	ticks;			/* profile ticks total */
-    uintptr_t	accounting_ticks;	/* Ticks in profCall() and friends */
-    uintptr_t	nodes;			/* #Recorded nodes */
+    uint64_t	samples;		/* profile samples */
+    uint64_t	ticks;			/* profile ticks total */
+    uint64_t	accounting_ticks;	/* Ticks in profCall() and friends */
+    size_t	nodes;			/* #Recorded nodes */
     double	time_at_last_tick;	/* Time at last statistics tick */
     double	time_at_start;		/* Time at last start */
     double	time;			/* recorded CPU time */

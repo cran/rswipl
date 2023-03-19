@@ -125,7 +125,7 @@ typedef foreign_t (*NdetFunc10)(term_t a1, term_t a2, term_t a3, term_t a4,
 
 #if defined(O_DEBUG) || defined(SECURE_GC) || defined(O_MAINTENANCE)
 #define loffset(p) LDFUNC(loffset, p)
-static intptr_t
+static size_t
 loffset(DECL_LD void *p)
 { if ( p == NULL )
     return 0;
@@ -145,7 +145,7 @@ DbgPrintInstruction(LocalFrame FR, Code PC)
   { GET_LD
 
     if ( ofr != FR )
-    { Sfprintf(Serror, "#%ld at [%ld] predicate %s\n",
+    { Sfprintf(Serror, "#%zd at [%ld] predicate %s\n",
 	       loffset(FR),
 	       levelFrame(FR),
 	       predicateName(FR->predicate));
@@ -745,47 +745,74 @@ call_term(DECL_LD Module mdef, term_t goal)
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 frameFinished() is used for two reasons:   providing hooks for the (GUI)
 debugger  for  updating   the   stack-view    and   for   dealing   with
-call_cleanup/3.  Both may call-back the Prolog engine.
+call_cleanup/2 family.  Both may call-back the Prolog engine.
+
+The helper callCleanupHandler() deals with the cleanup family. Currently
+the predicate is always
+
+    setup_call_catcher_cleanup(Setup, Goal, Catcher, Cleanup).
 
 Note that the cleanup handler is called while protected against signals.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define callCleanupHandler(fr, reason) LDFUNC(callCleanupHandler, fr, reason)
+#define callCleanupHandler(fr, reason) \
+	LDFUNC(callCleanupHandler, fr, reason)
+
 static void
 callCleanupHandler(DECL_LD LocalFrame fr, enum finished reason)
 { if ( false(fr, FR_CATCHED) )		/* from handler */
   { size_t fref = consTermRef(fr);
     fid_t cid;
-    term_t catcher;
-
-    assert(fr->predicate == PROCEDURE_setup_call_catcher_cleanup4->definition);
+    size_t arg_catcher = 0;
+    size_t arg_cleanup = 0;
+    term_t clean;
+    wakeup_state wstate;
 
     if ( !(cid=PL_open_foreign_frame()) )
       return;				/* exception is in the environment */
 
     fr = (LocalFrame)valTermRef(fref);
-    catcher = consTermRef(argFrameP(fr, 2));
-
-    set(fr, FR_CATCHED);
-    if ( unify_finished(catcher, reason) )
-    { term_t clean;
-      wakeup_state wstate;
-
-      fr = (LocalFrame)valTermRef(fref);
-      clean = consTermRef(argFrameP(fr, 3));
-      if ( saveWakeup(&wstate, FALSE) )
-      { int rval;
-
-	startCritical();
-	rval = call_term(contextModule(fr), clean);
-	if ( !endCritical() )
-	  rval = FALSE;
-	if ( !rval && exception_term )
-	  wstate.flags |= WAKEUP_KEEP_URGENT_EXCEPTION;
-	restoreWakeup(&wstate);
-      }
+    switch(fr->predicate->functor->arity)
+    { case 2:		/* call_cleanup(Goal, Cleanup) */
+	arg_cleanup = 2;
+        break;
+      case 3:		/* setup_call_cleanup(Setup, Goal, Cleanup) */
+	arg_cleanup = 3;
+        break;
+      case 4:		/* setup_call_catcher_cleanup(Stp, Goal, Catcher, Cln) */
+	arg_cleanup = 4;
+        arg_catcher = 3;
+	break;
+      default:
+	assert(0);
     }
 
+    set(fr, FR_CATCHED);
+
+			/* Unify the catcher */
+    if ( arg_catcher )
+    { term_t catcher = consTermRef(argFrameP(fr, arg_catcher-1));
+
+      if ( !unify_finished(catcher, reason) )
+	goto out;
+    }
+
+			/* Call the cleanup handler */
+    fr = (LocalFrame)valTermRef(fref);
+    clean = consTermRef(argFrameP(fr, arg_cleanup-1));
+    if ( saveWakeup(&wstate, FALSE) )
+    { int rval;
+
+      startCritical();
+      rval = call_term(contextModule(fr), clean);
+      if ( !endCritical() )
+	rval = FALSE;
+      if ( !rval && exception_term )
+	wstate.flags |= WAKEUP_KEEP_URGENT_EXCEPTION;
+      restoreWakeup(&wstate);
+    }
+
+  out:
     PL_close_foreign_frame(cid);
   }
 }
@@ -2061,10 +2088,12 @@ dbgRedoFrame(DECL_LD LocalFrame fr, choice_type cht)
 
 #endif /*O_DEBUGGER*/
 
-#define exception_hook(pqid, fr, catchfr_ref) LDFUNC(exception_hook, pqid, fr, catchfr_ref)
+#define exception_hook(pqid, fr, catchfr_ref) \
+	LDFUNC(exception_hook, pqid, fr, catchfr_ref)
+
 static int
 exception_hook(DECL_LD qid_t pqid, term_t fr, term_t catchfr_ref)
-{ if ( PROCEDURE_exception_hook4->definition->impl.clauses.first_clause )
+{ if ( PROCEDURE_exception_hook5->definition->impl.clauses.first_clause )
   { if ( !LD->exception.in_hook )
     { wakeup_state wstate;
       qid_t qid;
@@ -2075,7 +2104,7 @@ exception_hook(DECL_LD qid_t pqid, term_t fr, term_t catchfr_ref)
       if ( !saveWakeup(&wstate, TRUE) )
 	return FALSE;
 
-      av = PL_new_term_refs(4);
+      av = PL_new_term_refs(5);
       PL_put_term(av+0, exception_bin);
       PL_put_frame(av+2, (LocalFrame)valTermRef(fr));
 
@@ -2097,10 +2126,11 @@ exception_hook(DECL_LD qid_t pqid, term_t fr, term_t catchfr_ref)
       } else
       { PL_put_frame(av+3, NULL);	/* puts 'none' */
       }
+      PL_put_bool(av+4, debugstatus.debugging);
 
       startCritical();
       qid = PL_open_query(MODULE_user, PL_Q_NODEBUG|PL_Q_CATCH_EXCEPTION,
-			  PROCEDURE_exception_hook4, av);
+			  PROCEDURE_exception_hook5, av);
       rc = PL_next_solution(qid);
       rc = endCritical() && rc;
       debug = debugstatus.debugging;
@@ -2134,7 +2164,7 @@ exception_hook(DECL_LD qid_t pqid, term_t fr, term_t catchfr_ref)
 
       return rc;
     } else
-    { PL_warning("Recursive exception in prolog_exception_hook/4");
+    { PL_warning("Recursive exception in prolog:prolog_exception_hook/5");
     }
   }
 
@@ -2273,7 +2303,7 @@ static void
 discardFrame(DECL_LD LocalFrame fr)
 { Definition def = fr->predicate;
 
-  DEBUG(2, Sdprintf("discard #%d running %s\n",
+  DEBUG(2, Sdprintf("discard #%zd running %s\n",
 		    loffset(fr),
 		    predicateName(fr->predicate)));
 
@@ -2320,7 +2350,7 @@ chp_chars(Choice ch)
 { GET_LD
   static char buf[256];
 
-  Ssnprintf(buf, sizeof(buf), "Choice at #%ld for frame #%ld (%s), type %s",
+  Ssnprintf(buf, sizeof(buf), "Choice at #%zd for frame #%zd (%s), type %s",
 	    loffset(ch), loffset(ch->frame),
 	    predicateName(ch->frame->predicate),
 	    ch->type == CHP_JUMP ? "JUMP" :

@@ -1,5 +1,9 @@
 # rswipl: Embed SWI-Prolog into an R package
 
+_Matthias Gondan, Universität Innsbruck, Austria_
+
+Supported by the Erasmus+ programme of the European Commission, 2019-1-EE01-KA203-051708
+
 The purpose of this package is to embed SWI-Prolog into an R library,
 such that other packages can link to the SWI-Prolog runtime without the need
 to install the program on their computer. This R package is *not* meant to
@@ -15,8 +19,9 @@ distributed under its own license (BSD-2).
 ## Installation
 
 Please use R version >= 4.2. The package is on CRAN, it can be installed using 
-`install.packages("rswipl")` from the R environment. The current sources can be
-installed using 
+`install.packages("rswipl")` from the R environment.
+
+If you need an installation from the current sources, use
 
 `install.packages("remotes")`
 

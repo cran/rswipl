@@ -2394,9 +2394,7 @@ is not GC-ed. This applies  for   head-arguments  as well as B_UNIFY_VAR
 instructions. See get_vmi_state().
 
 (***) When debugging, we must  avoid   GC-ing  local variables of frames
-that  are  watched  by  the  debugger.    FR_WATCHED  is  also  used  by
-setup_call_cleanup/3. We avoid full marking here. Maybe we should use an
-alternate flag for these two cases?
+that  are  watched  by  the  debugger.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static QueryFrame
@@ -2456,8 +2454,7 @@ mark_environments(DECL_LD mark_state *mstate, LocalFrame fr, Code PC)
 	mark_local_variable(argp0);
       }
 
-      if ( true(fr, FR_WATCHED) &&		/* (***) */
-	   fr->predicate != PROCEDURE_setup_call_catcher_cleanup4->definition )
+      if ( true(fr, FR_WATCHED) )
       { int slots;
 	Word sp;
 
@@ -3841,11 +3838,11 @@ considerGarbageCollect(Stack s)
 
 void
 call_tune_gc_hook(void)
-{ Procedure proc = PROCEDURE_tune_gc3;
+{ GET_LD
+  Procedure proc = PROCEDURE_tune_gc3;
 
   if ( isDefinedProcedure(proc) )
-  { GET_LD
-    fid_t fid;
+  { fid_t fid;
 
     if ( (fid = PL_open_foreign_frame()) )
     { term_t av = PL_new_term_refs(3);
@@ -5179,6 +5176,7 @@ grow_stacks(DECL_LD size_t l, size_t g, size_t t)
   int rc;
 #if O_DEBUG
   word key=0;
+  int emergency = FALSE;
 #endif
 
   if ( !(l || g || t) )
@@ -5195,8 +5193,7 @@ grow_stacks(DECL_LD size_t l, size_t g, size_t t)
   { if ( tsize + gsize + lsize > LD->stacks.limit )
     { size_t ulocal  = needStack((Stack)&LD->stacks.local)  + l;
       size_t uglobal = needStack((Stack)&LD->stacks.global) + g;
-      size_t utrail  = needStack((Stack)&LD->stacks.trail)  + t +
-		       uglobal/GLOBAL_TRAIL_RATIO;
+      size_t utrail  = needStack((Stack)&LD->stacks.trail)  + t;
       size_t need    = ulocal + utrail + uglobal;
       size_t limit   = LD->stacks.limit;
       size_t minav   = limit/4;
@@ -5206,9 +5203,15 @@ grow_stacks(DECL_LD size_t l, size_t g, size_t t)
 	    Sdprintf("Reached stack-limit; need (l+g+t) %zd+%zd+%zd=%zd; limit = %zd\n",
 		     ulocal, uglobal, utrail, need, LD->stacks.limit));
 
-      if ( LD->in_print_message )
-      { limit += 1024*1024;
+      if ( LD->in_print_message || LD->exception.processing )
+      { DEBUG(MSG_STACK_OVERFLOW,
+	      { Sdprintf("In error condition; raising limit with 1Mb\n");
+		emergency = TRUE;
+	      });
+	limit += 1024*1024;
 	minav = 0;
+      } else
+      { utrail += uglobal/GLOBAL_TRAIL_RATIO;
       }
 
       if ( limit > need && (space=limit-need) > minav )
@@ -5383,6 +5386,14 @@ grow_stacks(DECL_LD size_t l, size_t g, size_t t)
     { Sdprintf("l+g+t = %zd+%zd+%zd (%.3f sec)\n",
 	       lsize, gsize, tsize, time);
     }
+    DEBUG(MSG_STACK_OVERFLOW,
+	  { if ( emergency )
+	    { Sdprintf("l+g+t = %zd+%zd+%zd; free = %zd+%zd+%zd (%.3f sec)\n",
+		       lsize, gsize, tsize,
+		       roomStack(local), roomStack(global), roomStack(trail),
+		       time);
+	    }
+	  });
   }
 
   DEBUG(CHK_SECURE,

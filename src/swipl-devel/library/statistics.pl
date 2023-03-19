@@ -299,27 +299,45 @@ time(Goal) :-
 %!  call_time(:Goal, -Time:dict, -Result).
 %
 %   Call Goal as  call/1,  unifying  Time   with  a  dict  that provides
-%   information on the  resource  usage.   Currently  Time  contains the
-%   keys below.  Future versions may provide additional keys.
+%   information on the resource usage. If   Goal  succeeds with a choice
+%   point, backtracking reports the time used to find the _next answer_,
+%   failure or exception. If Goal   succeeds deterministically no choice
+%   point is left open. Currently Time   contains the keys below. Future
+%   versions may provide additional keys.
 %
 %     - wall:Seconds
 %     - cpu:Seconds
 %     - inferences:Count
 %
-%   @arg Result is one of `true` or  `false` depending on whether or not
-%   the goal succeeded.
+%   call_time/2 is defined as below. Note  that for call_time/2 the time
+%   is only available if Goal succeeds.
+%
+%       call_time(Goal, Time) :-
+%	    call_time(Goal, Time, Result),
+%	    call(Result).
+%
+%   @arg Result is one of  `true`,   `false`  or  throw(E), depending on
+%   whether or not the goal succeeded or  raised an exception. Note that
+%   Result may be called  using  call/1   to  propagate  the  failure or
+%   exception.
 
 call_time(Goal, Time) :-
-    call_time(Goal, Time, true).
+    call_time(Goal, Time, Result),
+    call(Result).
+
 call_time(Goal, Time, Result) :-
     time_state(State0),
-    (   call_cleanup(catch(Goal, E, (report(State0,10), throw(E))),
+    (   call_cleanup(catch(Goal, E, true),
                      Det = true),
-        Result = true,
         time_true_used(State0, Time),
-        (   Det == true
-        ->  !
-        ;   true
+        (   var(E)
+        ->  Result = true,
+            (   Det == true
+            ->  !
+            ;   true
+            )
+        ;   !,
+            Result = throw(E)
         )
     ;   time_used(State0, 11, Time),
         Result = false

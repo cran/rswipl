@@ -84,16 +84,16 @@ static PL_prof_type_t *types[MAX_PROF_TYPES] = { &prof_default_type };
 #define PROFNODE_MAGIC 0x7ae38f24
 
 typedef struct call_node
-{ intptr_t	    magic;		/* PROFNODE_MAGIC */
+{ int		    magic;		/* PROFNODE_MAGIC */
   struct call_node *parent;
   void *            handle;		/* handle to procedure-id */
   PL_prof_type_t   *type;
-  uintptr_t	    calls;		/* Calls from the parent */
-  uintptr_t	    redos;		/* redos while here */
-  uintptr_t	    exits;		/* exits to the parent */
-  uintptr_t	    recur;		/* recursive calls */
-  uintptr_t	    ticks;		/* time-statistics */
-  uintptr_t	    sibling_ticks;	/* ticks in a siblings */
+  uint64_t	    calls;		/* Calls from the parent */
+  uint64_t	    fails;		/* fails back to choicepoint */
+  uint64_t	    exits;		/* exits to the parent */
+  uint64_t	    recur;		/* recursive calls */
+  uint64_t	    ticks;		/* time-statistics */
+  uint64_t	    sibling_ticks;	/* ticks in a siblings */
   struct call_node *next;		/* next in siblings chain */
   struct call_node *siblings;		/* my offspring */
 } call_node;
@@ -512,12 +512,12 @@ PRED_IMPL("$prof_node", 8, prof_node, 0)
   collectSiblingsTime();
 
   return ( unify_node_id(A2, n) &&
-	   PL_unify_integer(A3, n->calls) &&
-	   PL_unify_integer(A4, n->redos) &&
-	   PL_unify_integer(A5, n->exits) &&
-	   PL_unify_integer(A6, n->recur) &&
-	   PL_unify_integer(A7, n->ticks) &&
-	   PL_unify_integer(A8, n->sibling_ticks) );
+	   PL_unify_uint64(A3, n->calls) &&
+	   PL_unify_uint64(A4, n->exits + n->fails - n->calls) &&
+	   PL_unify_uint64(A5, n->exits) &&
+	   PL_unify_uint64(A6, n->recur) &&
+	   PL_unify_uint64(A7, n->ticks) &&
+	   PL_unify_uint64(A8, n->sibling_ticks) );
 }
 
 
@@ -539,22 +539,22 @@ typedef struct prof_ref
   void * handle;			/* Procedure handle */
   PL_prof_type_t   *type;
   int   cycle;
-  uintptr_t ticks;
-  uintptr_t sibling_ticks;
-  uintptr_t calls;			/* calls to/from this predicate */
-  uintptr_t redos;			/* redos to/from this predicate */
-  uintptr_t exits;			/* exits to/from this predicate */
+  uint64_t ticks;
+  uint64_t sibling_ticks;
+  uint64_t calls;			/* calls to/from this predicate */
+  uint64_t redos;			/* redos to/from this predicate */
+  uint64_t exits;			/* exits to/from this predicate */
 } prof_ref;
 
 
 typedef struct
 { Definition def;
-  uintptr_t ticks;
-  uintptr_t sibling_ticks;
-  uintptr_t calls;
-  uintptr_t redos;
-  uintptr_t exits;
-  uintptr_t recur;
+  uint64_t ticks;
+  uint64_t sibling_ticks;
+  uint64_t calls;
+  uint64_t redos;
+  uint64_t exits;
+  uint64_t recur;
   prof_ref *callers;
   prof_ref *callees;
 } node_sum;
@@ -583,13 +583,13 @@ add_parent_ref(node_sum *sum,
 { prof_ref *r;
 
   sum->calls += self->calls;
-  sum->redos += self->redos;
+  sum->redos += self->exits + self->fails - self->calls;
   sum->exits += self->exits;
 
   for(r=sum->callers; r; r=r->next)
   { if ( r->handle == handle && r->cycle == cycle )
     { r->calls += self->calls;
-      r->redos += self->redos;
+      r->redos += self->exits + self->fails - self->calls;
       r->exits += self->exits;
       r->ticks += self->ticks;
       r->sibling_ticks += self->sibling_ticks;
@@ -600,7 +600,7 @@ add_parent_ref(node_sum *sum,
 
   r = allocHeapOrHalt(sizeof(*r));
   r->calls = self->calls;
-  r->redos = self->redos;
+  r->redos = self->exits + self->fails - self->calls;
   r->exits = self->exits;
   r->ticks = self->ticks;
   r->sibling_ticks = self->sibling_ticks;
@@ -613,7 +613,7 @@ add_parent_ref(node_sum *sum,
 
 
 static void
-add_recursive_ref(node_sum *sum, uintptr_t count, int cycle)
+add_recursive_ref(node_sum *sum, uint64_t count, int cycle)
 { prof_ref *r;
 
   for(r=sum->callers; r; r=r->next)
@@ -641,7 +641,7 @@ add_sibling_ref(node_sum *sum, call_node *sibling, int cycle)
   for(r=sum->callees; r; r=r->next)
   { if ( r->handle == sibling->handle && r->cycle == cycle )
     { r->calls += sibling->calls;
-      r->redos += sibling->redos;
+      r->redos += sibling->exits + sibling->fails - sibling->calls;
       r->exits += sibling->exits;
       r->ticks += sibling->ticks;
       r->sibling_ticks += sibling->sibling_ticks;
@@ -652,7 +652,7 @@ add_sibling_ref(node_sum *sum, call_node *sibling, int cycle)
 
   r = allocHeapOrHalt(sizeof(*r));
   r->calls = sibling->calls;
-  r->redos = sibling->redos;
+  r->redos = sibling->exits + sibling->fails - sibling->calls;
   r->exits = sibling->exits;
   r->ticks = sibling->ticks;
   r->sibling_ticks = sibling->sibling_ticks;
@@ -726,11 +726,11 @@ unify_relatives(DECL_LD term_t list, prof_ref *r)
 	 !PL_unify_term(head, PL_FUNCTOR, FUNCTOR_node7,
 			PL_TERM, tmp,
 			PL_INT,  r->cycle,
-			PL_LONG, r->ticks,
-			PL_LONG, r->sibling_ticks,
-			PL_LONG, r->calls,
-			PL_LONG, r->redos,
-			PL_LONG, r->exits) )
+			PL_INT64, r->ticks,
+			PL_INT64, r->sibling_ticks,
+			PL_INT64, r->calls,
+			PL_INT64, r->redos,
+			PL_INT64, r->exits) )
       fail;
   }
 
@@ -807,11 +807,11 @@ PRED_IMPL("$prof_procedure_data", 8, prof_procedure_data, PL_FA_TRANSPARENT)
   if ( count == 0 )
     fail;				/* nothing known about this one */
 
-  rc = ( PL_unify_integer(A2, sum.ticks) &&
-	 PL_unify_integer(A3, sum.sibling_ticks) &&
-	 PL_unify_integer(A4, sum.calls) &&
-	 PL_unify_integer(A5, sum.redos) &&
-	 PL_unify_integer(A6, sum.exits) &&
+  rc = ( PL_unify_uint64(A2, sum.ticks) &&
+	 PL_unify_uint64(A3, sum.sibling_ticks) &&
+	 PL_unify_uint64(A4, sum.calls) &&
+	 PL_unify_uint64(A5, sum.redos) &&
+	 PL_unify_uint64(A6, sum.exits) &&
 	 unify_relatives(A7, sum.callers) &&
 	 unify_relatives(A8, sum.callees)
        );
@@ -835,11 +835,11 @@ PRED_IMPL("$prof_procedure_data", 8, prof_procedure_data, PL_FA_TRANSPARENT)
 static
 PRED_IMPL("$prof_statistics", 5, prof_statistics, 0)
 { PRED_LD
-  if ( PL_unify_integer(A1, LD->profile.samples) &&
-       PL_unify_integer(A2, LD->profile.ticks) &&
-       PL_unify_integer(A3, LD->profile.accounting_ticks) &&
-       PL_unify_float(  A4, LD->profile.time) &&
-       PL_unify_integer(A5, LD->profile.nodes) )
+  if ( PL_unify_uint64(A1, LD->profile.samples) &&
+       PL_unify_uint64(A2, LD->profile.ticks) &&
+       PL_unify_uint64(A3, LD->profile.accounting_ticks) &&
+       PL_unify_float( A4, LD->profile.time) &&
+       PL_unify_uint64(A5, LD->profile.nodes) )
     succeed;
 
   fail;
@@ -1159,6 +1159,16 @@ profResumeParent(DECL_LD struct call_node *node)
   LD->profile.current = node;
 }
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+profExit(call_node from_node)
+
+Exit to the parent of from_node. Note that all nodes from the current
+node back to and including from_node are deemed to have exited. This
+catches all normal exits (from_node == current) and last calls (from_node
+is an ancestor of current).
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 void
 profExit(DECL_LD struct call_node *node)
@@ -1169,33 +1179,51 @@ profExit(DECL_LD struct call_node *node)
 }
 
 
-void
-profRedo(DECL_LD struct call_node *node)
-{ if ( node && node->magic != PROFNODE_MAGIC )
-    return;
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+profFail(call_node cp_node)
 
-  if ( node )
-  { if ( LD->profile.current )
-    { struct call_node *n;
+Fail to choicepoint node. All nodes in  the branch from the current node
+back to a common ancestor with cp_node   are deemed to have failed. Note
+that if the current node is the  choicepoint node, nothing fails as this
+is internal to the predicate (doesn't pass through Fail port).
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-      DEBUG(MSG_PROF_CALLTREE,
-	    Sdprintf("Redo: on %s; current is %s\n",
-		     node_name(node), node_name(LD->profile.current) ));
+static int
+lookback(call_node *from_node, call_node *to_node)
+{ struct call_node *node = from_node;
 
-      for(n=node; n && n != LD->profile.current; n = n->parent)
-      { DEBUG(MSG_PROF_CALLTREE,
-	      Sdprintf("Redo: %s\n", node_name(n)));
-	n->redos++;
-      }
-    } else
-    { DEBUG(MSG_PROF_CALLTREE,
-	    Sdprintf("Redo: %s\n", node_name(node)));
-      node->redos++;
-    }
+  while( node )
+  { if ( node == to_node )
+      return TRUE;
+    else
+      node = node->parent;
   }
-  LD->profile.current = node;
+
+  return FALSE;
 }
 
+static void
+profFailToCP(struct call_node *current, struct call_node *cp_node)
+{ while (current && (!lookback(cp_node, current)))
+  { DEBUG(MSG_PROF_CALLTREE,
+	  Sdprintf("Fail: %s\n", node_name(current)));
+
+    if (current->magic == PROFNODE_MAGIC)
+      current->fails++;
+
+    current = current->parent;
+  }
+}
+
+void
+profFail(DECL_LD struct call_node *cp_node)
+{ LD->profile.accounting = TRUE;
+
+  profFailToCP(LD->profile.current, cp_node);
+  LD->profile.current = cp_node;
+
+  LD->profile.accounting = FALSE;
+}
 
 void
 profSetHandle(struct call_node *node, void *handle)
@@ -1249,10 +1277,10 @@ PL_prof_exit(void *node)
 		 *******************************/
 
 
-static uintptr_t
+static uint64_t
 collectSiblingsNode(call_node *n)
 { call_node *s;
-  uintptr_t count = 0;
+  uint64_t count = 0;
 
   for(s=n->siblings; s; s=s->next)
   { count += collectSiblingsNode(s);
@@ -1314,6 +1342,24 @@ freeProfileData(void)
 
   assert(LD->profile.nodes == 0);
 }
+
+#else /* !O_PROFILE */
+
+int
+PL_register_profile_type(PL_prof_type_t *type)
+{ return FALSE;
+}
+
+void *
+PL_prof_call(void *handle, PL_prof_type_t *type)
+{ return NULL;
+}
+
+void
+PL_prof_exit(void *node)
+{
+}
+
 
 #endif /* O_PROFILE */
 

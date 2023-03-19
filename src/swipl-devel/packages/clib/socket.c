@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2000-2022, University of Amsterdam
+    Copyright (c)  2000-2023, University of Amsterdam
                               VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -81,26 +81,36 @@
 #define ip_mreqn ip_mreq
 #endif
 
-static atom_t ATOM_reuseaddr;		/* "reuseaddr" */
-static atom_t ATOM_bindtodevice;	/* "bindtodevice" */
-static atom_t ATOM_broadcast;		/* "broadcast" */
-static atom_t ATOM_nodelay;		/* "nodelay" */
-static atom_t ATOM_dispatch;		/* "dispatch" */
-static atom_t ATOM_encoding;		/* "encoding" */
-static atom_t ATOM_nonblock;		/* "nonblock" */
-static atom_t ATOM_infinite;		/* "infinite" */
-static atom_t ATOM_as;			/* "as" */
-static atom_t ATOM_atom;		/* "atom" */
-static atom_t ATOM_string;		/* "string" */
-static atom_t ATOM_codes;		/* "codes" */
-static atom_t ATOM_term;		/* "term" */
-static atom_t ATOM_max_message_size;    /* "message_size" */
-static atom_t ATOM_file_no;		/* "file_no" */
-static atom_t ATOM_ip_add_membership;	/* "ip_add_membership" */
-static atom_t ATOM_ip_drop_membership;	/* "ip_drop_membership" */
-static atom_t ATOM_sndbuf;	        /* "sndbuf" */
-static atom_t ATOM_af_unix;		/* "af_unix" */
-static functor_t FUNCTOR_socket1;	/* $socket(Id) */
+static atom_t ATOM_address;
+static atom_t ATOM_af_unix;
+static atom_t ATOM_as;
+static atom_t ATOM_atom;
+static atom_t ATOM_bindtodevice;
+static atom_t ATOM_broadcast;
+static atom_t ATOM_codes;
+static atom_t ATOM_dgram;
+static atom_t ATOM_dispatch;
+static atom_t ATOM_domain;
+static atom_t ATOM_encoding;
+static atom_t ATOM_file_no;
+static atom_t ATOM_host;
+static atom_t ATOM_inet6;
+static atom_t ATOM_inet;
+static atom_t ATOM_infinite;
+static atom_t ATOM_ip_add_membership;
+static atom_t ATOM_ip_drop_membership;
+static atom_t ATOM_local;
+static atom_t ATOM_max_message_size;
+static atom_t ATOM_nodelay;
+static atom_t ATOM_nonblock;
+static atom_t ATOM_reuseaddr;
+static atom_t ATOM_sndbuf;
+static atom_t ATOM_sockaddr;
+static atom_t ATOM_stream;
+static atom_t ATOM_string;
+static atom_t ATOM_term;
+static atom_t ATOM_type;
+static atom_t ATOM_unix;
 
 static int get_socket_from_stream(term_t t, IOSTREAM **s, nbio_sock_t *sp);
 
@@ -196,48 +206,132 @@ tcp_get_socket(term_t handle, nbio_sock_t *sp)
 		 *	     CONVERSION		*
 		 *******************************/
 
-static foreign_t
-pl_host_to_address(term_t Host, term_t Ip)
-{ struct in_addr ip;
-  char *host_name;
+static PL_option_t host_address_options[] =
+{ PL_OPTION("domain",    OPT_ATOM),
+  PL_OPTION("type",	 OPT_ATOM),
+  PL_OPTION("canonname", OPT_BOOL),
+  PL_OPTIONS_END
+};
 
-  if ( PL_get_atom_chars(Host, &host_name) )
+
+static int
+put_socket_domain(term_t t, int domain)
+{ switch(domain)
+  { case AF_INET:  return PL_put_atom(t, ATOM_inet);
+    case AF_INET6: return PL_put_atom(t, ATOM_inet6);
+    default:
+      return FALSE;
+  }
+}
+
+static int
+put_socket_type(term_t t, int type)
+{ switch(type)
+  { case SOCK_STREAM: return PL_put_atom(t, ATOM_stream);
+    case SOCK_DGRAM:  return PL_put_atom(t, ATOM_dgram);
+    default:
+      return FALSE;
+  }
+}
+
+
+
+static foreign_t
+pl_host_address(term_t Host, term_t Ip, term_t options)
+{ struct sockaddr_storage addr;
+  char *host_name;
+  atom_t a_domain = 0;
+  atom_t a_type   = 0;
+  int    cname    = FALSE;
+
+  if ( !PL_scan_options(options, 0, "socket_options", host_address_options,
+                        &a_domain, &a_type, &cname) )
+    return FALSE;
+
+  if ( PL_get_chars(Host, &host_name, CVT_ATOM|CVT_STRING|CVT_LIST) )
   { struct addrinfo hints;
     struct addrinfo *res;
     int rc;
 
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
+    if ( a_domain )
+    { if ( a_domain == ATOM_inet )
+	hints.ai_family = AF_INET;
+      else if ( a_domain == ATOM_inet6 )
+	hints.ai_family = AF_INET6;
+      else
+	return PL_domain_error("socket_domain", a_domain);
+    } else
+      hints.ai_family = AF_UNSPEC;
+
+    if ( a_type )
+    { if ( a_type == ATOM_stream )
+	hints.ai_socktype = SOCK_STREAM;
+      else if ( a_type == ATOM_dgram )
+	hints.ai_socktype = SOCK_DGRAM;
+      else
+	return PL_domain_error("socket_type", a_type);
+    }
+
+    if ( cname )
+      hints.ai_flags |= AI_CANONNAME;
 
     if ( (rc=getaddrinfo(host_name, NULL, &hints, &res)) == 0 )
-    { int rc;
+    { term_t tail = PL_copy_term_ref(Ip);
+      term_t head = PL_new_term_ref();
+      term_t dict = PL_new_term_ref();
+      struct addrinfo *addri = res;
+      atom_t keys[4];
+      keys[0] = ATOM_host;
+      keys[1] = ATOM_domain;
+      keys[2] = ATOM_type;
+      keys[3] = ATOM_address;
+      term_t values = PL_new_term_refs(4);
 
-      switch( res->ai_family )
-      { case AF_INET:
-	{ struct sockaddr_in *addr = (struct sockaddr_in*)res->ai_addr;
-
-	  rc = nbio_unify_ip4(Ip, ntohl(addr->sin_addr.s_addr));
-	  break;
+      for( ; addri; addri = addri->ai_next )
+      {
+#if 0
+	Sdprintf("flags = %d; family = %d; type = %d, protocol = %d\n",
+		 addri->ai_flags,
+		 addri->ai_family,
+		 addri->ai_socktype,
+		 addri->ai_protocol);
+#endif
+	if ( !put_socket_domain(values+1, addri->ai_family) ||
+	     !put_socket_type(values+2, addri->ai_socktype) ||
+	     !PL_put_variable(values+3) ||
+	     !nbio_unify_addr(values+3, addri->ai_addr) ||
+	     !PL_unify_list(tail, head, tail) )
+	{ if ( !PL_exception(0) )
+	    continue;
+	out_fail:
+	  freeaddrinfo(res);
+	  return FALSE;
 	}
-	case AF_INET6:
-	{ rc = PL_warning("tcp_host_to_address/2: IPv6 address not supported");
-	  break;
+	if ( res->ai_canonname )
+	{ if ( !PL_put_chars(values+0, PL_ATOM|REP_MB,
+			     (size_t)-1, res->ai_canonname) ||
+	       !PL_put_dict(dict, ATOM_sockaddr, 4, keys, values) )
+	    goto out_fail;
+	} else
+	{ if ( !PL_put_dict(dict, ATOM_sockaddr, 3, keys+1, values+1) )
+	    goto out_fail;
 	}
-	default:
-	  assert(0);
-	  rc = FALSE;
+	if ( !PL_unify(head, dict) )
+	  goto out_fail;
       }
-
       freeaddrinfo(res);
 
-      return rc;
+      return PL_unify_nil(tail);
     } else
     { return nbio_error(rc, TCP_GAI_ERRNO);
     }
-  } else if ( nbio_get_ip(Ip, &ip) )
+  } else if ( nbio_get_ip(AF_INET, Ip, &addr) )
   { struct hostent *host;
+    struct sockaddr_in *sin = (struct sockaddr_in*)&addr;
+    struct addr_in *in = (struct addr_in *)&sin->sin_addr;
 
-    if ( (host = gethostbyaddr((char *)&ip, sizeof(ip), AF_INET)) )
+    if ( (host = gethostbyaddr((char *)&in, sizeof(in), AF_INET)) )
       return PL_unify_atom_chars(Host, host->h_name);
     else
       return nbio_error(GET_H_ERRNO, TCP_HERRNO);
@@ -326,15 +420,21 @@ pl_setopt(term_t Socket, term_t opt)
     { struct ip_mreqn mreq;
       term_t arg = PL_new_term_ref();
       int opname = (a == ATOM_ip_add_membership) ? IP_ADD_MEMBERSHIP
-					         : IP_DROP_MEMBERSHIP;
+						 : IP_DROP_MEMBERSHIP;
+
+      if ( nbio_domain(socket) != AF_INET )
+	return PL_permission_error(a == ATOM_ip_add_membership ? "ip_add_membership"
+							       : "ip_drop_membership",
+				   "socket",
+				   Socket);
 
       _PL_get_arg(1, opt, arg);
       memset(&mreq, 0, sizeof(mreq));
-      if ( !nbio_get_ip(arg, &mreq.imr_multiaddr) )
+      if ( !nbio_get_ip4(arg, &mreq.imr_multiaddr, TRUE) )
 	return PL_domain_error("ip", arg);
       if ( arity >= 2 )
       { _PL_get_arg(2, opt, arg);
-	if ( !nbio_get_ip(arg, &mreq.imr_address) )
+	if ( !nbio_get_ip4(arg, &mreq.imr_address, TRUE) )
 	  return PL_domain_error("ip", arg);
       } else
 	mreq.imr_address.s_addr = htonl(INADDR_ANY);
@@ -402,6 +502,25 @@ pl_getopt(term_t Socket, term_t opt)
 
 #include "sockcommon.c"
 
+static socklen_t
+sizeof_sockaddr(struct sockaddr_storage *sockaddr)
+{ switch(sockaddr->ss_family)
+  { case AF_INET:
+      return sizeof(struct sockaddr_in);
+    case AF_INET6:
+      return sizeof(struct sockaddr_in6);
+#ifdef AF_UNIX
+    case AF_UNIX:
+    { struct sockaddr_un *a = (struct sockaddr_un*)sockaddr;
+      return offsetof(struct sockaddr_un, sun_path) + strlen(a->sun_path) + 1;
+    }
+#endif
+    default:
+      assert(0);
+      return 0;
+  }
+}
+
 		 /*******************************
 		 *	    UDP SOCKETS		*
 		 *******************************/
@@ -417,12 +536,20 @@ From/To are of the format <Host>:<Port>
 #define UDP_DEFAULT_BUFSIZE  4096
 
 static int
-unify_address(term_t t, struct sockaddr_in *addr)
+unify_address(term_t t, struct sockaddr_storage *addr)
 { term_t av = PL_new_term_refs(2);
 
-  if ( !nbio_unify_ip4(av+0, ntohl(addr->sin_addr.s_addr)) ||
-       !PL_unify_integer(av+1, ntohs(addr->sin_port)) )
-    return FALSE;
+  switch ( addr->ss_family )
+  { case AF_INET:
+    { struct sockaddr_in *addr4 = (struct sockaddr_in*)addr;
+      if ( !nbio_unify_ip4(av+0, ntohl(addr4->sin_addr.s_addr)) ||
+	   !PL_unify_integer(av+1, ntohs(addr4->sin_port)) )
+	return FALSE;
+      break;
+    }
+    default:
+      assert(0);
+  }
 
   return PL_unify_term(t, PL_FUNCTOR_CHARS, ":", 2,
 		       PL_TERM, av+0,
@@ -474,14 +601,14 @@ get_as(term_t arg, int *asp)
 }
 
 
+#ifdef __WINDOWS__
+#define socklen_t int
+#endif
+
 static foreign_t
 udp_receive(term_t Socket, term_t Data, term_t From, term_t options)
-{ struct sockaddr_in sockaddr;
-#ifdef __WINDOWS__
-  int alen = sizeof(sockaddr);
-#else
-  socklen_t alen = sizeof(sockaddr);
-#endif
+{ struct sockaddr_storage sockaddr;
+  socklen_t alen;
   nbio_sock_t socket;
   int flags = 0;
   char smallbuf[UDP_DEFAULT_BUFSIZE];
@@ -525,7 +652,7 @@ udp_receive(term_t Socket, term_t Data, term_t From, term_t options)
   }
 
   if ( !tcp_get_socket(Socket, &socket) ||
-       !nbio_get_sockaddr(From, &sockaddr, &varport) )
+       !nbio_get_sockaddr(socket, From, &sockaddr, &varport) )
     return FALSE;
 
   if ( bufsize > UDP_DEFAULT_BUFSIZE )
@@ -561,12 +688,7 @@ out:
 
 static foreign_t
 udp_send(term_t Socket, term_t Data, term_t To, term_t options)
-{ struct sockaddr_in sockaddr;
-#ifdef __WINDOWS__
-  int alen = sizeof(sockaddr);
-#else
-  int alen = sizeof(sockaddr);
-#endif
+{ struct sockaddr_storage sockaddr;
   nbio_sock_t socket;
   int flags = 0L;
   char *data;
@@ -615,13 +737,14 @@ udp_send(term_t Socket, term_t Data, term_t To, term_t options)
     return FALSE;
 
   if ( !tcp_get_socket(Socket, &socket) ||
-       !nbio_get_sockaddr(To, &sockaddr, NULL) )
+       !nbio_get_sockaddr(socket, To, &sockaddr, NULL) )
     return FALSE;
 
   if ( (n=nbio_sendto(socket, data,
 		      (int)dlen,
 		      flags,
-		      (struct sockaddr*)&sockaddr, alen)) == -1 )
+		      (struct sockaddr*)&sockaddr,
+		      sizeof_sockaddr(&sockaddr))) == -1 )
     return nbio_error(GET_ERRNO, TCP_ERRNO);;
 
   return TRUE;
@@ -631,9 +754,61 @@ udp_send(term_t Socket, term_t Data, term_t To, term_t options)
 		 *	PROLOG CONNECTION	*
 		 *******************************/
 
+static int
+atom_domain_error(const char *domain, atom_t a)
+{ term_t t;
+
+  return ( (t=PL_new_term_ref()) &&
+	   PL_put_atom(t, a) &&
+	   PL_domain_error(domain, t) );
+}
+
+
+static PL_option_t socket_options[] =
+{ PL_OPTION("domain",   OPT_ATOM),
+  PL_OPTION("type",	OPT_ATOM),
+  PL_OPTIONS_END
+};
+
 
 static foreign_t
-create_socket(int domain, term_t socket, int type)
+socket_create(term_t socket, term_t options)
+{ atom_t a_domain = ATOM_inet;
+  atom_t a_type   = ATOM_stream;
+  int domain;
+  int type;
+  nbio_sock_t sock;
+
+  if ( !PL_scan_options(options, 0, "socket_options", socket_options,
+                        &a_domain, &a_type) )
+    return FALSE;
+
+  if ( a_domain == ATOM_inet )
+    domain = AF_INET;
+  else if ( a_domain == ATOM_inet6 )
+    domain = AF_INET6;
+#ifdef AF_UNIX
+  else if ( a_domain == ATOM_unix || a_domain == ATOM_local )
+    domain = AF_UNIX;
+#endif
+  else
+    return atom_domain_error("socket_domain", a_domain);
+
+  if ( a_type == ATOM_stream )
+    type = SOCK_STREAM;
+  else if ( a_type == ATOM_dgram )
+    type = SOCK_DGRAM;
+  else
+    return atom_domain_error("socket_type", a_type);
+
+  if ( !(sock = nbio_socket(domain, type, 0)) )
+    return FALSE;
+
+  return tcp_unify_socket(socket, sock);
+}
+
+static foreign_t
+create_socket(int domain, int type, term_t socket)
 { nbio_sock_t sock;
 
   if ( !(sock = nbio_socket(domain, type, 0)) )
@@ -645,20 +820,20 @@ create_socket(int domain, term_t socket, int type)
 
 static foreign_t
 tcp_socket(term_t socket)
-{ return create_socket(AF_INET, socket, SOCK_STREAM);
+{ return create_socket(AF_INET, SOCK_STREAM, socket);
 }
 
 
 static foreign_t
 udp_socket(term_t socket)
-{ return create_socket(AF_INET, socket, SOCK_DGRAM);
+{ return create_socket(AF_INET, SOCK_DGRAM, socket);
 }
 
 
 #ifdef AF_UNIX
 static foreign_t
 unix_domain_socket(term_t socket)
-{ return create_socket(AF_UNIX, socket, SOCK_STREAM);
+{ return create_socket(AF_UNIX, SOCK_STREAM, socket);
 }
 
 static int
@@ -722,7 +897,7 @@ af_unix_bind(nbio_sock_t sock, term_t Address)
 static foreign_t
 pl_connect(term_t Socket, term_t Address)
 { nbio_sock_t sock;
-  struct sockaddr_in sockaddr;
+  struct sockaddr_storage sockaddr;
   int rc;
 
   if ( !tcp_get_socket(Socket, &sock) )
@@ -731,10 +906,11 @@ pl_connect(term_t Socket, term_t Address)
   if ( (rc=af_unix_connect(sock, Address)) != -1 )
     return rc;
 
-  if ( !nbio_get_sockaddr(Address, &sockaddr, NULL) )
+  if ( !nbio_get_sockaddr(sock, Address, &sockaddr, NULL) )
     return FALSE;
 
-  if ( nbio_connect(sock, (struct sockaddr*)&sockaddr, sizeof(sockaddr)) == 0 )
+  if ( nbio_connect(sock, (struct sockaddr*)&sockaddr,
+		    sizeof_sockaddr(&sockaddr)) == 0 )
     return TRUE;
 
   return FALSE;
@@ -752,14 +928,15 @@ pl_bind(term_t Socket, term_t Address)
   if ( (rc=af_unix_bind(socket, Address)) != -1 )
   { return rc;
   } else
-  { struct sockaddr_in sockaddr;
+  { struct sockaddr_storage sockaddr;
     term_t varport = 0;
 
     memset(&sockaddr, 0, sizeof(sockaddr));
-    if ( !nbio_get_sockaddr(Address, &sockaddr, &varport) )
+    if ( !nbio_get_sockaddr(socket, Address, &sockaddr, &varport) )
       return FALSE;
 
-    if ( nbio_bind(socket, (struct sockaddr*)&sockaddr, sizeof(sockaddr)) < 0 )
+    if ( nbio_bind(socket, (struct sockaddr*)&sockaddr,
+		   sizeof_sockaddr(&sockaddr)) < 0 )
       return FALSE;
 
     if ( varport )
@@ -861,31 +1038,42 @@ pl_debug(term_t val)
 }
 #endif
 
+#define MKATOM(n) ATOM_ ## n = PL_new_atom(#n);
+
 install_t
 install_socket(void)
 { nbio_init("socket");
 
-  ATOM_reuseaddr          = PL_new_atom("reuseaddr");
-  ATOM_bindtodevice       = PL_new_atom("bindtodevice");
-  ATOM_broadcast          = PL_new_atom("broadcast");
-  ATOM_nodelay	          = PL_new_atom("nodelay");
-  ATOM_dispatch	          = PL_new_atom("dispatch");
-  ATOM_nonblock	          = PL_new_atom("nonblock");
-  ATOM_infinite	          = PL_new_atom("infinite");
-  ATOM_as	          = PL_new_atom("as");
-  ATOM_atom	          = PL_new_atom("atom");
-  ATOM_string	          = PL_new_atom("string");
-  ATOM_codes	          = PL_new_atom("codes");
-  ATOM_term	          = PL_new_atom("term");
-  ATOM_max_message_size   = PL_new_atom("max_message_size");
-  ATOM_file_no		  = PL_new_atom("file_no");
-  ATOM_ip_add_membership  = PL_new_atom("ip_add_membership");
-  ATOM_ip_drop_membership = PL_new_atom("ip_drop_membership");
-  ATOM_sndbuf             = PL_new_atom("sndbuf");
-  ATOM_af_unix            = PL_new_atom("af_unix");
-  ATOM_encoding           = PL_new_atom("encoding");
-
-  FUNCTOR_socket1 = PL_new_functor(PL_new_atom("$socket"), 1);
+  MKATOM(address);
+  MKATOM(af_unix);
+  MKATOM(as);
+  MKATOM(atom);
+  MKATOM(bindtodevice);
+  MKATOM(broadcast);
+  MKATOM(codes);
+  MKATOM(dgram);
+  MKATOM(dispatch);
+  MKATOM(domain);
+  MKATOM(encoding);
+  MKATOM(file_no);
+  MKATOM(host);
+  MKATOM(inet);
+  MKATOM(inet6);
+  MKATOM(infinite);
+  MKATOM(ip_add_membership);
+  MKATOM(ip_drop_membership);
+  MKATOM(local);
+  MKATOM(max_message_size);
+  MKATOM(nodelay);
+  MKATOM(nonblock);
+  MKATOM(reuseaddr);
+  MKATOM(sndbuf);
+  MKATOM(sockaddr);
+  MKATOM(stream);
+  MKATOM(string);
+  MKATOM(term);
+  MKATOM(type);
+  MKATOM(unix);
 
   PL_register_foreign("tcp_accept",           3, pl_accept,           0);
   PL_register_foreign("tcp_bind",             2, pl_bind,             0);
@@ -896,9 +1084,10 @@ install_socket(void)
   PL_register_foreign("tcp_close_socket",     1, pl_close_socket,     0);
   PL_register_foreign("tcp_setopt",           2, pl_setopt,           0);
   PL_register_foreign("tcp_getopt",           2, pl_getopt,           0);
-  PL_register_foreign("tcp_host_to_address",  2, pl_host_to_address,  0);
+  PL_register_foreign("$host_address",        3, pl_host_address,     0);
   PL_register_foreign("gethostname",          1, pl_gethostname,      0);
 
+  PL_register_foreign("socket_create",        2, socket_create,       0);
   PL_register_foreign("udp_socket",           1, udp_socket,          0);
   PL_register_foreign("udp_receive",	      4, udp_receive,	      0);
   PL_register_foreign("udp_send",	      4, udp_send,	      0);

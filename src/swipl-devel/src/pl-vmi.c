@@ -2171,10 +2171,9 @@ VMI(I_DEPART, VIF_BREAK, 1, (CA1_PROC))
     leaveDefinition(DEF);
     DEF = proc->definition;
     if ( true(DEF, P_TRANSPARENT) )
-    { FR->context = contextModule(FR);
+    { FR->context = contextModule(FR); /* must be  before setting FR_CONTEXT */
       FR->level++;
-      clear(FR, FR_CLEAR_NEXT);
-      set(FR, FR_CONTEXT);
+      FR->flags = ((FR->flags & ~(FR_LCO_CLEAR|FR_CLEAR_ALWAYS)) | FR_CONTEXT);
     } else
     { lcoSetNextFrameFlags(FR);
     }
@@ -2299,7 +2298,7 @@ VMI(I_EXIT, VIF_BREAK, 0, ())
     FR->clause = NULL;			/* leaveDefinition() destroys clause */
     leaveDefinition(DEF);		/* dynamic pred only */
     lTop = FR;
-    DEBUG(3, Sdprintf("Deterministic exit of %s, lTop = #%ld\n",
+    DEBUG(3, Sdprintf("Deterministic exit of %s, lTop = #%zd\n",
 		      predicateName(FR->predicate), loffset(lTop)));
   } else
   { leave = NULL;
@@ -3125,7 +3124,7 @@ VMH(c_cut, 1, (Choice), (och))
 
   ARGP = argFrameP(lTop, 0);
 
-  DEBUG(MSG_CUT, Sdprintf(" --> BFR = #%ld, lTop = #%ld\n",
+  DEBUG(MSG_CUT, Sdprintf(" --> BFR = #%ld, lTop = #%zd\n",
 			  loffset(BFR), loffset(lTop)));
   NEXT_INSTRUCTION;
 }
@@ -3144,7 +3143,7 @@ See pl-comp.c and C_SOFTCUT implementation for details.
 VMI(C_SOFTIF, 0, 2, (CA1_CHP,CA1_JUMP))
 { varFrame(FR, *PC++) = consTermRef(lTop);	/* see C_SOFTCUT */
 
-  DEBUG(MSG_CUT, Sdprintf("Creating *-> choice at %p (%d)\n",
+  DEBUG(MSG_CUT, Sdprintf("Creating *-> choice at %p (%zd)\n",
 			  lTop, loffset(lTop)));
   VMI_GOTO(C_OR);
 }
@@ -5014,36 +5013,39 @@ END_VMI
 		 *******************************/
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-I_CALLCLEANUP: Part of setup_call_catcher_cleanup(:Setup, :Goal,
-?Catcher, :Cleanup). Simply set a flag on the frame and call the 1-st
-argument. See also I_CATCH.
+I_CALLCLEANUP verifies the signature of the   cleanup  handler and calls
+the Goal for
 
-I_EXITCLEANUP  is  at  the  end  of   call_cleanup/3.  If  there  is  no
-choice-point created this is the final exit. If this frame has no parent
-(it is the entry of PL_next_solution()),
+  - call_cleanup(Goal, Cleanup)
+  - setup_call_cleanup(Setup, Goal, Cleanup)
+  - setup_call_catcher_cleanup(Setup, Goal, Catcher, Cleanup)
 
-setup_call_catcher_cleanup(:Setup :Goal, -Reason, :Cleanup)
-is tranalated into
+Which of these predicates it is working for  is dictated by the arity of
+the running predicate.
 
-  i_enter
-  <setup>
-  i_callcleanup
-  i_exitcleanup
-  i_exit
+I_EXITCLEANUP follows I_CALLCLEANUP. If there is no choice-point created
+this is the final exit.
 
-We set FR_WATCHED to get a cleanup call if the frame fails or is cutted.
+This group of predicates calls   '$call_cleanup'/0,  which is translated
+into the sequence of these two VM   instructions.  This call must be the
+last of the predicate.
+
+We set FR_CLEANUP to get a cleanup call if the frame fails or is cutted.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(I_CALLCLEANUP, 0, 0, ())
 { Word p;
+  size_t arity = FR->predicate->functor->arity;
+  size_t arg_goal = arity == 2 ? 1 : 2;
 
-  if ( !mustBeCallable(consTermRef(argFrameP(FR, 3))) )
+		    /* last arg is cleanup */
+  if ( !mustBeCallable(consTermRef(argFrameP(FR, arity-1))) )
     THROW_EXCEPTION;
 
   newChoice(CHP_CATCH, FR);
   set(FR, FR_CLEANUP);
 
-  p = argFrameP(FR, 1);
+  p = argFrameP(FR, arg_goal-1);
   if ( isVar(*p) )
   { PL_error(NULL, 0, NULL, ERR_INSTANTIATION);
     THROW_EXCEPTION;
@@ -5073,7 +5075,7 @@ VMI(I_EXITCLEANUP, 0, 0, ())
     BFR = BFR->parent;
 
   if ( BFR->frame == FR && BFR->type == CHP_CATCH )
-  { DEBUG(3, Sdprintf(" --> BFR = #%ld\n", loffset(BFR->parent)));
+  { DEBUG(3, Sdprintf(" --> BFR = #%zd\n", loffset(BFR->parent)));
     for(BFR = BFR->parent; BFR > (Choice)FR; BFR = BFR->parent)
     { if ( BFR->type == CHP_DEBUG )
 	continue;
@@ -5276,14 +5278,20 @@ again:
     { SAVE_REGISTERS(QID);
       if ( PL_is_functor(exception_term, FUNCTOR_error2) &&
 	   truePrologFlag(PLFLAG_DEBUG_ON_ERROR) )
-      { debugmode(TRUE, NULL);
+      { DEBUG(MSG_THROW,
+	      Sdprintf("Uncaught error(Formal,Context): enable debug mode\n"));
+	debugmode(TRUE, NULL);
 	if ( !trace_if_space() )		/* see (*) */
 	{ start_tracer = TRUE;
 	} else
-	{ int rc;
-	  trimStacks(FALSE);		/* restore spare stacks */
-	  rc = printMessage(ATOM_error, PL_TERM, exception_term);
-	  (void)rc;
+	{ DEBUG(MSG_THROW,
+		Sdprintf("No space for debugging, print (l+g+t) = (%zd+%zd+%zd)\n",
+			 roomStack(local),roomStack(global),roomStack(trail)));
+	  if ( !printMessage(ATOM_error, PL_TERM, exception_term) )
+	  { Sdprintf("Could not print message for exception:\n\t");
+	    PL_write_term(Suser_error, exception_term, 1200,
+			  PL_WRT_QUOTED|PL_WRT_NEWLINE);
+	  }
 	  PL_put_term(exception_printed, exception_term);
 	}
       } else if ( classify_exception(exception_term) != EXCEPT_ABORT )
@@ -6826,10 +6834,12 @@ next_choice:
     }
   }
 
+  Profile(profFail(ch->prof_node));
+
   switch(ch->type)
   { case CHP_JUMP:
       DEBUG(MSG_BACKTRACK,
-	    Sdprintf("    REDO #%ld: Jump in %s\n",
+	    Sdprintf("    REDO #%zd: Jump in %s\n",
 		     loffset(FR),
 		     predicateName(DEF)));
       PC   = ch->value.pc;
@@ -6882,7 +6892,6 @@ next_choice:
 	    THROW_EXCEPTION;
 	}
 #endif
-	Profile(profRedo(ch->prof_node));
       }
       NEXT_INSTRUCTION;
     case CHP_CLAUSE:			/* try next clause */
@@ -6890,7 +6899,7 @@ next_choice:
       struct clause_choice chp;
 
       DEBUG(MSG_BACKTRACK,
-	    Sdprintf("    REDO #%ld: Clause in %s\n",
+	    Sdprintf("    REDO #%zd: Clause in %s\n",
 		     loffset(FR),
 		     predicateName(DEF)));
       ARGP = argFrameP(FR, 0);
@@ -6944,7 +6953,6 @@ next_choice:
 	    THROW_EXCEPTION;
 	}
 #endif
-	Profile(profRedo(ch->prof_node));
       }
 
       if ( chp.cref )
@@ -6968,11 +6976,10 @@ next_choice:
     }
     case CHP_TOP:			/* Query toplevel */
     { DEBUG(MSG_BACKTRACK,
-	    Sdprintf("    REDO #%ld: %s: TOP\n",
+	    Sdprintf("    REDO #%zd: %s: TOP\n",
 		     loffset(FR),
 		     predicateName(DEF)));
       DiscardMark(ch->mark);
-      Profile(profRedo(ch->prof_node));
       QF = QueryFromQid(QID);
       set(QF, PL_Q_DETERMINISTIC);
       QF->foreign_frame = PL_open_foreign_frame();
@@ -6984,7 +6991,7 @@ next_choice:
     }
     case CHP_CATCH:			/* catch/3 & setup_call_cleanup/3 */
       DEBUG(MSG_BACKTRACK,
-	    Sdprintf("    REDO #%ld: %s: CATCH\n",
+	    Sdprintf("    REDO #%zd: %s: CATCH\n",
 		     loffset(FR),
 		     predicateName(DEF)));
 	    if ( true(ch->frame, FR_WATCHED) )
@@ -7008,7 +7015,7 @@ next_choice:
       /*FALLTHROUGH*/
     case CHP_DEBUG:			/* Just for debugging purposes */
       DEBUG(MSG_BACKTRACK,
-	    Sdprintf("    REDO #%ld: %s: DEBUG\n",
+	    Sdprintf("    REDO #%zd: %s: DEBUG\n",
 		     loffset(FR),
 		     predicateName(DEF)));
 #ifdef O_DEBUGGER

@@ -1794,15 +1794,21 @@ do_create_process_fork(p_options *info, create_method method)
 
   blockSignal(SIGPROF, &set);
 
+#ifdef HAVE_VFORK
 // #pragma GCC diagnostic push
 // #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-//  if ( method == PCREATE_VFORK )
-//    pid = vfork();				/* As long as it is there we use it */
-//  else
+  if ( method == PCREATE_VFORK )
+    pid = vfork();				/* As long as it is there we use it */
+  else
     pid = fork();
-//  if ( pid != 0 )				/* parent */
-//    restoreSignals(&set);
+  if ( pid != 0 )				/* parent */
+    restoreSignals(&set);
 // #pragma GCC diagnostic pop
+#else
+  pid = fork() ;
+  if ( pid != 0 )
+    restoreSignals(&set);
+#endif
 
   if ( pid == 0 )				/* child */
   { int fd;

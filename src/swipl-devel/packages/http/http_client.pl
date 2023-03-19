@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2002-2016, University of Amsterdam,
+    Copyright (c)  2002-2023, University of Amsterdam,
                               VU University Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -247,6 +248,14 @@ http_read_data(Fields, Data, QOptions) :-
 
 is_meta(on_filename).
 
+http_read_data(_In, Fields, Data, _Options) :-
+    option(status_code(Code), Fields),
+    no_content_status(Code),
+    \+ ( option(content_length(Len), Fields),
+	 Len > 0
+       ),
+    !,
+    Data = ''.
 http_read_data(In, Fields, Data, Options) :-    % Transfer-encoding: chunked
     select(transfer_encoding(chunked), Fields, RestFields),
     !,
@@ -321,6 +330,17 @@ is_content_type(ContentType, Check) :-
     ->  true
     ;   sub_atom(ContentType, Len, 1, _, ';')
     ).
+
+%!  no_content_status(+Code) is semidet.
+%
+%   True when Code is an HTTP status code that carries no content.
+%
+%   @see Issue#157
+
+no_content_status(Code) :-
+    between(100, 199, Code),
+    !.
+no_content_status(204).
 
 %!  http_convert_data(+In, +Fields, -Data, +Options) is semidet.
 %

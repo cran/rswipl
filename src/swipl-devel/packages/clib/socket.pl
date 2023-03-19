@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2000-2022, University of Amsterdam
+    Copyright (c)  2000-2023, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
@@ -36,11 +36,12 @@
 */
 
 :- module(socket,
-          [ tcp_socket/1,               % -Socket
+          [ socket_create/2,		% -Socket, +Options
+	    tcp_socket/1,               % -Socket
             tcp_close_socket/1,         % +Socket
             tcp_open_socket/3,          % +Socket, -Read, -Write
             tcp_connect/2,              % +Socket, +Address
-            tcp_connect/3,              % +Socket, +Address, -StreamPair
+            tcp_connect/3,              % +Address, -StreamPair, +Options
             tcp_connect/4,              % +Socket, +Address, -Read, -Write)
             tcp_bind/2,                 % +Socket, +Address
             tcp_accept/3,               % +Master, -Slave, -PeerName
@@ -48,9 +49,12 @@
             tcp_fcntl/3,                % +Socket, +Command, ?Arg
             tcp_setopt/2,               % +Socket, +Option
             tcp_getopt/2,               % +Socket, ?Option
+	    host_address/3,		% ?HostName, ?Address, +Options
             tcp_host_to_address/2,      % ?HostName, ?Ip-nr
             tcp_select/3,               % +Inputs, -Ready, +Timeout
             gethostname/1,              % -HostName
+
+	    ip_name/2,			% ?Ip, ?Name
 
             tcp_open_socket/2,          % +Socket, -StreamPair
 
@@ -60,9 +64,12 @@
 
             negotiate_socks_connection/2% +DesiredEndpoint, +StreamPair
           ]).
-:- autoload(library(debug),[debug/3]).
-:- autoload(library(lists),[last/2]).
-
+:- autoload(library(debug), [assertion/1, debug/3]).
+:- autoload(library(lists), [last/2, member/2, append/3, append/2]).
+:- autoload(library(apply), [maplist/3, maplist/2]).
+:- autoload(library(error),
+            [instantiation_error/1, syntax_error/1, must_be/2, domain_error/2]).
+:- autoload(library(option), [option/2, option/3]).
 
 /** <module> Network socket (TCP and UDP) library
 
@@ -70,15 +77,13 @@ The library(socket) provides  TCP  and   UDP  inet-domain  sockets  from
 SWI-Prolog, both client and server-side  communication. The interface of
 this library is very close to the  Unix socket interface, also supported
 by the MS-Windows _winsock_ API. SWI-Prolog   applications  that wish to
-communicate with multiple sources have three options:
+communicate with multiple sources have two options:
 
   - Use I/O multiplexing based on wait_for_input/3.  On Windows
     systems this can only be used for sockets, not for general
     (device-) file handles.
   - Use multiple threads, handling either a single blocking socket
     or a pool using I/O multiplexing as above.
-  - Using XPCE's class `socket` which synchronises socket
-    events in the GUI event-loop.
 
 ## Client applications  {#socket-server}
 
@@ -166,7 +171,29 @@ write portable code that handles specific   socket errors. Even on POSIX
 systems the exact set of errors  produced   by  the network stack is not
 defined.
 
-## TCP socket predicates                {#socket-predicates}
+## Socket addresses (families)		{#socket-domains}
+
+The library supports both IP4 and IP6 addresses. On Unix systems it also
+supports _Unix domain sockets_ (``AF_UNIX``).  The   address  of  a Unix
+domain sockets is a file name.  Unix   domain  sockets are created using
+socket_create/2 or unix_domain_socket/1.
+
+IP4 or IP6 sockets can be created using socket_create/2 or tcp_connect/3
+with the `inet` (default, IP3) or  `inet6`   domain  option. Some of the
+predicates produce or consume IP addresses as  a Prolog term. The format
+of this term is one of:
+
+  - ip(A,B,C,D)
+    Represents an IP4 address.  Each field is an integer in the range
+    0..255 (8 bit).
+  - ip(A,B,C,D,E,F,G,H)
+    Represents an IP6 address.  Each field is an integer in the range
+    0..65535 (16 bit).
+
+The  predicate  ip_name/2  translates  between   the  canonical  textual
+representation and the above defined address terms.
+
+## Socket predicate reference           {#socket-predicates}
 */
 
 :- multifile
@@ -177,7 +204,8 @@ defined.
 
 :- predicate_options(tcp_connect/3, 3,
                      [ bypass_proxy(boolean),
-                       nodelay(boolean)
+                       nodelay(boolean),
+                       domain(oneof([inet,inet6]))
                      ]).
 
 :- use_foreign_library(foreign(socket)).
@@ -187,11 +215,39 @@ defined.
 :- export(unix_domain_socket/1).  % -Socket
 :- endif.
 
+%!  socket_create(-SocketId, +Options) is det.
+%
+%   Create a socket according to Options.   Supported Options are:
+%
+%     - domain(+Domain)
+%       One of `inet` (default), `inet6`, `unix` or `local` (same
+%       as `unix`)
+%     - type(+Type)
+%       One of `stream` (default) to create a TCP connection or
+%       `dgram` to create a UDP socket.
+%
+%   This   predicate   subsumes    tcp_socket/1m,   udp_socket/1   and
+%   unix_domain_socket/1.
+
 %!  tcp_socket(-SocketId) is det.
 %
-%   Creates an INET-domain stream-socket and   unifies an identifier
-%   to it with SocketId. On MS-Windows, if the socket library is not
-%   yet initialised, this will also initialise the library.
+%   Equivalent   to   socket_create(SocketId,    [])   or,   explicit,
+%   socket_create(SocketId, [domain(inet), type(stream)]).
+
+%!  unix_domain_socket(-SocketId) is det.
+%
+%   Equivalent   to    socket_create(SocketId,   [domain(unix)])   or,
+%   explicit, socket_create(SocketId, [domain(unix), type(stream)])
+%
+%   Unix  domain   socket  affect  tcp_connect/2  (for   clients)  and
+%   tcp_bind/2 and tcp_accept/3 (for servers).  The address is an atom
+%   or string  that is  handled as  a file name.  On most  systems the
+%   length of this  file name is limited to 128  bytes (including null
+%   terminator), but  according to the Linux  documentation (unix(7)),
+%   portable applications must  keep the address below  92 bytes. Note
+%   that  these lengths  are  in bytes.  Non-ascii  characters may  be
+%   represented as multiple  bytes. If the length limit  is exceeded a
+%   representation_error(af_unix_name) exception is raised.
 
 %!  tcp_close_socket(+SocketId) is det.
 %
@@ -351,6 +407,10 @@ tcp_connect(Socket, Address, Read, Write) :-
 %        Defaults to =false=. If =true=, set nodelay on the
 %        resulting socket using tcp_setopt(Socket, nodelay)
 %
+%      * domain(+Domain)
+%        One of `inet' or `inet6`.  When omitted we use host_address/2
+%        with type(stream) and try the returned addresses in order.
+%
 %   The +,+,- mode is  deprecated  and   does  not  support  proxies. It
 %   behaves  like  tcp_connect/4,  but  creates    a  stream  pair  (see
 %   stream_pair/3).
@@ -373,7 +433,7 @@ tcp_connect(Address, StreamPair, Options) :-
     var(StreamPair),
     !,
     (   memberchk(bypass_proxy(true), Options)
-    ->  tcp_connect_direct(Address, Socket, StreamPair)
+    ->  tcp_connect_direct(Address, Socket, StreamPair, Options)
     ;   findall(Result,
                 try_a_proxy(Address, Result),
                 ResultList),
@@ -382,7 +442,7 @@ tcp_connect(Address, StreamPair, Options) :-
         ->  true
         ;   throw(error(proxy_error(tried(ResultList)), _))
         )
-    ;   tcp_connect_direct(Address, Socket, StreamPair)
+    ;   tcp_connect_direct(Address, Socket, StreamPair, Options)
     ),
     (   memberchk(nodelay(true), Options)
     ->  tcp_setopt(Socket, nodelay)
@@ -394,28 +454,70 @@ tcp_connect(Socket, Address, StreamPair) :-
     !,
     StreamPair = StreamPair0.
 tcp_connect(Socket, Address, StreamPair) :-
+    connect_stream_pair(Socket, Address, StreamPair).
+
+:- public tcp_connect_direct/3.   % used by HTTP proxy code.
+tcp_connect_direct(Address, Socket, StreamPair) :-
+    tcp_connect_direct(Address, Socket, StreamPair, []).
+
+%!  tcp_connect_direct(+Address, +Socket, -StreamPair, +Options) is det.
+%
+%   Make a direct connection to a TCP address, i.e., do not take proxy
+%   rules into  account.  If  no explicit  domain (`inet`,  `inet6` is
+%   given,  perform  a  getaddrinfo()  call  to  obtain  the  relevant
+%   addresses.
+
+tcp_connect_direct(Host:Port, Socket, StreamPair, Options) :-
+    \+ option(domain(_), Options),
+    !,
+    State = error(_),
+    (   host_address(Host, Address, [type(stream)]),
+	socket_create(Socket, [domain(Address.domain)]),
+	E = error(_,_),
+	catch(connect_or_discard_socket(Socket, Address.address:Port,
+					StreamPair),
+	      E, store_error_and_fail(State, E)),
+	debug(socket, '~p: connected to ~p', [Host, Address.address])
+    ->  true
+    ;   arg(1, State, Error),
+	assertion(nonvar(Error)),
+	throw(Error)
+    ).
+tcp_connect_direct(Address, Socket, StreamPair, Options) :-
+    make_socket(Address, Socket, Options),
+    connect_or_discard_socket(Socket, Address, StreamPair).
+
+connect_or_discard_socket(Socket, Address, StreamPair) :-
+    setup_call_catcher_cleanup(
+	true,
+	connect_stream_pair(Socket, Address, StreamPair),
+	Catcher, cleanup(Catcher, Socket)).
+
+cleanup(exit, _) :- !.
+cleanup(_, Socket) :-
+    tcp_close_socket(Socket).
+
+connect_stream_pair(Socket, Address, StreamPair) :-
     tcp_connect(Socket, Address, Read, Write),
     stream_pair(StreamPair, Read, Write).
 
-
-tcp_connect_direct(Address, Socket, StreamPair):-
-    make_socket(Address, Socket),
-    catch(tcp_connect(Socket, Address, StreamPair),
-          Error,
-          ( tcp_close_socket(Socket),
-            throw(Error)
-          )).
+store_error_and_fail(State, E) :-
+    arg(1, State, E0),
+    var(E0),
+    nb_setarg(1, State, E),
+    fail.
 
 :- if(current_predicate(unix_domain_socket/1)).
-make_socket(Address, Socket) :-
+make_socket(Address, Socket, _Options) :-
     (   atom(Address)
     ;   string(Address)
     ),
     !,
     unix_domain_socket(Socket).
 :- endif.
-make_socket(_Address, Socket) :-
-    tcp_socket(Socket).
+make_socket(_Address, Socket, Options) :-
+    option(domain(Domain), Options, inet),
+    socket_create(Socket, [domain(Domain)]).
 
 
 %!  tcp_select(+ListOfStreams, -ReadyList, +TimeOut)
@@ -512,6 +614,77 @@ try_proxy(socks(Host, Port), Address, Socket, StreamPair) :-
 :- multifile
     proxy_for_url/3.
 
+%!  udp_socket(-SocketId) is det.
+%
+%   Equivalent to socket_create(SocketId, [type(dgram)]) or, explicit,
+%   socket_create(SocketId, [domain(inet), type(dgram)]).
+
+%!  udp_receive(+Socket, -Data, -From, +Options) is det.
+%
+%   Wait for and  return the next datagram. The Data  is returned as a
+%   Prolog term  depending on Options.  From  is a term of  the format
+%   Ip:Port indicating the sender of the message. Here, `Ip` is either
+%   an  ip4  or  ip6  structure.   Socket  can  be  waited  for  using
+%   wait_for_input/3. Defined Options:
+%
+%     - as(+Type)
+%     Defines the type for Data.  Possible values are `atom`, `codes`,
+%     `string` (default) or `term` (parse as Prolog term).
+%     - encoding(+Encoding)
+%     Specify the encoding used to interpret the message. It is one of
+%     `octet`. `iso_latin_1`, `text` or `utf8`.
+%     - max_message_size(+Size)
+%     Specify  the  maximum  number  of  bytes  to  read  from  a  UDP
+%     datagram. Size must be within the range 0-65535. If unspecified,
+%     a maximum of 4096 bytes will be read.
+%
+%   For example:
+%
+%   ```
+%   receive(Port) :-
+%       udp_socket(Socket),
+%       tcp_bind(Socket, Port),
+%       repeat,
+%           udp_receive(Socket, Data, From, [as(atom)]),
+%           format('Got ~q from ~q~n', [Data, From]),
+%           fail.
+%   ```
+
+
+%!  udp_send(+Socket, +Data, +To, +Options) is det.
+%
+%   Send a UDP message. Data is  a string, atom or code-list providing
+%   the data.  To is an  address of the  form Host:Port where  Host is
+%   either the hostname or an IP address. Defined Options are:
+%
+%     - encoding(+Encoding)
+%       Specifies   the  encoding   to   use  for   the  string.   See
+%       udp_receive/4 for details
+%     - as(+Type)
+%       This uses the  same values for Type as the  as(Type) option of
+%       udp_receive/4. The are interpreted differently though. No Type
+%       corresponds   to  CVT_ALL   of  PL_get_chars().    Using  atom
+%       corresponds to CVT_ATOM  and any of string or  codes is mapped
+%       to  CVT_STRING|CVT_LIST,  allowing  for  a  SWI-Prolog  string
+%       object,  list  of  character  codes  or  list  of  characters.
+%       Finally, `term` maps to CVT_WRITE_CANONICAL. This implies that
+%       arbitrary Prolog terms  can be sent reliably  using the option
+%       list `[as(term),encoding(utf8)])`, using  the same option list
+%       for udp_receive/4.
+%
+%   For example
+%
+%   ```
+%   send(Host, Port, Message) :-
+%       udp_socket(S),
+%       udp_send(S, Message, Host:Port, []),
+%       tcp_close_socket(S).
+%   ```
+%
+%   A  broadcast is  achieved by  using tcp_setopt(Socket,  broadcast)
+%   prior  to  sending  the  datagram  and  using  the  local  network
+%   broadcast address as a ip/4 term.
+
 
                  /*******************************
                  *            OPTIONS           *
@@ -606,24 +779,181 @@ tcp_fcntl(Socket, setfl, nonblock) :-
 %     Get the OS file handle as an integer.  This may be used for
 %     debugging and integration.
 
+%!  host_address(+HostName, -Address, +Options) is nondet.
+%!  host_address(-HostName, +Address, +Options) is det.
+%
+%   Translate  between a  machines  host-name  and it's  (IP-)address.
+%   Supported options:
+%
+%     - domain(+Domain)
+%       One of `inet` or `inet6` to limit the results to the given
+%       family.
+%     - type(+Type)
+%       One of `stream` or `dgram`.
+%     - canonname(+Boolean)
+%       If `true` (default `false`), return the canonical host name
+%       in the frist answer
+%
+%   In mode (+,-,+) Address is unified to a dict with the following keys:
+%
+%     - address
+%       A Prolog terms describing the ip address.
+%     - domain
+%       One of `inet` or `inet6`.  The underlying getaddrinfo() calls
+%       this `family`.  We use `domain` for consistency with
+%       socket_create/2.
+%     - type
+%       Currently one of `stream` or `dgram`.
+%     - host
+%       Available if canonname(true) is specified on the first
+%       returned address.  Holds the official canonical host name.
+
+host_address(HostName, Address, Options), ground(HostName) =>
+    '$host_address'(HostName, Addresses, Options),
+    member(Address, Addresses).
+host_address(HostName, Address, Options), is_dict(Address) =>
+    '$host_address'(HostName, Address.address, Options).
+host_address(HostName, Address, Options), ground(Address) =>
+    '$host_address'(HostName, Address, Options).
+
 %!  tcp_host_to_address(?HostName, ?Address) is det.
 %
-%   Translate between a machines host-name and it's (IP-)address. If
-%   HostName is an atom, it is  resolved using getaddrinfo() and the
-%   IP-number is unified to  Address  using   a  term  of the format
-%   ip(Byte1,Byte2,Byte3,Byte4). Otherwise, if Address   is bound to
-%   an  ip(Byte1,Byte2,Byte3,Byte4)  term,   it    is   resolved  by
-%   gethostbyaddr() and the  canonical  hostname   is  unified  with
-%   HostName.
+%   Translate between a machines  host-name   and  it's (IP-)address. If
+%   HostName is an atom, it  is   resolved  using  getaddrinfo() and the
+%   IP-number  is  unified  to  Address  using  a  term  of  the  format
+%   ip(Byte1,Byte2,Byte3,Byte4). Otherwise, if Address is   bound  to an
+%   ip(Byte1,Byte2,Byte3,Byte4) term, it is  resolved by gethostbyaddr()
+%   and the canonical hostname is unified with HostName.
 %
-%   @tbd This function should support more functionality provided by
-%   gethostbyaddr, probably by adding an option-list.
+%   @deprecated New code should  use   host_address/3.  This  version is
+%   bootstrapped from host_address/3 and only searches for IP4 addresses
+%   that support TCP connections.
+
+tcp_host_to_address(Host, Address), ground(Address) =>
+    host_address(Host, Address, []).
+tcp_host_to_address(Host, Address), ground(Host) =>
+    host_address(Host, [Dict|_], [domain(inet), type(stream)]),
+    Address = Dict.address.
+
 
 %!  gethostname(-Hostname) is det.
 %
 %   Return the canonical fully qualified name  of this host. This is
 %   achieved by calling gethostname() and  return the canonical name
 %   returned by getaddrinfo().
+
+
+%!  ip_name(?IP, ?Name) is det.
+%
+%   Translate between the textual representation  of an IP address and
+%   the  Prolog data  structure.  Prolog  represents ip4  addresses as
+%   ip(A,B,C,D) and ip6 addresses as ip(A,B,C,D,E,F,H).  For example:
+%
+%       ?- ip_name(ip(1,2,3,4), Name)
+%       Name = '1.2.3.4'.
+%       ?- ip_name(IP, '::').
+%       IP = ip(0,0,0,0,0,0,0,0).
+%       ?- ip_name(IP, '1:2::3').
+%       IP = ip(1,2,0,0,0,0,0,3).
+
+ip_name(Ip, Atom), ground(Atom) =>
+    name_to_ip(Atom, Ip).
+ip_name(Ip, Atom), ground(Ip) =>
+    ip_to_name(Ip, Atom).
+ip_name(Ip, _) =>
+    instantiation_error(Ip).
+
+name_to_ip(Atom, Ip4) :-
+    split_string(Atom, '.', '', Parts),
+    length(Parts, 4),
+    maplist(string_byte, Parts, Bytes),
+    !,
+    Ip4 =.. [ip|Bytes].
+name_to_ip(Atom, Ip6) :-
+    split_string(Atom, ':', '', Parts0),
+    clean_ends(Parts0, Parts1),
+    length(Parts1, Len),
+    (   Len < 8
+    ->  append(Pre, [""|Post], Parts1),
+	Zeros is 8-(Len-1),
+	length(ZList, Zeros),
+	maplist(=("0"), ZList),
+	append([Pre, ZList, Post], Parts)
+    ;   Len == 8
+    ->  Parts = Parts1
+    ),
+    !,
+    maplist(string_short, Parts, Shorts),
+    Ip6 =.. [ip|Shorts].
+name_to_ip(Atom, _) :-
+    syntax_error(ip_address(Atom)).
+
+clean_ends([""|T0], T) :-
+    !,
+    (   append(T1, [""], T0)
+    ->  T = T1
+    ;   T = T0
+    ).
+clean_ends(T0, T) :-
+    append(T1, [""], T0),
+    !,
+    T = T1.
+clean_ends(T, T).
+
+string_byte(String, Byte) :-
+    number_string(Byte, String),
+    must_be(between(0, 255), Byte).
+
+string_short(String, Short) :-
+    string_concat('0x', String, String1),
+    number_string(Short, String1),
+    must_be(between(0, 65535), Short).
+
+ip_to_name(ip(A,B,C,D), Atom) :-
+    !,
+    atomic_list_concat([A,B,C,D], '.', Atom).
+ip_to_name(IP, Atom) :-
+    compound(IP),
+    compound_name_arity(IP, ip, 8),
+    !,
+    IP =.. [ip|Parts],
+    (   zero_seq(Parts, Pre, Post, Len),
+        Len > 1,
+        \+ ( zero_seq(Post, _, _, Len2),
+	     Len2 > Len
+	   )
+    ->  append([Pre, [''], Post], Parts1),
+	(   Pre == []
+	->  Parts2 = [''|Parts1]
+	;   Parts2 = Parts1
+	),
+	(   Post == []
+	->  append(Parts2, [''], Parts3)
+	;   Parts3 = Parts2
+	)
+    ;   Parts3 = Parts
+    ),
+    maplist(to_hex, Parts3, Parts4),
+    atomic_list_concat(Parts4, ':', Atom).
+ip_to_name(IP, _) :-
+    domain_error(ip_address, IP).
+
+zero_seq(List, Pre, Post, Count) :-
+    append(Pre, [0|Post0], List),
+    leading_zeros(Post0, Post, 1, Count).
+
+leading_zeros([0|T0], T, C0, C) =>
+    C1 is C0+1,
+    leading_zeros(T0, T, C1, C).
+leading_zeros(L0, L, C0, C) =>
+    L = L0,
+    C = C0.
+
+to_hex('', '') :-
+    !.
+to_hex(Num, Hex) :-
+    format(string(Hex), '~16r', [Num]).
+
 
 
                  /*******************************
@@ -731,4 +1061,3 @@ proxy_tried(error(Proxy, Error)) -->
     '$messages':translate_message(Error).
 proxy_tried(false(Proxy)) -->
     [ '~w: failed with unspecified error'-[Proxy] ].
-

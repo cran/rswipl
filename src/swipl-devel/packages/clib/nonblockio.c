@@ -2,9 +2,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2004-2020, University of Amsterdam
+    Copyright (c)  2004-2023, University of Amsterdam
                               VU University Amsterdam
 			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -84,6 +85,7 @@ Settings
 Address Converstion
 
 	nbio_get_sockaddr()
+	nbio_get_ip()
 	nbio_get_ip4()
 
 Alternative to nbio_read() and nbio_write(), the application program may
@@ -165,6 +167,17 @@ leave the details to this function.
 
 #ifndef SOCKET_ERROR
 #define SOCKET_ERROR (-1)
+#endif
+
+/* Everybody seems to defined `struct in6_addr` in a different way ...
+ */
+
+#ifndef s6_addr16
+#if defined(s6_words)
+#define s6_addr16 s6_words
+#elif defined(__APPLE__)
+#define s6_addr16 __u6_addr.__u6_addr16
+#endif
 #endif
 
 #define set(s, f)   ((s)->flags |= (f))
@@ -496,6 +509,7 @@ nbio_fcntl(nbio_sock_t socket, int op, int arg)
 
 static functor_t FUNCTOR_module2;
 static functor_t FUNCTOR_ip4;
+static functor_t FUNCTOR_ip8;
 static functor_t FUNCTOR_ip1;
 static atom_t ATOM_any;
 static atom_t ATOM_broadcast;
@@ -812,8 +826,9 @@ nbio_init(const char *module)
   initialised = TRUE;
 
   FUNCTOR_module2  = PL_new_functor(PL_new_atom(":"), 2);
-  FUNCTOR_ip4	   = PL_new_functor(PL_new_atom("ip"), 4);
   FUNCTOR_ip1	   = PL_new_functor(PL_new_atom("ip"), 1);
+  FUNCTOR_ip4	   = PL_new_functor(PL_new_atom("ip"), 4);
+  FUNCTOR_ip8	   = PL_new_functor(PL_new_atom("ip"), 8);
   ATOM_any	   = PL_new_atom("any");
   ATOM_broadcast   = PL_new_atom("broadcast");
   ATOM_loopback	   = PL_new_atom("loopback");
@@ -1099,34 +1114,64 @@ or the name of a registered port (e.g. 'smtp').
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 int
-nbio_get_sockaddr(term_t Address, struct sockaddr_in *addr, term_t *varport)
+nbio_get_sockaddr(nbio_sock_t socket,
+		  term_t Address, struct sockaddr_storage *storage,
+		  term_t *varport)
 { int port;
+  struct sockaddr_in  *addr4 = (struct sockaddr_in*)storage;
+  struct sockaddr_in6 *addr6 = (struct sockaddr_in6*)storage;
 
-  memset(addr, 0, sizeof(*addr));
-  addr->sin_family = AF_INET;
-  addr->sin_addr.s_addr = INADDR_ANY;
+  switch(socket->domain)
+  { case AF_INET:
+      memset(addr4, 0, sizeof(*addr4));
+      addr4->sin_family = AF_INET;
+      addr4->sin_addr.s_addr = INADDR_ANY;
+      break;
+    case AF_INET6:
+      memset(addr6, 0, sizeof(*addr6));
+      addr6->sin6_family = AF_INET6;
+      break;
+    default:
+      assert(0);
+  }
 
   if ( PL_is_functor(Address, FUNCTOR_module2) )	/* Host:Port */
   { char *hostName;
     term_t arg = PL_new_term_ref();
 
     _PL_get_arg(1, Address, arg);
-    if ( PL_get_atom_chars(arg, &hostName) )
+    if ( PL_get_chars(arg, &hostName, CVT_ATOM|CVT_STRING|CVT_LIST) )
     { struct addrinfo hints;
       struct addrinfo *res;
       int rc;
 
       memset(&hints, 0, sizeof(hints));
-      hints.ai_family = AF_INET;
+      hints.ai_family = socket->domain;
       if ( (rc=getaddrinfo(hostName, NULL, &hints, &res)) !=  0) /* see (*) */
 	return nbio_error(rc, TCP_GAI_ERRNO);
-      assert(res->ai_family == AF_INET);
-      memcpy(&addr->sin_addr,
-	     &((struct sockaddr_in*)res->ai_addr)->sin_addr,
-	     sizeof(addr->sin_addr));
+      switch(socket->domain)
+      { case AF_INET:
+	  if ( res->ai_family != AF_INET )
+	  { freeaddrinfo(res);
+	    return PL_warning("Expected ip4 address");
+	  }
+	  memcpy(&addr4->sin_addr,
+		 &((struct sockaddr_in*)res->ai_addr)->sin_addr,
+		 sizeof(addr4->sin_addr));
+	  break;
+	case AF_INET6:
+	  if ( res->ai_family != AF_INET6 )
+	  { freeaddrinfo(res);
+	    return PL_warning("Expected ip4 address");
+	  }
+	  memcpy(&addr6->sin6_addr,
+		 &((struct sockaddr_in6*)res->ai_addr)->sin6_addr,
+		 sizeof(addr6->sin6_addr));
+	  break;
+      }
       freeaddrinfo(res);
-    } else if ( !nbio_get_ip(arg, &addr->sin_addr) )
-    { return pl_error(NULL, 0, NULL, ERR_ARGTYPE, 1, arg, "atom|ip/4");
+    } else if ( !nbio_get_ip(socket->domain, arg, storage) )
+    { return PL_type_error("host_or_address", arg);
     }
 
     _PL_get_arg(2, Address, arg);
@@ -1139,24 +1184,32 @@ nbio_get_sockaddr(term_t Address, struct sockaddr_in *addr, term_t *varport)
   } else if ( !nbio_get_port(Address, &port) )
     return FALSE;
 
-  addr->sin_port = htons((short)port);
+  switch(socket->domain)
+  { case AF_INET:
+      addr4->sin_port = htons((short)port);
+      break;
+    case AF_INET6:
+      addr6->sin6_port  = htons((short)port);
+      break;
+  }
 
   return TRUE;
 }
 
 
 int
-nbio_get_ip(term_t ip4, struct in_addr *ip)
+nbio_get_ip4(term_t ip4, struct in_addr *ip, int error)
 { uint32_t hip = 0;
 
   if ( PL_is_functor(ip4, FUNCTOR_ip4) )
-  { int i, ia;
+  { int i;
+    unsigned char ua;
     term_t a = PL_new_term_ref();
 
     for(i=1; i<=4; i++)
     { _PL_get_arg(i, ip4, a);
-      if ( PL_get_integer(a, &ia) )
-	hip |= ia << ((4-i)*8);
+      if ( PL_cvt_i_uchar(a, &ua) )
+	hip |= (uint32_t)ua << ((4-i)*8);
       else
 	return FALSE;
     }
@@ -1177,18 +1230,67 @@ nbio_get_ip(term_t ip4, struct in_addr *ip)
       else if ( id == ATOM_loopback )
 	ip->s_addr = INADDR_LOOPBACK;
       else
-	return FALSE;
+	return PL_domain_error("ip4_symbolic_address", a);
 
       return TRUE;
     }
   }
 
-  return FALSE;
+  if ( error )
+    return PL_domain_error("ip4_address", ip4);
+  else
+    return FALSE;
+}
+
+
+static int
+nbio_get_ip6(term_t ip8, struct in6_addr *ip)
+{ if ( PL_is_functor(ip8, FUNCTOR_ip8) )
+  { unsigned short ia;
+    term_t a = PL_new_term_ref();
+
+    for(int i=1; i<=8; i++)
+    { _PL_get_arg(i, ip8, a);
+      if ( PL_cvt_i_ushort(a, &ia) )
+      { ip->s6_addr16[i-1] = htons(ia);
+      } else
+	return FALSE;
+    }
+
+    return TRUE;
+  } else
+    return PL_domain_error("ip6", ip8);
 }
 
 
 int
-nbio_unify_ip4(term_t Ip, unsigned long hip)
+nbio_get_ip(int domain, term_t Ip, struct sockaddr_storage *storage)
+{ switch( domain )
+  { case AF_INET:
+    { struct sockaddr_in *addr = (struct sockaddr_in*)storage;
+      return nbio_get_ip4(Ip, &addr->sin_addr, TRUE);
+    }
+    case AF_INET6:
+    { struct sockaddr_in6 *addr = (struct sockaddr_in6*)storage;
+      return nbio_get_ip6(Ip, &addr->sin6_addr);
+    }
+    case AF_UNSPEC:
+    { struct sockaddr_in  *addr4 = (struct sockaddr_in*)storage;
+      struct sockaddr_in6 *addr6 = (struct sockaddr_in6*)storage;
+
+      return ( nbio_get_ip4(Ip, &addr4->sin_addr, FALSE) ||
+	       nbio_get_ip6(Ip, &addr6->sin6_addr) );
+    }
+    default:
+      assert(0);
+      return FALSE;
+  }
+}
+
+
+
+int
+nbio_unify_ip4(term_t Ip, uint32_t hip)
 { return PL_unify_term(Ip,
 		       PL_FUNCTOR, FUNCTOR_ip4,
 			 IntArg((hip >> 24) & 0xff),
@@ -1197,6 +1299,40 @@ nbio_unify_ip4(term_t Ip, unsigned long hip)
 			 IntArg((hip >>  0) & 0xff));
 }
 
+
+#define NSHORTARG(i) PL_INT, ntohs(i)
+
+static int
+nbio_unify_ip6(term_t t, struct in6_addr *addr)
+{ return PL_unify_term(t,
+		       PL_FUNCTOR, FUNCTOR_ip8,
+			 NSHORTARG(addr->s6_addr16[0]),
+			 NSHORTARG(addr->s6_addr16[1]),
+			 NSHORTARG(addr->s6_addr16[2]),
+			 NSHORTARG(addr->s6_addr16[3]),
+			 NSHORTARG(addr->s6_addr16[4]),
+			 NSHORTARG(addr->s6_addr16[5]),
+			 NSHORTARG(addr->s6_addr16[6]),
+			 NSHORTARG(addr->s6_addr16[7]));
+}
+
+
+int
+nbio_unify_addr(term_t t, struct sockaddr *addr)
+{ switch( addr->sa_family )
+  { case AF_INET:
+    { struct sockaddr_in *addr4 = (struct sockaddr_in*)addr;
+      return nbio_unify_ip4(t, ntohl(addr4->sin_addr.s_addr));
+    }
+    case AF_INET6:
+    { struct sockaddr_in6 *addr6 = (struct sockaddr_in6*)addr;
+      return nbio_unify_ip6(t, &addr6->sin6_addr);
+    }
+    default:
+      assert(0);
+      return FALSE;
+  }
+}
 
 int
 nbio_bind(nbio_sock_t socket, struct sockaddr *my_addr, size_t addrlen)

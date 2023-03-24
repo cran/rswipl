@@ -697,7 +697,7 @@ vfree_clause_list_ref(void *cref)
 
 static void
 lingerClauseListRef(Definition def, ClauseRef cref)
-{ linger(&def->lingering, vfree_clause_list_ref, cref);
+{ linger_always(&def->lingering, vfree_clause_list_ref, cref);
 }
 
 
@@ -1806,7 +1806,7 @@ setIndexes(Definition def, ClauseList cl, ClauseIndex *cip)
   MEMORY_BARRIER();
   cl->clause_indexes = cip;
   if ( cipo )
-    linger(&def->lingering, unalloc_index_array, cipo);
+    linger_always(&def->lingering, unalloc_index_array, cipo);
 }
 
 
@@ -1841,7 +1841,7 @@ replaceIndex(Definition def, ClauseList cl, ClauseIndex *cip, ClauseIndex ci)
       }
     }
 
-    linger(&def->lingering, unalloc_ci, old);
+    linger_always(&def->lingering, unalloc_ci, old);
   }
 
   if ( !isSortedIndexes(cl->clause_indexes) )
@@ -2046,22 +2046,22 @@ listIndexGenerations(Definition def, gen_t gen)
 	    for(cr=cl->first_clause; cr; cr=cr->next)
 	    { Clause clause = cr->value.clause;
 
-	      Sdprintf("  %p: [%2d] %8u-%10u%s%s\n",
+	      Sdprintf("  %p: [%2d] %8s-%10s%s%s\n",
 		       clause,
 		       clauseNo(clause, 0),
-		       clause->generation.created,
-		       clause->generation.erased,
+		       generationName(clause->generation.created),
+		       generationName(clause->generation.erased),
 		       true(clause, CL_ERASED) ? " erased" : "",
 		       visibleClause(clause, gen) ? " v" : " X");
 	    }
 	  } else
 	  { Clause clause = cref->value.clause;
 
-	    Sdprintf("%p: [%2d] %8u-%10u%s%s%s\n",
+	    Sdprintf("%p: [%2d] %8s-%10s%s%s%s\n",
 		     clause,
 		     clauseNo(clause, 0),
-		     clause->generation.created,
-		     clause->generation.erased,
+		     generationName(clause->generation.created),
+		     generationName(clause->generation.erased),
 		     true(clause, CL_ERASED) ? " erased" : "",
 		     visibleClause(clause, gen) ? " v " : " X ",
 		     keyName(cref->d.key));
@@ -2390,7 +2390,7 @@ skipToTerm(Clause clause, const iarg_t *position)
       case I_ENTER:			/* fix H_VOID, H_VOID, I_ENTER */
 	return pc;
       default:
-	Sdprintf("Unexpected VM code %d at %p\n", c, pc);
+        Sdprintf("Unexpected VM code %" PRIuPTR " at %p\n", c, pc);
 	Sdprintf("\topcode=%s\n", codeTable[c].name);
 	assert(0);
 #else

@@ -568,7 +568,7 @@ redo:
 #endif
 #ifdef O_DEBUG_ATOMGC
         if ( atomLogFd && tracking(a) )
-          Sfprintf(atomLogFd, "Lookup `%s' at (#%d)\n",
+          Sfprintf(atomLogFd, "Lookup `%s' at (#%" PRIuPTR ")\n",
 		   a->name, indexAtom(a->atom));
 #endif
         *new = FALSE;
@@ -638,7 +638,7 @@ redo:
 
 #ifdef O_DEBUG_ATOMGC
   if ( atomLogFd && tracking(a) )
-    Sfprintf(atomLogFd, "Created `%s' at (#%d)\n",
+    Sfprintf(atomLogFd, "Created `%s' at (#%" PRIuPTR "d)\n",
 	     a->name, indexAtom(a->atom));
 #endif
   *new = TRUE;
@@ -692,7 +692,7 @@ _PL_debug_register_atom(atom_t a,
 
     refs = ATOM_REF_COUNT(register_atom(atom));
     if ( atomLogFd && tracking(atom) )
-      Sfprintf(atomLogFd, "%s:%d: %s(): ++ (%d) for `%s' (#%d)\n",
+      Sfprintf(atomLogFd, "%s:%d: %s(): ++ (%d) for `%s' (#%zd)\n",
 	       file, line, func, refs, atom->name, i);
   }
 }
@@ -711,7 +711,7 @@ _PL_debug_unregister_atom(atom_t a,
 
     refs = unregister_atom(atom);
     if ( atomLogFd && tracking(atom) )
-      Sfprintf(atomLogFd, "%s:%d: %s(): -- (%d) for `%s' (#%d)\n",
+      Sfprintf(atomLogFd, "%s:%d: %s(): -- (%d) for `%s' (#%zd)\n",
 	       file, line, func, refs, atom->name, i);
   }
 }
@@ -774,7 +774,7 @@ markAtom(atom_t a)
   {
 #ifdef O_DEBUG_ATOMGC
     if ( atomLogFd && tracking(ap) )
-      Sfprintf(atomLogFd, "Marked `%s' at (#%d)\n", ap->name, i);
+      Sfprintf(atomLogFd, "Marked `%s' at (#%zd)\n", ap->name, i);
 #endif
     ATOMIC_OR(&ap->references, ATOM_MARKED_REFERENCE);
   }
@@ -1036,18 +1036,19 @@ pl_garbage_collect_atoms(void)
   if ( verbose )
   { if ( !printMessage(ATOM_informational,
 		       PL_FUNCTOR_CHARS, "agc", 1,
-		         PL_CHARS, "start") )
+			 PL_CHARS, "start") )
     { GD->atoms.gc_active = FALSE;
       return FALSE;
     }
   }
 
+  LD->atoms.gc_active = TRUE;
   PL_LOCK(L_REHASH_ATOMS);
   blockSignals(&set);
   t = CpuTime(CPU_USER);
   unmarkAtoms();
   markAtomsOnStacks(LD, NULL);
-#ifdef O_PLMT
+#ifdef O_ENGINES
   forThreadLocalDataUnsuspended(markAtomsOnStacks, NULL);
   markAtomsMessageQueues();
 #endif
@@ -1060,14 +1061,15 @@ pl_garbage_collect_atoms(void)
   GD->atoms.gc++;
   unblockSignals(&set);
   PL_UNLOCK(L_REHASH_ATOMS);
+  LD->atoms.gc_active = FALSE;
 
   if ( verbose )
     rc = printMessage(ATOM_informational,
 		      PL_FUNCTOR_CHARS, "agc", 1,
-		        PL_FUNCTOR_CHARS, "done", 3,
-		          PL_INT64, GD->atoms.collected - oldcollected,
-		          PL_INT, GD->statistics.atoms,
-		          PL_DOUBLE, (double)t);
+			PL_FUNCTOR_CHARS, "done", 3,
+			  PL_INT64, GD->atoms.collected - oldcollected,
+			  PL_INT, GD->statistics.atoms,
+			  PL_DOUBLE, (double)t);
 
   GD->atoms.gc_active = FALSE;
 
@@ -1224,7 +1226,7 @@ unregister_atom(volatile Atom p)
     refs = ATOM_REF_COUNT(newref);
 #ifdef O_DEBUG_ATOMGC
     if ( refs == 0 && atomLogFd && tracking(p) )
-      Sfprintf(atomLogFd, "Marked '%s' at (#%d) (unregistered)\n",
+      Sfprintf(atomLogFd, "Marked '%s' at (#%" PRIuPTR ") (unregistered)\n",
 	       p->name, indexAtom(p->atom));
 #endif
   } else
@@ -1234,7 +1236,7 @@ unregister_atom(volatile Atom p)
     { LD->atoms.unregistering = p->atom;
 #ifdef O_DEBUG_ATOMGC
     if ( atomLogFd && tracking(p) )
-      Sfprintf(atomLogFd, "Set atoms.unregistering for '%s' at (#%d)\n",
+      Sfprintf(atomLogFd, "Set atoms.unregistering for '%s' at (#%" PRIuPTR ")\n",
 	       p->name, indexAtom(p->atom));
 #endif
     }
@@ -1574,7 +1576,8 @@ exitAtoms(int status, void *context)
 
 void
 do_init_atoms(void)
-{ PL_LOCK(L_INIT_ATOMS);
+{ initPrologThreads();
+  PL_LOCK(L_INIT_ATOMS);
   if ( !GD->atoms.initialised )			/* Atom hash table */
   { GD->atoms.table = allocHeapOrHalt(sizeof(*GD->atoms.table));
     GD->atoms.table->buckets = ATOMHASHSIZE;
@@ -1744,7 +1747,7 @@ current_blob(DECL_LD term_t a, term_t type, frg_code call, intptr_t state)
 	      /* avoid trap through linkVal() check */
 	      if ( atom->atom == ATOM_garbage_collected )
 	      { PL_unregister_atom(atom->atom);
-	        continue;
+		continue;
 	      });
 
 	if ( type )
@@ -2082,6 +2085,8 @@ static void
 atom_generator_create_key(void)
 { pthread_key_create(&key, NULL);
 }
+#else
+static size_t atom_genetor_state;
 #endif
 
 static int
@@ -2100,9 +2105,11 @@ atom_generator(PL_chars_t *prefix, PL_chars_t *hit, int state)
   } else
   { if ( HAS_LD )
       index = LD->atoms.generator;
-#ifdef O_PLMT
     else
+#ifdef O_PLMT
       index = (size_t)pthread_getspecific(key);
+#else
+      index = atom_genetor_state;
 #endif
   }
 
@@ -2131,9 +2138,11 @@ atom_generator(PL_chars_t *prefix, PL_chars_t *hit, int state)
 	   is_identifier_text(hit) )
       { if ( HAS_LD )
 	  LD->atoms.generator = index+1;
-#ifdef O_PLMT
 	else
+#ifdef O_PLMT
 	  pthread_setspecific(key, (void *)(index+1));
+#else
+	  atom_genetor_state = index;
 #endif
 
         return TRUE;

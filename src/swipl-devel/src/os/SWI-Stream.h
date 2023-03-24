@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2022, University of Amsterdam
+    Copyright (c)  2011-2023, University of Amsterdam
 			      VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -158,6 +158,10 @@ typedef struct recursiveMutex IOLOCK;
 #ifndef PL_HAVE_TERM_T
 #define PL_HAVE_TERM_T
 typedef uintptr_t	term_t;		/* opaque term handle */
+#endif
+#ifndef PL_HAVE_ATOM_T
+#define PL_HAVE_ATOM_T
+typedef uintptr_t	atom_t;		/* opaque handle to an atom */
 #endif
 
 typedef struct io_functions
@@ -482,21 +486,17 @@ PL_EXPORT(IOENC)	PL_atom_to_encoding(atom_t name);
 PL_EXPORT(atom_t)	PL_encoding_to_atom(IOENC enc);
 #endif
 
-PL_EXPORT(char *)	PL_qlf_getString(IOSTREAM *, size_t *len);
-PL_EXPORT(int64_t)	PL_qlf_getInt64(IOSTREAM *);
-PL_EXPORT(int)		PL_qlf_getInt32(IOSTREAM *s);
-PL_EXPORT(unsigned int)	PL_qlf_getUInt(IOSTREAM *fd);
-PL_EXPORT(int)		PL_qlf_getInt(IOSTREAM *);
-PL_EXPORT(double)	PL_qlf_getFloat(IOSTREAM *);
-// TODO: PL_EXPORT(pl_wchar_t *) PL_qlf_getStringW(IOSTREAM *, size_t *len);
+PL_EXPORT(int)		PL_qlf_get_int64(IOSTREAM *s, int64_t *ip);
+PL_EXPORT(int)		PL_qlf_get_int32(IOSTREAM *s, int32_t *ip);
+PL_EXPORT(int)		PL_qlf_get_uint32(IOSTREAM *s, uint32_t *ip);
+PL_EXPORT(int)		PL_qlf_get_double(IOSTREAM *s, double *fp);
+PL_EXPORT(int)		PL_qlf_get_atom(IOSTREAM *s, atom_t *a);
 
-PL_EXPORT(void)		PL_qlf_putString(const char *, size_t len, IOSTREAM *);
-PL_EXPORT(void)		PL_qlf_putInt64(int64_t, IOSTREAM *);
-PL_EXPORT(void)		PL_qlf_putInt32(int32_t, IOSTREAM *);
-PL_EXPORT(void)		PL_qlf_putUInt(unsigned int i, IOSTREAM *fd);
-PL_EXPORT(void)		PL_qlf_putInt(int v, IOSTREAM *fd);
-PL_EXPORT(void)		PL_qlf_put_Float(double, IOSTREAM *);
-// TODO: PL_EXPORT(void) PL_qlf_putStringW(const pl_wchar_t *s, size_t len, IOSTREAM *fd);
+PL_EXPORT(int)		PL_qlf_put_int64(int64_t i, IOSTREAM *s);
+PL_EXPORT(int)		PL_qlf_put_int32(int32_t i, IOSTREAM *s);
+PL_EXPORT(int)		PL_qlf_put_uint32(uint32_t i, IOSTREAM *s);
+PL_EXPORT(int)		PL_qlf_put_double(double f, IOSTREAM *s);
+PL_EXPORT(int)		PL_qlf_put_atom(atom_t a, IOSTREAM *s);
 
 
 #ifdef __cplusplus

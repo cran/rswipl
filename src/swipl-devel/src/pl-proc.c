@@ -2350,7 +2350,7 @@ ddi_generation_name(DirtyDefInfo ddi)
   { int i;
 
     for(i=0; i<ddi->count; i++)
-    { Ssprintf(o, "%s%lld", i==0?"":" ", ddi->access[i]);
+    { Ssprintf(o, "%s%s", i==0?"":" ", generationName(ddi->access[i]));
       o += strlen(o);
     }
   } else
@@ -2360,7 +2360,7 @@ ddi_generation_name(DirtyDefInfo ddi)
     { gen_t f = ddi->access[i++];
       gen_t t = ddi->access[i++];
 
-      Ssprintf(o, "%s%lld-%lld", i==2?"":" ", f, t);
+      Ssprintf(o, "%s%s-%s", i==2?"":" ", generationName(f), generationName(t));
       o += strlen(o);
     }
   }
@@ -2686,7 +2686,7 @@ pl_garbage_collect_clauses(void)
 
     initBuffer(&tr_starts);
     markPredicatesInEnvironments(LD, (Buffer)&tr_starts);
-#ifdef O_PLMT
+#ifdef O_ENGINES
     forThreadLocalDataUnsuspended(markPredicatesInEnvironments,
 				  (Buffer)&tr_starts);
 #endif
@@ -3709,7 +3709,7 @@ setDynamicDefinition(Definition def, bool isdyn)
 int
 setThreadLocalDefinition(Definition def, bool val)
 {
-#ifdef O_PLMT
+#ifdef O_ENGINES
 
   LOCKDEF(def);
   if ( (val && true(def, P_THREAD_LOCAL)) ||
@@ -4118,10 +4118,10 @@ listGenerations(Definition def)
   for(i=1,cref=def->impl.clauses.first_clause; cref; cref=cref->next, i++)
   { Clause clause = cref->value.clause;
 
-    Sdprintf("%p: [%2d] %8u-%10u%s%s%s\n",
+    Sdprintf("%p: [%2d] %8s-%10s%s%s%s\n",
 	     clause, i,
-	     clause->generation.created,
-	     clause->generation.erased,
+	     generationName(clause->generation.created),
+	     generationName(clause->generation.erased),
 	     true(clause, CL_ERASED) ? " erased" : "",
 	     visibleClause(clause, gen) ? " v " : " X ",
 	     keyName(cref->d.key));

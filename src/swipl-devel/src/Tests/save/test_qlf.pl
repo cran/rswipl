@@ -3,7 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2009, University of Amsterdam
+    Copyright (c)  2023, University of Amsterdam
+                         VU University Amsterdam
+		CWI, Amsterdam
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -32,21 +34,44 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include "pl-incl.h"
+:- module(test_qlf,
+          [ test_qlf/0
+          ]).
+:- use_module(library(plunit)).
+:- use_module(library(filesex), [directory_file_path/3]).
+:- use_module(library(debug), [assertion/1]).
 
-#ifndef _PL_SYS_H
-#define _PL_SYS_H
+test_qlf :-
+    run_tests([ qlf
+              ]).
 
-		 /*******************************
-		 *    FUNCTION DECLARATIONS	*
-		 *******************************/
+find_me.
 
-word		pl_shell(term_t command, term_t status);
-word		pl_getenv(term_t var, term_t value);
-word		pl_setenv(term_t var, term_t value);
-word		pl_unsetenv(term_t var);
-word		pl_get_time(term_t t);
-word		pl_sleep(term_t time);
-word		pl_get_pid(term_t pid);
+file_path(File, Path) :-
+    source_file(find_me, Here),
+    file_directory_name(Here, Dir),
+    directory_file_path(Dir, File, Path).
 
-#endif /*_PL_SYS_H*/
+:- begin_tests(qlf).
+
+% Note that ['$qlf'(Qlf)] is an undocumented way  to save the file in an
+% explicit location.
+
+test(unicode,
+     [ Found =@= Expected,
+       cleanup(catch(delete_file(Qlf), _, true))
+     ]) :-
+    file_path('input/unicode', In),
+    file_base_name(In, Base),
+    file_name_extension(Base, qlf, QlfFile),
+    current_prolog_flag(tmp_dir, Tmp),
+    directory_file_path(Tmp, QlfFile, Qlf),
+    catch(delete_file(Qlf), _, true),
+    load_files(In, ['$qlf'(Qlf)]),
+    findall(Data, data(Data), Expected),
+    unload_file(In),
+    assertion(\+ current_predicate(data/1)),
+    consult(Qlf),
+    findall(Data, data(Data), Found).
+
+:- end_tests(qlf).

@@ -112,7 +112,7 @@ and libraries that are built.
   | `-DSWIPL_PACKAGES_ODBC=OFF`   | Drop ODBC and CQL packages            |
   | `-DSWIPL_PACKAGES_JAVA=OFF`   | Drop JPL Java interface               |
   | `-DSWIPL_PACKAGES_X=OFF`      | Drop graphics (xpce)                  |
-  | `-DSWIPL_PACKAGES=List`       | ;-separated list of packages          |
+  | `-DSWIPL_PACKAGE_LIST=List`   | ;-separated list of packages          |
   | `-DBUILD_TESTING=OFF`         | Do not setup for ctest unit tests     |
   | `-DINSTALL_TESTS=ON`          | Add tests to installed system         |
   | `-DINSTALL_DOCUMENTATION=OFF` | Drop generating the HTML docs         |
@@ -126,6 +126,14 @@ You are strongly encouraged  to  install   the  full  system for desktop
 usage. When installing in lightweight and   server  environments one may
 drop  one  or  more  of  ``SWIPL_PACKAGES_X``,  ``SWIPL_PACKAGES_JAVA``,
 ``SWIPL_PACKAGES_ODBC`` and ``INSTALL_DOCUMENTATION``.
+
+A   specific   list   of    packages     can    be    requestion   using
+`DSWIPL_PACKAGE_LIST` set to a list of package.  The list is checked for
+missing dependencies, which  are  automatically   added.  Typically  the
+documentation should be disabled in this   scenario because including it
+includes many packages. For example:
+
+    cmake -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGE_LIST="clib;plunit"
 
 
 ## Embedding SWI-Prolog in Java, C, C++, etc.

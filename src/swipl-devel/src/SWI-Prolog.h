@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2008-2022, University of Amsterdam
+    Copyright (c)  2008-2023, University of Amsterdam
 			      VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -60,7 +60,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 90107
+#define PLVERSION 90108
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -180,7 +180,10 @@ be relied upon to remain unchanged across versions.
 		 *******************************/
 
 typedef uintptr_t	_PLQ(word);	/* Anonymous ptr-sized object*/
-typedef _PLQ(word)	atom_t;		/* Prolog atom */
+#ifndef PL_HAVE_ATOM_T
+#define PL_HAVE_ATOM_T
+typedef uintptr_t	atom_t;		/* Prolog atom */
+#endif
 typedef _PLQ(word)	functor_t;	/* Name/arity pair */
 typedef uintptr_t	_PLQ(code);	/* Prolog bytecode type */
 typedef _PLS(module) *	module_t;	/* Prolog module */
@@ -727,6 +730,7 @@ typedef struct PL_blob_t
 PL_EXPORT(int)		PL_is_blob(term_t t, PL_blob_t **type);
 PL_EXPORT(int)		PL_unify_blob(term_t t, void *blob, size_t len,
 				      PL_blob_t *type);
+PL_EXPORT(atom_t)	PL_new_blob(void *blob, size_t len, PL_blob_t *type);
 PL_EXPORT(int)		PL_put_blob(term_t t, void *blob, size_t len,
 				    PL_blob_t *type);
 PL_EXPORT(int)		PL_get_blob(term_t t, void **blob, size_t *len,

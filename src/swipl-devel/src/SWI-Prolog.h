@@ -60,7 +60,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 90108
+#define PLVERSION 90109
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -170,8 +170,10 @@ be relied upon to remain unchanged across versions.
 
 #if __GNUC__ >= 4
 #define WUNUSED __attribute__((warn_unused_result))
+#define WDEPRECATED __attribute__((deprecated))
 #else
 #define WUNUSED
+#define WDEPRECATED
 #endif
 
 
@@ -343,7 +345,7 @@ typedef struct PL_extension
 } PL_extension;
 
 #define PL_FA_NOTRACE		(0x01)	/* foreign cannot be traced */
-#define PL_FA_TRANSPARENT	(0x02)	/* foreign is module transparent */
+#define PL_FA_TRANSPARENT	(0x02)	/* foreign is module transparent (deprecated) */
 #define PL_FA_NONDETERMINISTIC	(0x04)	/* foreign is non-deterministic */
 #define PL_FA_VARARGS		(0x08)	/* call using t0, ac, ctx */
 #define PL_FA_CREF		(0x10)	/* Internal: has clause-reference */
@@ -361,7 +363,7 @@ PL_EXPORT(int)		PL_register_foreign_in_module(const char *module,
 						      const char *name, int arity,
 						      pl_function_t func,
 						      int flags, ...);
-PL_EXPORT(void)		PL_load_extensions(const PL_extension *e);
+PL_EXPORT(void)		PL_load_extensions(const PL_extension *e); /* WDEPRECATED */
 
 		 /*******************************
 		 *	      LICENSE		*
@@ -438,13 +440,13 @@ PL_EXPORT(PL_engine_t)	PL_query_engine(qid_t qid);
 PL_EXPORT(int)		PL_can_yield(void);
 
 			/* Simplified (but less flexible) call-back */
-PL_EXPORT(int)		PL_call(term_t t, module_t m);
-PL_EXPORT(int)		PL_call_predicate(module_t m, int debug,
-					  predicate_t pred, term_t t0);
+PL_EXPORT(int)		PL_call(term_t t, module_t m) WUNUSED;
+PL_EXPORT(int)		PL_call_predicate(module_t m, int flags,
+					  predicate_t pred, term_t t0); /* TODO: WUNUSED */
 			/* Handling exceptions */
 PL_EXPORT(term_t)	PL_exception(qid_t qid);
 PL_EXPORT(int)		PL_raise_exception(term_t exception);
-PL_EXPORT(int)		PL_throw(term_t exception);
+PL_EXPORT(int)		PL_throw(term_t exception); /* WDEPRECATED */
 PL_EXPORT(void)		PL_clear_exception(void);
 			/* Engine-based coroutining */
 PL_EXPORT(term_t)	PL_yielded(qid_t qid);
@@ -479,7 +481,7 @@ PL_EXPORT(atom_t)	PL_new_atom(const char *s);
 PL_EXPORT(atom_t)	PL_new_atom_nchars(size_t len, const char *s);
 PL_EXPORT(atom_t)	PL_new_atom_wchars(size_t len, const pl_wchar_t *s);
 PL_EXPORT(atom_t)	PL_new_atom_mbchars(int rep, size_t len, const char *s);
-PL_EXPORT(const char *)	PL_atom_chars(atom_t a);
+PL_EXPORT(const char *)	PL_atom_chars(atom_t a); /* WDEPRECATED */
 PL_EXPORT(const char *)	PL_atom_nchars(atom_t a, size_t *len);
 PL_EXPORT(int)		PL_atom_mbchars(atom_t a, size_t *len, char **s,
 					unsigned int flags);
@@ -587,7 +589,7 @@ PL_EXPORT(int)		PL_put_list(term_t l) WUNUSED;
 PL_EXPORT(int)		PL_put_nil(term_t l);
 PL_EXPORT(int)		PL_put_term(term_t t1, term_t t2) WUNUSED;
 PL_EXPORT(int)		PL_put_dict(term_t t, atom_t tag, size_t len,
-				    const atom_t *keys, term_t values);
+				    const atom_t *keys, term_t values) WUNUSED;
 
 			/* construct a functor or list-cell */
 PL_EXPORT(int)		PL_cons_functor(term_t h, functor_t f, ...) WUNUSED;
@@ -632,6 +634,8 @@ PL_EXPORT(int)		PL_skip_list(term_t list, term_t tail, size_t *len);
 		 *    WIDE CHARACTER VERSIONS	*
 		 *******************************/
 
+PL_EXPORT(int)		PL_put_wchars(term_t t, int type,
+				      size_t len, const pl_wchar_t *s) WUNUSED;
 PL_EXPORT(int)		PL_unify_wchars(term_t t, int type,
 					size_t len, const pl_wchar_t *s) WUNUSED;
 PL_EXPORT(int)		PL_unify_wchars_diff(term_t t, term_t tail, int type,
@@ -1178,7 +1182,7 @@ typedef struct pl_sigaction
 } pl_sigaction_t;
 
 
-PL_EXPORT(void) (*PL_signal(int sig, void (*func)(int)))(int);
+PL_EXPORT(void) (*PL_signal(int sig, void (*func)(int)))(int); /* WDEPRECATED */
 PL_EXPORT(int)  PL_sigaction(int sig, pl_sigaction_t *act, pl_sigaction_t *old);
 PL_EXPORT(void)	PL_interrupt(int sig);
 PL_EXPORT(int)	PL_raise(int sig);

@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2002-2021, University of Amsterdam
+    Copyright (c)  2002-2023, University of Amsterdam
 			      VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -40,9 +40,12 @@
 	    argv_options/4,             % +Argv, -RestArgv, -Options, +ParseOpts
 	    argv_usage/1,               % +Level
 	    cli_parse_debug_options/2,  % +OptionsIn, -Options
+            cli_debug_opt_type/3,       % -Flag, -Option, -Type
+            cli_debug_opt_help/2,       % -Option, -Message
+            cli_debug_opt_meta/2,       % -Option, -Arg
 	    cli_enable_development_system/0
-	  ]).
-:- autoload(library(apply), [maplist/3, partition/4]).
+          ]).
+:- autoload(library(apply), [maplist/2, maplist/3, partition/4]).
 :- autoload(library(lists), [append/3]).
 :- autoload(library(pairs), [pairs_keys/2, pairs_values/2]).
 :- autoload(library(prolog_code), [pi_head/2]).
@@ -202,10 +205,18 @@ interrupt(_Sig) :-
 %       - file
 %         Convert to a file name in Prolog canonical notation
 %         using prolog_to_os_filename/2.
+%       - directory
+%         Convert to a file name in Prolog canonical notation
+%         using prolog_to_os_filename/2.  No checking is done and
+%         thus this type is the same as `file`
 %       - file(Access)
 %         As `file`, and check access using access_file/2.  A value `-`
 %         is not checked for access, assuming the application handles
 %         this as standard input or output.
+%       - directory(Access)
+%         As `directory`, and check access.  Access is one of `read`
+%         `write` or `create`.  In the latter case the parent directory
+%         must exist and have write access.
 %       - term
 %         Parse option value to a Prolog term.
 %       - term(+Options)
@@ -527,6 +538,11 @@ opt_convert(file(Access), Spec, Value) :-
 	;   opt_error(access_file(Spec, Access))
 	)
     ).
+opt_convert(directory, Spec, Value) :-
+    prolog_to_os_filename(Value, Spec).
+opt_convert(directory(Access), Spec, Value) :-
+    prolog_to_os_filename(Value, Spec),
+    access_directory(Value, Access).
 opt_convert(term, Spec, Value) :-
     term_string(Value, Spec, []).
 opt_convert(term(Options), Spec, Value) :-
@@ -536,17 +552,36 @@ opt_convert(term(Options), Spec, Value) :-
     ;   Value = Term
     ).
 
+access_directory(Dir, read) =>
+    exists_directory(Dir),
+    access_file(Dir, read).
+access_directory(Dir, write) =>
+    exists_directory(Dir),
+    access_file(Dir, write).
+access_directory(Dir, create) =>
+    (   exists_directory(Dir)
+    ->  access_file(Dir, write)
+    ;   \+ exists_file(Dir),
+        file_directory_name(Dir, Parent),
+        exists_directory(Parent),
+        access_file(Parent, write)
+    ).
+
 to_bool(true,    true).
 to_bool('True',  true).
 to_bool('TRUE',  true).
 to_bool(on,      true).
 to_bool('On',    true).
+to_bool(yes,     true).
+to_bool('Yes',   true).
 to_bool('1',     true).
 to_bool(false,   false).
 to_bool('False', false).
 to_bool('FALSE', false).
 to_bool(off,     false).
 to_bool('Off',   false).
+to_bool(no,      false).
+to_bool('No',    false).
 to_bool('0',     false).
 
 %!  argv_usage(:Level) is det.
@@ -946,20 +981,75 @@ cli_parse_debug_options([H|T0], Opts) :-
 cli_parse_debug_options([H|T0], [H|T]) :-
     cli_parse_debug_options(T0, T).
 
+%!  cli_debug_opt_type(-Flag, -Option, -Type).
+%!  cli_debug_opt_help(-Option, -Message).
+%!  cli_debug_opt_meta(-Option, -Arg).
+%
+%   Implements  opt_type/3,  opt_help/2   and    opt_meta/2   for  debug
+%   arguments. Applications that wish to  use   these  features can call
+%   these predicates from their own hook.  Fot example:
+%
+%   ```
+%   opt_type(..., ..., ...).	% application types
+%   opt_type(Flag, Opt, Type) :-
+%       cli_debug_opt_type(Flag, Opt, Type).
+%   % similar for opt_help/2 and opt_meta/2
+%
+%   main(Argv) :-
+%       argv_options(Argv, Positional, Options0),
+%       cli_parse_debug_options(Options0, Options),
+%       ...
+%   ```
+
+cli_debug_opt_type(debug,       debug,       string).
+cli_debug_opt_type(spy,         spy,         string).
+cli_debug_opt_type(gspy,        gspy,        string).
+cli_debug_opt_type(interactive, interactive, boolean).
+
+cli_debug_opt_help(debug,
+                   "Call debug(Topic).  See debug/1 and debug/3. \c
+                    Multiple topics may be separated by : or ;").
+cli_debug_opt_help(spy,
+                   "Place a spy-point on Predicate. \c
+                    Multiple topics may be separated by : or ;").
+cli_debug_opt_help(gspy,
+                   "As --spy using the graphical debugger.  See tspy/1 \c
+                    Multiple topics may be separated by `;`").
+cli_debug_opt_help(interactive,
+                   "Start the Prolog toplevel after main/1 completes.").
+
+cli_debug_opt_meta(debug, 'TOPICS').
+cli_debug_opt_meta(spy,   'PREDICATES').
+cli_debug_opt_meta(gspy,  'PREDICATES').
+
+:- meta_predicate
+    spy_from_string(1, +).
+
 debug_option(interactive(true)) :-
     asserta(interactive).
-debug_option(debug(TopicS)) :-
+debug_option(debug(Spec)) :-
+    split_string(Spec, ";", "", Specs),
+    maplist(debug_from_string, Specs).
+debug_option(spy(Spec)) :-
+    split_string(Spec, ";", "", Specs),
+    maplist(spy_from_string(spy), Specs).
+debug_option(gspy(Spec)) :-
+    split_string(Spec, ";", "", Specs),
+    maplist(spy_from_string(cli_gspy), Specs).
+
+debug_from_string(TopicS) :-
     term_string(Topic, TopicS),
     debug(Topic).
-debug_option(spy(Atom)) :-
-    atom_pi(Atom, PI),
-    spy(PI).
-debug_option(gspy(Atom)) :-
-    atom_pi(Atom, PI),
-    (   exists_source(library(thread_util))
+
+spy_from_string(Pred, Spec) :-
+    atom_pi(Spec, PI),
+    call(Pred, PI).
+
+cli_gspy(PI) :-
+    (   exists_source(library(threadutil))
     ->  use_module(library(threadutil), [tspy/1]),
 	Goal = tspy(PI)
-    ;   exists_source(library(guitracer))
+    ;   exists_source(library(gui_tracer))
     ->  use_module(library(gui_tracer), [gspy/1]),
 	Goal = gspy(PI)
     ;   Goal = spy(PI)

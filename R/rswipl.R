@@ -9,8 +9,8 @@
 #
 .onLoad <- function(libname, pkgname)
 {
-  # Load libswipl.dylib under Linux and macOS
-  if(.Platform$OS.type == "unix")
+  # Load libswipl.dylib under macOS (linux: static lib)
+  if(.Platform$OS.type == "unix" & R.version$os != "linux-gnu")
   {
     fp <- file.path(libname, pkgname, "swipl", "lib", "swipl", "lib")
     arch <- R.version$arch
@@ -43,7 +43,7 @@
   # See .onLoad for details
   library.dynam.unload("rswipl", libpath=libpath)
 
-  if(.Platform$OS.type == "unix")
+  if(.Platform$OS.type == "unix" & R.version$os != "linux-gnu")
   {
     fp <- file.path(libpath, "swipl", "lib", "swipl", "lib")
     arch <- R.version$arch

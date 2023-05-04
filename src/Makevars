@@ -1,5 +1,6 @@
 PKG_CPPFLAGS=-I../inst/swipl/lib/swipl/include -D_REENTRANT -D__SWI_PROLOG__ -D__SWI_EMBEDDED__
 PKG_LIBS=`pkg-config ../inst/swipl/share/pkgconfig/swipl.pc --libs`
+OS=$(shell ${R_HOME}/bin/R -e "cat(R.version[['os']])" -s)
 
 CMAKE_VERSION := $(shell cmake --version 2>/dev/null)
 CMAKE_VERSION_MACOS := $(shell /Applications/CMake.app/Contents/bin/cmake --version 2>/dev/null)
@@ -14,13 +15,17 @@ swipl: ../linux/done
 
 ../linux/done:
 	mkdir -p ../linux
-ifdef CMAKE_VERSION
-	cd ../linux && cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DBUILD_TESTING=ON -DINSTALL_TESTS=ON -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel
+ifeq ("$(OS)","linux-gnu")
+	cd ../linux && cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DSWIPL_SHARED_LIB=OFF -DSWIPL_STATIC_LIB=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel
 	cd ../linux && $(MAKE) -j1
 	cd ../linux && $(MAKE) -j1 install
+else
+ifdef CMAKE_VERSION
+	cd ../linux && cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DBUILD_TESTING=ON -DINSTALL_TESTS=ON -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel && $(MAKE) -j1 install
 endif
 ifdef CMAKE_VERSION_MACOS
-	cd ../linux && LDFLAGS="-L/opt/R/arm64/lib" CFLAGS="-I/opt/R/arm64/include" /Applications/CMake.app/Contents/bin/cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel
+	cd ../linux && LDFLAGS="-L/opt/R/arm64/lib" CFLAGS="-I/opt/R/arm64/include" /Applications/CMake.app/Contents/bin/cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel && $(MAKE) -j1 install
+endif
 	cd ../linux && $(MAKE) -j1
 	cd ../linux && $(MAKE) -j1 install	
 endif

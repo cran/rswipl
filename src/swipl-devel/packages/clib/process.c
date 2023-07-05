@@ -1796,9 +1796,9 @@ do_create_process_fork(p_options *info, create_method method)
 
 // #pragma GCC diagnostic push
 // #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-//  if ( method == PCREATE_VFORK )
-//    pid = vfork();				/* As long as it is there we use it */
-//   else
+//   if ( method == PCREATE_VFORK )
+//     pid = vfork();				/* As long as it is there we use it */
+//  else
     pid = fork();
   if ( pid != 0 )				/* parent */
     restoreSignals(&set);

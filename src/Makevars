@@ -16,7 +16,7 @@ swipl: ../linux/done
 ../linux/done:
 	mkdir -p ../linux
 ifeq ("$(OS)","linux-gnu")
-	cd ../linux && cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DSWIPL_SHARED_LIB=OFF -DSWIPL_STATIC_LIB=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel
+	cd ../linux && cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel
 	cd ../linux && $(MAKE) -j1
 	cd ../linux && $(MAKE) -j1 install
 else
@@ -26,8 +26,6 @@ endif
 ifdef CMAKE_VERSION_MACOS
 	cd ../linux && LDFLAGS="-L/opt/R/arm64/lib" CFLAGS="-I/opt/R/arm64/include" /Applications/CMake.app/Contents/bin/cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel && $(MAKE) -j1 install
 endif
-	cd ../linux && $(MAKE) -j1
-	cd ../linux && $(MAKE) -j1 install	
 endif
 	rm ../inst/swipl/bin/swipl
 	rm ../inst/swipl/bin/swipl-ld

@@ -10,6 +10,17 @@ Rcpp::Rostream<true>&  Rcpp::Rcout = Rcpp::Rcpp_cout_get();
 Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
+// consult_
+LogicalVector consult_(CharacterVector files);
+RcppExport SEXP _rswipl_consult_(SEXP filesSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< CharacterVector >::type files(filesSEXP);
+    rcpp_result_gen = Rcpp::wrap(consult_(files));
+    return rcpp_result_gen;
+END_RCPP
+}
 // query_
 RObject query_(RObject query);
 RcppExport SEXP _rswipl_query_(SEXP querySEXP) {
@@ -41,6 +52,50 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// once_
+RObject once_(RObject query);
+RcppExport SEXP _rswipl_once_(SEXP querySEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< RObject >::type query(querySEXP);
+    rcpp_result_gen = Rcpp::wrap(once_(query));
+    return rcpp_result_gen;
+END_RCPP
+}
+// findall_
+List findall_(RObject query);
+RcppExport SEXP _rswipl_findall_(SEXP querySEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< RObject >::type query(querySEXP);
+    rcpp_result_gen = Rcpp::wrap(findall_(query));
+    return rcpp_result_gen;
+END_RCPP
+}
+// portray_
+RObject portray_(RObject query);
+RcppExport SEXP _rswipl_portray_(SEXP querySEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< RObject >::type query(querySEXP);
+    rcpp_result_gen = Rcpp::wrap(portray_(query));
+    return rcpp_result_gen;
+END_RCPP
+}
+// call_
+RObject call_(String query);
+RcppExport SEXP _rswipl_call_(SEXP querySEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< String >::type query(querySEXP);
+    rcpp_result_gen = Rcpp::wrap(call_(query));
+    return rcpp_result_gen;
+END_RCPP
+}
 // init_
 LogicalVector init_(String argv0);
 RcppExport SEXP _rswipl_init_(SEXP argv0SEXP) {
@@ -64,9 +119,14 @@ END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
+    {"_rswipl_consult_", (DL_FUNC) &_rswipl_consult_, 1},
     {"_rswipl_query_", (DL_FUNC) &_rswipl_query_, 1},
     {"_rswipl_clear_", (DL_FUNC) &_rswipl_clear_, 0},
     {"_rswipl_submit_", (DL_FUNC) &_rswipl_submit_, 0},
+    {"_rswipl_once_", (DL_FUNC) &_rswipl_once_, 1},
+    {"_rswipl_findall_", (DL_FUNC) &_rswipl_findall_, 1},
+    {"_rswipl_portray_", (DL_FUNC) &_rswipl_portray_, 1},
+    {"_rswipl_call_", (DL_FUNC) &_rswipl_call_, 1},
     {"_rswipl_init_", (DL_FUNC) &_rswipl_init_, 1},
     {"_rswipl_done_", (DL_FUNC) &_rswipl_done_, 0},
     {NULL, NULL, 0}

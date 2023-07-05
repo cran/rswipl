@@ -152,7 +152,7 @@ set(SWIPL_DATA_library explain.pl sort.pl prolog_config.pl
     lazy_lists.pl prolog_jiti.pl zip.pl obfuscate.pl wfs.pl
     prolog_wrap.pl prolog_trace.pl prolog_code.pl intercept.pl
     prolog_deps.pl tables.pl hashtable.pl strings.pl increval.pl
-    prolog_debug.pl prolog_versions.pl)
+    prolog_debug.pl prolog_versions.pl prolog_evaluable.pl macros.pl)
 if(INSTALL_DOCUMENTATION)
   set(SWIPL_DATA_library ${SWIPL_DATA_library} help.pl)
 endif()
@@ -172,7 +172,8 @@ if(NOT STATIC_EXTENSIONS)
   set(SWIPL_DATA_library ${SWIPL_DATA_library} shlib.pl)
 endif()
 if(MULTI_THREADED)
-  list(APPEND SWIPL_DATA_library threadutil.pl thread.pl thread_pool.pl)
+  list(APPEND SWIPL_DATA_library threadutil.pl thread.pl thread_pool.pl
+       rwlocks.pl)
 endif()
 if(O_PROFILE)
   list(APPEND SWIPL_DATA_library prolog_profile.pl)
@@ -397,15 +398,8 @@ endif()
 # build swipl
 add_executable(swipl${PGO_SUFFIX} ${SWIPL_SRC})
 target_link_libraries(swipl${PGO_SUFFIX} ${SWIPL_LIBRARIES} libswipl${PGO_SUFFIX})
-target_c_stack(swipl${PGO_SUFFIX} 4000000)
 if(MINGW)
   target_link_options(swipl${PGO_SUFFIX} PRIVATE -municode)
-endif()
-if(EMSCRIPTEN)
-  target_link_options(swipl${PGO_SUFFIX} PRIVATE -s ALLOW_MEMORY_GROWTH=1)
-  if(MULTI_THREADED)
-    target_link_options(swipl${PGO_SUFFIX} PRIVATE -pthread -s PTHREAD_POOL_SIZE=4)
-  endif()
 endif()
 
 # build the library
@@ -510,6 +504,10 @@ elseif(EMSCRIPTEN)
   include(EmscriptenTargets)
 elseif(ANDROID)
   include(AndroidTargets)
+endif()
+
+if(SWIPL_C_STACK_SIZE)
+  target_c_stack(swipl${PGO_SUFFIX} ${SWIPL_C_STACK_SIZE})
 endif()
 
 ################

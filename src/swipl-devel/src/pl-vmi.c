@@ -5058,20 +5058,8 @@ VMI(I_CALLCLEANUP, 0, 0, ())
 END_VMI
 
 
-/* (*) Work around a bug in the LLVM.  Just calling a dummy function avoids
-   a crash here!?  If we do not use GCC's threaded-code support it appears
-   that the bug is gone too.  LLVM's support for this GCC extension is poor
-   anyway: it runs, but is *much* slower than the switch.
-*/
-
 VMI(I_EXITCLEANUP, 0, 0, ())
-{
-#if defined(__llvm__) && defined(VMCODE_IS_ADDRESS) /* (*) */
-  extern int llvm_dummy(void);
-  llvm_dummy();
-#endif
-
-  while( BFR && BFR->type == CHP_DEBUG )
+{ while( BFR && BFR->type == CHP_DEBUG )
     BFR = BFR->parent;
 
   if ( BFR->frame == FR && BFR->type == CHP_CATCH )
@@ -5108,6 +5096,11 @@ which is translated to:
   I_ENTER
   I_CATCH
   I_EXITCATCH
+
+I_EXITCATCH verifies finishes the catch/3 call   if  there are no choice
+points created by the guarded goal. This is   the case if the first real
+choicepoint is our `CHP_CATCH` choicepoint. If we   are in debug mode we
+restore it as a debug choicepoint, else we discard it.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(I_CATCH, 0, 0, ())
@@ -5131,9 +5124,19 @@ END_VMI
 
 
 VMI(I_EXITCATCH, 0, 0, ())
-{ if ( BFR->frame == FR && BFR == (Choice)argFrameP(FR, 3) )
-  { assert(BFR->type == CHP_CATCH);
-    BFR = BFR->parent;
+{ Choice bfr = BFR;
+
+  while(bfr && bfr->type == CHP_DEBUG)
+    bfr = bfr->parent;
+
+  if ( bfr->frame == FR && bfr == (Choice)argFrameP(FR, 3) )
+  { assert(bfr->type == CHP_CATCH);
+    if ( debugstatus.debugging )
+    { bfr->type = CHP_DEBUG;
+      BFR = bfr;
+    } else
+    { BFR = bfr->parent;
+    }
     set(FR, FR_CATCHED);
   }
 

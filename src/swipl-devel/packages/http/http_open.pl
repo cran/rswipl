@@ -91,8 +91,8 @@ additional modules that act as plugins:
     subsequent requests.
 
     * library(http/http_stream)
-    This library adds support for _chunked_ encoding and makes the
-    http_open/3 advertise itself as HTTP/1.1 instead of HTTP/1.0.
+    This library adds support for _chunked_ encoding. It is lazily
+    loaded if the server sends a ``Transfer-encoding: chunked`` header.
 
 
 Here is a simple example to fetch a web-page:
@@ -487,8 +487,8 @@ try_http_proxy(Method, Parts, Stream, Options0) :-
               [ Host:Port, StreamPair ]),
         catch(send_rec_header(StreamPair, Stream, HostPort,
                               RequestURI, Parts, Options),
-              error(E,_),
-              keep_alive_error(E))
+              Error,
+              keep_alive_error(Error, StreamPair))
     ->  true
     ;   http:http_connection_over_proxy(Method, Parts, Host:Port,
                                         SocketStreamPair, Options, Options1),
@@ -659,6 +659,9 @@ guarded_send_rec_header(StreamPair, Stream, Host, RequestURI, Parts, Options) :-
 
 http_version('1.1') :-
     http:current_transfer_encoding(chunked),
+    !.
+http_version('1.1') :-
+    autoload_encoding(chunked),
     !.
 http_version('1.0').
 
@@ -1054,6 +1057,10 @@ transfer_encoding_filter_(Encoding, In0, In, _Options) :-
 :- if(exists_source(library(zlib))).
 autoload_encoding(gzip) :-
     use_module(library(zlib)).
+:- endif.
+:- if(exists_source(library(http/http_stream))).
+autoload_encoding(chunked) :-
+    use_module(library(http/http_stream)).
 :- endif.
 
 content_type(Lines, Type) :-
@@ -1668,22 +1675,26 @@ http_close_keep_alive(Address) :-
     forall(get_from_pool(Address, StreamPair),
            close(StreamPair, [force(true)])).
 
-%!  keep_alive_error(+Error)
+%!  keep_alive_error(+Error, +StreamPair)
 %
-%   Deal with an error from reusing  a keep-alive connection. If the
-%   error is due to an I/O error   or end-of-file, fail to backtrack
-%   over get_from_pool/2. Otherwise it is a   real error and we thus
-%   re-raise it.
+%   Deal with an error from  reusing   a  keep-alive  connection. If the
+%   error is due to an I/O error  or end-of-file, fail to backtrack over
+%   get_from_pool/2. Otherwise it is a real   error and we thus re-raise
+%   it. In all cases we close StreamPair rather than returning it to the
+%   pool as we may have done a partial read and thus be out of sync wrt.
+%   the HTTP protocol.
 
-keep_alive_error(keep_alive(closed)) :-
+keep_alive_error(error(keep_alive(closed), _), _) :-
     !,
     debug(http(connection), 'Keep-alive connection was closed', []),
     fail.
-keep_alive_error(io_error(_,_)) :-
+keep_alive_error(error(io_error(_,_), _), StreamPair) :-
     !,
+    close(StreamPair, [force(true)]),
     debug(http(connection), 'IO error on Keep-alive connection', []),
     fail.
-keep_alive_error(Error) :-
+keep_alive_error(Error, StreamPair) :-
+    close(StreamPair, [force(true)]),
     throw(Error).
 
 

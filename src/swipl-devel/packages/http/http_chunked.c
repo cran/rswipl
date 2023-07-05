@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2007-2018, University of Amsterdam
+    Copyright (c)  2007-2023, University of Amsterdam
                               VU University Amsterdam
 			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -43,7 +44,7 @@
 #include <time.h>
 #include <errno.h>
 
-#define MAXHDR 1024			/* max size of chink header line */
+#define MAXHDR 1024			/* max size of chunk header line */
 
 static atom_t ATOM_close_parent;	/* close_parent(Bool) */
 static atom_t ATOM_max_chunk_size;	/* max_chunk_size(Int) */
@@ -55,14 +56,37 @@ static atom_t ATOM_max_chunk_size;	/* max_chunk_size(Int) */
 
 #define BUFSIZE SIO_BUFSIZE		/* raw I/O buffer */
 
-typedef struct chunked_context
-{ IOSTREAM	   *stream;		/* Original stream */
-  IOSTREAM	   *chunked_stream;	/* Stream I'm handle of */
-  int		    close_parent;	/* close parent on close */
-  int		    eof_seen;		/* We saw end-of-file */
-  IOENC		    parent_encoding;	/* Saved encoding of parent */
-  size_t	    avail;		/* data available */
-} chunked_context;
+static chunked_metadata*
+alloc_chunked_metadata(void)
+{ chunked_metadata *md = PL_malloc(sizeof(*md));
+
+  if ( md )
+    memset(md, 0, sizeof(*md));
+
+  return md;
+}
+
+static void
+free_chunked_metadata(chunked_metadata *md)
+{ if ( md )
+  { chunked_trailer *tr;
+
+    if ( (tr=md->trailer) )
+    { chunked_trailer *next;
+      md->trailer = NULL;
+      md->trailer_tail = NULL;
+
+      for( ; tr; tr=next )
+      { next = tr->next;
+	PL_unregister_atom(tr->key);
+	PL_unregister_atom(tr->value);
+	PL_free(tr);
+      }
+    }
+
+    PL_free(md);
+  }
+}
 
 
 static chunked_context*
@@ -83,6 +107,7 @@ static void
 free_chunked_context(chunked_context *ctx)
 { if ( ctx->stream->upstream )
     Sset_filter(ctx->stream, NULL);
+  free_chunked_metadata(ctx->metadata);
 
   PL_free(ctx);
 }
@@ -161,15 +186,59 @@ chunked_read(void *handle, char *buf, size_t size)
 
 
 static ssize_t				/* encode */
-chunked_write(void *handle, char *buf, size_t size)
-{ chunked_context *ctx = handle;
+chunked_write_chunk(IOSTREAM *s, const chunked_metadata *md, char *buf, size_t size)
+{ int rc = 0;
 
-  if ( Sfprintf(ctx->stream, "%zx\r\n", size) >= 0 &&
-       Sfwrite(buf, sizeof(char), size, ctx->stream) == size &&
-       Sfprintf(ctx->stream, "\r\n") >= 0 )
+  if ( md && md->chunk_ext )
+  { if ( Sfprintf(s, "%zx", size) < 0 )
+      rc = -1;
+
+    term_t tail = PL_copy_term_ref(md->chunk_ext);
+    term_t head = PL_new_term_ref();
+    term_t arg  = PL_new_term_ref();
+
+    while(rc == 0 && PL_get_list_ex(tail, head, tail))
+    { char *k, *v;
+
+      if ( !PL_get_arg(1, head, arg) ||
+	   !PL_get_chars(arg, &k, CVT_ATOMIC|CVT_EXCEPTION|REP_ISO_LATIN_1) ||
+	   !PL_get_arg(2, head, arg) ||
+	   !PL_get_chars(arg, &v, CVT_ATOMIC|CVT_EXCEPTION|REP_ISO_LATIN_1) ||
+	   Sfprintf(s, ";%s=%s", k, v) < 0 )
+      { term_t ex;
+
+	if ( (ex=PL_exception(0)) )
+	  Sset_exception(s, ex);
+	rc = -1;
+      }
+    }
+    if ( !PL_get_nil_ex(tail) )
+    { Sset_exception(s, PL_exception(0));
+      rc = -1;
+    }
+
+    if ( rc == 0 && Sfprintf(s, "\r\n") < 0 )
+      rc = -1;
+  } else
+  { if ( Sfprintf(s, "%zx\r\n", size) < 0 )
+      rc = -1;
+  }
+
+  if ( rc == 0 &&
+       Sfwrite(buf, sizeof(char), size, s) == size &&
+       Sfprintf(s, "\r\n") >= 0 &&
+       Sflush(s) >= 0 )
     return size;
 
   return -1;
+}
+
+
+static ssize_t				/* encode */
+chunked_write(void *handle, char *buf, size_t size)
+{ chunked_context *ctx = handle;
+
+  return chunked_write_chunk(ctx->stream, ctx->metadata, buf, size);
 }
 
 
@@ -196,6 +265,40 @@ chunked_control(void *handle, int op, void *data)
 
 
 static int
+chunked_write_trailer(IOSTREAM *s, const chunked_metadata *md)
+{ int rc = 0;
+
+  if ( !md || !md->trailer)
+  { if ( Sfprintf(s, "0\r\n\r\n") < 0 )
+      rc = -1;
+  } else
+  { if ( Sfprintf(s, "0\r\n") >= 0 )
+    { chunked_trailer *tr;
+
+      for(tr=md->trailer; tr && rc == 0; tr = tr->next)
+      { char *k, *v;
+
+	PL_STRINGS_MARK();
+	if ( !PL_atom_mbchars(tr->key, NULL, &k, REP_UTF8) ||
+	     !PL_atom_mbchars(tr->value, NULL, &v, REP_UTF8) ||
+	     SfprintfX(s, "%Us: %Us\r\n", k, v) < 0 )
+	  rc = -1;
+	PL_STRINGS_RELEASE();
+      }
+
+      if ( Sfprintf(s, "\r\n") < 0 )
+	rc = -1;
+    } else
+      rc = -1;
+  }
+
+  if ( rc == 0 )
+    rc = Sflush(s);
+
+  return rc;
+}
+
+static int
 chunked_close(void *handle)
 { chunked_context *ctx = handle;
   int rc = 0;
@@ -203,9 +306,7 @@ chunked_close(void *handle)
   DEBUG(1, Sdprintf("chunked_close() ...\n"));
 
   if ( (ctx->chunked_stream->flags & SIO_OUTPUT) )
-  { if ( Sfprintf(ctx->stream, "0\r\n\r\n") < 0 )
-      rc = -1;
-  }
+    rc = chunked_write_trailer(ctx->stream, ctx->metadata);
 
   ctx->stream->encoding = ctx->parent_encoding;
 
@@ -315,6 +416,98 @@ error:
 }
 
 
+static int
+get_chunked_metadata(term_t t, chunked_metadata **ctx, int silent)
+{ IOSTREAM *s;
+  int rc = FALSE;
+
+  if ( (rc=PL_get_stream(t, &s, 0)) )
+  { chunked_metadata **mdp = NULL;
+
+    if ( s->functions == &chunked_functions )
+    { chunked_context *ctx = s->handle;
+      mdp = &ctx->metadata;
+    } else if ( s->functions == &cgi_functions )
+    { cgi_context *ctx = s->handle;
+      if ( ctx->transfer_encoding == ATOM_chunked )
+	mdp = &ctx->metadata;
+    } else
+    { if ( !silent )
+	PL_domain_error("http_chunked_stream", t);
+    }
+
+    if ( mdp )
+    { if ( !*mdp )
+	*mdp = alloc_chunked_metadata();
+      if ( *mdp )
+      { *ctx = *mdp;
+	rc = TRUE;
+      }
+    }
+
+    PL_release_stream(s);
+  }
+
+  return rc;
+}
+
+static foreign_t
+http_chunked_flush(term_t Stream, term_t Ext)
+{ chunked_metadata *md;
+  int rc;
+
+  if ( (rc=get_chunked_metadata(Stream, &md, FALSE)) )
+  { IOSTREAM *s;
+
+    md->chunk_ext = Ext;
+    if ( PL_get_stream(Stream, &s, 0) )
+    { Sflush(s);
+      rc = PL_release_stream(s);
+    } else
+      rc = FALSE;
+    md->chunk_ext = 0;
+  }
+
+  return rc;
+}
+
+
+static foreign_t
+http_chunked_add_trailer(term_t Stream, term_t Key, term_t Value)
+{ chunked_metadata *md;
+  atom_t key, value;
+  chunked_trailer *tr;
+
+  if ( get_chunked_metadata(Stream, &md, FALSE) &&
+       PL_get_atom(Key, &key) &&
+       PL_get_atom(Value, &value) &&
+       (tr=PL_malloc(sizeof(*tr))) )
+  { tr->key = key;
+    tr->value = value;
+    tr->next = NULL;
+    PL_register_atom(key);
+    PL_register_atom(value);
+    if ( md->trailer_tail )
+    { md->trailer_tail->next = tr;
+    } else
+    { md->trailer = md->trailer_tail = tr;
+    }
+
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+
+static foreign_t
+http_is_chunked(term_t Stream)
+{ chunked_metadata *md;
+
+  return get_chunked_metadata(Stream, &md, TRUE);
+}
+
+
 		 /*******************************
 		 *	       INSTALL		*
 		 *******************************/
@@ -324,5 +517,8 @@ install_http_chunked()
 { ATOM_close_parent   = PL_new_atom("close_parent");
   ATOM_max_chunk_size = PL_new_atom("max_chunk_size");
 
-  PL_register_foreign("http_chunked_open",  3, pl_http_chunked_open,  0);
+  PL_register_foreign("http_chunked_open",        3, pl_http_chunked_open,     0);
+  PL_register_foreign("http_is_chunked",          1, http_is_chunked,          0);
+  PL_register_foreign("http_chunked_flush",       2, http_chunked_flush,       0);
+  PL_register_foreign("http_chunked_add_trailer", 3, http_chunked_add_trailer, 0);
 }

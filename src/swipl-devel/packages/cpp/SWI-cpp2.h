@@ -848,13 +848,13 @@ public:
   }
 
   void erase()
-  { if ( C_ != null )
+  { if ( not_null() )
       Plx_erase(C_);
-    C_ = null;
+    reset();
   }
 
   PlRecord duplicate() const
-  { return PlRecord(Plx_duplicate_record(C_));
+  { return is_null() ? PlRecord(null) : PlRecord(Plx_duplicate_record(C_));
   }
 
   ~PlRecord()
@@ -889,6 +889,8 @@ public:
     Plx_recorded_external(C_.data(), t.C_);
     return t;
   }
+
+  const std::string& data() const { return C_; }
 
 private:
   std::string C_;
@@ -972,6 +974,7 @@ public:
     // allocating the std::string) even though we specify "throw()" -
     // telling the truth "noexcept(false)" results in a compilation
     // error.
+    (void)enc; // TODO: use this
     const_cast<PlException*>(this)->set_what_str();
     return what_str_;
   }
@@ -1476,8 +1479,9 @@ public:
 //
 // THe methods are the usual "smart pointer" ones: dereference (either
 // using `->` or `*`), get(), set(ptr). In addition:
-//    deferred_free() - the pointer will be deleted on return/throw
+//    deferred_free() - the pointer will be deleted on return/throw (default)
 //    keep() - the pointer will not be deleted on return/throw
+// Typically, keep() is used only when calling PL_retry_address()
 
 template <typename ContextType> class PlForeignContextPtr
 {
@@ -1497,9 +1501,9 @@ public:
   ContextType* get()        const { return ptr_; }
   void set(ContextType* ptr = nullptr) { ptr_ = ptr; }
 
-  void deferred_free()       { deferred_free_ = true; }
   void deferred_free(bool v) { deferred_free_ = v; }
-  void keep()                { deferred_free_ = false; }
+  void deferred_free()       { deferred_free(true); }
+  ContextType* keep()        { deferred_free(false); return get(); }
 
   ~PlForeignContextPtr()
   { if ( deferred_free_ )

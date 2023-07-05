@@ -7,6 +7,12 @@ project(SWI-Prolog)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+if(CMAKE_C_COMPILER_ID STREQUAL Clang)
+  set(DEFAULT_VMI_FUNCTIONS ON)
+else()
+  set(DEFAULT_VMI_FUNCTIONS OFF)
+endif()
+
 option(MULTI_THREADED
        "Enable multiple Prolog threads"
        ON)
@@ -15,7 +21,7 @@ option(ENGINES
        OFF)
 option(VMI_FUNCTIONS
        "Create a function for each VM instruction"
-       OFF)
+       ${DEFAULT_VMI_FUNCTIONS})
 option(USE_SIGNALS
        "Enable signal handling"
        ON)
@@ -92,6 +98,14 @@ option(GCOV
 option(STATIC_EXTENSIONS
        "Add foreign extensions statically"
        OFF)
+if(EMSCRIPTEN)
+  set(DEFAULT_CCACHE OFF)
+else()
+  set(DEFAULT_CCACHE ON)
+endif()
+option(CCACHE
+       "Use ccache when available"
+       ${DEFAULT_CCACHE})
 
 set(JNIDIR ""
     CACHE STRING "Directory for linking Java JNI components")
@@ -121,6 +135,14 @@ endif()
 
 # Verbosity
 set(CMAKE_INSTALL_MESSAGE NEVER)
+
+if(CCACHE)
+  find_program(PROG_CCACHE ccache)
+  if(PROG_CCACHE)
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ${PROG_CCACHE})
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ${PROG_CCACHE})
+  endif(PROG_CCACHE)
+endif(CCACHE)
 
 ################
 # Installation directories

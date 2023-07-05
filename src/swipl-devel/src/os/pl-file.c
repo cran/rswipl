@@ -213,6 +213,7 @@ aliasStream(IOSTREAM *s, atom_t name)
   ctx = getStreamContext(s);
   addNewHTable(streamAliases, (void *)name, s);
   PL_register_atom(name);
+  Sreference(s);
 
   a = allocHeapOrHalt(sizeof(*a));
   a->next = NULL;
@@ -256,6 +257,7 @@ unaliasStream(IOSTREAM *s, atom_t name)
       }
 
       PL_unregister_atom(name);
+      Sunreference(s);
     }
   } else				/* delete them all */
   { stream_context *ctx;
@@ -269,6 +271,7 @@ unaliasStream(IOSTREAM *s, atom_t name)
 	if ( lookupHTable(streamAliases, (void *)a->name) )
 	{ deleteHTable(streamAliases, (void *)a->name);
 	  PL_unregister_atom(a->name);
+	  Sunreference(s);
 	}
 
 	freeHeap(a, sizeof(*a));
@@ -2892,7 +2895,8 @@ read_pending_input(DECL_LD term_t input, term_t list, term_t tail, int chars)
     if ( n < 0 )			/* should not happen */
       return streamStatus(s);
     if ( n == 0 )			/* end-of-file */
-    { return ( PL_unify(list, tail) &&
+    { return ( streamStatus(s) &&
+	       PL_unify(list, tail) &&
 	       PL_unify_nil(list) );
     }
     if ( s->position )
@@ -2908,7 +2912,7 @@ read_pending_input(DECL_LD term_t input, term_t list, term_t tail, int chars)
       { ssize_t i;
 
 	if ( !allocList(n, &ctx) )
-	  return FALSE;
+	  goto failure;
 
 	for(i=0; i<n; i++)
 	{ int c = buf[i]&0xff;
@@ -2950,7 +2954,7 @@ read_pending_input(DECL_LD term_t input, term_t list, term_t tail, int chars)
 			  count, n, es-us));
 
 	if ( !allocList(count, &ctx) )
-	  return FALSE;
+	  goto failure;
 
 	for(us=buf,i=0; i<count; i++)
 	{ wchar_t c;
@@ -3000,7 +3004,7 @@ read_pending_input(DECL_LD term_t input, term_t list, term_t tail, int chars)
 			  count, n, es-us));
 
 	if ( !allocList(count, &ctx) )
-	  return FALSE;
+	  goto failure;
 
 	for(us=buf,i=0; i<count; i++)
 	{ int c;
@@ -3048,7 +3052,7 @@ read_pending_input(DECL_LD term_t input, term_t list, term_t tail, int chars)
 	}
 
 	if ( !allocList(count, &ctx) )
-	  return FALSE;
+	  goto failure;
 
 	for(us=buf,i=0; i<count; i++)
 	{ int c = get_ucs2(us, s->encoding == ENC_UTF16BE);
@@ -3085,7 +3089,7 @@ read_pending_input(DECL_LD term_t input, term_t list, term_t tail, int chars)
 	size_t done, i;
 
 	if ( !allocList(count, &ctx) )
-	  return FALSE;
+	  goto failure;
 
 	for(i=0; i<count; i++)
 	{ int c = ws[i];

@@ -60,7 +60,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 90111
+#define PLVERSION 90112
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -409,6 +409,7 @@ PL_EXPORT(const atom_t) *_PL_atoms(void); /* base of reserved (meta-)atoms */
 #endif
 
 					/* PL_Q_EXT_STATUS return codes */
+#define PL_S_NOT_INNER	       -2	/* Query is not inner query */
 #define PL_S_EXCEPTION	       -1	/* Query raised exception */
 #define PL_S_FALSE		0	/* Query failed */
 #define PL_S_TRUE		1	/* Query succeeded with choicepoint */
@@ -547,6 +548,11 @@ PL_EXPORT(int)		PL_get_tail(term_t l, term_t t) WUNUSED;
 PL_EXPORT(int)		PL_get_nil(term_t l) WUNUSED;
 PL_EXPORT(int)		PL_get_term_value(term_t t, term_value_t *v) WUNUSED;
 PL_EXPORT(char *)	PL_quote(int chr, const char *data);
+#define PL_FOR_DICT_SORTED	0x1
+PL_EXPORT(int)		PL_for_dict(term_t dict,
+				    int (*func)(term_t key, term_t value, void *closure),
+				    void *closure,
+				    int flags);
 
 			/* Verify types */
 PL_EXPORT(int)		PL_term_type(term_t t);
@@ -590,6 +596,8 @@ PL_EXPORT(int)		PL_put_nil(term_t l);
 PL_EXPORT(int)		PL_put_term(term_t t1, term_t t2) WUNUSED;
 PL_EXPORT(int)		PL_put_dict(term_t t, atom_t tag, size_t len,
 				    const atom_t *keys, term_t values) WUNUSED;
+PL_EXPORT(atom_t)	_PL_cons_small_int(int64_t v);
+PL_EXPORT(void)		_PL_unregister_keys(size_t len, atom_t *keys);
 
 			/* construct a functor or list-cell */
 PL_EXPORT(int)		PL_cons_functor(term_t h, functor_t f, ...) WUNUSED;
@@ -743,6 +751,7 @@ PL_EXPORT(int)		PL_get_blob(term_t t, void **blob, size_t *len,
 PL_EXPORT(void*)	PL_blob_data(atom_t a,
 				     size_t *len,
 				     struct PL_blob_t **type);
+PL_EXPORT(int)		PL_free_blob(atom_t blob);
 
 PL_EXPORT(void)		PL_register_blob_type(PL_blob_t *type);
 PL_EXPORT(PL_blob_t*)	PL_find_blob_type(const char* name);

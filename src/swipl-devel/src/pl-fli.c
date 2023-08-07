@@ -653,6 +653,16 @@ int
   return (int)arity;
 }
 
+atom_t
+_PL_cons_small_int(int64_t v)
+{ word w = consInt(v);
+  if ( valInt(w) == v )
+    return (atom_t)w;
+
+  return 0;
+}
+
+
 
 		 /*******************************
 		 *    WIDE CHARACTER SUPPORT	*
@@ -3912,6 +3922,24 @@ PL_blob_data(atom_t a, size_t *len, PL_blob_t **type)
 }
 
 
+int
+PL_free_blob(atom_t a)
+{ Atom x = atomValue(a);
+  const PL_blob_t *type = x->type;
+
+  if ( true(type, PL_BLOB_NOCOPY) && type->release )
+  { if ( (*type->release)(a) )
+    { x->length = 0;
+      x->name = NULL;
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+
+
 		 /*******************************
 		 *	       DICT		*
 		 *******************************/
@@ -3962,6 +3990,14 @@ PL_put_dict(term_t t, atom_t tag,
   }
 
   return FALSE;
+}
+
+void
+_PL_unregister_keys(size_t len, atom_t *keys)
+{ for(size_t i=0; i<len; i++)
+  { if ( isAtom(keys[i]) )
+      PL_unregister_atom(keys[i]);
+  }
 }
 
 
@@ -4225,7 +4261,7 @@ PL_call_predicate(Module ctx, int flags, predicate_t pred, term_t h0)
 
 int
 PL_call(term_t t, Module m)
-{ return callProlog(m, t, PL_Q_NORMAL, NULL);
+{ return callProlog(m, t, PL_Q_PASS_EXCEPTION, NULL);
 }
 
 

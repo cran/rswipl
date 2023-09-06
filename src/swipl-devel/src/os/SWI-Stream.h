@@ -50,24 +50,25 @@
 #endif
 #endif
 
-#ifdef __MINGW32__
+#ifdef __WINDOWS__
 #include <winsock2.h>
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 #include <stdarg.h>
 #include <wchar.h>
 #include <stddef.h>
-#ifdef _MSC_VER
-typedef __int64 int64_t;
-#if (_MSC_VER < 1300)
-typedef long intptr_t;
-typedef unsigned long uintptr_t;
-#endif
-typedef intptr_t ssize_t;		/* signed version of size_t */
-#else
-#include <unistd.h>
 #include <inttypes.h>			/* more portable than stdint.h */
+
+#ifdef _MSC_VER
+typedef __int32 int32_t;
+typedef unsigned __int32 uint32_t;
+typedef __int64 int64_t;
+typedef unsigned __int64 uint64_t;
+typedef intptr_t ssize_t;
+typedef uintptr_t size_t;
 #endif
 
 #ifdef __cplusplus
@@ -88,13 +89,16 @@ stuff.
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #define HAVE_DECLSPEC
+#else
+#if !defined(HAVE_VISIBILITY_ATTRIBUTE) && (__GNUC__ >= 4 || defined(__clang__))
+#define HAVE_VISIBILITY_ATTRIBUTE 1
+#endif
 #endif
 
 #ifdef HAVE_DECLSPEC
 # ifdef PL_KERNEL
 #define PL_EXPORT(type)		__declspec(dllexport) extern type
 #define PL_EXPORT_DATA(type)	__declspec(dllexport) extern type
-#define install_t		void
 # else
 #  ifdef __BORLANDC__
 #define PL_EXPORT(type)		type _stdcall
@@ -118,7 +122,11 @@ stuff.
 #define PL_EXPORT(type)		extern type
 #define PL_EXPORT_DATA(type)	extern type
 # endif
+#ifdef HAVE_VISIBILITY_ATTRIBUTE
+#define install_t		__attribute__((visibility("default"))) void
+#else
 #define install_t		void
+#endif
 #endif /*HAVE_DECLSPEC*/
 #endif /*_PL_EXPORT_DONE*/
 

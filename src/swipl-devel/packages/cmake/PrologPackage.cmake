@@ -136,7 +136,9 @@ endif()
     elseif(arg STREQUAL "C_SOURCES")
       set(mode c_sources)
     elseif(arg STREQUAL "THREADED")
-      set(v_c_libs ${v_c_libs} ${CMAKE_THREAD_LIBS_INIT})
+      if(MULTI_THREADED)
+        set(v_c_libs ${v_c_libs} Threads::Threads)
+      endif()
     elseif(arg STREQUAL "C_LIBS")
       set(mode c_libs)
     elseif(arg STREQUAL "C_INCLUDE_DIR")
@@ -192,6 +194,8 @@ endif()
     else()
       target_link_libraries(${foreign_target} PRIVATE
 			    ${v_c_libs} ${SWIPL_LIBRARIES})
+      set_property(TARGET ${foreign_target} PROPERTY
+		   C_VISIBILITY_PRESET hidden)
     endif()
     add_dependencies(library_index_library ${foreign_target})
     if(v_c_include_dirs)
@@ -241,7 +245,7 @@ endfunction(swipl_plugin)
 # tree.
 
 function(install_dll)
-if(WIN32 AND NOT MSYS2)
+if(WIN32 AND NOT MSYS2 AND NOT MSVC)
   set(dlls)
 
   foreach(lib ${ARGN})

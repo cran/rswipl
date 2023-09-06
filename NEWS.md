@@ -1,3 +1,9 @@
+# rswipl 9.1.15
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-1-15/6820
+
+maintainance release, fixes valgrind issues
+
 # rswipl 9.1.12
 
 see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-1-12/6754

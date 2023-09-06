@@ -54,13 +54,7 @@
 #endif
 
 #if O_GMP
-# ifdef _MSC_VER			/* ignore warning in gmp 5.0.2 header */
-# pragma warning( disable : 4146 )
-# endif
 #include <gmp.h>
-# ifdef _MSC_VER
-# pragma warning( default : 4146 )
-# endif
 #elif O_BF
 #include "libbf/bf_gmp_types.h"
 #endif
@@ -119,14 +113,16 @@
 #define COMMON(type) type
 
 #if (defined(__GNUC__) || defined(__clang__)) && !defined(PEDANTIC)
-#define O_EMPY_STRUCTS 1
+#define O_EMPTY_STRUCTS 1
 #endif
 
 #include "pl-macros.h"
 
 /* C11 gives us the _Static_assert operator, let's make it a little nicer.
  * Accept either static_assert(cond, "message") or static_assertion(cond). */
+#ifndef _MSC_VER
 #define static_assert(condition, message) _Static_assert(condition, message)
+#endif
 #define static_assertion(condition) _Static_assert(condition, "Assertion failed: ("#condition") [expansion: " A_STRINGIFY(condition) "]")
 
 #include "pl-builtin.h"
@@ -1544,7 +1540,7 @@ typedef struct
   code		merge_av[1];	/* Argument vector */
 } vmi_merge;
 
-#if O_EMPY_STRUCTS
+#if O_EMPTY_STRUCTS
 #define VM_ARGC 4
 #define VM_ARGTYPES(ci) (ci)->_argtype
 #define VM_ARTYPE_PREFIX
@@ -2158,7 +2154,7 @@ typedef struct
 { handler_t   saved_handler;		/* Original handler */
   handler_t   handler;			/* User signal handler */
   predicate_t predicate;		/* Prolog handler */
-  int	      flags;			/* PLSIG_*, defined in pl-setup.c */
+  unsigned int flags;			/* PLSIG_*, defined in pl-setup.c */
 } sig_handler, *SigHandler;
 
 /* Declare numbers for the virtual signals, in their own domain. For now, these
@@ -2470,7 +2466,7 @@ typedef struct
 typedef struct wakeup_state
 { fid_t		fid;			/* foreign frame reference */
   Stack		outofstack;		/* Stack we are out of */
-  int		flags;			/* WAKEUP_STATE_* */
+  unsigned int	flags;			/* WAKEUP_STATE_* */
 } wakeup_state;
 
 

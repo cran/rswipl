@@ -60,7 +60,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 90112
+#define PLVERSION 90115
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -105,14 +105,17 @@ duplicated this stuff.
 #define _PL_EXPORT_DONE
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
-#define HAVE_DECLSPEC
+#define HAVE_DECLSPEC 1
+#else
+#if !defined(HAVE_VISIBILITY_ATTRIBUTE) && (__GNUC__ >= 4 || defined(__clang__))
+#define HAVE_VISIBILITY_ATTRIBUTE 1
+#endif
 #endif
 
 #ifdef HAVE_DECLSPEC
 # ifdef PL_KERNEL
 #define PL_EXPORT(type)		__declspec(dllexport) extern type
 #define PL_EXPORT_DATA(type)	__declspec(dllexport) extern type
-#define install_t		void
 # else
 #  ifdef __BORLANDC__
 #define PL_EXPORT(type)		type _stdcall
@@ -128,7 +131,7 @@ duplicated this stuff.
 #  endif
 #define install_t		__declspec(dllexport) void
 # endif
-#else /*HAVE_DECLSPEC*/
+#else /*!HAVE_DECLSPEC*/
 # ifdef PL_SO_EXPORT
 #define PL_EXPORT(type)		extern PL_SO_EXPORT type
 #define PL_EXPORT_DATA(type)	extern PL_SO_EXPORT type
@@ -136,7 +139,11 @@ duplicated this stuff.
 #define PL_EXPORT(type)		extern type
 #define PL_EXPORT_DATA(type)	extern type
 # endif
+#ifdef HAVE_VISIBILITY_ATTRIBUTE
+#define install_t		__attribute__((visibility("default"))) void
+#else
 #define install_t		void
+#endif
 #endif /*HAVE_DECLSPEC*/
 #endif /*_PL_EXPORT_DONE*/
 
@@ -1369,11 +1376,6 @@ PL_EXPORT(void)		PL_prof_exit(void *node);
 		 /*******************************
 		 *	      DEBUG		*
 		 *******************************/
-
-PL_EXPORT_DATA(int)     plugin_is_GPL_compatible;
-#ifndef EMACS_MODULE_H
-PL_EXPORT(int)          emacs_module_init(void*);
-#endif
 
 PL_EXPORT(int)		PL_prolog_debug(const char *topic);
 PL_EXPORT(int)		PL_prolog_nodebug(const char *topic);

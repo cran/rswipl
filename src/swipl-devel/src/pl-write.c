@@ -68,7 +68,7 @@
 #endif
 
 typedef struct
-{ int   flags;				/* PL_WRT_* flags */
+{ unsigned int flags;			/* PL_WRT_* flags */
   int   max_depth;			/* depth limit */
   int   depth;				/* current depth */
   atom_t spacing;			/* Where to insert spaces */
@@ -751,7 +751,8 @@ writeAtom(atom_t a, write_options *options)
   }
 
   if ( atom->type->write )
-    return (*atom->type->write)(options->out, a, options->flags);
+    return ((*atom->type->write)(options->out, a, options->flags) &&
+	    !Sferror(options->out));
   if ( false(atom->type, PL_BLOB_TEXT) )
     return writeBlob(a, options);
 
@@ -2150,7 +2151,7 @@ PL_write_term(IOSTREAM *s, term_t term, int precedence, int flags)
   int rc;
 
   memset(&options, 0, sizeof(options));
-  options.flags	    = flags;
+  options.flags	    = flags & ~PL_WRT_NEWLINE;
   options.out	    = s;
   options.module    = MODULE_user;
 

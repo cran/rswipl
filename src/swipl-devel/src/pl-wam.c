@@ -3060,7 +3060,7 @@ typedef struct register_file
 #define VMH_ARGSTRUCT(Name)		struct helper_args_ ## Name
 
 /* GCC and CLang allow for struct name {}, i.e., an empty struct */
-#if O_EMPY_STRUCTS
+#if O_EMPTY_STRUCTS
 #define VMH_PAD_STRUCT
 #define VMH_INIT_ARGSTRUCT(...) {__VA_ARGS__}
 #else
@@ -3123,7 +3123,8 @@ static vmi_instr jmp_table[] =
 #undef NEXT_INSTRUCTION
 #undef VMH_GOTO
 #define NEXT_INSTRUCTION (void)0
-#define VMH_GOTO(n) PC = helper_##n(VMI_ARG_PASS, (VMH_ARGSTRUCT(n)){})
+#define VMH_GOTO(n) PC = helper_##n(VMI_ARG_PASS, \
+				    (VMH_ARGSTRUCT(n))VMH_INIT_ARGSTRUCT())
 
 #if VMI_USE_REGISTER_VARIABLES
 # undef LD

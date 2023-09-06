@@ -33,6 +33,7 @@ endif()
 
 # Source locations
 get_filename_component(SWIPL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+get_filename_component(SWIPL_BIN_ROOT "${CMAKE_CURRENT_BINARY_DIR}/.." ABSOLUTE)
 set(SWIPL_LIBRARY_ROOT ${SWIPL_ROOT}/library)
 set(SWIPL_BOOT_ROOT ${SWIPL_ROOT}/boot)
 
@@ -353,14 +354,14 @@ endfunction()
 config_data_files()
 
 # Set swipl.home above binaries to a relative path to the root
-file(WRITE "${CMAKE_BINARY_DIR}/swipl.home" "home\n")
-file(WRITE "${CMAKE_BINARY_DIR}/src/swipl.home" "../home\n")
-file(WRITE "${CMAKE_BINARY_DIR}/packages/swipl.home" "../home\n")
-symlink_or_copy(${SWIPL_BOOT_ROOT}/build_home.pl ${CMAKE_BINARY_DIR}/home/swipl.rc)
-symlink_or_copy(${SWIPL_BOOT_ROOT}/build_home.pl ${CMAKE_BINARY_DIR}/home/swipl-win.rc)
+file(WRITE "${SWIPL_BIN_ROOT}/swipl.home" "home\n")
+file(WRITE "${SWIPL_BIN_ROOT}/src/swipl.home" "../home\n")
+file(WRITE "${SWIPL_BIN_ROOT}/packages/swipl.home" "../home\n")
+symlink_or_copy(${SWIPL_BOOT_ROOT}/build_home.pl ${SWIPL_BIN_ROOT}/home/swipl.rc)
+symlink_or_copy(${SWIPL_BOOT_ROOT}/build_home.pl ${SWIPL_BIN_ROOT}/home/swipl-win.rc)
 # Final swipl.home for installed system
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/dot.txt" ".\n")
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/dotdot.txt" "..\n")
+file(WRITE "${SWIPL_BIN_ROOT}/dot.txt" ".\n")
+file(WRITE "${SWIPL_BIN_ROOT}/dotdot.txt" "..\n")
 
 endif(NOT PGO_SUFFIX)
 
@@ -429,7 +430,7 @@ target_include_directories(swiplobjs${PGO_SUFFIX} BEFORE PRIVATE
 			   ${LIBSWIPL_INCLUDES})
 
 function(libswipl_properties lib outname)
-  if(MSVC AND NOT SWIPL_SHARED_LIB)
+  if(MSVC)
     # MSVC does not automatically prepend 'lib' to the library name
     # Furthermore it would generate swipl.lib in the same directory as swipl.exe,
     # causing a linking failure:
@@ -455,7 +456,10 @@ endfunction()
 
 add_library(libswipl${PGO_SUFFIX} ${LIBSWIPL_TYPE} $<TARGET_OBJECTS:swiplobjs${PGO_SUFFIX}>)
 libswipl_properties(libswipl${PGO_SUFFIX} swipl${PGO_SUFFIX})
-
+# See https://github.com/python/cpython/issues/65735#issuecomment-1235768965
+# Doesn't seem to work though
+# set_target_properties(libswipl${PGO_SUFFIX} PROPERTIES
+#		        LINK_FLAGS -Wl,-z,global)
 
 ###################################################################################
 #                         END OF MAIN TARGET DEFINITIONS                          #
@@ -614,7 +618,7 @@ write_basic_package_version_file(SWIPLConfigVersion.cmake
   VERSION "${SWIPL_VERSION_STRING}"
   COMPATIBILITY SameMajorVersion)
 configure_package_config_file(
-  "${CMAKE_SOURCE_DIR}/cmake/SWIPLConfig.cmake.in"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/SWIPLConfig.cmake.in"
   SWIPLConfig.cmake
   PATH_VARS SWIPL_INSTALL_ARCH_EXE
   INSTALL_DESTINATION "${SWIPL_INSTALL_CMAKE_CONFIG_DIR}"
@@ -669,10 +673,10 @@ install_src(core_compat_yap
 	    FILES
 	    ${CMAKE_CURRENT_SOURCE_DIR}/compat/YapInterface.h
 	    DESTINATION ${SWIPL_INSTALL_INCLUDE}/Yap)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/dot.txt
+install(FILES ${SWIPL_BIN_ROOT}/dot.txt
 	DESTINATION ${SWIPL_INSTALL_PREFIX}
 	RENAME "swipl.home")
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/dotdot.txt
+install(FILES ${SWIPL_BIN_ROOT}/dotdot.txt
 	DESTINATION ${SWIPL_INSTALL_PREFIX}/bin
 	RENAME "swipl.home")
 

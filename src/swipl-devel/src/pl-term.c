@@ -55,7 +55,7 @@ late;  character terminals  disappear quickly now.  Use XPCE if you want
 windowing!
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#if !defined(HAVE_TERM_H) && !defined(HAVE_NCURSES_TERM_H)
+#if !defined(HAVE_TERM_H) && !defined(HAVE_NCURSES_TERM_H) && !defined(HAVE_CURSES_H)
 /* Some systems seem not to have the headers ... */
 #undef HAVE_TGETENT
 #endif
@@ -373,7 +373,9 @@ void cleanupTerm(void)
 #include <sys/ioctl.h>
 #endif
 
-#if !defined(HAVE_PL_TTY_SIZE) && defined(HAVE_SYS_IOCTL_H) && \
+#if !defined(HAVE_PL_TTY_SIZE) && \
+    !defined(EMSCRIPTEN) && \
+    defined(HAVE_SYS_IOCTL_H) && \
     (defined(TIOCGSIZE) || defined(TIOCGWINSZ) || defined(HAVE_TGETENT))
 
 #define HAVE_TTY_SIZE_PRED 1

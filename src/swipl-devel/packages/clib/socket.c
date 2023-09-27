@@ -37,6 +37,8 @@
 
 #define O_DEBUG 1
 
+#define _WINSOCK_DEPRECATED_NO_WARNINGS 1
+#define _CRT_SECURE_NO_WARNINGS 1
 #include <SWI-Prolog.h>
 #include <config.h>
 
@@ -608,13 +610,12 @@ get_as(term_t arg, int *asp)
 static foreign_t
 udp_receive(term_t Socket, term_t Data, term_t From, term_t options)
 { struct sockaddr_storage sockaddr;
-  socklen_t alen;
+  socklen_t alen = sizeof(sockaddr);
   nbio_sock_t socket;
   int flags = 0;
   char smallbuf[UDP_DEFAULT_BUFSIZE];
   char *buf = smallbuf;
   int bufsize = UDP_DEFAULT_BUFSIZE;
-  term_t varport = 0;
   ssize_t n;
   int as = PL_STRING;
   int rc;
@@ -651,8 +652,7 @@ udp_receive(term_t Socket, term_t Data, term_t From, term_t options)
       return FALSE;
   }
 
-  if ( !tcp_get_socket(Socket, &socket) ||
-       !nbio_get_sockaddr(socket, From, &sockaddr, &varport) )
+  if ( !tcp_get_socket(Socket, &socket) )
     return FALSE;
 
   if ( bufsize > UDP_DEFAULT_BUFSIZE )
@@ -662,7 +662,7 @@ udp_receive(term_t Socket, term_t Data, term_t From, term_t options)
 
   if ( (n=nbio_recvfrom(socket, buf, bufsize, flags,
 			(struct sockaddr*)&sockaddr, &alen)) == -1 )
-  { rc = nbio_error(GET_ERRNO, TCP_ERRNO);;
+  { rc = nbio_error(GET_ERRNO, TCP_ERRNO);
     goto out;
   }
 

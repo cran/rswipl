@@ -531,32 +531,33 @@ unifyAtomic(DECL_LD term_t t, word w)
 { Word p = valHandleP(t);
 
   for(;;)
-  { if ( canBind(*p) )
-    { if ( !hasGlobalSpace(0) )
-      { int rc;
-
-	if ( (rc=ensureGlobalSpace(0, ALLOW_GC)) != TRUE )
-	  return raiseStackOverflow(rc);
-	p = valHandleP(t);
-	deRef(p);
-      }
-
-      bindConst(p, w);
-      succeed;
+  { switch( tag(*p) )
+    { case TAG_VAR:
+	if ( !hasTrailSpace(1) )
+	  break;
+	varBindConst(p, w);
+	return TRUE;
+      case TAG_ATTVAR:
+	if ( !hasGlobalSpace(0) )
+	  break;
+	assignAttVar(p, &w);
+	return TRUE;
+      case TAG_REFERENCE:
+	p = unRef(*p);
+	continue;
+      default:
+	if ( *p == w )
+	  return TRUE;
+	if ( isIndirect(w) && isIndirect(*p) )
+	  return equalIndirect(w, *p);
+	return FALSE;
     }
 
-    if ( isRef(*p) )
-    { p = unRef(*p);
-      continue;
-    }
-
-    if ( *p == w )
-      succeed;
-
-    if ( isIndirect(w) && isIndirect(*p) )
-      return equalIndirect(w, *p);
-
-    fail;
+    int rc = ensureGlobalSpace(0, ALLOW_GC);
+    if ( rc == TRUE )
+      p = valHandleP(t);
+    else
+      return raiseStackOverflow(rc);
   }
 }
 
@@ -618,12 +619,16 @@ PL_new_blob(void *blob, size_t len, PL_blob_t *type)
 
 
 functor_t
-PL_new_functor_sz(atom_t f, size_t arity)
-{ if ( !GD->initialised )
-    initFunctors();
-
-  return lookupFunctorDef(f, arity);
+PL_new_functor_sz(DECL_LD atom_t f, size_t arity)
+{ return lookupFunctorDef(f, arity);
 }
+
+
+API_STUB(functor_t)
+(PL_new_functor_sz)(atom_t f, size_t arity)
+( if ( !GD->initialised )
+    initFunctors();
+  return PL_new_functor_sz(f, arity); )
 
 functor_t
 (PL_new_functor)(atom_t f, int arity)
@@ -789,12 +794,11 @@ compareUCSAtom(atom_t h1, atom_t h2)
   { if ( *s1 != *s2 )
     { int d = *s1 - *s2;
 
-      return d<0 ? CMP_LESS : d>0 ? CMP_GREATER : CMP_EQUAL;
+      return SCALAR_TO_CMP(d, 0);
     }
   }
 
-  return a1->length >  a2->length ? CMP_GREATER :
-	 a1->length == a2->length ? CMP_EQUAL : CMP_LESS;
+  return SCALAR_TO_CMP(a1->length, a2->length);
 }
 
 
@@ -1967,8 +1971,8 @@ PL_is_inf(term_t t)
 }
 
 
-int
-PL_get_float(term_t t, double *f)
+static int
+get_float(term_t t, double *f, int error)
 { GET_LD
   word w = valHandle(t);
 
@@ -1983,7 +1987,7 @@ PL_get_float(term_t t, double *f)
     get_rational(w, &n);
     if ( (rc=promoteToFloatNumber(&n)) )
       *f = n.value.f;
-    else
+    else if ( !error )
       PL_clear_exception();
 
     clearNumber(&n);
@@ -1991,9 +1995,21 @@ PL_get_float(term_t t, double *f)
     return rc;
   }
 
+  if ( error )
+    PL_type_error("float", t);
   return FALSE;
 }
 
+
+int
+PL_get_float(term_t t, double *f)
+{ return get_float(t, f, FALSE);
+}
+
+int
+PL_get_float_ex(term_t t, double *f)
+{ return get_float(t, f, TRUE);
+}
 
 #ifdef _MSC_VER
 #define ULL(x) x ## ui64
@@ -3447,10 +3463,13 @@ API_STUB(int)
 
 
 int
-PL_unify_nil(term_t l)
-{ GET_LD
-  return unifyAtomic(l, ATOM_nil);
+PL_unify_nil(DECL_LD term_t l)
+{ return unifyAtomic(l, ATOM_nil);
 }
+
+API_STUB(int)
+(PL_unify_nil)(term_t t)
+( return PL_unify_nil(t); )
 
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

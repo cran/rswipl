@@ -55,14 +55,13 @@ This code is also used by test_cpp.pl, which has many examples of
 how the various predicates can be called from Prolog.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+#define _CRT_SECURE_NO_WARNINGS 1
 #define PROLOG_MODULE "user"
 #include <iostream>
 #include <sstream>
 #include <memory>
-#include <SWI-Stream.h>
-#include <SWI-Prolog.h>
 #include "SWI-cpp2.h"
-#include <unistd.h>
+#include "SWI-cpp2-atommap.h"
 #include <errno.h>
 #include <math.h>
 #include <cassert>
@@ -70,6 +69,11 @@ how the various predicates can be called from Prolog.
 #include <string>
 #include <map>
 using namespace std;
+
+#ifdef _MSC_VER
+#undef min
+#undef max
+#endif
 
 #ifdef O_DEBUG
 #define DEBUG(g) g
@@ -89,9 +93,9 @@ PREDICATE(hello, 2)
   // This will result in an encoding error if A1 isn't Latin-1
   buffer << "Hello " << A1.as_string() << endl;
   buffer << "Hello " << A1.as_string().c_str() << endl; // Same output as previous line
-  buffer << "Hello " << A1.as_string(PlEncoding::Latin1).c_str() << endl; // Also same, if it's ASCII
-  buffer << "Hello " << A1.as_string(PlEncoding::UTF8).c_str() << endl;
-  buffer << "Hello " << A1.as_string(PlEncoding::Locale).c_str() << endl; // Can vary by locale settings
+  buffer << "Hello " << A1.as_string(PlEncoding::Latin1) << endl; // Also same, if it's ASCII
+  buffer << "Hello " << A1.as_string(PlEncoding::UTF8) << endl;
+  buffer << "Hello " << A1.as_string(PlEncoding::Locale) << endl; // Can vary by locale settings
 
   return A2.unify_string(buffer.str());
 }
@@ -102,9 +106,9 @@ PREDICATE(hello2, 2)
   // The following have the same output as hello/1, if A1 is an atom
   buffer << "Hello2 " << atom_a1.as_string() << endl;
   buffer << "Hello2 " << A1.as_string().c_str() << endl;
-  buffer << "Hello2 " << A1.as_string(PlEncoding::Latin1).c_str() << endl;
-  buffer << "Hello2 " << A1.as_string(PlEncoding::UTF8).c_str() << endl;
-  buffer << "Hello2 " << A1.as_string(PlEncoding::Locale).c_str() << endl;
+  buffer << "Hello2 " << A1.as_string(PlEncoding::Latin1) << endl;
+  buffer << "Hello2 " << A1.as_string(PlEncoding::UTF8) << endl;
+  buffer << "Hello2 " << A1.as_string(PlEncoding::Locale) << endl;
 
   return A2.unify_string(buffer.str());
 }
@@ -135,11 +139,11 @@ PREDICATE(add, 3)
 
 PREDICATE(add_num, 3)
 { auto x = A1, y = A2, result = A3;
-  // Note that as_float() handles floats
+  // Note that as_float() handles integers
   double sum = x.as_float() + y.as_float();
-  if ( double(long(sum)) == sum ) /* Can float be represented as int? */
-    return result.unify_integer(long(sum));
-  return result.unify_float(sum);
+  return ( double(long(sum)) == sum ) // Can float be represented as int?
+    ? result.unify_integer(long(sum))
+    : result.unify_float(sum);
 }
 
 PREDICATE(name_arity, 2)
@@ -172,6 +176,8 @@ PREDICATE(list_modules, 1)
   return A1.unify_string(buffer.str());
 }
 
+// %! average(+Templ, :Goal, -Average) is det.
+// % Same as: aggregate(sum(X)/count, Goal, A), Average is A.
 PREDICATE(average, 3)			/* average(+Templ, :Goal, -Average) */
 { long sum = 0;
   long n = 0;
@@ -274,16 +280,21 @@ PREDICATE(eq2, 2)
 }
 
 PREDICATE(eq3, 2)
-{ PlCheckFail(PL_unify(A1.C_, A2.C_));
-  return true;
+{ return Plx_unify(A1.C_, A2.C_);
+}
+
+PREDICATE(eq4, 2)
+{ // This is what Plx_unify() expands to
+  return PlWrap<bool>(PL_unify(A1.C_, A2.C_));
 }
 
 PREDICATE(write_list, 1)
 { PlTerm_tail tail(A1);
   PlTerm_var e;
+  PlAcquireStream strm(Scurrent_output);
 
   while(tail.next(e))
-    cout << e.as_string() << endl;
+    Sfprintf(strm, "%s\n", e.as_string().c_str());
 
   return true;
 }
@@ -293,7 +304,7 @@ PREDICATE(cappend, 3)
   PlTerm_tail l3(A3);
   PlTerm_var e;
 
-  while(l1.next(e))
+  while( l1.next(e) )
     PlCheckFail(l3.append(e));
 
   return A2.unify_term(l3);
@@ -308,6 +319,7 @@ PREDICATE(cpp_call_, 3)
 { int flags = A2.as_int();
   int verbose = A3.as_bool();
   std::string flag_str;
+  PlAcquireStream strm(Scurrent_output);
   // if ( flags & PL_Q_DEBUG )        flag_str.append(",debug");
   // if ( flags & PL_Q_DETERMINISTIC) flag_str.append(",deterministic");
   if ( flags & PL_Q_NORMAL )          flag_str.append(",normal");
@@ -321,7 +333,7 @@ PREDICATE(cpp_call_, 3)
   else
     flag_str = std::string("cpp_call(").append(flag_str.substr(1)).append(")");
   if ( verbose )
-    cout << flag_str << ": " << A1.as_string() << endl;
+    Sfprintf(strm, "%s: %s\n",  flag_str.c_str(), A1.as_string().c_str());
 
   try
   { int rc = PlCall(A1, flags);
@@ -336,33 +348,33 @@ PREDICATE(cpp_call_, 3)
 	default:             status_str = "???";       break;
       }
       if ( verbose )
-	cout << "... after call, rc=" << rc << ": " << status_str << endl;
+	Sfprintf(strm, "... after call, rc=%d: %s\n", rc, status_str);
     } else
     { if ( verbose )
-	cout << "... after call, rc=" << rc << endl;
+	Sfprintf(strm, "... after call, rc=%d\n", rc);
     }
 
     if ( rc )
     { if ( verbose )
-	cout << "cpp_call result: rc=" << rc << ": " << A1.as_string() << endl;
+	Sfprintf(strm, "cpp_call result: rc=%d: %s\n", rc, A1.as_string().c_str());
     } else
-    { PlTerm_term_t ex(Plx_exception(0));
+    { PlTerm ex(Plx_exception(0));
       if ( ex.is_null() )
       { if ( verbose )
-	  cout << "cpp_call failed" << endl;
+	  Sfprintf(strm, "cpp_call failed\n");
       } else
       { if ( verbose )
-	  cout << "cpp_call failed: ex: " << ex.as_string() << endl;
+	  Sfprintf(strm, "cpp_call failed: ex: %s\n", ex.as_string().c_str());
       }
     }
     return rc; // TODO: this is wrong with some query flags
   } catch ( PlException& ex )
   { if ( ex.is_null() )
     { if ( verbose )
-	cout << "cpp_call except is_null" << endl;
+	Sfprintf(strm, "cpp_call except is_null\n");
     } else
     { if ( verbose )
-	cout << "cpp_call exception: " << ex.as_string() << endl;
+	Sfprintf(strm, "cpp_call exception: %s\n", ex.as_string().c_str());
     }
     throw;
   }
@@ -371,11 +383,12 @@ PREDICATE(cpp_call_, 3)
 PREDICATE(cpp_atom_codes, 2)
 { int rc = PlCall("atom_codes", PlTermv(A1, A2));
   if ( ! rc )
-  { PlException ex(PlTerm_term_t(Plx_exception(0)));
+  { PlException ex(PlTerm(Plx_exception(0)));
+    PlAcquireStream strm(Scurrent_output);
     if ( ex.is_null() )
-      cout << "atom_codes failed" << endl;
+      Sfprintf(strm, "atom_codes failed\n");
     else
-      cout << "atom_codes failed: ex: " << ex.as_string() << endl; // Shouldn't happen
+      Sfprintf(strm, "atom_codes failed: ex: %s\n", ex.as_string().c_str()); // Shouldn't happen
   }
   return rc;
 }
@@ -395,7 +408,7 @@ PREDICATE(square_roots, 2)
 { int end = A1.as_int();
   PlTerm_tail list(A2);
 
-  for(int i=0; i<end; i++)
+  for(int i=0; i<=end; i++)
     PlCheckFail(list.append(PlTerm_float(sqrt(double(i)))));
 
   return list.close();
@@ -471,7 +484,7 @@ PREDICATE(free_my_object, 1)
 }
 
 PREDICATE(make_functor, 3)  // make_functor(foo, x, foo(x))
-{ auto f = PlFunctor(A1.as_atom().as_string().c_str(), 1);
+{ auto f = PlFunctor(A1.as_atom().as_string(), 1);
   return A3.unify_functor(f) &&
     A3[1].unify_term(A2);
 }
@@ -561,6 +574,8 @@ PREDICATE(ensure_PlTerm_forward_declarations_are_implemented, 0)
   PlTerm_atom p_atom5(std::wstring(L"世界"));
   PlTerm_term_t t_t(Plx_new_term_ref());
   PlTerm_term_t t_null(PlTerm::null);
+  PlTerm t_t2(Plx_new_term_ref());
+  PlTerm t_null2(PlTerm::null);
   // The various integer types are also used in IntInfo.
   PlTerm_integer t_int1(std::numeric_limits<int>::max());
   PlTerm_integer t_int1b(std::numeric_limits<int>::min());
@@ -806,15 +821,16 @@ PREDICATE_NONDET(range_cpp, 3)
 }
 
 
-
 // For benchmarking `throw PlThrow()` vs `return false`
 // Times are given for 1 million failures
 
-// 0.085 sec for ime((between(1,1000000,X), fail)).
-
+// 0.085 sec for time((between(1,1000000,X), fail)).
 // 0.16 sec for time((between(1,1000000,X), X=0)).
-
 // 0.20 sec for time((between(1,1000000,X), unify_zero_0(X))).
+
+// See also timings for individual unify_zero_* predicates, unify_foo_*
+
+
 static foreign_t
 unify_zero_0(term_t a1)
 { return static_cast<foreign_t>(Plx_unify_integer(a1, 0));
@@ -908,6 +924,39 @@ PREDICATE(unify_foo_string_2b, 1)
 
 // end of benchmarking predicates
 
+// Example pl_write_atoms from foreign.doc
+
+PREDICATE(pl_write_atoms_cpp, 1)
+{ auto l = A1;
+  PlTerm_var head;
+  PlTerm tail(l.copy_term_ref());
+  PlAcquireStream strm(Scurrent_output);
+  
+  while( tail.get_list_ex(head, tail) )
+  { Sfprintf(strm, "%s\n", head.as_string().c_str());
+  }
+
+  tail.get_nil_ex();
+  return true;
+}
+
+PREDICATE(pl_write_atoms_c, 1)
+{ term_t l = A1.C_;
+  term_t head = PL_new_term_ref();   /* the elements */
+  term_t tail = PL_copy_term_ref(l); /* copy (we modify tail) */
+  int rc = TRUE;
+  PlAcquireStream strm(Scurrent_output);
+
+  while( rc && PL_get_list_ex(tail, head, tail) )
+  { PL_STRINGS_MARK();
+      char *s;
+      if ( (rc=PL_get_chars(head, &s, CVT_ATOM|REP_MB|CVT_EXCEPTION)) )
+        Sfprintf(strm, "%s\n", s);
+    PL_STRINGS_RELEASE();
+  }
+
+  return rc && PL_get_nil_ex(tail); /* test end for [] */
+}
 
 // Predicates for checking native integer handling
 // See https://en.cppreference.com/w/cpp/types/numeric_limits
@@ -1047,13 +1096,12 @@ PREDICATE(w_atom_cpp_, 2)
 { auto stream = A1, t = A2;
   IOSTREAM* s;
   Plx_get_stream(stream.C_, &s, SIO_INPUT);
-  { PlStringBuffers _string_buffers;
-    size_t len;
-    const pl_wchar_t *sa = Plx_atom_wchars(t.as_atom().C_, &len);
-    // TODO: Sfprintf() doesn't get format checked in C++
-    Sfprintf(s, "/%Ws/%zd", sa, len);
-  }
-  return TRUE;
+  PlAcquireStream strm(Scurrent_output);
+  PlStringBuffers _string_buffers;
+  size_t len;
+  const pl_wchar_t *sa = Plx_atom_wchars(t.as_atom().C_, &len);
+  SfprintfX(strm, "/%Ws/%zd", sa, len);
+  return true;
 }
 
 
@@ -1143,27 +1191,45 @@ PREDICATE(throw_uninstantiation_error_cpp, 1)
 }
 
 PREDICATE(throw_representation_error_cpp, 1)
-{ throw PlRepresentationError(A1.as_string().c_str());
+{ throw PlRepresentationError(A1.as_string());
 }
 
 PREDICATE(throw_type_error_cpp, 2)
-{ throw PlTypeError(A1.as_string().c_str(), A2);
+{ throw PlTypeError(A1.as_string(), A2);
+}
+
+PREDICATE(throw_and_check_error_cpp, 2)
+{ try
+  { throw PlTypeError(A1.as_string(), A2);
+  } catch (const PlException& e)
+  { PlAtom ATOM_error("error");
+    PlAtom ATOM_type_error("type_error");
+    PlTerm e_t = e.term();
+    // if A1 is 'atom', then e_t is error(type_error(atom,A2),_):
+    PlCheckFail(e_t.name() == ATOM_error);
+    PlCheckFail(e_t.arity() == 2);
+    PlCheckFail(e_t[1].name() == ATOM_type_error);
+    PlCheckFail(e_t[1][1].as_string() == A1.as_string());
+    PlCheckFail(e_t[1][2] == A2);
+    throw;
+  }
+  return true;
 }
 
 PREDICATE(throw_domain_error_cpp, 2)
-{ throw PlDomainError(A1.as_string().c_str(), A2);
+{ throw PlDomainError(A1.as_string(), A2);
 }
 
 PREDICATE(throw_existence_error_cpp, 2)
-{ throw PlExistenceError(A1.as_string().c_str(), A2);
+{ throw PlExistenceError(A1.as_string(), A2);
 }
 
 PREDICATE(throw_permission_error_cpp, 3)
-{ throw PlPermissionError(A1.as_string().c_str(), A2.as_string().c_str(), A3);
+{ throw PlPermissionError(A1.as_string(), A2.as_string(), A3);
 }
 
 PREDICATE(throw_resource_error_cpp, 1)
-{ throw PlResourceError(A1.as_string().c_str());
+{ throw PlResourceError(A1.as_string());
 }
 
 PREDICATE(ten, 10)
@@ -1283,4 +1349,50 @@ PREDICATE(close_my_blob, 1)
   if ( !ref->close() )
     throw ref->MyBlobError("my_blob_close_error");
   return true;
+}
+
+
+static AtomMap<PlAtom, PlAtom> map_atom_atom("add", "atom_atom");
+
+PREDICATE(atom_atom_find, 2)
+{ auto value = map_atom_atom.find(A1.as_atom());
+  PlCheckFail(value.not_null());
+  return A2.unify_atom(value);
+}
+
+PREDICATE(atom_atom_add, 2)
+{ map_atom_atom.insert(A1.as_atom(), A2.as_atom());
+  return true;
+}
+
+PREDICATE(atom_atom_erase, 1)
+{ map_atom_atom.erase(A1.as_atom());
+  return true;
+}
+
+PREDICATE(atom_atom_size, 1)
+{ return A1.unify_integer(map_atom_atom.size());
+}
+
+static AtomMap<PlTerm, PlRecord> map_atom_term("insert", "atom_term");
+
+PREDICATE(atom_term_find, 2)
+{ auto value = map_atom_term.find(A1.as_atom());
+  if ( value.is_null() )
+    return false;
+  return A2.unify_term(value);
+}
+
+PREDICATE(atom_term_insert, 2)
+{ map_atom_term.insert(A1.as_atom(), A2);
+  return true;
+}
+
+PREDICATE(atom_term_erase, 1)
+{ map_atom_term.erase(A1.as_atom());
+  return true;
+}
+
+PREDICATE(atom_term_size, 1)
+{ return A1.unify_integer(map_atom_term.size());
 }

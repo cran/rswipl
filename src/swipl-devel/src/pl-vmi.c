@@ -221,6 +221,11 @@ END_VMH
 	ENSURE_STACK_SPACE(cells, 0, onchange)
 #define ENSURE_STACK_SPACE(g, t, onchange) \
 	if ( !hasStackSpace(g, t) )			\
+	{ GROW_STACK_SPACE(g, t);			\
+	  onchange;					\
+	}
+#define GROW_STACK_SPACE(g, t) \
+	do \
 	{ int __rc;					\
 	  SAVE_REGISTERS(QID);				\
 	  __rc = ensureStackSpace(g, t);		\
@@ -229,8 +234,7 @@ END_VMH
 	  { raiseStackOverflow(__rc);			\
 	    THROW_EXCEPTION;				\
 	  }						\
-	  onchange;					\
-	}
+	} while(0)
 
 /* Can be used for debugging to always force GC at a place */
 #define FAKE_GC(onchange) \
@@ -480,19 +484,35 @@ VMI(H_SMALLINT, 0, 1, (CA1_DATA))
 END_VMI
 
 VMH(h_const, 1, (word), (c))
-{ Word k;
-  deRef2(ARGP, k);
-  if ( *k == c )
-  { ARGP++;
-    NEXT_INSTRUCTION;
+{ Word k = ARGP;
+
+  for(;;)
+  { switch(tag(*k))
+    { case TAG_VAR:
+	if ( !hasTrailSpace(1) )
+	  break;
+	varBindConst(k, c);
+	ARGP++;
+	NEXT_INSTRUCTION;
+      case TAG_ATTVAR:
+	if ( !hasGlobalSpace(0) )
+	  break;
+	assignAttVar(k, &c);
+	ARGP++;
+	NEXT_INSTRUCTION;
+      case TAG_REFERENCE:
+	k = unRef(*k);
+	continue;
+      default:
+	if ( *k == c )
+	{ ARGP++;
+	  NEXT_INSTRUCTION;
+	}
+	CLAUSE_FAILED;
+    }
+    GROW_STACK_SPACE(0,0);
+    k = ARGP;
   }
-  if ( canBind(*k) )
-  { ENSURE_GLOBAL_SPACE(0, deRef2(ARGP, k));
-    bindConst(k, c);
-    ARGP++;
-    NEXT_INSTRUCTION;
-  }
-  CLAUSE_FAILED;
 }
 END_VMH
 
@@ -1212,7 +1232,7 @@ END_VMI
 VMH(bvar_cont, 1, (int), (voffset))
 { Word p;
   p = varFrameP(FR, voffset);
-  if ( isVar(*p) )
+  if ( unlikely(isVar(*p)) )
   { ENSURE_GLOBAL_SPACE(1, p = varFrameP(FR, voffset));
     globaliseVar(p);
     *ARGP++ = *p;
@@ -2261,7 +2281,7 @@ from C.
 VMI(I_EXIT, VIF_BREAK, 0, ())
 { LocalFrame leave;
 
-  if ( unlikely(LD->alerted) )
+  if ( unlikely(LD->alerted != 0) )
   { if ( (LD->alerted&ALERT_BUFFER) )
     { LD->alerted &= ~ALERT_BUFFER;
       release_string_buffers_from_frame(FR);
@@ -2289,9 +2309,9 @@ VMI(I_EXIT, VIF_BREAK, 0, ())
 	BFR = BFR->parent;
     }
 #endif /*O_DEBUGGER*/
-  }
 
-  Coverage(FR, EXIT_PORT);
+    Coverage(FR, EXIT_PORT);
+  }
 
   if ( (void *)BFR <= (void *)FR )	/* deterministic */
   { leave = true(FR, FR_WATCHED) ? FR : NULL;
@@ -4630,15 +4650,13 @@ conventions.
 VMI(I_FCALLDETVA, 0, 1, (CA1_FOREIGN))
 { typedef foreign_t (*va_func)(term_t av, int ac, control_t ctx);
   va_func f = (va_func)*PC++;
-  struct foreign_context context;
   term_t h0 = argFrameP(FR, 0) - (Word)lBase;
 
-  context.context   = 0L;
-  context.engine    = LD;
-  context.control   = FRG_FIRST_CALL;
-  context.predicate = DEF;
+  FNDET_CONTEXT.control   = FRG_FIRST_CALL;
+  FNDET_CONTEXT.context   = 0L;
+  FNDET_CONTEXT.predicate = DEF;
 
-  VMH_GOTO_AS_VMI(I_FEXITDET, (*f)(h0, DEF->functor->arity, &context));
+  VMH_GOTO_AS_VMI(I_FEXITDET, (*f)(h0, DEF->functor->arity, &FNDET_CONTEXT));
 }
 END_VMI
 
@@ -4772,9 +4790,8 @@ to the I_FCALLNDETVA (PC -= 4);
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(I_FOPENNDET, 0, 0, ())
-{ FNDET_CONTEXT.context   = 0L;
-  FNDET_CONTEXT.engine    = LD;
-  FNDET_CONTEXT.control   = FRG_FIRST_CALL;
+{ FNDET_CONTEXT.control   = FRG_FIRST_CALL;
+  FNDET_CONTEXT.context   = 0L;
   FNDET_CONTEXT.predicate = DEF;
 
   VMH_GOTO(foreign_redo);
@@ -4973,7 +4990,7 @@ END_VMH
 VMI(I_FREDO, 0, 0, ())
 { DEBUG(0, assert(true(DEF, P_FOREIGN)));
 
-  if ( is_signalled() )
+  if ( unlikely(LD->alerted) && is_signalled() )
   { if ( false(DEF, P_SIG_ATOMIC) )
     { SAVE_REGISTERS(QID);
       handleSignals();
@@ -4983,19 +5000,18 @@ VMI(I_FREDO, 0, 0, ())
     }
   }
 
-  FNDET_CONTEXT.engine = LD;
   switch((word)FR->clause & FRG_REDO_MASK)
   { case REDO_INT:
-      FNDET_CONTEXT.context = (word)(((intptr_t)FR->clause) >> FRG_REDO_BITS);
       FNDET_CONTEXT.control = FRG_REDO;
+      FNDET_CONTEXT.context = (word)(((intptr_t)FR->clause) >> FRG_REDO_BITS);
       break;
     case REDO_PTR:
-      FNDET_CONTEXT.context = (word)FR->clause;
       FNDET_CONTEXT.control = FRG_REDO;
+      FNDET_CONTEXT.context = (word)FR->clause;
       break;
     case YIELD_PTR:
-      FNDET_CONTEXT.context = (word)FR->clause & ~FRG_REDO_MASK;
       FNDET_CONTEXT.control = FRG_RESUME;
+      FNDET_CONTEXT.context = (word)FR->clause & ~FRG_REDO_MASK;
       break;
     default:
       assert(0);

@@ -36,6 +36,7 @@
 
 #define _ISOC99_SOURCE 1		/* fwprintf(), etc prototypes */
 
+#define _CRT_SECURE_NO_WARNINGS 1
 #define DTD_IMPLEMENTATION 1
 #include <stdio.h>
 #include <wchar.h>
@@ -104,7 +105,7 @@ static int		process_entity(dtd_parser *p, const ichar *name);
 static int		emit_cdata(dtd_parser *p, int last);
 static dtd_space_mode	istr_to_space_mode(const ichar *val);
 static void		update_space_mode(dtd_parser *p, dtd_element *e,
-					  int natts, sgml_attribute *atts);
+					  size_t natts, sgml_attribute *atts);
 static dtd_model *	make_model(dtd_parser *p, const ichar *decl,
 				   const ichar **end);
 static void		for_elements_in_model(dtd_model *m,
@@ -3210,7 +3211,7 @@ get_attribute_value(dtd_parser *p, ichar const *decl, sgml_attribute *att)
       { (void) istrtol(buf, &att->value.number);
       } else
       { att->value.textW  = istrdup(buf);
-	att->value.number = (long)istrlen(buf);
+	att->value.number = istrlen(buf);
       }
       return end;
     case AT_CDATA:		/* CDATA attribute */
@@ -3445,7 +3446,7 @@ add_default_attributes(dtd_parser *p, dtd_element *e,
 
 
 static void
-free_attribute_values(int argc, sgml_attribute *argv)
+free_attribute_values(size_t argc, sgml_attribute *argv)
 { int i;
 
   for(i=0; i<argc; i++, argv++)
@@ -4215,7 +4216,7 @@ istr_to_space_mode(const ichar *val)
 
 static void
 update_space_mode(dtd_parser *p, dtd_element *e,
-		  int natts, sgml_attribute *atts)
+		  size_t natts, sgml_attribute *atts)
 { for( ; natts-- > 0; atts++ )
   { const ichar *name = atts->definition->name->name;
 
@@ -4249,7 +4250,7 @@ empty_cdata(dtd_parser *p)
 
 
 static void
-cb_cdata(dtd_parser *p, ocharbuf *buf, int offset, int size)
+cb_cdata(dtd_parser *p, ocharbuf *buf, size_t offset, size_t size)
 { if ( p->on_data )
     (*p->on_data)(p, EC_CDATA, size, buf->data.w+offset);
 }
@@ -4260,8 +4261,8 @@ emit_cdata(dtd_parser *p, int last)
 { dtd *dtd = p->dtd;
   locbuf locsafe;
   ocharbuf *cdata = p->cdata;
-  int offset = 0;
-  int size = cdata->size;
+  size_t offset = 0;
+  size_t size = cdata->size;
 
   if ( size == 0 )
     return TRUE;			/* empty or done */
@@ -4767,7 +4768,7 @@ add_cdata(dtd_parser *p, int chr)
 
     if ( chr == '\n' &&
 	 p->environments && p->environments->space_mode != SP_STRICT )
-    { int sz;				/* insert missing CR */
+    { size_t sz;				/* insert missing CR */
 
       if ( (sz=buf->size) == 0 ||
 	   fetch_ocharbuf(buf, sz-1) != CR )
@@ -4784,7 +4785,7 @@ add_cdata(dtd_parser *p, int chr)
     /* dubious.  Should we do that here or in space-handling? */
     if ( chr == '\n' &&
 	 p->environments && p->environments->space_mode != SP_STRICT )
-    { int sz;
+    { size_t sz;
 
       if ( (sz=buf->size) > 1 &&
 	   fetch_ocharbuf(buf, sz-1) == LF &&

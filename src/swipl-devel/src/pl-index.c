@@ -63,11 +63,11 @@
     Need at least this ratio of #clauses/speedup for creating an index
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define MAX_LOOKAHEAD  100
-#define MIN_SPEEDUP    1.5
-#define MAX_VAR_FRAC   0.1
-#define MIN_CLAUSES_FOR_INDEX 10
-#define MIN_SPEEDUP_RATIO  10
+#define MIN_SPEEDUP           (GD->clause_index.min_speedup)
+#define MAX_VAR_FRAC          (GD->clause_index.max_var_fraction)
+#define MIN_SPEEDUP_RATIO     (GD->clause_index.min_speedup_ratio)
+#define MAX_LOOKAHEAD         (GD->clause_index.max_lookahead)
+#define MIN_CLAUSES_FOR_INDEX (GD->clause_index.min_clauses)
 
 
 		 /*******************************
@@ -213,7 +213,9 @@ getIndexOfTerm(term_t t)
 }
 
 
-#define nextClauseArg1(chp, generation) LDFUNC(nextClauseArg1, chp, generation)
+#define nextClauseArg1(chp, generation) \
+	LDFUNC(nextClauseArg1, chp, generation)
+
 static inline ClauseRef
 nextClauseArg1(DECL_LD ClauseChoice chp, gen_t generation)
 { ClauseRef cref = chp->cref;
@@ -497,6 +499,13 @@ retry:
 
   if ( unlikely(clist->number_of_clauses == 0) )
     return NULL;
+
+  /* Try first argument indexing if the first argument can be indexed and
+   * we have less than MIN_CLAUSES_FOR_INDEX clauses.  Accept if we have
+   * no clause or the next candidate has a different key.   If the next
+   * candidate has the same key, deep indexing may help us, so we will
+   * search for other indexes.
+   */
 
   if ( (chp->key = indexOfWord(argv[0])) &&
        (clist->number_of_clauses <= MIN_CLAUSES_FOR_INDEX || STATIC_RELOADING()) )
@@ -2895,6 +2904,20 @@ out:
   release_def(def);
 
   return rc;
+}
+
+
+		 /*******************************
+		 *             INIT             *
+		 *******************************/
+
+void
+initClauseIndexing(void)
+{ GD->clause_index.min_speedup       = 1.5f;
+  GD->clause_index.max_var_fraction  = 0.1f;
+  GD->clause_index.min_speedup_ratio = 10.0f;
+  GD->clause_index.max_lookahead     = 100;
+  GD->clause_index.min_clauses       = 10;
 }
 
 

@@ -110,6 +110,17 @@ __builtin_popcount(size_t sz)
 #endif
 }
 
+static inline int
+__builtin_saddll_overflow(long long int a, long long int b, long long int *res)
+{ long long int r = a + b;
+  if ( (r > 0 && a < 0 && b < 0) ||
+       (r < 0 && a > 0 && b > 9) )
+    return TRUE;
+
+  *res = r;
+  return FALSE;
+}
+
 #endif /*_MSC_VER*/
 
 #if !defined(HAVE_MSB) && defined(HAVE__BUILTIN_CLZ)
@@ -321,6 +332,17 @@ MSB64(int64_t i)
 #define MEMORY_BARRIER() (void)0
 #define MEMORY_ACQUIRE() (void)0
 #define MEMORY_RELEASE() (void)0
+#endif
+
+#ifndef max
+#define max(x,y) ( \
+	{ __auto_type __x = (x); __auto_type __y = (y); \
+          __x > __y ? __x : __y; \
+	})
+#define min(x,y) ( \
+	{ __auto_type __x = (x); __auto_type __y = (y); \
+          __x < __y ? __x : __y; \
+	})
 #endif
 
 		 /*******************************

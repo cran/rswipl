@@ -2,8 +2,9 @@
 
     Author:        Matt Lilley and Markus Triska
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2004-2017, SWI-Prolog Foundation
+    Copyright (c)  2004-2023, SWI-Prolog Foundation
                               VU University Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -32,6 +33,7 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
+#define _CRT_SECURE_NO_WARNINGS 1
 #include <config.h>
 #include <assert.h>
 #include <string.h>
@@ -117,7 +119,7 @@ pl_crypto_n_random_bytes(term_t tn, term_t tout)
   if ( !(buffer = malloc(len)) )
     return PL_resource_error("memory");
 
-  if ( RAND_bytes(buffer, len) == 0 )
+  if ( RAND_bytes(buffer, (int)len) == 0 )
   { free(buffer);
     return raise_ssl_error(ERR_get_error());
   }
@@ -683,13 +685,14 @@ pl_crypto_stream_hash_context(term_t stream, term_t tcontext)
                  *    Hashes of passwords   *
                  ****************************/
 
+#define PBKDF2_DIGEST_LEN 64
+
 static foreign_t
 pl_crypto_password_hash_pbkdf2(term_t tpw, term_t tsalt, term_t titer, term_t tdigest)
 { char *pw, *salt;
   size_t pwlen, saltlen;
   int iter;
-  const int DIGEST_LEN = 64;
-  unsigned char digest[DIGEST_LEN];
+  unsigned char digest[PBKDF2_DIGEST_LEN];
 
   if ( !PL_get_nchars(tpw, &pwlen, &pw,
                       CVT_ATOM|CVT_STRING|CVT_LIST|CVT_EXCEPTION|REP_UTF8) ||
@@ -697,19 +700,20 @@ pl_crypto_password_hash_pbkdf2(term_t tpw, term_t tsalt, term_t titer, term_t td
        !PL_get_integer_ex(titer, &iter) )
     return FALSE;
 
-  PKCS5_PBKDF2_HMAC((const char *) pw, pwlen,
-                    (const unsigned char *) salt, saltlen,
-                    iter, EVP_sha512(), DIGEST_LEN, digest);
+  PKCS5_PBKDF2_HMAC((const char *) pw, (int)pwlen,
+                    (const unsigned char *) salt, (int)saltlen,
+                    iter, EVP_sha512(), PBKDF2_DIGEST_LEN, digest);
 
-  return PL_unify_list_ncodes(tdigest, DIGEST_LEN, (char *) digest);
+  return PL_unify_list_ncodes(tdigest, PBKDF2_DIGEST_LEN, (char *) digest);
 }
+
+#define BCRYPT_DIGEST_LEN (7 + 22 + 31 + 1)
 
 static foreign_t
 pl_crypto_password_hash_bcrypt(term_t tpw, term_t tsetting, term_t tdigest)
 { char *pw, *setting;
   size_t pwlen, settinglen;
-  const int DIGEST_LEN = 7 + 22 + 31 + 1;
-  char digest[DIGEST_LEN];
+  char digest[BCRYPT_DIGEST_LEN];
 
   if ( !PL_get_nchars(tpw, &pwlen, &pw,
                       CVT_ATOM|CVT_STRING|CVT_LIST|CVT_EXCEPTION|REP_UTF8) ||
@@ -717,11 +721,11 @@ pl_crypto_password_hash_bcrypt(term_t tpw, term_t tsetting, term_t tdigest)
                       CVT_ATOM|CVT_STRING|CVT_LIST|CVT_EXCEPTION|REP_UTF8) )
     return FALSE;
 
-  char* ret = _crypt_blowfish_rn(pw, setting, (char *) digest, DIGEST_LEN);
+  char* ret = _crypt_blowfish_rn(pw, setting, (char *) digest, BCRYPT_DIGEST_LEN);
   if ( ret == NULL )
     return PL_domain_error("setting", tsetting);
 
-  return PL_unify_chars(tdigest, PL_ATOM | REP_UTF8, DIGEST_LEN - 1, (char *) digest);
+  return PL_unify_chars(tdigest, PL_ATOM | REP_UTF8, BCRYPT_DIGEST_LEN - 1, (char *) digest);
 }
 
 static foreign_t
@@ -761,9 +765,9 @@ pl_crypto_data_hkdf(term_t tkey, term_t tsalt, term_t tinfo, term_t talg,
 
   if ( (EVP_PKEY_derive_init(pctx) > 0) &&
        (EVP_PKEY_CTX_set_hkdf_md(pctx, alg) > 0) &&
-       (EVP_PKEY_CTX_set1_hkdf_salt(pctx, (unsigned char*)salt, saltlen) > 0) &&
-       (EVP_PKEY_CTX_set1_hkdf_key(pctx, (unsigned char*)key, keylen) > 0) &&
-       (EVP_PKEY_CTX_add1_hkdf_info(pctx, (unsigned char*)info, infolen) > 0) &&
+       (EVP_PKEY_CTX_set1_hkdf_salt(pctx, (unsigned char*)salt, (int)saltlen) > 0) &&
+       (EVP_PKEY_CTX_set1_hkdf_key(pctx, (unsigned char*)key, (int)keylen) > 0) &&
+       (EVP_PKEY_CTX_add1_hkdf_info(pctx, (unsigned char*)info, (int)infolen) > 0) &&
        (EVP_PKEY_derive(pctx, out, &outlen) > 0) )
   { int rc = PL_unify_list_ncodes(tout, outlen, (char *) out);
     free(out);
@@ -1152,7 +1156,7 @@ pl_ecdsa_verify(term_t Public, term_t Data, term_t Enc, term_t Signature)
 
   copy = signature;
 
-  if ( !(sig = d2i_ECDSA_SIG(NULL, &copy, signature_len)) )
+  if ( !(sig = d2i_ECDSA_SIG(NULL, &copy, (int)signature_len)) )
     return FALSE;
 
 #ifdef USE_EVP_API
@@ -1679,7 +1683,7 @@ pl_crypto_data_decrypt(term_t ciphertext_t, term_t algorithm_t,
 #ifdef EVP_CTRL_AEAD_SET_TAG
   if ( PL_get_nchars(authtag_t, &authlen, &authtag, CVT_LIST) &&
        ( authlen > 0 ) )
-  { if ( !EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, authlen, authtag) )
+  { if ( !EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, (int)authlen, authtag) )
     { EVP_CIPHER_CTX_free(ctx);
       return raise_ssl_error(ERR_get_error());
     }
@@ -1689,7 +1693,7 @@ pl_crypto_data_decrypt(term_t ciphertext_t, term_t algorithm_t,
   EVP_CIPHER_CTX_set_padding(ctx, padding);
   plaintext = PL_malloc(cipher_length + EVP_CIPHER_block_size(cipher));
   if ( EVP_DecryptUpdate(ctx, (unsigned char*)plaintext, &plain_length,
-			 (unsigned char*)ciphertext, cipher_length) == 1 )
+			 (unsigned char*)ciphertext, (int)cipher_length) == 1 )
   { int last_chunk = plain_length;
     int rc;
     rc = EVP_DecryptFinal_ex(ctx, (unsigned char*)(plaintext + plain_length),
@@ -1713,6 +1717,8 @@ pl_crypto_data_decrypt(term_t ciphertext_t, term_t algorithm_t,
   return raise_ssl_error(ERR_get_error());
 }
 
+#define MAX_AUTHLEN 256
+
 static foreign_t
 pl_crypto_data_encrypt(term_t plaintext_t, term_t algorithm_t,
                        term_t key_t, term_t iv_t,
@@ -1732,7 +1738,6 @@ pl_crypto_data_encrypt(term_t plaintext_t, term_t algorithm_t,
   int rep = REP_UTF8;
   int padding = 1;
   int authlen;
-  const int MAX_AUTHLEN = 256;
 #ifdef EVP_CTRL_AEAD_SET_TAG
   char authtag[MAX_AUTHLEN];
 #endif
@@ -1759,7 +1764,7 @@ pl_crypto_data_encrypt(term_t plaintext_t, term_t algorithm_t,
   EVP_CIPHER_CTX_set_padding(ctx, padding);
   ciphertext = PL_malloc(plain_length + EVP_CIPHER_block_size(cipher));
   if ( EVP_EncryptUpdate(ctx, (unsigned char*)ciphertext, &cipher_length,
-                         (unsigned char*)plaintext, plain_length) == 1 )
+                         (unsigned char*)plaintext, (int)plain_length) == 1 )
   { int last_chunk;
     int rc;
 

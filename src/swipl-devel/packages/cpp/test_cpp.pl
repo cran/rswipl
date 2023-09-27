@@ -51,7 +51,8 @@
 :- use_foreign_library(foreign(test_cpp)).
 
 test_cpp :-
-    run_tests([ cpp
+    run_tests([ cpp,
+                cpp_atommap
 	      ]).
 
 % Some of the tests can result in crashes if there's a bug, so the
@@ -134,6 +135,10 @@ testing:p(20).
 test(average_3, Average =:= Expected) :-
     average(X, testing:p(X), Average),
     Expected is (1+10+20)/3 .
+test(average_3, Average =:= Expected) :-
+    average(X, between(1,6,X), Average),
+    aggregate(sum(X)/count, between(1,6,X), A),
+    Expected is A.
 
 call_cut_test :-
     setup_call_cleanup(true,
@@ -239,7 +244,7 @@ cpp_call(Goal, Flags) :-
     cpp_call_(Goal, CombinedFlag, false).
 
 test(square_roots_2, Result == [0.0, 1.0, 1.4142135623730951, 1.7320508075688772, 2.0]) :-
-    square_roots(5, Result).
+    square_roots(4, Result).
 
 :- meta_predicate with_small_stacks(+, 0).
 with_small_stacks(Free, Goal) :-
@@ -653,8 +658,11 @@ test(throw, error(uninstantiation_error(abc),_)) :-
 test(throw, error(representation_error(some_resource))) :-
     throw_representation_error_cpp(some_resource).
 
-test(throw, error(type_error(int,"abc"))) :-
+test(throw, error(type_error(int, "abc"))) :-
     throw_type_error_cpp(int, "abc").
+
+test(throw, error(type_error(float, abc))) :-
+    throw_and_check_error_cpp(float, abc).
 
 test(throw, error(domain_error(positive, -5))) :-
     throw_domain_error_cpp(positive, -5).
@@ -834,6 +842,67 @@ test_setup_call_cleanup(X) :-
         throw(error)).
 
 :- end_tests(cpp).
+
+:- begin_tests(cpp_atommap).
+
+test(atom_atom_map) :-
+    atom_atom_add(foo, foo_value),
+    atom_atom_add(bar, bar_value),
+    atom_atom_add(bar, bar_value), % OK to add identical enntry
+    catch(atom_atom_add(foo, foo_value2),
+          error(permission_error(add,atom_atom,foo),_),
+          Exc = true),
+    assertion(Exc == true),
+    atom_atom_find(foo, F),
+    assertion(F == foo_value),
+    assertion(\+ atom_atom_find(foox, _)),
+    atom_atom_erase(foo),
+    assertion(\+ atom_atom_find(foo, _)),
+    atom_atom_erase(non_existent_key),
+    atom_atom_erase(bar),
+    atom_atom_size(Size),
+    assertion(Size == 0).
+
+test(atom_term_map) :-
+    % This test uses different keys from the other atom_term_map test.
+    % If it succeeds, it will have erased all the entries that were
+    % inserted.
+    atom_term_insert(foo, foo_value),
+    atom_term_insert(bar, bar_value),
+    atom_term_insert(bar, bar_value), % OK to add identical enntry
+    catch(atom_term_insert(foo, foo_value2),
+          error(permission_error(insert,atom_term,foo),_),
+          Exc = true),
+    assertion(Exc == true),
+    atom_term_find(foo, F),
+    assertion(F == foo_value),
+    assertion(\+ atom_term_find(foox, _)),
+    atom_term_erase(foo),
+    assertion(\+ atom_term_find(foo, _)),
+    atom_term_erase(non_existent_key),
+    atom_term_erase(bar),
+    atom_atom_size(Size),
+    assertion(Size == 0).
+
+test(atom_term_map) :-
+    % This test uses different keys from the other atom_term_map test.
+    % If it succeeds, it will have erased all the entries that were
+    % inserted.
+    atom_term_insert(foo2, foo2(value)),
+    atom_term_insert(bar2, 123),
+    atom_term_find(foo2, F),
+    assertion(F == foo2(value)),
+    atom_term_find(bar2, B),
+    assertion(B == 123),
+    assertion(\+ atom_term_find(foo2x, _)),
+    atom_term_erase(foo2),
+    assertion(\+ atom_term_find(foo2, _)),
+    atom_term_erase(non_existent_key),
+    atom_term_erase(bar2),
+    atom_atom_size(Size),
+    assertion(Size == 0).
+
+:- end_tests(cpp_atommap).
 
 w_atom_cpp(Atom, String) :-
     with_output_to(string(String), w_atom_cpp_(current_output, Atom)).

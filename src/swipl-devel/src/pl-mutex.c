@@ -168,7 +168,9 @@ unify_mutex(term_t t, pl_mutex *m)
 
 static int
 unify_mutex_owner(term_t t, int owner)
-{ if ( owner )
+{ GET_LD
+
+  if ( owner )
     return unify_thread_id(t, GD->thread.threads[owner]);
   else
     return PL_unify_nil(t);
@@ -183,8 +185,10 @@ PL_register_atom() would be cleaner, but that  routine is much more time
 critical.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+#define mutexCreate(name) LDFUNC(mutexCreate, name)
+
 static pl_mutex *
-mutexCreate(atom_t name)
+mutexCreate(DECL_LD atom_t name)
 { pl_mutex *m;
 
   if ( (m=allocHeap(sizeof(*m))) )

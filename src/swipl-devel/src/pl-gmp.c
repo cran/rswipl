@@ -496,65 +496,60 @@ get_integer(word w, Number n)
 
 
 void
-get_rational(DECL_LD word w, Number n)
-{ if ( storage(w) == STG_INLINE )
-  { n->type = V_INTEGER,
-    n->value.i = valInt(w);
+get_rational_no_int(DECL_LD word w, Number n)
+{ Word p = addressIndirect(w);
+  size_t wsize = wsizeofInd(*p);
+
+  p++;
+  if ( wsize == WORDS_PER_INT64 )
+  { n->type = V_INTEGER;
+    memcpy(&n->value.i, p, sizeof(int64_t));
+  } else if ( (*p&MP_RAT_MASK) )
+  { mpz_t num, den;
+    size_t num_size;
+
+    n->type = V_MPQ;
+#if O_GMP
+    num->_mp_size  = mpz_stack_size(*p++);
+    num->_mp_alloc = 0;
+    num->_mp_d     = (mp_limb_t*) (p+1);
+    num_size       = mpz_wsize(num, NULL);
+    den->_mp_size  = mpz_stack_size(*p++);
+    den->_mp_alloc = 0;
+    den->_mp_d     = (mp_limb_t*) (p+num_size);
+#elif O_BF
+    slimb_t len = mpz_stack_size(*p++);
+    num->ctx	 = NULL;
+    num->alloc = 0;
+    num->expn  = (slimb_t)*p++;
+    num->sign  = len < 0;
+    num->len   = abs(len);
+    num->tab   = (limb_t*)(p+2);
+    num_size   = mpz_wsize(num, NULL);
+    den->ctx   = NULL;
+    den->alloc = 0;
+    den->sign  = 0;			/* canonical MPQ */
+    den->len   = mpz_stack_size(*p++);
+    den->expn  = (slimb_t)*p++;
+    den->tab   = (limb_t*) (p+num_size);
+#endif
+    *mpq_numref(n->value.mpq) = num[0];
+    *mpq_denref(n->value.mpq) = den[0];
   } else
-  { Word p = addressIndirect(w);
-    size_t wsize = wsizeofInd(*p);
-
-    p++;
-    if ( wsize == WORDS_PER_INT64 )
-    { n->type = V_INTEGER;
-      memcpy(&n->value.i, p, sizeof(int64_t));
-    } else if ( (*p&MP_RAT_MASK) )
-    { mpz_t num, den;
-      size_t num_size;
-
-      n->type = V_MPQ;
-#if O_GMP
-      num->_mp_size  = mpz_stack_size(*p++);
-      num->_mp_alloc = 0;
-      num->_mp_d     = (mp_limb_t*) (p+1);
-      num_size       = mpz_wsize(num, NULL);
-      den->_mp_size  = mpz_stack_size(*p++);
-      den->_mp_alloc = 0;
-      den->_mp_d     = (mp_limb_t*) (p+num_size);
-#elif O_BF
-      slimb_t len = mpz_stack_size(*p++);
-      num->ctx	 = NULL;
-      num->alloc = 0;
-      num->expn  = (slimb_t)*p++;
-      num->sign  = len < 0;
-      num->len   = abs(len);
-      num->tab   = (limb_t*)(p+2);
-      num_size   = mpz_wsize(num, NULL);
-      den->ctx   = NULL;
-      den->alloc = 0;
-      den->sign  = 0;			/* canonical MPQ */
-      den->len   = mpz_stack_size(*p++);
-      den->expn  = (slimb_t)*p++;
-      den->tab   = (limb_t*) (p+num_size);
-#endif
-      *mpq_numref(n->value.mpq) = num[0];
-      *mpq_denref(n->value.mpq) = den[0];
-    } else
-    { n->type = V_MPZ;
+  { n->type = V_MPZ;
 
 #if O_GMP
-      n->value.mpz->_mp_size  = mpz_stack_size(*p++);
-      n->value.mpz->_mp_alloc = 0;
-      n->value.mpz->_mp_d     = (mp_limb_t*) p;
+    n->value.mpz->_mp_size  = mpz_stack_size(*p++);
+    n->value.mpz->_mp_alloc = 0;
+    n->value.mpz->_mp_d     = (mp_limb_t*) p;
 #elif O_BF
-      slimb_t len = mpz_stack_size(*p++);
-      n->value.mpz->ctx	 = NULL;
-      n->value.mpz->expn = (slimb_t)*p++;
-      n->value.mpz->sign = len < 0;
-      n->value.mpz->len  = abs(len);
-      n->value.mpz->tab  = (limb_t*)p;
+    slimb_t len = mpz_stack_size(*p++);
+    n->value.mpz->ctx	 = NULL;
+    n->value.mpz->expn = (slimb_t)*p++;
+    n->value.mpz->sign = len < 0;
+    n->value.mpz->len  = abs(len);
+    n->value.mpz->tab  = (limb_t*)p;
 #endif
-    }
   }
 }
 
@@ -1388,12 +1383,20 @@ put_number(DECL_LD Word at, Number n, int flags)
 int
 PL_unify_number(DECL_LD term_t t, Number n)
 { Word p = valTermRef(t);
+  word w;
 
   deRef(p);
 
+  if ( isVar(*p) &&
+       n->type == V_INTEGER &&
+       valInt(w=consInt(n->value.i)) == n->value.i &&
+       hasTrailSpace(1) )
+  { varBindConst(p, w);
+    return TRUE;
+  }
+
   if ( canBind(*p) )
-  { word w;
-    int rc;
+  { int rc;
 
     if ( (rc=put_number(&w, n, ALLOW_GC)) != TRUE )
       return raiseStackOverflow(rc);
@@ -1402,7 +1405,7 @@ PL_unify_number(DECL_LD term_t t, Number n)
     deRef(p);
 
     bindConst(p, w);
-    succeed;
+    return TRUE;
   }
 
   switch(n->type)
@@ -1634,7 +1637,7 @@ cmpFloatNumbers(Number n1, Number n2)
 
 int
 cmpNumbers(Number n1, Number n2)
-{ if ( n1->type != n2->type )
+{ if ( unlikely(n1->type != n2->type) )
   { int rc;
 
     if ( n1->type == V_FLOAT || n2->type == V_FLOAT )
@@ -1646,28 +1649,34 @@ cmpNumbers(Number n1, Number n2)
 
   switch(n1->type)
   { case V_INTEGER:
-      return n1->value.i  < n2->value.i ? CMP_LESS :
-	     n1->value.i == n2->value.i ? CMP_EQUAL : CMP_GREATER;
+      return SCALAR_TO_CMP(n1->value.i, n2->value.i);
 #ifdef O_BIGNUM
     case V_MPZ:
     { int rc = mpz_cmp(n1->value.mpz, n2->value.mpz);
 
-      return rc < 0 ? CMP_LESS : rc == 0 ? CMP_EQUAL : CMP_GREATER;
+      return SCALAR_TO_CMP(rc, 0);
     }
     case V_MPQ:
     { int rc = mpq_cmp(n1->value.mpq, n2->value.mpq);
 
-      return rc < 0 ? CMP_LESS : rc == 0 ? CMP_EQUAL : CMP_GREATER;
+      return SCALAR_TO_CMP(rc, 0);
     }
 #endif
     case V_FLOAT:
-      return n1->value.f  < n2->value.f ? CMP_LESS :
-	     n1->value.f == n2->value.f ? CMP_EQUAL :
-	     n1->value.f  > n2->value.f ? CMP_GREATER : CMP_NOTEQ;
-  }
+    { if ( n1->value.f == n2->value.f )
+	return CMP_EQUAL;
 
-  assert(0);
-  return CMP_EQUAL;
+      int lt = n1->value.f  < n2->value.f;
+      int gt = n1->value.f  > n2->value.f;
+
+      if ( !lt && !gt )		/* either is NaN */
+	return CMP_NOTEQ;	/* as SCALAR_TO_CMP() */
+      return gt-lt;
+    }
+    default:
+      assert(0);
+      return CMP_EQUAL;
+  }
 }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1694,11 +1703,23 @@ cmp_f_f(double d1, double d2)
 }
 
 /* See https://stackoverflow.com/questions/58734034/ */
-static int cmp_i_f(int64_t i1, double d2)
-{ int64_t i1_lo = i1 & 0x00000000FFFFFFFF;
-  int64_t i1_hi = i1 & 0xFFFFFFFF00000000;
-
-  return cmp_f_f((double)i1_lo, d2-(double)i1_hi);
+static int
+cmp_i_f(int64_t i1, double d2)
+{ if ( isnan(d2) )
+  { return CMP_NOTEQ;
+  } else
+  { double d1_lo, d1_hi;
+#define TOD(i) ((double)((int64_t)(i)))
+    if ( i1 >= 0 )
+    { d1_lo = TOD(i1 & 0x00000000FFFFFFFF);
+      d1_hi = TOD(i1 & 0xFFFFFFFF00000000);
+    } else
+    { d1_lo = TOD(i1 | 0xFFFFFFFF00000000);
+      d1_hi = TOD(i1 | 0x00000000FFFFFFFF)+1.0;
+    }
+#undef TOD
+    return SCALAR_TO_CMP(d1_lo, d2-d1_hi);
+  }
 }
 
 #ifdef O_BIGNUM

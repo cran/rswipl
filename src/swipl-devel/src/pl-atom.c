@@ -205,7 +205,7 @@ Note that threads can mark their atoms and continue execution because:
 static int	rehashAtoms(void);
 static void	considerAGC(void);
 static unsigned int register_atom(volatile Atom p);
-static unsigned int unregister_atom(volatile Atom p);
+static void	 unregister_atom(volatile Atom p);
 #ifdef O_DEBUG_ATOMGC
 static int	tracking(const Atom a);
 IOSTREAM *atomLogFd = 0;
@@ -528,9 +528,8 @@ same_name(const Atom a, const char *s, size_t length, const PL_blob_t *type)
 
 
 word
-lookupBlob(const char *s, size_t length, PL_blob_t *type, int *new)
-{ GET_LD
-  unsigned int v0, v, ref;
+lookupBlob(DECL_LD const char *s, size_t length, PL_blob_t *type, int *new)
+{ unsigned int v0, v, ref;
   Atom *table;
   int buckets;
   Atom a, head;
@@ -656,7 +655,7 @@ redo:
 
 
 word
-lookupAtom(const char *s, size_t length)
+lookupAtom(DECL_LD const char *s, size_t length)
 { int new;
 
   return lookupBlob(s, length, &text_atom, &new);
@@ -707,12 +706,12 @@ _PL_debug_unregister_atom(atom_t a,
   assert(i>=0 && i<mx);
   if ( i >= GD->atoms.builtin )
   { Atom atom = fetchAtomArray(i);
-    unsigned int refs;
 
-    refs = unregister_atom(atom);
+    unregister_atom(atom);
     if ( atomLogFd && tracking(atom) )
       Sfprintf(atomLogFd, "%s:%d: %s(): -- (%d) for `%s' (#%zd)\n",
-	       file, line, func, refs, atom->name, i);
+	       file, line, func, ATOM_REF_COUNT(atom->references),
+	       atom->name, i);
   }
 }
 
@@ -1201,20 +1200,17 @@ unregistering  in  LD->atoms.unregistered  and  mark    this  atom  from
 markAtomsOnStacks().
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-static unsigned int
+static void
 unregister_atom(volatile Atom p)
-{ unsigned int refs;
+{ unsigned int newref;
 
-  if ( !ATOM_IS_VALID(p->references) )
+  if ( unlikely(!ATOM_IS_VALID(p->references)) )
   { Sdprintf("OOPS: PL_unregister_atom('%s'): invalid atom\n", p->name);
     trap_gdb();
   }
 
-  if ( unlikely(ATOM_REF_COUNT(p->references+1) == 0) )
-    return ATOM_REF_COUNT(~(unsigned int)0);
-
-  if ( GD->atoms.gc_active )
-  { unsigned int oldref, newref;
+  if ( unlikely(GD->atoms.gc_active) )
+  { unsigned int oldref;
 
     do
     { oldref = p->references;
@@ -1223,28 +1219,35 @@ unregister_atom(volatile Atom p)
       if ( ATOM_REF_COUNT(newref) == 0 )
 	newref |= ATOM_MARKED_REFERENCE;
     } while( !COMPARE_AND_SWAP_UINT(&p->references, oldref, newref) );
-    refs = ATOM_REF_COUNT(newref);
 #ifdef O_DEBUG_ATOMGC
-    if ( refs == 0 && atomLogFd && tracking(p) )
+    if ( ATOM_REF_COUNT(newref) == 0 && atomLogFd && tracking(p) )
       Sfprintf(atomLogFd, "Marked '%s' at (#%" PRIuPTR ") (unregistered)\n",
 	       p->name, indexAtom(p->atom));
 #endif
-  } else
-  { GET_LD
+  } else			/* no AGC in progress */
+  { unsigned int oldref;
 
-    if ( HAS_LD )
-    { LD->atoms.unregistering = p->atom;
 #ifdef O_DEBUG_ATOMGC
     if ( atomLogFd && tracking(p) )
       Sfprintf(atomLogFd, "Set atoms.unregistering for '%s' at (#%" PRIuPTR ")\n",
 	       p->name, indexAtom(p->atom));
 #endif
-    }
-    if ( (refs=ATOM_REF_COUNT(ATOMIC_DEC(&p->references))) == 0 )
-      ATOMIC_INC(&GD->atoms.unregistered);
+
+    do
+    { oldref = p->references;
+      newref = oldref - 1;
+
+      if ( ATOM_REF_COUNT(newref) == 0 )
+      { GET_LD
+
+        if ( HAS_LD )
+	  LD->atoms.unregistering = p->atom;
+	ATOMIC_INC(&GD->atoms.unregistered);
+      }
+    } while( !COMPARE_AND_SWAP_UINT(&p->references, oldref, newref) );
   }
 
-  if ( refs == ATOM_REF_COUNT((unsigned int)-1) )
+  if ( unlikely(ATOM_REF_COUNT(newref) == ATOM_REF_COUNT((unsigned int)-1)) )
   { char fmt[100];
     char *enc;
     char *buf = NULL;
@@ -1257,8 +1260,6 @@ unregister_atom(volatile Atom p)
       PL_free(buf);
     trap_gdb();
   }
-
-  return refs;
 }
 
 

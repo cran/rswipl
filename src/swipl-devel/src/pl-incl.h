@@ -2284,6 +2284,17 @@ stack guarding when compiling with the address sanitizer.
 #define CMP_GREATER   1			/* > */
 #define CMP_NOTEQ     2			/* \== */
 
+/* Convert <0, 0, >0 to -1, 0, 1 (or CMP*) */
+#ifdef _MSC_VER
+#define SCALAR_TO_CMP(a,b) (((a) > (b)) - ((a) < (b)))
+#else
+#define SCALAR_TO_CMP(a,b) ( \
+	{ __auto_type __a = (a); __auto_type __b = (b);	\
+	  (__a > __b) - (__a < __b);			\
+	})
+#endif
+
+
 		/********************************
 		*             STACKS            *
 		*********************************/
@@ -2412,6 +2423,8 @@ size N on the global stack AND  can   use  bindConst()  to bind it to an
 #define hasStackSpace(g, t) \
 	(likely(gTop+(g)+BIND_GLOBAL_SPACE <= gMax) && \
 	 likely(tTop+(t)+BIND_TRAIL_SPACE <= tMax))
+#define hasTrailSpace(t) \
+	likely(tTop+(t) <= tMax)
 #define overflowCode(n) \
 	( (gTop+(n)+BIND_GLOBAL_SPACE > gMax) ? GLOBAL_OVERFLOW \
 					      : TRAIL_OVERFLOW )

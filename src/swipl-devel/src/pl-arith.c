@@ -252,9 +252,14 @@ PRED_IMPL("between", 3, between, PL_FA_NONDETERMINISTIC)
 	{ rc = FALSE;
 	  goto cleanup;
 	}
-	if ( !state->hinf &&
-	     cmpNumbers(&state->low, &state->high) == 0 )
-	  goto cleanup;
+	if ( !state->hinf )
+	{ if ( likely(state->high.type == V_INTEGER &&
+		      state->low.type == V_INTEGER) )
+	  { if ( state->low.value.i == state->high.value.i )
+	      goto cleanup;
+	  } else if ( cmpNumbers(&state->low, &state->high) == CMP_EQUAL )
+	      goto cleanup;
+	}
 	ForeignRedoPtr(state);
 	/*NOTREACHED*/
       }
@@ -965,12 +970,18 @@ valueExpression(DECL_LD term_t expr, number *result)
   number *n = result;
   number n_tmp;
   int walk_ref = FALSE;
-  Word p = valTermRef(expr);
+  Word p;
   Word start;
   int known_acyclic = FALSE;
   int pushed = 0;
   functor_t functor;
-  int old_round_mode = fegetround();
+  int old_round_mode;
+  int signalled;
+
+retry:
+  old_round_mode = fegetround();
+  signalled = FALSE;
+  p = valTermRef(expr);
 
   deRef(p);
   start = p;
@@ -1045,17 +1056,30 @@ valueExpression(DECL_LD term_t expr, number *result)
 	{ PL_no_memory();
 	  goto error;
 	}
-	if ( ++pushed > 100 && !known_acyclic )
-	{ int rc;
+	if ( ++pushed % 1024 == 0 )
+	{ if ( is_signalled() )
+	  { Word ogtop = gTop;
+	    if ( PL_handle_signals() < 0 )
+	      goto error;
+	    if ( ogtop != gTop ) /* gc or stack shift */
+	    { signalled = TRUE;
+	      goto error;
+	    }
+	  }
 
-	  if ( (rc=is_acyclic(start)) == TRUE )
-	  { known_acyclic = TRUE;
-	  } else
-	  { if ( rc == MEMORY_OVERFLOW )
-	      PL_error(NULL, 0, NULL, ERR_NOMEM);
-	    else
-	      PL_error(NULL, 0, "cyclic term", ERR_TYPE, ATOM_expression, expr);
-	    goto error;
+	  if ( pushed > 1000 && !known_acyclic )
+	  { int rc;
+
+	    if ( (rc=is_acyclic(start)) == TRUE )
+	    { known_acyclic = TRUE;
+	    } else
+	    { if ( rc == MEMORY_OVERFLOW )
+		PL_error(NULL, 0, NULL, ERR_NOMEM);
+	      else
+		PL_error(NULL, 0, "cyclic term",
+			 ERR_TYPE, ATOM_expression, expr);
+	      goto error;
+	    }
 	  }
 	}
 	if ( term->definition == FUNCTOR_roundtoward2 )
@@ -1194,6 +1218,13 @@ error:
     fesetround(old_round_mode);
   }
   LD->in_arithmetic--;
+
+  if ( signalled )
+  { DEBUG(MSG_SIGNAL,
+	  Sdprintf("Interrupt in valueExpression() shifted stacks;"
+		   " restarting\n"));
+    goto retry;
+  }
 
   return FALSE;
 }
@@ -1405,16 +1436,16 @@ int
 ar_add_si(Number n, long add)
 { switch(n->type)
   { case V_INTEGER:
-    { int64_t r = n->value.i + add;
+    { long long r;
 
-      if ( (r < 0 && add > 0 && n->value.i > 0) ||
-	   (r > 0 && add < 0 && n->value.i < 0) )
-      { if ( !promoteIntNumber(n) )
-	  fail;
-      } else
+      static_assert(sizeof(long long) == sizeof(int64_t), "");
+      if ( !__builtin_saddll_overflow(n->value.i, add, &r) )
       { n->value.i = r;
-	succeed;
+	return TRUE;
       }
+
+      if ( !promoteIntNumber(n) )
+	return FALSE;
     }
     /*FALLTHROUGH*/
 #ifdef O_BIGNUM
@@ -1447,7 +1478,6 @@ ar_add_si(Number n, long add)
   fail;
 }
 
-#define SAME_SIGN(i1, i2) (((i1) ^ (i2)) >= 0)
 
 int
 pl_ar_add(Number n1, Number n2, Number r)
@@ -1456,19 +1486,15 @@ pl_ar_add(Number n1, Number n2, Number r)
 
   switch(n1->type)
   { case V_INTEGER:
-    { if ( SAME_SIGN(n1->value.i, n2->value.i) )
-      { if ( n2->value.i < 0 )		/* both negative */
-	{ if ( n1->value.i < PLMININT - n2->value.i )
-	    goto overflow;
-	} else				/* both positive */
-	{ if ( PLMAXINT - n1->value.i < n2->value.i )
-	    goto overflow;
-	}
+    { long long v;
+
+      static_assert(sizeof(long long) == sizeof(int64_t), "");
+      if ( !__builtin_saddll_overflow(n1->value.i, n2->value.i, &v) )
+      { r->value.i = v;
+	r->type = V_INTEGER;
+	return TRUE;
       }
-      r->value.i = n1->value.i + n2->value.i;
-      r->type = V_INTEGER;
-      succeed;
-    overflow:
+
       if ( !promoteIntNumber(n1) ||
 	   !promoteIntNumber(n2) )
 	fail;

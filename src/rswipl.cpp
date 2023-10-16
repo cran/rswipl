@@ -1,6 +1,9 @@
+#include "Rcpp.h"
+
 #include <SWI-cpp2.h>
 #include <SWI-cpp2.cpp>
-#include "Rcpp.h"
+
+// #include "Rcpp.h"
 using namespace Rcpp ;
 
 // Translate prolog expression to R
@@ -1140,61 +1143,6 @@ RObject call_(String query)
   }
   
   return wrap(r) ;
-}
-
-// Call R expression from Prolog
-PREDICATE(r_eval, 1)
-{
-  CharacterVector names ;
-  PlTerm_var vars ;
-  RObject Expr = pl2r(A1, names, vars) ;
-  RObject Res = Expr ;
-  try
-  {
-    Language id("identity") ;
-    id.push_back(Expr) ;
-    Res = id.eval() ;
-  }
-
-  catch(std::exception& ex)
-  {
-    throw PlException(PlCompound("r_eval", PlTermv(A1, PlTerm_atom(ex.what())))) ;
-  }
-
-  return true ;
-}
-
-// Evaluate R expression from Prolog
-PREDICATE(r_eval, 2)
-{
-  CharacterVector names ;
-  PlTerm_var vars ;
-  RObject Expr = pl2r(A1, names, vars) ;
-  RObject Res = Expr ;
-  try
-  {
-    Language id("identity") ;
-    id.push_back(Expr) ;
-    Res = id.eval() ;
-  }
-  
-  catch(std::exception& ex)
-  {
-    throw PlException(PlCompound("r_eval", PlTermv(A1, PlTerm_atom(ex.what())))) ;
-  }
-
-  PlTerm_var pl ;
-  try
-  {
-    PlCheckFail(pl.unify_term(r2pl(Res, names, vars))) ;
-  }
-  
-  catch(std::exception& ex)
-  {
-    throw PlException(PlCompound("r_eval", PlTermv(A1, PlTerm_atom(ex.what())))) ;
-  }
-
-  return A2.unify_term(pl) ;
 }
 
 // The SWI system should not be initialized twice; therefore, we keep track of

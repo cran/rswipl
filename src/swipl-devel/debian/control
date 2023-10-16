@@ -28,11 +28,9 @@ Build-Depends:
  libunwind-dev | libunwind8-dev | libunwind7-dev,
  libossp-uuid-dev,
  libdb-dev,
- libpcre2-dev,
+ libpcre3-dev,
  libyaml-dev,
  libjs-jquery,
- python3,
- libpython3-dev,
  dh-autoreconf
 Standards-Version: 3.9.4
 Vcs-Git: git://git.debian.org/git/collab-maint/swi-prolog.git
@@ -42,7 +40,7 @@ Homepage: http://www.swi-prolog.org
 Package: swi-prolog
 Architecture: any
 Depends: ${misc:Depends}, swi-prolog-nox (= ${binary:Version}), swi-prolog-x (= ${binary:Version})
-Suggests: prolog-el
+Suggests: swi-prolog-doc, prolog-el
 Description: ISO/Edinburgh-style Prolog interpreter
  SWI-Prolog is a fast and powerful ISO/Edinburgh-style Prolog compiler with a
  rich set of built-in predicates. It offers a fast, robust and small
@@ -62,7 +60,7 @@ Package: swi-prolog-nox
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, libgmp-dev, libedit-dev, libreadline-dev, libncursesw5-dev, libjs-jquery
 Breaks: swi-prolog (<< 5.8.2-1)
-Suggests: prolog-el
+Suggests: swi-prolog-doc, prolog-el
 Description: ISO/Edinburgh-style Prolog interpreter (without X support)
  SWI-Prolog is a fast and powerful ISO/Edinburgh-style Prolog compiler with a
  rich set of built-in predicates. It offers a fast, robust and small

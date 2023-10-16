@@ -60,7 +60,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 90116
+#define PLVERSION 90117
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -306,6 +306,7 @@ typedef union
 		*    DETERMINISTIC CALL/RETURN  *
 		*********************************/
 
+/* PL_succeed and PL_fail are deprecated */
 #define	PL_succeed	return TRUE	/* succeed deterministically */
 #define PL_fail		return FALSE	/* fail */
 

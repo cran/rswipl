@@ -1,3 +1,9 @@
+# rswipl 9.1.17
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-1-17/6890
+
+maintainance release, fixes linker warnings on MacOS
+
 # rswipl 9.1.16
 
 see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-1-16/6862

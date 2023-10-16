@@ -1,5 +1,5 @@
-PKG_CPPFLAGS=-I../inst/swipl/lib/swipl/include -D_REENTRANT -D__SWI_PROLOG__ -D__SWI_EMBEDDED__
-PKG_LIBS=`pkg-config ../inst/swipl/share/pkgconfig/swipl.pc --libs`
+PKG_CPPFLAGS=-Iswipl-devel/src -Iswipl-devel/packages/cpp -I../inst/swipl/lib/swipl/include -D_REENTRANT -D__SWI_PROLOG__
+PKG_CXXFLAGS=$(CXX_VISIBILITY)
 OS=$(shell ${R_HOME}/bin/R -e "cat(R.version[['os']])" -s)
 
 CMAKE_VERSION := $(shell cmake --version 2>/dev/null)
@@ -7,24 +7,19 @@ CMAKE_VERSION_MACOS := $(shell /Applications/CMake.app/Contents/bin/cmake --vers
 
 all: $(SHLIB)
 
-$(SHLIB): RcppExports.o rswipl.o
+$(SHLIB): ../linux/done
 
-rswipl.o: swipl
+RcppExports.o: ../linux/done
 
-swipl: ../linux/done
+rswipl.o: ../linux/done
 
 ../linux/done:
 	mkdir -p ../linux
-ifeq ("$(OS)","linux-gnu")
-	cd ../linux && cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_BUILD_TYPE=Release -DSWIPL_PACKAGES_PYTHON=OFF -S ../src/swipl-devel
-	cd ../linux && $(MAKE) -j1
-	cd ../linux && $(MAKE) -j1 install
-else
 ifdef CMAKE_VERSION
-	cd ../linux && cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DBUILD_TESTING=ON -DSWIPL_PACKAGES_PYTHON=OFF -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel && $(MAKE) -j1 install
-endif
+	cd ../linux && cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DSWIPL_PACKAGES_PYTHON=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel && $(MAKE) install
+else
 ifdef CMAKE_VERSION_MACOS
-	cd ../linux && LDFLAGS="-L/opt/R/arm64/lib" CFLAGS="-I/opt/R/arm64/include" /Applications/CMake.app/Contents/bin/cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DSWIPL_PACKAGES_PYTHON=OFF -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel && $(MAKE) -j1 install
+	cd ../linux && LDFLAGS="-L/opt/R/arm64/lib" CFLAGS="-I/opt/R/arm64/include" /Applications/CMake.app/Contents/bin/cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl -DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DSWIPL_PACKAGES_PYTHON=OFF -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel && $(MAKE) install
 endif
 endif
 	rm ../inst/swipl/bin/swipl

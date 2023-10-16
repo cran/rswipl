@@ -1,38 +1,80 @@
-swi-prolog (7.1.23-1-g2474030-preciseppa2) precise; urgency=medium
+swi-prolog (6.6.0-3-g67f9672-saucyppa2) saucy; urgency=low
 
   * New upstream release (from GIT)
 
- -- Jan Wielemaker <jan@swi-prolog.org>  Sat, 20 Sep 2014 22:50:31 +0200
+ -- Jan Wielemaker <ppa@swi-prolog.org>  Fri, 22 Nov 2013 14:21:42 +0100
 
-swi-prolog (7.1.23-0-trustyppa2) trusty; urgency=medium
-
-  * New upstream release (from GIT)
-
- -- Jan Wielemaker <jan@swi-prolog.org>  Sat, 20 Sep 2014 22:50:01 +0200
-
-swi-prolog (7.1.11-5-g9c58b7c-saucyppa2) saucy; urgency=low
+swi-prolog (6.6.0-2-geca9f98-raringppa2) raring; urgency=low
 
   * New upstream release (from GIT)
 
- -- Jan Wielemaker <ppa@swi-prolog.org>  Thu, 03 Apr 2014 13:43:02 +0200
+ -- Jan Wielemaker <ppa@swi-prolog.org>  Fri, 22 Nov 2013 14:21:16 +0100
 
-swi-prolog (6.3.17-1-gef46fe6-raringppa2) raring; urgency=low
-
-  * New upstream release (from GIT)
-
- -- Jan Wielemaker <jan@swi-prolog.org>  Fri, 14 Jun 2013 19:51:33 +0200
-
-swi-prolog (6.3.17-0-preciseppa2) precise; urgency=low
+swi-prolog (6.6.0-1-g646fc5d-preciseppa2) precise; urgency=low
 
   * New upstream release (from GIT)
 
- -- Jan Wielemaker <jan@swi-prolog.org>  Fri, 14 Jun 2013 16:23:36 +0200
+ -- Jan Wielemaker <ppa@swi-prolog.org>  Fri, 22 Nov 2013 14:05:39 +0100
 
-swi-prolog (6.3.16-5-ga7018e1-raringppa2) raring; urgency=low
+swi-prolog (6.5.3-5-gb057ae9-raringppa2) raring; urgency=low
 
   * New upstream release (from GIT)
 
- -- Jan Wielemaker <jan@swi-prolog.org>  Sun, 09 Jun 2013 16:36:41 +0200
+ -- Jan Wielemaker <ppa@swi-prolog.org>  Tue, 19 Nov 2013 16:53:44 +0100
+
+swi-prolog (6.5.3-4-ga87d8e4-saucyppa2) saucy; urgency=low
+
+  * New upstream release (from GIT)
+
+ -- Jan Wielemaker <ppa@swi-prolog.org>  Tue, 19 Nov 2013 16:52:27 +0100
+
+swi-prolog (6.5.3-0-preciseppa2) precise; urgency=low
+
+  * New upstream release (from GIT)
+
+ -- Jan Wielemaker <ppa@swi-prolog.org>  Tue, 19 Nov 2013 16:46:35 +0100
+
+swi-prolog (6.5.1-18-g1628573-raringppa2) raring; urgency=low
+
+  * New upstream release (from GIT)
+
+ -- Jan Wielemaker <jan@swi-prolog.org>  Tue, 13 Aug 2013 21:08:36 +0200
+
+swi-prolog (6.5.1-17-gf52bcb7-preciseppa2) precise; urgency=low
+
+  * New upstream release (from GIT)
+
+ -- Jan Wielemaker <jan@swi-prolog.org>  Tue, 13 Aug 2013 21:07:39 +0200
+
+swi-prolog (6.5.1-15-g72a7b72-preciseppa2) precise; urgency=low
+
+  * New upstream release (from GIT)
+
+ -- Jan Wielemaker <jan@swi-prolog.org>  Tue, 13 Aug 2013 21:02:54 +0200
+
+swi-prolog (6.3.19-1-g7ea9fb8-raringppa2) raring; urgency=low
+
+  * New upstream release (from GIT)
+
+ -- Jan Wielemaker <jan@swi-prolog.org>  Thu, 11 Jul 2013 16:15:44 +0200
+
+swi-prolog (6.3.19-0-preciseppa2) precise; urgency=low
+
+  * New upstream release (from GIT)
+
+ -- Jan Wielemaker <jan@swi-prolog.org>  Thu, 11 Jul 2013 16:14:33 +0200
+
+swi-prolog (6.3.18-1-g1bbabcf-raringppa2) raring; urgency=low
+
+  * New upstream release (from GIT)
+
+ -- Jan Wielemaker <jan@swi-prolog.org>  Fri, 28 Jun 2013 14:42:48 +0200
+
+swi-prolog (6.3.18-0-preciseppa2) precise; urgency=low
+
+  * New upstream release (from GIT)
+
+ -- Jan Wielemaker <jan@swi-prolog.org>  Fri, 28 Jun 2013 14:41:17 +0200
 
 swi-prolog (6.2.6-1) experimental; urgency=low
 

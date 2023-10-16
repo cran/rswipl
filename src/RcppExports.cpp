@@ -12,7 +12,7 @@ Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 
 // consult_
 LogicalVector consult_(CharacterVector files);
-RcppExport SEXP _rswipl_consult_(SEXP filesSEXP) {
+RcppExport SEXP __attribute__((visibility("default"))) _rswipl_consult_(SEXP filesSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -23,7 +23,7 @@ END_RCPP
 }
 // query_
 RObject query_(RObject query);
-RcppExport SEXP _rswipl_query_(SEXP querySEXP) {
+RcppExport SEXP __attribute__((visibility("default"))) _rswipl_query_(SEXP querySEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -34,7 +34,7 @@ END_RCPP
 }
 // clear_
 RObject clear_();
-RcppExport SEXP _rswipl_clear_() {
+RcppExport SEXP __attribute__((visibility("default"))) _rswipl_clear_() {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -44,7 +44,7 @@ END_RCPP
 }
 // submit_
 RObject submit_();
-RcppExport SEXP _rswipl_submit_() {
+RcppExport SEXP __attribute__((visibility("default"))) _rswipl_submit_() {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -54,7 +54,7 @@ END_RCPP
 }
 // once_
 RObject once_(RObject query);
-RcppExport SEXP _rswipl_once_(SEXP querySEXP) {
+RcppExport SEXP __attribute__((visibility("default"))) _rswipl_once_(SEXP querySEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -65,7 +65,7 @@ END_RCPP
 }
 // findall_
 List findall_(RObject query);
-RcppExport SEXP _rswipl_findall_(SEXP querySEXP) {
+RcppExport SEXP __attribute__((visibility("default"))) _rswipl_findall_(SEXP querySEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -76,7 +76,7 @@ END_RCPP
 }
 // portray_
 RObject portray_(RObject query);
-RcppExport SEXP _rswipl_portray_(SEXP querySEXP) {
+RcppExport SEXP __attribute__((visibility("default"))) _rswipl_portray_(SEXP querySEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -87,7 +87,7 @@ END_RCPP
 }
 // call_
 RObject call_(String query);
-RcppExport SEXP _rswipl_call_(SEXP querySEXP) {
+RcppExport SEXP __attribute__((visibility("default"))) _rswipl_call_(SEXP querySEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -98,7 +98,7 @@ END_RCPP
 }
 // init_
 LogicalVector init_(String argv0);
-RcppExport SEXP _rswipl_init_(SEXP argv0SEXP) {
+RcppExport SEXP __attribute__((visibility("default"))) _rswipl_init_(SEXP argv0SEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -109,7 +109,7 @@ END_RCPP
 }
 // done_
 LogicalVector done_();
-RcppExport SEXP _rswipl_done_() {
+RcppExport SEXP __attribute__((visibility("default"))) _rswipl_done_() {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -132,7 +132,7 @@ static const R_CallMethodDef CallEntries[] = {
     {NULL, NULL, 0}
 };
 
-RcppExport void R_init_rswipl(DllInfo *dll) {
+RcppExport void __attribute__((visibility("default"))) R_init_rswipl(DllInfo *dll) {
     R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);
 }

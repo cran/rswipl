@@ -112,8 +112,13 @@ DoubleVector pl2r_real(PlTerm pl)
 // Convert vector of reals (e.g., #(1.0, 2.0, na)) to DoubleVector
 DoubleVector pl2r_realvec(PlTerm pl)
 {
-  DoubleVector r(pl.arity()) ;
-  for(size_t i=0; i<pl.arity(); i++)
+  PlAtom n(PlAtom::null) ;
+  size_t arity ;
+  if(!pl.name_arity(&n, &arity))
+    stop("name_arity") ;
+
+  DoubleVector r(arity) ;
+  for(size_t i=0; i<arity; i++)
     r(i) = pl2r_double(pl[i+1]) ;
 
   return r ;
@@ -122,16 +127,28 @@ DoubleVector pl2r_realvec(PlTerm pl)
 // Convert matrix of reals (e.g., ##(#(1.0, 2.0), #(na, ...), ...))
 NumericMatrix pl2r_realmat(PlTerm pl)
 {
-  size_t nrow = pl.arity() ;
+  PlAtom n(PlAtom::null) ;
+  size_t nrow ;
+  if(!pl.name_arity(&n, &nrow))
+    stop("name_arity") ;
+
   size_t ncol = 0 ;
   if(nrow > 0)
   {
-    for(size_t i=0; i<pl.arity(); i++)
+    for(size_t i=0; i<nrow; i++)
       if(i == 0)
-        ncol = pl[1].arity() ;
+      {
+        PlAtom n1(PlAtom::null) ;
+        if(!pl[1].name_arity(&n1, &ncol))
+          stop("name_arity") ;
+      }
       else
       {
-        if(pl[i+1].arity() != ncol)
+        PlAtom n1(PlAtom::null) ;
+        size_t ncol1 ;
+        if(!pl[i+1].name_arity(&n1, &ncol1))
+          stop("name_arity") ;
+        if(ncol1 != ncol)
           stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
       }
   }
@@ -170,8 +187,13 @@ IntegerVector pl2r_integer(PlTerm pl)
 
 IntegerVector pl2r_intvec(PlTerm pl)
 {
-  IntegerVector r(pl.arity()) ;
-  for(size_t i=0; i<pl.arity(); i++)
+  PlAtom n(PlAtom::null) ;
+  size_t arity ;
+  if(!pl.name_arity(&n, &arity))
+    stop("name_arity") ;
+
+  IntegerVector r(arity) ;
+  for(size_t i=0; i<arity; i++)
     r(i) = pl2r_int(pl[i+1]) ;
 
   return r ;
@@ -179,16 +201,28 @@ IntegerVector pl2r_intvec(PlTerm pl)
 
 IntegerMatrix pl2r_intmat(PlTerm pl)
 {
-  size_t nrow = pl.arity() ;
+  PlAtom n(PlAtom::null) ;
+  size_t nrow ;
+  if(!pl.name_arity(&n, &nrow))
+    stop("name_arity") ;
+
   size_t ncol = 0 ;
   if(nrow > 0)
   {
-    for(size_t i=0; i<pl.arity(); i++)
+    for(size_t i=0; i<nrow; i++)
       if(i == 0)
-        ncol = pl[1].arity() ;
+      {
+        PlAtom n1(PlAtom::null) ;
+        if(!pl[1].name_arity(&n1, &ncol))
+          stop("name_arity") ;
+      }
       else
       {
-        if(pl[i+1].arity() != ncol)
+        PlAtom n1(PlAtom::null) ;
+        size_t ncol1 ;
+        if(!pl[i+1].name_arity(&n1, &ncol1))
+          stop("name_arity") ;
+        if(ncol1 != ncol)
           stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
       }
   }
@@ -216,8 +250,13 @@ CharacterVector pl2r_char(PlTerm pl)
 
 CharacterVector pl2r_charvec(PlTerm pl)
 {
-  CharacterVector r(pl.arity()) ;
-  for(size_t i=0; i<pl.arity(); i++)
+  PlAtom n(PlAtom::null) ;
+  size_t arity ;
+  if(!pl.name_arity(&n, &arity))
+    stop("name_arity") ;
+
+  CharacterVector r(arity) ;
+  for(size_t i=0; i<arity; i++)
     r(i) = pl2r_string(pl[i+1]) ;
 
   return r ;
@@ -225,16 +264,28 @@ CharacterVector pl2r_charvec(PlTerm pl)
 
 CharacterMatrix pl2r_charmat(PlTerm pl)
 {
-  size_t nrow = pl.arity() ;
+  PlAtom n(PlAtom::null) ;
+  size_t nrow ;
+  if(!pl.name_arity(&n, &nrow))
+    stop("name_arity") ;
+
   size_t ncol = 0 ;
   if(nrow > 0)
   {
-    for(size_t i=0; i<pl.arity(); i++)
+    for(size_t i=0; i<nrow; i++)
       if(i == 0)
-        ncol = pl[1].arity() ;
+      {
+        PlAtom n1(PlAtom::null) ;
+        if(!pl[1].name_arity(&n1, &ncol))
+          stop("name_arity") ;
+      }
       else
       {
-        if(pl[i+1].arity() != ncol)
+        PlAtom n1(PlAtom::null) ;
+        size_t ncol1 ;
+        if(!pl[i+1].name_arity(&n1, &ncol1))
+          stop("name_arity") ;
+        if(ncol1 != ncol)
           stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
       }
   }
@@ -275,12 +326,20 @@ RObject pl2r_function(PlTerm pl, CharacterVector& names, PlTerm& vars)
   PlTerm plbody = pl[2] ;
 
   Language head("alist") ;
-  for(unsigned int i=1 ; i<=plhead.arity() ; i++)
+  PlAtom n(PlAtom::null) ;
+  size_t h_arity ;
+  if(!plhead.name_arity(&n, &h_arity))
+    stop("name_arity") ;
+  for(unsigned int i=1 ; i<=h_arity ; i++)
   {
     PlTerm arg = plhead[i] ;
+    PlAtom a_name(PlAtom::null) ;
+    size_t a_arity ;
+    if(!arg.name_arity(&a_name, &a_arity))
+      stop("name_arity") ;
 
     // Compounds like mean=100 are translated to named function arguments
-    if(arg.is_compound() && arg.name().as_string() == "=" && arg.arity() == 2)
+    if(arg.is_compound() && a_name.as_string() == "=" && a_arity == 2)
     {
       PlTerm a1 = arg[1] ;
       PlTerm a2 = arg[2] ;
@@ -292,7 +351,8 @@ RObject pl2r_function(PlTerm pl, CharacterVector& names, PlTerm& vars)
     }
 
     // the argument is the name
-    head.push_back(Named(arg.as_string(PlEncoding::UTF8)) = pl2r_symbol(PlTerm_atom(""))) ;
+    // head.push_back(Named(arg.as_string(PlEncoding::UTF8)) = pl2r_symbol(PlTerm_atom(""))) ;
+    head.push_back(Named(arg.as_string(PlEncoding::UTF8)) = Function("substitute")()) ;
   }
 
   RObject body = pl2r_compound(plbody, names, vars) ;
@@ -304,8 +364,13 @@ RObject pl2r_function(PlTerm pl, CharacterVector& names, PlTerm& vars)
 
 LogicalVector pl2r_boolvec(PlTerm pl)
 {
-  LogicalVector r(pl.arity()) ;
-  for(size_t i=0; i<pl.arity(); i++)
+  PlAtom n(PlAtom::null) ;
+  size_t arity ;
+  if(!pl.name_arity(&n, &arity))
+    stop("name_arity") ;
+
+  LogicalVector r(arity) ;
+  for(size_t i=0; i<arity; i++)
   {
     PlTerm t = pl[i+1] ;
     if(t.is_atom())
@@ -329,7 +394,7 @@ LogicalVector pl2r_boolvec(PlTerm pl)
       }
     }
     
-    warning("r2pl_logical: invalid item %s, returning NA", t.as_string(PlEncoding::Locale).c_str()) ;
+    warning("pl2r_logical: invalid item %s, returning NA", t.as_string(PlEncoding::Locale).c_str()) ;
     r(i) = NA_LOGICAL ;
   }
 
@@ -338,16 +403,28 @@ LogicalVector pl2r_boolvec(PlTerm pl)
 
 LogicalMatrix pl2r_boolmat(PlTerm pl)
 {
-  size_t nrow = pl.arity() ;
+  PlAtom n(PlAtom::null) ;
+  size_t nrow ;
+  if(!pl.name_arity(&n, &nrow))
+    stop("name_arity") ;
+
   size_t ncol = 0 ;
   if(nrow > 0)
   {
-    for(size_t i=0; i<pl.arity(); i++)
+    for(size_t i=0; i<nrow; i++)
       if(i == 0)
-        ncol = pl[1].arity() ;
+      {
+        PlAtom n1(PlAtom::null) ;
+        if(!pl[1].name_arity(&n1, &ncol))
+          stop("name_arity") ;
+      }
       else
       {
-        if(pl[i+1].arity() != ncol)
+        PlAtom n1(PlAtom::null) ;
+        size_t ncol1 ;
+        if(!pl[i+1].name_arity(&n1, &ncol1))
+          stop("name_arity") ;
+        if(ncol1 != ncol)
           stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
       }
   }
@@ -427,17 +504,25 @@ RObject pl2r_compound(PlTerm pl, CharacterVector& names, PlTerm& vars)
     return pl2r_boolvec(pl) ;
 
   // Convert :- to function
-  if(pl.name().as_string() == ":-")
+  if(!strcmp(pl.name().as_string(PlEncoding::UTF8).c_str(), ":-"))
     return pl2r_function(pl, names, vars) ;
 
   // Other compounds
-  Language r(pl.name().as_string(PlEncoding::UTF8).c_str()) ;
-  for(unsigned int i=1 ; i<=pl.arity() ; i++)
+  PlAtom name(PlAtom::null) ;
+  size_t arity ;
+  if(!pl.name_arity(&name, &arity))
+    stop("name_arity") ;
+  Language r(name.as_string(PlEncoding::UTF8).c_str()) ;
+  for(unsigned int i=1 ; i<=arity ; i++)
   {
     PlTerm arg = pl[i] ;
+    PlAtom a_name(PlAtom::null) ;
+    size_t a_arity ;
+    if(!pl.name_arity(&a_name, &a_arity))
+      stop("name_arity") ;
 
     // Compounds like mean=100 are translated to named function arguments
-    if(arg.is_compound() && !strcmp(arg.name().as_string(PlEncoding::UTF8).c_str(), "=") && arg.arity() == 2)
+    if(arg.is_compound() && !strcmp(name.as_string(PlEncoding::UTF8).c_str(), "=") && arity == 2)
     {
       PlTerm a1 = arg[1] ;
       PlTerm a2 = arg[2] ;
@@ -477,14 +562,21 @@ RObject pl2r_list(PlTerm pl, CharacterVector& names, PlTerm& vars)
     List r = as<List>(tail) ;
     
     // convert prolog pair a-X to named list element
-    if(head.is_compound() && !strcmp(head.name().as_string(PlEncoding::UTF8).c_str(), "-") && head.arity() == 2)
+    if(head.is_compound())
     {
-      PlTerm a1 = head[1] ;
-      PlTerm a2 = head[2] ;
-      if(a1.is_atom())
+      PlAtom name(PlAtom::null) ;
+      size_t arity ;
+      if(!head.name_arity(&name, &arity))
+        stop("name_arity") ;
+      if(!strcmp(name.as_string(PlEncoding::UTF8).c_str(), "-") && arity == 2)
       {
-        r.push_front(pl2r(a2, names, vars), a1.name().as_string(PlEncoding::UTF8).c_str()) ;
-        return r ;
+        PlTerm a1 = head[1] ;
+        PlTerm a2 = head[2] ;
+        if(a1.is_atom())
+        {
+          r.push_front(pl2r(a2, names, vars), a1.name().as_string(PlEncoding::UTF8).c_str()) ;
+          return r ;
+        }
       }
     }
     
@@ -497,15 +589,22 @@ RObject pl2r_list(PlTerm pl, CharacterVector& names, PlTerm& vars)
   Language r(pl.name().as_string(PlEncoding::UTF8).c_str()) ;
   
   // convert prolog pair a-X to named list element
-  if(head.is_compound() && !strcmp(head.name().as_string(PlEncoding::UTF8).c_str(), "-") && head.arity() == 2)
+  if(head.is_compound())
   {
-    PlTerm a1 = head[1] ;
-    PlTerm a2 = head[2] ;
-    if(a1.is_atom())
+    PlAtom name(PlAtom::null) ;
+    size_t arity ;
+    if(!head.name_arity(&name, &arity))
+      stop("name_arity") ;
+    if(!strcmp(name.as_string(PlEncoding::UTF8).c_str(), "-") && arity == 2)
     {
-      r.push_back(Named(a1.name().as_string(PlEncoding::UTF8).c_str()) = pl2r(a2, names, vars)) ;
-      r.push_back(tail) ;
-      return as<RObject>(r) ;
+      PlTerm a1 = head[1] ;
+      PlTerm a2 = head[2] ;
+      if(a1.is_atom())
+      {
+        r.push_back(Named(a1.name().as_string(PlEncoding::UTF8).c_str()) = pl2r(a2, names, vars)) ;
+        r.push_back(tail) ;
+        return as<RObject>(r) ;
+      }
     }
   }
 
@@ -556,8 +655,9 @@ PlTerm r2pl_string(CharacterVector r) ;
 PlTerm r2pl_null()
 {
   PlTerm_var pl ;
-  PlCheckFail(PlTerm_tail(pl).close()) ;
-  return pl ;
+  PlTerm_tail tail(pl) ;
+  PlCheckFail(tail.close()) ;
+  return tail ;
 }
 
 // Prolog representation of R's NA.
@@ -986,7 +1086,7 @@ RlQuery* query_id = NULL ;
 
 // Open a query for later use.
 // [[Rcpp::export(.query)]]
-RObject query_(RObject query)
+RObject query_(RObject q)
 {
   if(PL_current_query() != 0)
   {
@@ -994,7 +1094,7 @@ RObject query_(RObject query)
     return wrap(false) ;
   }
 
-  query_id = new RlQuery(query) ;
+  query_id = new RlQuery(q) ;
   return wrap(true) ;
 }
 
@@ -1027,122 +1127,6 @@ RObject submit_()
   }
   
   return query_id->bindings() ;
-}
-
-// Execute a query once and return conditions
-//
-// Examples:
-//
-// once(call("=", 1, 2)) -> FALSE
-// once(call("=", 1, 1)) -> empty list
-// once(call("member", 1, list(2, expression(X)))) -> list stating that X = 1
-// once(call("=", list(expression(X), expression(Y)), list(1, expression(Z))))
-//   -> list stating that X = 1 and Z = Y
-// once(call("member", 1, expression(X))) -> list stating that X = [1 | _]; 
-//   e.g., something like [|]`(1, expression(`_6330`)). This is cumbersome, any
-//   better ideas are welcome.
-//
-// [[Rcpp::export(.once)]]
-RObject once_(RObject query)
-{
-  PlFrame f ;
-  if(!query_(query))
-    stop("Could not create query.") ;
-    
-  RObject l = submit_() ;
-  clear_() ;
-  return l ;
-}
-
-// Same as once_ above, but return all solutions to a query.
-// [[Rcpp::export(.findall)]]
-List findall_(RObject query)
-{
-  PlFrame f ;
-  if(!query_(query))
-    stop("Could not create query.") ;
-    
-  List results ;
-  while(true)
-  {
-    RObject l = submit_() ;
-    if(TYPEOF(l) == LGLSXP)
-      break ;
-    
-    results.push_back(l) ;
-  }
-  
-  clear_() ;
-  return results ;
-}
-
-// Pretty print query. Maybe simplify to something like this:
-// with_output_to(string(S), write_term(member(X), [variable_names(['X'=X])])).
-//
-// [[Rcpp::export(.portray)]]
-RObject portray_(RObject query)
-{
-  if(PL_current_query() != 0)
-  {
-    warning("Closing the current query.") ;
-    clear_() ;
-  }
-
-  CharacterVector names ;
-  PlTerm_var vars ;
-  PlTermv pl(3) ;
-  PlCheckFail(pl[0].unify_term(r2pl(query, names, vars))) ;
-  PlTerm_tail tail(pl[2]) ;
-  PlCheckFail(tail.append(PlCompound("quoted", PlTermv(PlTerm_atom("false"))))) ;
-  PlCheckFail(tail.append(PlCompound("spacing", PlTermv(PlTerm_atom("next_argument"))))) ;
-  PlCheckFail(tail.close()) ;
-
-  PlFrame f ;
-  PlQuery q("term_string", pl) ;
-  try
-  {
-    if(!q.next_solution())
-      return wrap(false) ;
-  }
-  
-  catch(PlException& ex)
-  {
-    warning(ex.as_string(PlEncoding::Locale).c_str()) ;
-    PL_clear_exception() ;
-    stop("portray of %s failed.", pl[0].as_string(PlEncoding::Locale).c_str()) ;
-  }
-  
-  return pl2r(pl[1], names, vars) ;
-}
-
-// Execute a query given as a string
-//
-// Example:
-// once("use_module(library(http/html_write))")
-//
-// [[Rcpp::export(.call)]]
-RObject call_(String query)
-{
-  if(PL_current_query() != 0)
-  {
-    warning("Closing the current query.") ;
-    clear_() ;
-  }
-
-  bool r = false ;
-  try
-  {
-    r = PlCall(query.get_cstring()) ;
-  }
-  
-  catch(PlException& ex)
-  {
-    warning(ex.as_string(PlEncoding::Locale).c_str()) ;
-    PL_clear_exception() ;
-    stop("query failed: %s", query.get_cstring()) ;
-  }
-  
-  return wrap(r) ;
 }
 
 // The SWI system should not be initialized twice; therefore, we keep track of

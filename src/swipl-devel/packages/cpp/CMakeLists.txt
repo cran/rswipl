@@ -42,3 +42,8 @@ swipl_plugin(
     C_LIBS ${SOCKET_LIBRARIES}
     C_SOURCES test_cpp.cpp SWI-cpp2.cpp)
 endif()
+
+# Make sure we stick to the C++17 standard
+if(CMAKE_COMPILER_IS_GNUCC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+  target_compile_options(plugin_test_cpp PRIVATE -std=c++17 -Wpedantic)
+endif()

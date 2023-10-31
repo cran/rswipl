@@ -5,8 +5,8 @@
     .Call('_rswipl_consult_', PACKAGE = 'rswipl', files)
 }
 
-.query <- function(query) {
-    .Call('_rswipl_query_', PACKAGE = 'rswipl', query)
+.query <- function(q) {
+    .Call('_rswipl_query_', PACKAGE = 'rswipl', q)
 }
 
 .clear <- function() {
@@ -15,22 +15,6 @@
 
 .submit <- function() {
     .Call('_rswipl_submit_', PACKAGE = 'rswipl')
-}
-
-.once <- function(query) {
-    .Call('_rswipl_once_', PACKAGE = 'rswipl', query)
-}
-
-.findall <- function(query) {
-    .Call('_rswipl_findall_', PACKAGE = 'rswipl', query)
-}
-
-.portray <- function(query) {
-    .Call('_rswipl_portray_', PACKAGE = 'rswipl', query)
-}
-
-.call <- function(query) {
-    .Call('_rswipl_call_', PACKAGE = 'rswipl', query)
 }
 
 .init <- function(argv0) {

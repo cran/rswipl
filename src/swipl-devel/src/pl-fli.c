@@ -54,7 +54,7 @@
 #include "pl-attvar.h"
 #include "pl-funct.h"
 #include "pl-write.h"
-#include "pl-wic.h"
+#include "pl-qlf.h"
 #include "pl-prims.h"
 #include "pl-modul.h"
 #include "pl-proc.h"
@@ -334,10 +334,10 @@ bArgVar(DECL_LD Word ap, Word vp)
 		 *******************************/
 
 term_t
-PL_new_term_refs(DECL_LD int n)
+PL_new_term_refs(DECL_LD size_t n)
 { Word t;
   term_t r;
-  int i;
+  size_t i;
   FliFrame fr;
 
   if ( !ensureLocalSpace(n*sizeof(word)) )
@@ -404,7 +404,7 @@ PL_new_term_ref_noshift(DECL_LD)
 
 
 API_STUB(term_t)
-(PL_new_term_refs)(int n)
+(PL_new_term_refs)(size_t n)
 ( if ( (void*)fli_context <= (void*)environment_frame )
     fatalError("PL_new_term_refs(): No foreign environment");
 
@@ -1491,19 +1491,28 @@ PL_get_term_value(term_t t, term_value_t *val)
 
 
 int
+atom_to_bool(atom_t a)
+{ if ( a == ATOM_true || a == ATOM_on )
+    return TRUE;
+  if ( a == ATOM_false || a == ATOM_off )
+    return FALSE;
+
+  return -1;
+}
+
+
+int
 PL_get_bool(term_t t, int *b)
 { GET_LD
   word w = valHandle(t);
 
   if ( isAtom(w) )
-  { if ( w == ATOM_true || w == ATOM_on )
-    { *b = TRUE;
-      succeed;
-    } else if ( w == ATOM_false || w == ATOM_off )
-    { *b = FALSE;
-      succeed;
+  { int bv = atom_to_bool(w);
+    if ( bv >= 0 )
+    { *b = bv;
+      return TRUE;
     }
-    fail;
+    return FALSE;
   }
   if ( isInteger(w) )
   { if ( w == consInt(0) )
@@ -1511,11 +1520,11 @@ PL_get_bool(term_t t, int *b)
     else if ( w == consInt(1) )
       *b = TRUE;
     else
-      fail;
-    succeed;
+      return FALSE;
+    return TRUE;
   }
 
-  fail;
+  return FALSE;
 }
 
 
@@ -3325,7 +3334,7 @@ PL_unify_integer(DECL_LD term_t t, intptr_t i)
 
 API_STUB(int)
 (PL_unify_integer)(term_t t, intptr_t i)
-( return unify_int64_ex(t, i, FALSE); )
+( return PL_unify_integer(t, i); )
 
 API_STUB(int)
 (PL_unify_int64)(term_t t, int64_t i)
@@ -4591,7 +4600,7 @@ bindForeign(Module m, const char *name, int arity, Func f, int flags)
   if ( def->impl.any.defined )
     PL_linger(def->impl.any.defined);	/* Dubious: what if a clause list? */
   def->impl.foreign.function = f;
-  def->flags &= ~(P_DYNAMIC|P_THREAD_LOCAL|P_TRANSPARENT|P_NONDET|P_VARARG);
+  def->flags &= ~(P_DYNAMIC|P_TRANSACT|P_THREAD_LOCAL|P_TRANSPARENT|P_NONDET|P_VARARG);
   def->flags |= (P_FOREIGN|TRACE_ME);
 
   if ( m == MODULE_system || SYSTEM_MODE )

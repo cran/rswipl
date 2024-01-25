@@ -320,7 +320,7 @@ open_foreign_frame(DECL_LD)
   Mark(fr->mark);
   DEBUG(CHK_SECURE, assert(fr>fli_context));
   fr->parent = fli_context;
-  fr->magic = FLI_MAGIC;
+  FLI_SET_VALID(fr);
   fli_context = fr;
 
   return consTermRef(fr);
@@ -331,10 +331,10 @@ void
 PL_close_foreign_frame(DECL_LD fid_t id)
 { FliFrame fr = (FliFrame) valTermRef(id);
 
-  if ( !id || fr->magic != FLI_MAGIC )
+  if ( !id || !FLI_VALID(fr) )
     sysError("PL_close_foreign_frame(): illegal frame: %d", id);
   DiscardMark(fr->mark);
-  fr->magic = FLI_MAGIC_CLOSED;
+  FLI_SET_CLOSED(fr);
   fli_context = fr->parent;
   lTop = (LocalFrame) fr;
 }
@@ -383,7 +383,7 @@ PL_open_signal_foreign_frame(int sync)
   }
 
   fr = addPointer(lTop, margin);
-  fr->magic = FLI_MAGIC;
+  FLI_SET_VALID(fr);
   fr->size = 0;
   Mark(fr->mark);
   fr->parent = fli_context;
@@ -532,6 +532,56 @@ ssu_or_det_failed(DECL_LD LocalFrame fr)
 		/********************************
 		*         FOREIGN CALLS         *
 		*********************************/
+
+#define vmi_fopen(fr, def) LDFUNC(vmi_fopen, fr, def)
+
+static void
+vmi_fopen(DECL_LD LocalFrame fr, Definition def)
+{ FliFrame ffr;
+
+#ifdef O_DEBUGGER
+  if ( debugstatus.debugging )
+  { lTop = (LocalFrame)argFrameP(fr, def->functor->arity);
+    BFR = newChoice(CHP_DEBUG, fr);
+    ffr = (FliFrame)lTop;
+  } else
+#endif
+  { ffr = (FliFrame)argFrameP(fr, def->functor->arity);
+  }
+
+#if O_DEBUG
+  if ( exception_term )
+  { Sdprintf("Exception at entry of %s\n",  predicateName(def));
+    PL_write_term(Serror, exception_term, 1200, PL_WRT_NEWLINE);
+  }
+#endif
+
+  DEBUG(CHK_SECURE, assert(def->functor->arity < 100));
+
+  lTop = (LocalFrame)(ffr+1);
+  ffr->size = 0;
+  NoMark(ffr->mark);
+  ffr->parent = fli_context;
+  FLI_SET_VALID(ffr);
+  fli_context = ffr;
+}
+
+
+static void
+error_foreign_return_code(intptr_t rc)
+{ fid_t fid = PL_open_foreign_frame();
+
+  if ( (fid = PL_open_foreign_frame()) )
+  { term_t ex;
+    int rc2 = ( (ex=PL_new_term_ref()) &&
+		PL_put_intptr(ex, rc) &&
+		PL_error(NULL, 0, NULL, ERR_DOMAIN,
+			 ATOM_foreign_return_value, ex) );
+    (void)rc2;
+    PL_close_foreign_frame(fid);
+  }
+}
+
 
 #define CALL_FCUTTED(argc, f, c) \
   { switch(argc) \

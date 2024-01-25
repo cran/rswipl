@@ -71,6 +71,8 @@
 user:file_search_path(autoload, swi(library)).
 user:file_search_path(autoload, pce(prolog/lib)).
 user:file_search_path(autoload, app_config(lib)).
+user:file_search_path(autoload, Dir) :-
+    '$ext_library_directory'(Dir).
 
 :- create_prolog_flag(warn_autoload, false, []).
 
@@ -356,7 +358,7 @@ make_library_index2(Dir, Patterns) :-
     pattern_files(Patterns, DirS, Files),
     (   library_index_out_of_date(Dir, AbsIndex, Files)
     ->  do_make_library_index(AbsIndex, DirS, Files),
-        flag('$modified_index', _, true)
+        set_flag('$modified_index', true)
     ;   true
     ).
 
@@ -388,10 +390,10 @@ library_index_out_of_date(_Dir, Index, _Files) :-
 library_index_out_of_date(Dir, Index, Files) :-
     time_file(Index, IndexTime),
     (   time_file(Dir, DotTime),
-        DotTime > IndexTime
-    ;   '$member'(File, Files),
+        DotTime - IndexTime > 0.001             % compensate for jitter
+    ;   '$member'(File, Files),                 % and rounding
         time_file(File, FileTime),
-        FileTime > IndexTime
+        FileTime - IndexTime > 0.001
     ),
     !.
 
@@ -461,16 +463,17 @@ exports(File, Module, Exports) :-
     ),
     setup_call_cleanup(
         set_prolog_flag(xref, true),
-        exports_(File, Module, Exports),
+        snapshot(exports_(File, Module, Exports)),
         set_prolog_flag(xref, Old)).
 
 exports_(File, Module, Exports) :-
     State = state(true, _, []),
-    (   '$source_term'(File, _,_,Term0,_,_,[syntax_errors(quiet)]),
-        (   is_list(Term0)
-        ->  '$member'(Term, Term0)
-        ;   Term = Term0
-        ),
+    (   '$source_term'(File,
+                       _Read,_RLayout,
+                       Term,_TermLayout,
+                       _Stream,
+                       [ syntax_errors(quiet)
+                       ]),
         (   Term = (:- module(M,Public)),
             is_list(Public),
             arg(1, State, true)

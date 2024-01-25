@@ -22,6 +22,80 @@ added to extend the coverage of  this   benchmark  set. Good coverage is
 important to maximize the benefits of Program Guided Optimization (PGO).
 See CMAKE.md, CMAKE_BUILD_TYPE=PGO
 
+## Running
+
+To run  the benchmark  suite with SWI-Prolog,  simply run  the command
+below.  The benchmarks  are calibrated to take about 1  second each on
+SWI-Prolog 8.5.2.   You can  speedup the run  using `--speedup=Times`,
+e.g.
+
+    swipl run.pl --speedup=10
+
+To create a clustered histogram comparing multiple systems run e.g.
+
+    swipl compare.pl --speedup=10 swi gprolog
+
+Any number of  systems may be specified.  Use `wipl  compare.pl -l` to
+see the available  systems and the _Porting_ section  below for adding
+systems.  The  results are  saved into  `bench.svg`.  Use  the command
+below for other options.
+
+    swipl compare.pl --help
+
+
+
+## Porting
+
+The  current version  runs on  SWI-Prolog, YAP,  SICStus Prolog,  Ciao
+lang, Scryer  Prolog and GNU-Prolog,  XSB and Trealla Prolog.   To get
+the actual  list, run this command  to get the system  identifiers and
+their version.
+
+    swipl compare.pl -l
+
+There are two routes for running the benchmarks.
+
+  - For  systems with a  Quintus-derived module systems,  `run.pl` can
+    usually  deal with  loading and  configuring the  benchmark suite.
+    Currently this supports SWI-Prolog, YAP and SICStus Prolog.
+
+  - For  other  systems we  use `tools/modularize.pl`  to qualify  all
+    local predicates with  their file (base name), such  that they can
+    be   loaded    into   the   same   Prolog    instance.    We   add
+    `ports/prepare/<system>.pl` to call the modularization, test which
+    benchmarks can  be loaded  and executed on  the target  system and
+    finally generate  a file  that includes all  tests and  provides a
+    predicate has_program/1 that provides  all programs that have been
+    loaded.      The     prepared     system     is     created     in
+    `port/programs/<system>`
+
+	Next, we  provide `port/run/<system>.pl` that loads  the above and
+	provides `run(Factor)`  which runs  all benchmarks and  writes the
+	CSV output.
+
+When using the second route, proceeds as follows.  First, run
+
+    swipl port/tools/modularize.pl --dir=port/programs/<system> \
+		  --include-all=include_all.pl programs/*.pl
+
+Next, you should  have `port/programs/<system>/include_all.pl`.  Tweak
+to  get  this running  on  the  target  system  such that  e.g.,  this
+benchmark runs:
+
+    ?- 'qsort:top'.
+
+After loading the file, has_program/1  should succeed for every Prolog
+that can  be loaded.  Once you  know how to  do that, copy one  of the
+`port/prepare/<system>.pl` files.  Most contain code that
+
+  - Call modularize.pl correctly to get the proper programs
+  - Evaluate whether a benchmark can be loaded.
+  - Generate `include_all.pl` to only include the benchmarks we
+    can run.
+
+Now,  copy   and  edit   `port/run/<system>.pl`  and   finally  extend
+`compare.pl` to include the new system.
+
 
 ## Legal status
 
@@ -40,10 +114,9 @@ redistribution.
 
 Source packages that wish to be sure   to  only distribute material that
 complies with open source standards  may   remove  these files using the
-command below. MAKE SURE NOT TO  ADD   ANY  OTHER  MARKDOWN LIST TO THIS
-FILE.
+command below.
 
-    rm $(grep '^\s*-' README.md | awk '{print $2}')
+    rm $(grep '^\s*- [a-z0-9_]*\.pl' README.md | awk '{print $2}')
 
   - boyer.pl
   - browse.pl
@@ -66,5 +139,3 @@ FILE.
   - tak.pl
   - unify.pl
   - zebra.pl
-
-

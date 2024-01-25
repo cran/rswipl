@@ -60,7 +60,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 90117
+#define PLVERSION 90122
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -480,7 +480,7 @@ PL_EXPORT(int)		PL_assert(term_t term, module_t m, int flags);
 		 *******************************/
 
 			/* Creating and destroying term-refs */
-PL_EXPORT(term_t)	PL_new_term_refs(int n);
+PL_EXPORT(term_t)	PL_new_term_refs(size_t n);
 PL_EXPORT(term_t)	PL_new_term_ref(void);
 PL_EXPORT(term_t)	PL_copy_term_ref(term_t from);
 PL_EXPORT(void)		PL_reset_term_refs(term_t r);
@@ -681,6 +681,13 @@ PL_EXPORT(int)		PL_put_uint64(term_t t, uint64_t i) WUNUSED;
 
 PL_EXPORT(int)		PL_is_attvar(term_t t);
 PL_EXPORT(int)		PL_get_attr(term_t v, term_t a);
+
+
+		 /*******************************
+		 *           TABLING            *
+		 *******************************/
+
+PL_EXPORT(int)		PL_get_delay_list(term_t l);
 
 
 		 /*******************************

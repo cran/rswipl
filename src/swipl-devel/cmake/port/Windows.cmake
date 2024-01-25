@@ -11,14 +11,17 @@ else()
   set(WIN_PROGRAM_FILES "Program Files (x86)")
   set(SWIPL_ARCH i386-win32)
 endif()
-set(PLHOME "c:/${WIN_PROGRAM_FILES}/swipl")
 
 set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} ws2_32)
 
 if(MINGW_ROOT)
   include(port/MinGW)
-elseif(DEFINED ENV{CONDA_BUILD})
+elseif(CONDA)
   include(port/CondaWindows)
+endif()
+
+if(NOT PLHOME)
+  set(PLHOME "c:/${WIN_PROGRAM_FILES}/swipl")
 endif()
 
 # Separator for swipl -p alias=dir<sep>dir...

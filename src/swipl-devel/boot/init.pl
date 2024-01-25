@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2022, University of Amsterdam
+    Copyright (c)  1985-2023, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -98,7 +98,8 @@ memberchk(E, List) :-
     det(:),
     '$clausable'(:),
     '$iso'(:),
-    '$hide'(:).
+    '$hide'(:),
+    '$notransact'(:).
 
 %!  dynamic(+Spec) is det.
 %!  multifile(+Spec) is det.
@@ -143,6 +144,7 @@ det(Spec)                :- '$set_pattr'(Spec, pred, det(true)).
 '$iso'(Spec)             :- '$set_pattr'(Spec, pred, iso(true)).
 '$clausable'(Spec)       :- '$set_pattr'(Spec, pred, clausable(true)).
 '$hide'(Spec)            :- '$set_pattr'(Spec, pred, trace(false)).
+'$notransact'(Spec)      :- '$set_pattr'(Spec, pred, transact(false)).
 
 '$set_pattr'(M:Pred, How, Attr) :-
     '$set_pattr'(Pred, M, How, Attr).
@@ -692,6 +694,7 @@ call_cleanup(_Goal, _Cleanup) :-
 
 :- multifile '$init_goal'/3.
 :- dynamic   '$init_goal'/3.
+:- '$notransact'('$init_goal'/3).
 
 %!  initialization(:Goal, +When)
 %
@@ -1038,6 +1041,7 @@ default_module(Me, Super) :-
     user:portray/1.
 :- multifile
     user:portray/1.
+:- '$notransact'(user:portray/1).
 
 
 		 /*******************************
@@ -1050,6 +1054,8 @@ default_module(Me, Super) :-
 :- multifile
     user:file_search_path/2,
     user:library_directory/1.
+:- '$notransact'((user:file_search_path/2,
+                  user:library_directory/1)).
 
 user:(file_search_path(library, Dir) :-
 	library_directory(Dir)).
@@ -1060,26 +1066,11 @@ user:file_search_path(swi, Home) :-
 user:file_search_path(library, app_config(lib)).
 user:file_search_path(library, swi(library)).
 user:file_search_path(library, swi(library/clp)).
+user:file_search_path(library, Dir) :-
+    '$ext_library_directory'(Dir).
 user:file_search_path(foreign, swi(ArchLib)) :-
     current_prolog_flag(apple_universal_binary, true),
     ArchLib = 'lib/fat-darwin'.
-user:file_search_path(foreign, swi(ArchLib)) :-
-    \+ current_prolog_flag(windows, true),
-    current_prolog_flag(arch, Arch),
-    atom_concat('lib/', Arch, ArchLib).
-user:file_search_path(foreign, swi(ArchLib)) :-
-    current_prolog_flag(msys2, true),
-    current_prolog_flag(arch, Arch),
-    atomic_list_concat([lib, Arch], /, ArchLib).
-user:file_search_path(foreign, swi(SoLib)) :-
-    current_prolog_flag(msys2, true),
-    current_prolog_flag(arch, Arch),
-    atomic_list_concat([bin, Arch], /, SoLib).
-user:file_search_path(foreign, swi(SoLib)) :-
-    (   current_prolog_flag(windows, true)
-    ->  SoLib = bin
-    ;   SoLib = lib
-    ).
 user:file_search_path(path, Dir) :-
     getenv('PATH', Path),
     (   current_prolog_flag(windows, true)
@@ -1102,6 +1093,8 @@ user:file_search_path(app_config, common_app_config('.')).
 % backward compatibility
 user:file_search_path(app_preferences, user_app_config('.')).
 user:file_search_path(user_profile, app_preferences('.')).
+user:file_search_path(app, swi(app)).
+user:file_search_path(app, app_data(app)).
 
 '$xdg_prolog_directory'(Which, Dir) :-
     '$xdg_directory'(Which, XDGDir),
@@ -1152,19 +1145,13 @@ user:file_search_path(user_profile, app_preferences('.')).
 
 '$existing_dir_from_env_path'(Env, Defaults, Dir) :-
     (   getenv(Env, Path)
-    ->  '$path_sep'(Sep),
+    ->  current_prolog_flag(path_sep, Sep),
 	atomic_list_concat(Dirs, Sep, Path)
     ;   Dirs = Defaults
     ),
     '$member'(Dir, Dirs),
     Dir \== '',
     exists_directory(Dir).
-
-'$path_sep'(Char) :-
-    (   current_prolog_flag(windows, true)
-    ->  Char = ';'
-    ;   Char = ':'
-    ).
 
 '$make_config_dir'(Dir) :-
     exists_directory(Dir),
@@ -1180,6 +1167,21 @@ user:file_search_path(user_profile, app_preferences('.')).
     ->  DirS = Dir
     ;   atom_concat(Dir, /, DirS)
     ).
+
+:- dynamic '$ext_lib_dirs'/1.
+:- volatile '$ext_lib_dirs'/1.
+
+'$ext_library_directory'(Dir) :-
+    '$ext_lib_dirs'(Dirs),
+    !,
+    '$member'(Dir, Dirs).
+'$ext_library_directory'(Dir) :-
+    current_prolog_flag(home, Home),
+    atom_concat(Home, '/library/ext/*', Pattern),
+    expand_file_name(Pattern, Dirs0),
+    '$include'(exists_directory, Dirs0, Dirs),
+    asserta('$ext_lib_dirs'(Dirs)),
+    '$member'(Dir, Dirs).
 
 
 %!  '$expand_file_search_path'(+Spec, -Expanded, +Cond) is nondet.
@@ -1471,6 +1473,8 @@ user:prolog_file_type(dylib,    executable) :-
 :- volatile
     '$search_path_file_cache'/3,
     '$search_path_gc_time'/1.
+:- '$notransact'(('$search_path_file_cache'/3,
+                  '$search_path_gc_time'/1)).
 
 :- create_prolog_flag(file_search_cache_time, 10, []).
 
@@ -1665,6 +1669,8 @@ extensions to .ext
 :- volatile
     '$compilation_mode_store'/1,
     '$directive_mode_store'/1.
+:- '$notransact'(('$compilation_mode_store'/1,
+                  '$directive_mode_store'/1)).
 
 '$compilation_mode'(Mode) :-
     (   '$compilation_mode_store'(Val)
@@ -1827,6 +1833,7 @@ compiling :-
     '$load_input'/2.
 :- volatile
     '$load_input'/2.
+:- '$notransact'('$load_input'/2).
 
 '$open_source'(stream(Id, In, Opts), In,
 	       restore(In, StreamState, Id, Ref, Opts), Parents, _Options) :-
@@ -2371,9 +2378,7 @@ load_files(Module:Files, Options) :-
 	(   PlTime > QlfTime
 	->  Why = old                   % PlFile is newer
 	;   Error = error(Formal,_),
-	    catch('$qlf_info'(QlfFile, _CVer, _MLVer,
-			      _FVer, _CSig, _FSig),
-		  Error, true),
+	    catch('$qlf_is_compatible'(QlfFile), Error, true),
 	    nonvar(Formal)              % QlfFile is incompatible
 	->  Why = Error
 	;   fail                        % QlfFile is up-to-date and ok
@@ -2427,6 +2432,7 @@ load_files(Module:Files, Options) :-
 
 :- dynamic
     '$resolved_source_path_db'/3.                % ?Spec, ?Dialect, ?Path
+:- '$notransact'('$resolved_source_path_db'/3).
 
 '$load_file'(File, Module, Options) :-
     '$error_count'(E0, W0),
@@ -2577,6 +2583,7 @@ load_files(Module:Files, Options) :-
     '$loading_file'/3.              % File, Queue, Thread
 :- volatile
     '$loading_file'/3.
+:- '$notransact'('$loading_file'/3).
 
 :- if(current_prolog_flag(threads, true)).
 '$mt_load_file'(File, FullFile, Module, Options) :-
@@ -2873,6 +2880,7 @@ load_files(Module:Files, Options) :-
 
 :- thread_local
     '$autoload_nesting'/1.
+:- '$notransact'('$autoload_nesting'/1).
 
 '$update_autoload_level'(Options, AutoLevel) :-
     '$option'(autoload(Autoload), Options, false),
@@ -3012,6 +3020,7 @@ load_files(Module:Files, Options) :-
     '$load_context_module'/3.
 :- multifile
     '$load_context_module'/3.
+:- '$notransact'('$load_context_module'/3).
 
 '$assert_load_context_module'(_, _, Options) :-
     memberchk(register(false), Options),
@@ -4179,6 +4188,15 @@ compile_aux_clauses(Clauses) :-
 '$last'([], Last, Last).
 '$last'([H|T], _, Last) :-
     '$last'(T, H, Last).
+
+:- meta_predicate '$include'(1,+,-).
+'$include'(_, [], []).
+'$include'(G, [H|T0], L) :-
+    (   call(G,H)
+    ->  L = [H|T]
+    ;   T = L
+    ),
+    '$include'(G, T0, T).
 
 
 %!  length(?List, ?N)

@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2022, University of Amsterdam
+    Copyright (c)  2023, University of Amsterdam
                          VU University Amsterdam
-		         CWI, Amsterdam
+			 CWI, Amsterdam
+			 SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -41,6 +42,7 @@
 #include "bf_gmp.h"
 #include <stdlib.h>
 #include "cutils.h"
+//#include "../os/SWI-Stream.h"		/* For Sdprintf() debugging */
 
 #define STEIN 1
 
@@ -161,7 +163,7 @@ mpz_gcd(mpz_t r, const mpz_t n1, const mpz_t n2)
   { // a and b always odd at start of loop
     if ((a->expn < INT64BITSIZE) && (b->expn <INT64BITSIZE))
     { // both fit in 64 bit integers; get int64 values and use int64 gcd
-      mpz_set_ui(r, (unsigned long)i64_gcd(mpz_get_si(a), mpz_get_si(b)));
+      mpz_set_ui64(r, i64_gcd(mpz_get_si64(a), mpz_get_si64(b)));
       break;             // we're done, exit while loop
     }
     mpz_sub(r,a,b);      // a-b -> r is now even, b still odd
@@ -255,13 +257,13 @@ mpz_pow_ui(mpz_t r, const mpz_t n, unsigned long x)
 
 void
 mpz_ui_pow_ui(mpz_t r, unsigned long n, unsigned long x)
-{ int64_t N = n;
-  int64_t R = 1;
+{ uint64_t N = n;
+  uint64_t R = 1;
   mpz_t Nz;
 
   while ( x )
-  { int64_t N1, R1=R;
-    unsigned x1 = x;
+  { uint64_t N1, R1=R;
+    unsigned long x1 = x;
 
     if ( x & 0x1 )
     { if ( __builtin_mul_overflow(R,N,&R1) )
@@ -275,12 +277,11 @@ mpz_ui_pow_ui(mpz_t r, unsigned long n, unsigned long x)
     R = R1;
     N = N1;
   }
-  mpz_set_ui(r, (unsigned long)R);
+  mpz_set_ui64(r, R);
 
  overflow:
-
-  mpz_init_set_ui(Nz, (unsigned long)N);
-  mpz_set_ui(r, (unsigned long)R);
+  mpz_init_set_ui64(Nz, N);
+  mpz_set_ui64(r, R);
 
   while ( x )
   { if ( x & 0x1 )

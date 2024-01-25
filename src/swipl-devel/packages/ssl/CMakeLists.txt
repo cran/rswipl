@@ -61,6 +61,12 @@ AC_CHECK_FUNCS(OSSL_PARAM_BLD_new)
 AC_CHECK_HEADERS(openssl/kdf.h)
 AC_CHECK_HEADERS(openssl/core_names.h)
 AC_CHECK_HEADERS(openssl/param_build.h)
+AC_CHECK_HEADERS(openssl/applink.c)
+if(MSVC AND HAVE_OPENSSL_APPLINK_C)
+  set(APPLINK ssl_applink.c)
+else()
+  set(APPLINK)
+endif()
 
 if(NOT DEFINED GET0SIG_CONST_T)
   if(HAVE_X509_GET0_SIGNATURE)
@@ -194,7 +200,7 @@ add_compile_options(-D__SWI_PROLOG__
 
 swipl_plugin(
     ssl4pl
-    C_SOURCES ssl4pl.c ../clib/error.c
+    C_SOURCES ssl4pl.c ${APPLINK} ../clib/error.c
     THREADED
     C_LIBS ${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY} ${OPENSSL_OS_LIBS}
     C_INCLUDE_DIR ${OPENSSL_INCLUDE_DIR}

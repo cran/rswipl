@@ -112,11 +112,7 @@ DoubleVector pl2r_real(PlTerm pl)
 // Convert vector of reals (e.g., #(1.0, 2.0, na)) to DoubleVector
 DoubleVector pl2r_realvec(PlTerm pl)
 {
-  PlAtom n(PlAtom::null) ;
-  size_t arity ;
-  if(!pl.name_arity(&n, &arity))
-    stop("name_arity") ;
-
+  size_t arity = pl.arity() ;
   DoubleVector r(arity) ;
   for(size_t i=0; i<arity; i++)
     r(i) = pl2r_double(pl[i+1]) ;
@@ -127,28 +123,16 @@ DoubleVector pl2r_realvec(PlTerm pl)
 // Convert matrix of reals (e.g., ##(#(1.0, 2.0), #(na, ...), ...))
 NumericMatrix pl2r_realmat(PlTerm pl)
 {
-  PlAtom n(PlAtom::null) ;
-  size_t nrow ;
-  if(!pl.name_arity(&n, &nrow))
-    stop("name_arity") ;
-
+  size_t nrow = pl.arity() ;
   size_t ncol = 0 ;
   if(nrow > 0)
   {
     for(size_t i=0; i<nrow; i++)
       if(i == 0)
-      {
-        PlAtom n1(PlAtom::null) ;
-        if(!pl[1].name_arity(&n1, &ncol))
-          stop("name_arity") ;
-      }
+        ncol = pl[1].arity() ;
       else
       {
-        PlAtom n1(PlAtom::null) ;
-        size_t ncol1 ;
-        if(!pl[i+1].name_arity(&n1, &ncol1))
-          stop("name_arity") ;
-        if(ncol1 != ncol)
+        if(ncol != pl[i+1].arity())
           stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
       }
   }
@@ -187,11 +171,7 @@ IntegerVector pl2r_integer(PlTerm pl)
 
 IntegerVector pl2r_intvec(PlTerm pl)
 {
-  PlAtom n(PlAtom::null) ;
-  size_t arity ;
-  if(!pl.name_arity(&n, &arity))
-    stop("name_arity") ;
-
+  size_t arity = pl.arity() ;
   IntegerVector r(arity) ;
   for(size_t i=0; i<arity; i++)
     r(i) = pl2r_int(pl[i+1]) ;
@@ -201,28 +181,16 @@ IntegerVector pl2r_intvec(PlTerm pl)
 
 IntegerMatrix pl2r_intmat(PlTerm pl)
 {
-  PlAtom n(PlAtom::null) ;
-  size_t nrow ;
-  if(!pl.name_arity(&n, &nrow))
-    stop("name_arity") ;
-
+  size_t nrow = pl.arity() ;
   size_t ncol = 0 ;
   if(nrow > 0)
   {
     for(size_t i=0; i<nrow; i++)
       if(i == 0)
-      {
-        PlAtom n1(PlAtom::null) ;
-        if(!pl[1].name_arity(&n1, &ncol))
-          stop("name_arity") ;
-      }
+        ncol = pl[1].arity() ;
       else
       {
-        PlAtom n1(PlAtom::null) ;
-        size_t ncol1 ;
-        if(!pl[i+1].name_arity(&n1, &ncol1))
-          stop("name_arity") ;
-        if(ncol1 != ncol)
+        if(pl[i+1].arity() != ncol)
           stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
       }
   }
@@ -250,11 +218,7 @@ CharacterVector pl2r_char(PlTerm pl)
 
 CharacterVector pl2r_charvec(PlTerm pl)
 {
-  PlAtom n(PlAtom::null) ;
-  size_t arity ;
-  if(!pl.name_arity(&n, &arity))
-    stop("name_arity") ;
-
+  size_t arity = pl.arity() ;
   CharacterVector r(arity) ;
   for(size_t i=0; i<arity; i++)
     r(i) = pl2r_string(pl[i+1]) ;
@@ -264,28 +228,16 @@ CharacterVector pl2r_charvec(PlTerm pl)
 
 CharacterMatrix pl2r_charmat(PlTerm pl)
 {
-  PlAtom n(PlAtom::null) ;
-  size_t nrow ;
-  if(!pl.name_arity(&n, &nrow))
-    stop("name_arity") ;
-
+  size_t nrow = pl.arity() ;
   size_t ncol = 0 ;
   if(nrow > 0)
   {
     for(size_t i=0; i<nrow; i++)
       if(i == 0)
-      {
-        PlAtom n1(PlAtom::null) ;
-        if(!pl[1].name_arity(&n1, &ncol))
-          stop("name_arity") ;
-      }
+        nrow = pl[1].arity() ;
       else
       {
-        PlAtom n1(PlAtom::null) ;
-        size_t ncol1 ;
-        if(!pl[i+1].name_arity(&n1, &ncol1))
-          stop("name_arity") ;
-        if(ncol1 != ncol)
+        if(pl[i+1].arity() != ncol)
           stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
       }
   }
@@ -327,19 +279,13 @@ RObject pl2r_function(PlTerm pl, CharacterVector& names, PlTerm& vars)
 
   Language head("alist") ;
   PlAtom n(PlAtom::null) ;
-  size_t h_arity ;
-  if(!plhead.name_arity(&n, &h_arity))
-    stop("name_arity") ;
-  for(unsigned int i=1 ; i<=h_arity ; i++)
+  size_t arity = plhead.arity() ;
+  for(unsigned int i=1 ; i<=arity ; i++)
   {
     PlTerm arg = plhead[i] ;
-    PlAtom a_name(PlAtom::null) ;
-    size_t a_arity ;
-    if(!arg.name_arity(&a_name, &a_arity))
-      stop("name_arity") ;
 
     // Compounds like mean=100 are translated to named function arguments
-    if(arg.is_compound() && a_name.as_string() == "=" && a_arity == 2)
+    if(arg.is_compound() && arg.name().as_string() == "=" && arg.arity() == 2)
     {
       PlTerm a1 = arg[1] ;
       PlTerm a2 = arg[2] ;
@@ -364,11 +310,7 @@ RObject pl2r_function(PlTerm pl, CharacterVector& names, PlTerm& vars)
 
 LogicalVector pl2r_boolvec(PlTerm pl)
 {
-  PlAtom n(PlAtom::null) ;
-  size_t arity ;
-  if(!pl.name_arity(&n, &arity))
-    stop("name_arity") ;
-
+  size_t arity = pl.arity() ;
   LogicalVector r(arity) ;
   for(size_t i=0; i<arity; i++)
   {
@@ -403,28 +345,16 @@ LogicalVector pl2r_boolvec(PlTerm pl)
 
 LogicalMatrix pl2r_boolmat(PlTerm pl)
 {
-  PlAtom n(PlAtom::null) ;
-  size_t nrow ;
-  if(!pl.name_arity(&n, &nrow))
-    stop("name_arity") ;
-
+  size_t nrow = pl.arity() ;
   size_t ncol = 0 ;
   if(nrow > 0)
   {
     for(size_t i=0; i<nrow; i++)
       if(i == 0)
-      {
-        PlAtom n1(PlAtom::null) ;
-        if(!pl[1].name_arity(&n1, &ncol))
-          stop("name_arity") ;
-      }
+        ncol = pl[1].arity() ;
       else
       {
-        PlAtom n1(PlAtom::null) ;
-        size_t ncol1 ;
-        if(!pl[i+1].name_arity(&n1, &ncol1))
-          stop("name_arity") ;
-        if(ncol1 != ncol)
+        if(pl[i+1].arity() != ncol)
           stop("cannot convert PlTerm to Matrix, inconsistent rows") ;
       }
   }
@@ -508,21 +438,14 @@ RObject pl2r_compound(PlTerm pl, CharacterVector& names, PlTerm& vars)
     return pl2r_function(pl, names, vars) ;
 
   // Other compounds
-  PlAtom name(PlAtom::null) ;
-  size_t arity ;
-  if(!pl.name_arity(&name, &arity))
-    stop("name_arity") ;
-  Language r(name.as_string(PlEncoding::UTF8).c_str()) ;
+  size_t arity = pl.arity() ;
+  Language r(pl.name().as_string(PlEncoding::UTF8).c_str()) ;
   for(unsigned int i=1 ; i<=arity ; i++)
   {
     PlTerm arg = pl[i] ;
-    PlAtom a_name(PlAtom::null) ;
-    size_t a_arity ;
-    if(!pl.name_arity(&a_name, &a_arity))
-      stop("name_arity") ;
 
     // Compounds like mean=100 are translated to named function arguments
-    if(arg.is_compound() && !strcmp(name.as_string(PlEncoding::UTF8).c_str(), "=") && arity == 2)
+    if(arg.is_compound() && !strcmp(arg.name().as_string(PlEncoding::UTF8).c_str(), "=") && arg.arity() == 2)
     {
       PlTerm a1 = arg[1] ;
       PlTerm a2 = arg[2] ;
@@ -564,11 +487,7 @@ RObject pl2r_list(PlTerm pl, CharacterVector& names, PlTerm& vars)
     // convert prolog pair a-X to named list element
     if(head.is_compound())
     {
-      PlAtom name(PlAtom::null) ;
-      size_t arity ;
-      if(!head.name_arity(&name, &arity))
-        stop("name_arity") ;
-      if(!strcmp(name.as_string(PlEncoding::UTF8).c_str(), "-") && arity == 2)
+      if(!strcmp(head.name().as_string(PlEncoding::UTF8).c_str(), "-") && head.arity() == 2)
       {
         PlTerm a1 = head[1] ;
         PlTerm a2 = head[2] ;
@@ -591,11 +510,7 @@ RObject pl2r_list(PlTerm pl, CharacterVector& names, PlTerm& vars)
   // convert prolog pair a-X to named list element
   if(head.is_compound())
   {
-    PlAtom name(PlAtom::null) ;
-    size_t arity ;
-    if(!head.name_arity(&name, &arity))
-      stop("name_arity") ;
-    if(!strcmp(name.as_string(PlEncoding::UTF8).c_str(), "-") && arity == 2)
+    if(!strcmp(head.name().as_string(PlEncoding::UTF8).c_str(), "-") && head.arity() == 2)
     {
       PlTerm a1 = head[1] ;
       PlTerm a2 = head[2] ;
@@ -666,7 +581,7 @@ PlTerm r2pl_na()
   return PlTerm_atom("na") ;
 }
 
-// Translate to matrix ##(#(1.0, 2.0, 3.0), #(4.0, 5.0, 6.0))
+// Translate to matrix ###(##(1.0, 2.0, 3.0), ##(4.0, 5.0, 6.0))
 PlTerm r2pl_matrix(Matrix<REALSXP> r)
 {
   PlTermv rows(r.nrow()) ;
@@ -676,7 +591,7 @@ PlTerm r2pl_matrix(Matrix<REALSXP> r)
   return PlCompound("###", rows) ;
 }
 
-// Translate to (scalar) real or compounds like #(1.0, 2.0, 3.0)
+// Translate to (scalar) real or compounds like ##(1.0, 2.0, 3.0)
 PlTerm r2pl_real(NumericVector r)
 {
   if(Rf_isMatrix(r))
@@ -697,7 +612,7 @@ PlTerm r2pl_real(NumericVector r)
     return PlTerm_float(r[0]);
   }
 
-  // Translate to vector #(1.0, 2.0, 3.0)
+  // Translate to vector ##(1.0, 2.0, 3.0)
   size_t len = (size_t) r.length() ;
   PlTermv args(len) ;
   for(size_t i=0 ; i<len ; i++)
@@ -711,7 +626,7 @@ PlTerm r2pl_real(NumericVector r)
   return PlCompound("##", args) ;
 }
 
-// Translate to matrix !!(!(true, false), !(false, true))
+// Translate to matrix !!!(!!(true, false), !(false, true))
 PlTerm r2pl_matrix(Matrix<LGLSXP> r)
 {
   PlTermv rows(r.nrow()) ;
@@ -721,7 +636,7 @@ PlTerm r2pl_matrix(Matrix<LGLSXP> r)
   return PlCompound("!!!", rows) ;
 }
 
-// Translate to (scalar) boolean or compounds like !(true, false, na)
+// Translate to (scalar) boolean or compounds like !!(true, false, na)
 PlTerm r2pl_logical(LogicalVector r)
 {
   if(Rf_isMatrix(r))
@@ -741,7 +656,7 @@ PlTerm r2pl_logical(LogicalVector r)
     return PlTerm_atom(r[0] ? "true" : "false") ;
   }
 
-  // LogicalVector !(true, false, na)
+  // LogicalVector !!(true, false, na)
   size_t len = (size_t) r.length() ;
   PlTermv args(len) ;
   for(size_t i=0 ; i<len ; i++)
@@ -755,7 +670,7 @@ PlTerm r2pl_logical(LogicalVector r)
   return PlCompound("!!", args) ;
 }
 
-// Translate to matrix %%(%(1, 2), %(3, 4))
+// Translate to matrix %%%(%%(1, 2), %(3, 4))
 PlTerm r2pl_matrix(Matrix<INTSXP> r)
 {
   PlTermv rows(r.nrow()) ;
@@ -765,7 +680,7 @@ PlTerm r2pl_matrix(Matrix<INTSXP> r)
   return PlCompound("%%%", rows) ;
 }
 
-// Translate to (scalar) integer or compounds like %(1, 2, 3)
+// Translate to (scalar) integer or compounds like %%(1, 2, 3)
 PlTerm r2pl_integer(IntegerVector r)
 {
   if(Rf_isMatrix(r))
@@ -785,7 +700,7 @@ PlTerm r2pl_integer(IntegerVector r)
     return PlTerm_integer(r(0)) ;
   }
   
-  // IntegerVector %(1, 2, 3)
+  // IntegerVector %%(1, 2, 3)
   size_t len = (size_t) r.length() ;
   PlTermv args(len) ;
   for(size_t i=0 ; i<len ; i++)

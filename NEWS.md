@@ -1,3 +1,26 @@
+# rswipl 9.1.22
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-1-22/7197
+
+maintainance release, silences Windows Defender warnings during cmake,
+sets LD-LIBRARY-PATH during build to avoid installed swipl
+
+# rswipl 9.1.21
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-1-21/7075
+
+# rswipl 9.1.20
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-1-20/7011
+
+# rswipl 9.1.19
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-1-19/6978
+
+# rswipl 9.1.18
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-1-18/6936
+
 # rswipl 9.1.17.1
 
 maintainance release, fixes UBSAN errors

@@ -1680,6 +1680,11 @@ dict_field_extraction(Term) :-
     Term \= [_|_].                        % traditional mode
 
 
+colourise_expression_args(roundtoward(Expr, Mode), TB,
+                          term_position(_,_,_,_,[ExprPos, ModePos])) :-
+    !,
+    colourise_expression(Expr, TB, ExprPos),
+    colourise_round_mode(Mode, TB, ModePos).
 colourise_expression_args(Term, TB,
                           term_position(_,_,_,_,ArgPos)) :-
     !,
@@ -1693,6 +1698,21 @@ colourise_expression_args([Pos|T], N, Term, TB) :-
     NN is N + 1,
     colourise_expression_args(T, NN, Term, TB).
 
+colourise_round_mode(Mode, TB, Pos) :-
+    var(Mode),
+    !,
+    colourise_term_arg(Mode, TB, Pos).
+colourise_round_mode(Mode, TB, Pos) :-
+    round_mode(Mode),
+    !,
+    colour_item(identifier, TB, Pos).
+colourise_round_mode(_Mode, TB, Pos) :-
+    colour_item(domain_error(rounding_mode), TB, Pos).
+
+round_mode(to_nearest).
+round_mode(to_positive).
+round_mode(to_negative).
+round_mode(to_zero).
 
 %!  colourise_qq_type(+QQType, +TB, +QQTypePos)
 %
@@ -2201,11 +2221,38 @@ colourise_prolog_flag_name(Name, TB, Pos) :-
     !,
     (   current_prolog_flag(Name, _)
     ->  colour_item(flag_name(Name), TB, Pos)
+    ;   known_flag(Name)
+    ->  colour_item(known_flag_name(Name), TB, Pos)
     ;   colour_item(no_flag_name(Name), TB, Pos)
     ).
 colourise_prolog_flag_name(Name, TB, Pos) :-
     colourise_term(Name, TB, Pos).
 
+% Some flags are know, but can be unset.
+known_flag(android).
+known_flag(android_api).
+known_flag(apple).
+known_flag(asan).
+known_flag(conda).
+known_flag(dde).
+known_flag(emscripten).
+known_flag(executable_format).
+known_flag(gc_thread).
+known_flag(gmp_version).
+known_flag(gui).
+known_flag(max_rational_size).
+known_flag(mitigate_spectre).
+known_flag(pid).
+known_flag(pipe).
+known_flag(posix_shell).
+known_flag(shared_home).
+known_flag(shared_table_space).
+known_flag(system_thread_id).
+known_flag(threads).
+known_flag(unix).
+known_flag(windows).
+known_flag(wine_version).
+known_flag(xpce).
 
 		 /*******************************
 		 *             MACROS		*
@@ -2654,6 +2701,7 @@ def_style(class(user,_),           [underline(true)]).
 def_style(class(undefined,_),      [colour(red), underline(true)]).
 def_style(prolog_data,             [colour(blue), underline(true)]).
 def_style(flag_name(_),            [colour(blue)]).
+def_style(known_flag_name(_),      [colour(blue), background(pink)]).
 def_style(no_flag_name(_),         [colour(red)]).
 def_style(unused_import,           [colour(blue), background(pink)]).
 def_style(undefined_import,        [colour(red)]).
@@ -2681,6 +2729,7 @@ def_style(dcg_right_hand_ctx,      [background('#d4ffe3')]).
 
 def_style(error,                   [background(orange)]).
 def_style(type_error(_),           [background(orange)]).
+def_style(domain_error(_),         [background(orange)]).
 def_style(syntax_error(_,_),       [background(orange)]).
 def_style(instantiation_error,     [background(orange)]).
 
@@ -3161,6 +3210,12 @@ syntax_message(neck(-->)) -->
     [ 'Grammar rule' ].
 syntax_message(macro(String)) -->
     [ 'Macro indicator (expands to ~s)'-[String] ].
+syntax_message(flag_name(Name)) -->
+    [ 'Prolog flag ~w'-[Name] ].
+syntax_message(known_flag_name(Name)) -->
+    [ 'Prolog flag ~w (not set; known)'-[Name] ].
+syntax_message(no_flag_name(Name)) -->
+    [ 'Prolog flag ~w (not set)'-[Name] ].
 
 goal_message(meta, _) -->
     [ 'Meta call' ].

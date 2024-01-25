@@ -51,7 +51,7 @@ option  parsing,  initialisation  and  handling  of errors and warnings.
 #include "pl-comp.h"
 #include "pl-setup.h"
 #include "pl-fli.h"
-#include "pl-wic.h"
+#include "pl-qlf.h"
 #include "pl-pro.h"
 #include "pl-trace.h"
 #include "pl-proc.h"
@@ -248,6 +248,7 @@ findHome(const char *symbols, int argc, const char **argv)
   char plp[PATH_MAX];
   const char *homeopt = find_longopt("home", argc, argv);
   const char *val;
+  const char *envvar;
 
   if ( homeopt && (val=is_longopt(homeopt, "home")) && val[0] )
   { if ( (home=PrologPath(val, plp, sizeof(plp))) )
@@ -256,18 +257,21 @@ findHome(const char *symbols, int argc, const char **argv)
   }
 
 #ifdef PLHOMEVAR_1
-  if ( !(maybe_home = Getenv(PLHOMEVAR_1, envbuf, sizeof(envbuf))) )
+  if ( !(maybe_home = Getenv((envvar=PLHOMEVAR_1), envbuf, sizeof(envbuf))) )
   {
 #ifdef PLHOMEVAR_2
-    maybe_home = Getenv(PLHOMEVAR_2, envbuf, sizeof(envbuf));
+    maybe_home = Getenv((envvar=PLHOMEVAR_2), envbuf, sizeof(envbuf));
 #endif
   }
   if ( maybe_home &&
        (maybe_home = PrologPath(maybe_home, plp, sizeof(plp))) &&
        ExistsDirectory(maybe_home) )
   { home = maybe_home;
+    DEBUG(MSG_INITIALISE,
+	  Sdprintf("Found home using env %s\n", envvar));
     goto out;
   }
+  (void)envvar;
 #endif
 
 #ifdef PLHOMEFILE
@@ -313,18 +317,44 @@ findHome(const char *symbols, int argc, const char **argv)
 
 	if ( ExistsDirectory(maybe_home) )
 	{ home = maybe_home;
+	  DEBUG(MSG_INITIALISE,
+		Sdprintf("Found home using %s from %s\n", buf));
 	}
       }
       Sclose(fd);
     }
   }
 #endif /*PLHOMEFILE*/
+#ifdef PLRELHOME
+  if ( !home && symbols )
+  { char bindir[PATH_MAX];
+    char *o;
 
+    strcpy(bindir, symbols);
+    DirName(bindir, bindir);
+    if ( strlen(bindir)+strlen(PLRELHOME)+2 > sizeof(bindir) )
+      fatalError("Executable path name too long");
+    o = bindir+strlen(bindir);
+    *o++ = '/';
+    strcpy(o, PLRELHOME);
+    if ( ExistsDirectory(bindir) )
+    { if ( !(home=AbsoluteFile(bindir, plp, sizeof(plp))) )
+	fatalError("Executable path name too long");
+      DEBUG(MSG_INITIALISE,
+	    Sdprintf("Found home using %s from %s\n", PLRELHOME, symbols));
+    }
+  }
+#endif
+
+#ifdef PLHOME
   if ( !home &&
        ( (maybe_home = PrologPath(PLHOME, plp, sizeof(plp))) &&
 	 ExistsDirectory(maybe_home)
        ) )
-    home = maybe_home;
+  { home = maybe_home;
+    DEBUG(MSG_INITIALISE, Sdprintf("Found home using %s\n", PLHOME));
+  }
+#endif
 
 out:
   if ( home )
@@ -865,6 +895,17 @@ parseCommandLineOptions(int argc0, char **argv0, char **argvleft, int compile)
       continue;
     }
 
+    if ( *s == 'D' )
+    { const char *def = s+1;
+
+      if ( *def )
+	opt_append(&GD->options.defines, def);
+      else
+	optionList(&GD->options.defines);
+
+      continue;
+    }
+
     while(*s)
     { switch(*s)
       { case 'd':	if ( argc > 1 )
@@ -1272,12 +1313,13 @@ usage(void)
     "%s: Usage:\n",
     "    1) %s [options] prolog-file ... [-- arg ...]\n",
     "    2) %s [options] [-o executable] -c prolog-file ...\n",
-    "    3) %s --help         Display this message\n",
-    "    4) %s --version      Display version information\n",
-    "    5) %s --abi-version  Display ABI version key\n",
-    "    6) %s --arch         Display architecture\n",
-    "    7) %s --dump-runtime-variables[=format]\n"
-    "                        Dump link info in sh(1) format\n",
+    "    3) %s app ...        Use ", "\"%s app list\" for available apps\n",
+    "    4) %s --help         Display this message\n",
+    "    5) %s --version      Display version information\n",
+    "    6) %s --abi-version  Display ABI version key\n",
+    "    7) %s --arch         Display architecture\n",
+    "    8) %s --dump-runtime-variables[=format]\n"
+    "                            Dump link info in sh(1) format\n",
     "\n",
     "Options:\n",
     "    -x state                 Start from state (must be first)\n",
@@ -1288,6 +1330,7 @@ usage(void)
     "    -l file                  Script source file\n",
     "    -s file                  Script source file\n",
     "    -p alias=path            Define file search path 'alias'\n",
+    "    -D name=value		  Set a Prolog flag\n",
     "    -O                       Optimised compilation\n",
     "    --on-error=style         One of print, halt or status\n",
     "    --on-warning=style       One of print, halt or status\n",
@@ -1480,6 +1523,8 @@ PL_cleanup(int status)
 
   if ( GD->cleaning != CLN_NORMAL )
     return PL_CLEANUP_RECURSIVE;
+
+  checkPrologFlagsAccess();
 
 #ifdef __WINDOWS__
   if ( rval != 0 && !hasConsole() )

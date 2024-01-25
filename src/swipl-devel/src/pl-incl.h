@@ -1000,6 +1000,7 @@ with one operation, it turns out to be faster as well.
 #define FILE_ASSIGNED		(0x40000000LL) /* Is assigned to a file */
 #define P_REDEFINED		(0x80000000LL) /* Overrules a definition */
 #define P_SIG_ATOMIC	      (0x0100000000LL) /* Do not call handleSignals */
+#define P_TRANSACT	      (0x0200000000LL) /* Subject to transactions */
 #define PROC_DEFINED		(P_DYNAMIC|P_FOREIGN|P_MULTIFILE|\
 				 P_DISCONTIGUOUS|P_LOCKED_SUPERVISOR)
 /* flags for p_reload data (reconsult) */
@@ -1824,10 +1825,24 @@ struct queryFrame
 
 #define FLI_MAGIC		82649821
 #define FLI_MAGIC_CLOSED	42424242
+#ifdef O_DEBUG
+#define FLI_SET_VALID(fr)	((fr)->magic = FLI_MAGIC)
+#define FLI_SET_CLOSED(fr)	((fr)->magic = FLI_MAGIC_CLOSED)
+#define FLI_VALID(fr)		((fr)->magic == FLI_MAGIC)
+#define FLI_ASSERT_VALID(fr)	assert(FLI_VALID(fr))
+#else
+#define FLI_SET_VALID(fr)	(void)0
+#define FLI_SET_CLOSED(fr)	(void)0
+#define FLI_VALID(fr)		(1)
+#define FLI_ASSERT_VALID(fr)	(void)0
+#endif
 
 struct fliFrame
-{ int		magic;			/* Magic code */
-  int		size;			/* # slots on it */
+{
+#ifdef O_DEBUG
+  int		magic;			/* Magic code */
+#endif
+  size_t	size;			/* # slots on it */
   FliFrame	parent;			/* parent FLI frame */
   mark		mark;			/* data-stack mark */
 };
@@ -1896,7 +1911,7 @@ typedef struct p_reload
   gen_t		generation;		/* generation we update */
   ClauseRef	current_clause;		/* currently reloading clause */
   arg_info     *args;			/* Meta info on arguments */
-  unsigned	flags;			/* new flags (P_DYNAMIC, etc.) */
+  uint64_t	flags;			/* new flags (P_DYNAMIC, etc.) */
   unsigned	number_of_clauses;	/* Number of clauses we've seen */
 } p_reload;
 
@@ -2665,6 +2680,10 @@ typedef struct internaldebuginfo
 #define FT_FROM_VALUE	0x0f		/* Determine type from value */
 #define FT_MASK		0x0f		/* mask to get type */
 
+/* Note: the FF_* flags are defines in SWI-Prolog.h using mask
+ * 0xf000
+ */
+
 typedef enum plflag
 { PLFLAG_CHARESCAPE = 1,		/* handle \ in atoms */
   PLFLAG_CHARESCAPE_UNICODE,		/* Write escape as \uXXXX */
@@ -2755,7 +2774,7 @@ typedef enum
 #define CACHED_DICT_FUNCTORS 128	/* Max size of dict to cache */
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-Administration of loaded intermediate code files  (see  pl-wic.c).  Used
+Administration of loaded intermediate code files  (see  pl-qlf.c).  Used
 with the -c option to include all these if necessary.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 

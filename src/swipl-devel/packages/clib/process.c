@@ -494,23 +494,27 @@ get_stream(term_t t, p_options *info, p_stream *stream, atom_t name)
     return TRUE;
   } else if ( PL_is_functor(t, FUNCTOR_stream1) )
   { IOSTREAM *s;
-    int fd;
     stream->term = PL_new_term_ref();
     _PL_get_arg(1, t, stream->term);
     if ( !PL_get_stream(stream->term, &s,
 			name == ATOM_stdin ? SIO_INPUT : SIO_OUTPUT) )
       return FALSE;
     stream->type = std_stream;
-    if ( (fd = Sfileno(s)) > 0 )
-    {
+
 #ifdef __WINDOWS__
-      stream->fd[0] = stream->fd[1] = (HANDLE)_get_osfhandle(fd);
+    HANDLE h = Swinhandle(s);
+    if ( h )
+      stream->fd[0] = stream->fd[1] = h;
+    else
+      return PL_domain_error("file_stream", stream->term);
 #else
+    int fd = Sfileno(s);
+    if ( fd >= 0 )
       stream->fd[0] = stream->fd[1] = fd;
+    else
+      return PL_domain_error("file_stream", stream->term);
 #endif
-    } else
-    { return PL_domain_error("file_stream", stream->term);
-    }
+
     return TRUE;
   } else
     return PL_type_error("process_stream", t);
@@ -788,7 +792,7 @@ open_process_pipe(process_context *pc, p_options *info, int which, int fdn)
 
   pc->open_mask |= (1<<which);
 #ifdef __WINDOWS__
-  pc->pipes[which] = _open_osfhandle((intptr_t)fd, _O_BINARY);
+  pc->pipes[which] = Swin_open_osfhandle(fd, _O_BINARY);
 #else
   pc->pipes[which] = fd;
 #endif
@@ -1136,11 +1140,11 @@ win_wait_success(atom_t exe, HANDLE process)
 
     if ( PL_unify_term(ex,
 		       PL_FUNCTOR, FUNCTOR_error2,
-		         PL_FUNCTOR, FUNCTOR_process_error2,
-		           PL_ATOM, exe,
-		           PL_FUNCTOR, FUNCTOR_exit1,
-		             PL_LONG, rc,
-		         PL_VARIABLE) )
+			 PL_FUNCTOR, FUNCTOR_process_error2,
+			   PL_ATOM, exe,
+			   PL_FUNCTOR, FUNCTOR_exit1,
+			     PL_LONG, rc,
+			 PL_VARIABLE) )
       return PL_raise_exception(ex);
     return FALSE;
   }
@@ -1191,10 +1195,11 @@ create_pipes(p_options *info)
 
 static IOSTREAM *
 Sopen_handle(HANDLE h, const char *mode)
-{ IOSTREAM *s = Sfdopen(_open_osfhandle((intptr_t)h, _O_BINARY), mode);
+{ IOSTREAM *s = Swin_open_handle(h, mode);
+
   if ( s->functions == &Sfilefunctions )
-  { s->functions = &Sprocessfilefunctions;
-  }
+    s->functions = &Sprocessfilefunctions;
+
   return s;
 }
 
@@ -1261,8 +1266,12 @@ do_create_process(p_options *info)
 
 				      /* stdin */
   switch( info->streams[0].type )
-  { case std_pipe:
-    case std_stream:
+  { case std_stream:
+      si.hStdInput = info->streams[0].fd[0];
+      SetHandleInformation(si.hStdInput,
+			   HANDLE_FLAG_INHERIT, TRUE);
+      break;
+    case std_pipe:
       si.hStdInput = info->streams[0].fd[0];
       SetHandleInformation(info->streams[0].fd[1],
 			   HANDLE_FLAG_INHERIT, FALSE);
@@ -1276,8 +1285,12 @@ do_create_process(p_options *info)
   }
 				      /* stdout */
   switch( info->streams[1].type )
-  { case std_pipe:
-    case std_stream:
+  { case std_stream:
+      si.hStdOutput = info->streams[1].fd[1];
+      SetHandleInformation(si.hStdOutput,
+			   HANDLE_FLAG_INHERIT, TRUE);
+      break;
+    case std_pipe:
       si.hStdOutput = info->streams[1].fd[1];
       SetHandleInformation(info->streams[1].fd[0],
 			   HANDLE_FLAG_INHERIT, FALSE);
@@ -1291,8 +1304,12 @@ do_create_process(p_options *info)
   }
 				      /* stderr */
   switch( info->streams[2].type )
-  { case std_pipe:
-    case std_stream:
+  { case std_stream:
+      si.hStdError = info->streams[2].fd[1];
+      SetHandleInformation(si.hStdError,
+			   HANDLE_FLAG_INHERIT, TRUE);
+      break;
+    case std_pipe:
       si.hStdError = info->streams[2].fd[1];
       SetHandleInformation(info->streams[2].fd[0],
                            HANDLE_FLAG_INHERIT, FALSE);

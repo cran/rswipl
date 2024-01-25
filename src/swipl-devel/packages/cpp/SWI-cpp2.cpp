@@ -37,7 +37,7 @@
 /* If you wish, you can append SWI-cpp2.cpp file to SWI-pp2.h ...
    to do this, you need this definition:
 
-#define _SWI_CPP2_CPP_inline inline
+   #define _SWI_CPP2_CPP_inline inline
 
 */
 
@@ -230,7 +230,7 @@ const std::wstring
 PlAtom::as_wstring() const
 { PlStringBuffers _string_buffers;
   size_t len;
-  const wchar_t *s = Plx_atom_wchars(C_, &len);
+  const wchar_t *s = Plx_atom_wchars(unwrap(), &len);
   return std::wstring(s, len);
 }
 
@@ -297,8 +297,7 @@ bool PlTerm::unify_blob(std::unique_ptr<PlBlob>* blob) const
 _SWI_CPP2_CPP_inline
 PlTerm
 PlTerm::copy_term_ref() const
-{ PlTerm t(Plx_copy_term_ref(C_));
-  return t;
+{ return PlTerm(Plx_copy_term_ref(unwrap()));
 }
 
 _SWI_CPP2_CPP_inline
@@ -363,7 +362,7 @@ PlTerm::record() const
 
 _SWI_CPP2_CPP_inline
 PlTerm::PlTerm(const PlRecord& r)
-  : WrappedC<term_t>(r.term().C_)
+  : WrappedC<term_t>(r.term().unwrap())
 { }
 
 
@@ -374,7 +373,7 @@ PlTerm::PlTerm(const PlRecord& r)
 _SWI_CPP2_CPP_inline
 PlTerm_tail::PlTerm_tail(const PlTerm& l)
 { if ( l.is_variable() || l.is_list() )
-    C_ = l.copy_term_ref().C_;
+    reset(l.copy_term_ref());
   else
     throw PlTypeError("list", l);
 }
@@ -394,7 +393,7 @@ PlTerm_tail::append(PlTerm e)
 
 _SWI_CPP2_CPP_inline
 bool PlTerm_tail::next(PlTerm& t)
-{ if ( Plx_get_list(C_, t.C_, C_) )
+{ if ( Plx_get_list(unwrap(), t.unwrap(), unwrap()) )
     return true;
 
   if ( get_nil() )
@@ -463,18 +462,18 @@ PlTerm
 PlTerm::operator [](size_t index) const
 { PlTerm t;
 
-  if ( Plx_get_arg(index, C_, t.C_) )
+  if ( Plx_get_arg(index, unwrap(), t.unwrap()) )
     return t;
 
   if ( !is_compound() )
     throw PlTypeError("compound", *this);
 
   /* Construct error term and throw it */
-  Plx_put_uint64(t.C_, index);
+  Plx_put_uint64(t.unwrap(), index);
   if ( index < 1 )
     throw PlDomainError("not_less_than_zero", t);
   else
-    throw PlDomainError("arity", t); /* TODO: arity(t.C_) - see PlTermv::operator[] */
+    throw PlDomainError("arity", t); /* TODO: arity(t.unwrap()) - see PlTermv::operator[] */
 }
 
 _SWI_CPP2_CPP_inline
@@ -491,7 +490,7 @@ PlAtom
 PlTerm::name() const
 { atom_t name;
   size_t arity;
-  if ( Plx_get_name_arity(C_, &name, &arity) )
+  if ( Plx_get_name_arity(unwrap(), &name, &arity) )
     return PlAtom(name);
   throw PlTypeError("compound", *this);
 }
@@ -500,7 +499,7 @@ _SWI_CPP2_CPP_inline
 bool
 PlTerm::name_arity(PlAtom *name, size_t *arity) const
 { atom_t name_a;
-  if ( Plx_get_name_arity(C_, &name_a, arity) )
+  if ( Plx_get_name_arity(unwrap(), &name_a, arity) )
   { if ( name )
       *name = PlAtom(name_a);
     return true;
@@ -578,7 +577,7 @@ bool
 PlTerm::eq(const wchar_t *s) const
 { wchar_t *s0;
 
-  if ( Plx_get_wchars(C_, nullptr, &s0, CVT_ALL) )
+  if ( Plx_get_wchars(unwrap(), nullptr, &s0, CVT_ALL) )
     return wcscmp(s0, s) == 0;
 
   throw PlTypeError("text", *this);
@@ -600,8 +599,8 @@ bool
 PlTerm::eq(const PlAtom& a) const
 { atom_t v;
 
-  if ( Plx_get_atom(C_, &v) )
-    return v == a.C_;
+  if ( Plx_get_atom(unwrap(), &v) )
+    return v == a.unwrap();
 
   throw PlTypeError("atom", *this);
 }
@@ -616,7 +615,7 @@ PlCompound::PlCompound(const wchar_t *text)
 { term_t t = Plx_new_term_ref();
   if ( !Plx_wchars_to_term(text, t) )
     throw PlException(PlTerm(t));
-  Plx_put_term(C_, t);
+  Plx_put_term(unwrap(), t);
 }
 
 _SWI_CPP2_CPP_inline
@@ -626,7 +625,7 @@ PlCompound::PlCompound(const std::string& text, PlEncoding enc)
 
   // TODO: PL_put_term_from_chars() should take an unsigned int flags
   PlEx<int>(Plx_put_term_from_chars(t, static_cast<int>(enc)|CVT_EXCEPTION, text.size(), text.data()));
-  Plx_put_term(C_, t);
+  Plx_put_term(unwrap(), t);
 }
 
 _SWI_CPP2_CPP_inline
@@ -637,33 +636,33 @@ PlCompound::PlCompound(const std::wstring& text)
   // TODO: what is wchar_t equivalent of PL_put_term_from_chars()?
   if ( !Plx_wchars_to_term(text.c_str(), t) ) // TODO: use text.size()
     throw PlException(PlTerm(t));
-  Plx_put_term(C_, t);
+  Plx_put_term(unwrap(), t);
 }
 
 _SWI_CPP2_CPP_inline
 PlCompound::PlCompound(const char *functor, const PlTermv& args)
 { functor_t f = Plx_new_functor(Plx_new_atom(functor), args.size());
   PlEx<bool>(f != (functor_t)0);
-  Plx_cons_functor_v(C_, f, args.termv());
+  Plx_cons_functor_v(unwrap(), f, args.termv());
 }
 
 _SWI_CPP2_CPP_inline
 PlCompound::PlCompound(const wchar_t *functor, const PlTermv& args)
 { functor_t f = Plx_new_functor(Plx_new_atom_wchars(wcslen(functor), functor), args.size());
   PlEx<bool>(f != (functor_t)0);
-  Plx_cons_functor_v(C_, f, args.termv());
+  Plx_cons_functor_v(unwrap(), f, args.termv());
 }
 
 _SWI_CPP2_CPP_inline
 PlCompound::PlCompound(const std::string& functor, const PlTermv& args)
 { functor_t f = Plx_new_functor(Plx_new_atom_nchars(functor.size(), functor.data()), args.size());
-  Plx_cons_functor_v(C_, f, args.termv());
+  Plx_cons_functor_v(unwrap(), f, args.termv());
 }
 
 _SWI_CPP2_CPP_inline
 PlCompound::PlCompound(const std::wstring& functor, const PlTermv& args)
 { functor_t f = Plx_new_functor(Plx_new_atom_wchars(functor.size(), functor.data()), args.size());
-  Plx_cons_functor_v(C_, f,  args.termv());
+  Plx_cons_functor_v(unwrap(), f,  args.termv());
 }
 
 		 /*******************************
@@ -673,14 +672,14 @@ PlCompound::PlCompound(const std::wstring& functor, const PlTermv& args)
 _SWI_CPP2_CPP_inline
 PlTermv::PlTermv(const PlAtom& a)
   : size_(1),
-    a0_(PlTerm_atom(a).C_)
+    a0_(PlTerm_atom(a).unwrap())
 { PlEx<bool>(a0_ != (term_t)0);
 }
 
 _SWI_CPP2_CPP_inline
 PlTermv::PlTermv(const PlTerm& m0)
   : size_(1),
-    a0_(m0.C_)
+    a0_(m0.unwrap())
 { // Assume that m0 is valid
 }
 
@@ -689,8 +688,8 @@ PlTermv::PlTermv(const PlTerm& m0, const PlTerm& m1)
   : size_(2),
     a0_(Plx_new_term_refs(2))
 { PlEx<bool>(a0_ != (term_t)0);
-  Plx_put_term(a0_+0, m0.C_);
-  Plx_put_term(a0_+1, m1.C_);
+  Plx_put_term(a0_+0, m0.unwrap());
+  Plx_put_term(a0_+1, m1.unwrap());
 }
 
 _SWI_CPP2_CPP_inline
@@ -698,9 +697,9 @@ PlTermv::PlTermv(const PlTerm& m0, const PlTerm& m1, const PlTerm& m2)
   : size_(3),
     a0_(Plx_new_term_refs(3))
 { PlEx<bool>(a0_ != (term_t)0);
-  Plx_put_term(a0_+0, m0.C_);
-  Plx_put_term(a0_+1, m1.C_);
-  Plx_put_term(a0_+2, m2.C_);
+  Plx_put_term(a0_+0, m0.unwrap());
+  Plx_put_term(a0_+1, m1.unwrap());
+  Plx_put_term(a0_+2, m2.unwrap());
 }
 
 _SWI_CPP2_CPP_inline
@@ -708,10 +707,10 @@ PlTermv::PlTermv(const PlTerm& m0, const PlTerm& m1, const PlTerm& m2, const PlT
   : size_(4),
     a0_(Plx_new_term_refs(4))
 { PlEx<bool>(a0_ != (term_t)0);
-  Plx_put_term(a0_+0, m0.C_);
-  Plx_put_term(a0_+1, m1.C_);
-  Plx_put_term(a0_+2, m2.C_);
-  Plx_put_term(a0_+3, m3.C_);
+  Plx_put_term(a0_+0, m0.unwrap());
+  Plx_put_term(a0_+1, m1.unwrap());
+  Plx_put_term(a0_+2, m2.unwrap());
+  Plx_put_term(a0_+3, m3.unwrap());
 }
 
 _SWI_CPP2_CPP_inline
@@ -720,11 +719,11 @@ PlTermv::PlTermv(const PlTerm& m0, const PlTerm& m1, const PlTerm& m2,
   : size_(5),
     a0_(Plx_new_term_refs(5))
 { PlEx<bool>(a0_ != (term_t)0);
-  Plx_put_term(a0_+0, m0.C_);
-  Plx_put_term(a0_+1, m1.C_);
-  Plx_put_term(a0_+2, m2.C_);
-  Plx_put_term(a0_+3, m3.C_);
-  Plx_put_term(a0_+4, m4.C_);
+  Plx_put_term(a0_+0, m0.unwrap());
+  Plx_put_term(a0_+1, m1.unwrap());
+  Plx_put_term(a0_+2, m2.unwrap());
+  Plx_put_term(a0_+3, m3.unwrap());
+  Plx_put_term(a0_+4, m4.unwrap());
 }
 
 _SWI_CPP2_CPP_inline
@@ -792,6 +791,23 @@ PlException::what() const throw()
   return what_str_.c_str();
 }
 
+_SWI_CPP2_CPP_inline
+void
+PlException::set_what_str()
+{ if ( what_str_.empty() )
+  { // Doing a query inside a query is ... problematic:
+    // TODO: const_cast<PlException*>(this)->what_str_ = string_term().as_string();
+    what_str_ = term().as_string();
+  }
+}
+
+_SWI_CPP2_CPP_inline
+void
+PlException::erase()
+{ if ( term_rec_.not_null() )
+    term_rec_.erase();
+  term_rec_.set_null();
+}
 
 		 /*******************************
 		 *	    QUERY (BODY)	*
@@ -800,7 +816,7 @@ PlException::what() const throw()
 _SWI_CPP2_CPP_inline
 int
 PlQuery::next_solution()
-{ int rval = PL_next_solution(C_);
+{ int rval = PL_next_solution(unwrap());
 
   if ( flags_ & PL_Q_EXT_STATUS )
   { // values are:
@@ -842,8 +858,8 @@ void PlWrapDebug(const char*msg) {
 		 *******************************/
 
 _SWI_CPP2_CPP_inline
-PlStream::PlStream(PlTerm& stream, int flags)
-{ Plx_get_stream(stream.C_, &s_, flags);
+PlStream::PlStream(PlTerm stream, int flags)
+{ Plx_get_stream(stream.unwrap(), &s_, flags);
   check_stream(); // Shouldn't happen
 }
 
@@ -858,20 +874,11 @@ PlStream::~PlStream() noexcept
 { release();
 }
 
+_SWI_CPP2_CPP_inline
 void PlStream::release()
 { if ( s_ )
     Plx_release_stream(s_);
   s_ = nullptr;
-}
-
-_SWI_CPP2_CPP_inline
-int
-PlStream::check_rc(int rc)
-{ if ( rc < 0 )
-  { release(); // throws an exception if stream has an error
-    throw PlUnknownError("Stream error");
-  }
-  return rc;
 }
 
 _SWI_CPP2_CPP_inline
@@ -881,27 +888,50 @@ PlStream::check_stream() const
     throw PlUnknownError("Stream not set");
 }
 
+/* JW: was using check_rc(), but somehown Apple Clang thinks ssize_t
+   maps both to int32_t and int64_t.
+ */
 #define _SWI_CPP2_CPP_check_rc(rc_t, defn, call) \
 _SWI_CPP2_CPP_inline \
 rc_t \
 PlStream::defn \
 { check_stream(); \
-  return check_rc(call); \
+  rc_t rc = call; \
+  if ( rc < 0 ) { release(); throw PlUnknownError("Stream error"); } \
+  return rc; \
+}
+
+#define _SWI_CPP2_CPP_check_brc(rc_t, defn, call) \
+_SWI_CPP2_CPP_inline \
+rc_t \
+PlStream::defn \
+{ check_stream(); \
+  rc_t rc = call; \
+  if ( !rc ) { release(); throw PlUnknownError("Stream error"); } \
+  return rc; \
+}
+
+#define _SWI_CPP2_CPP_nocheck(rc_t, defn, call) \
+_SWI_CPP2_CPP_inline \
+rc_t \
+PlStream::defn \
+{ check_stream(); \
+  return call; \
 }
 
 _SWI_CPP2_CPP_check_rc(int, set_timeout(int tmo), Sset_timeout(s_, tmo))
 _SWI_CPP2_CPP_check_rc(int, unit_size(), Sunit_size(s_));
-_SWI_CPP2_CPP_check_rc(bool, canrepresent(int c), Scanrepresent(c, s_))
+_SWI_CPP2_CPP_nocheck(bool, canrepresent(int c), Scanrepresent(c, s_))
 _SWI_CPP2_CPP_check_rc(int, putcode(int c), Sputcode(c, s_))
 _SWI_CPP2_CPP_check_rc(int, getcode(), Sgetcode(s_))
 _SWI_CPP2_CPP_check_rc(int, peekcode(), Speekcode(s_))
 _SWI_CPP2_CPP_check_rc(int, putw(int w), Sputw(w, s_))
 _SWI_CPP2_CPP_check_rc(int, getw(), Sgetw(s_))
-_SWI_CPP2_CPP_check_rc(int, read(void *data, size_t size, size_t elems), Sfread(data, size, elems, s_))
-_SWI_CPP2_CPP_check_rc(int, write(const void *data, size_t size, size_t elems), Sfwrite(data, size, elems, s_))
-_SWI_CPP2_CPP_check_rc(int, eof(), Sfeof(s_))
-_SWI_CPP2_CPP_check_rc(int, pasteof(), Sfpasteof(s_))
-_SWI_CPP2_CPP_check_rc(int, error(), Sferror(s_))
+_SWI_CPP2_CPP_nocheck(size_t, fread(void *data, size_t size, size_t elems), Sfread(data, size, elems, s_))
+_SWI_CPP2_CPP_nocheck(size_t, fwrite(const void *data, size_t size, size_t elems), Sfwrite(data, size, elems, s_))
+_SWI_CPP2_CPP_check_rc(int, feof(), Sfeof(s_))
+_SWI_CPP2_CPP_check_rc(int, fpasteof(), Sfpasteof(s_))
+_SWI_CPP2_CPP_check_rc(int, ferror(), Sferror(s_))
 _SWI_CPP2_CPP_check_rc(int, seterr(int which, const char *message), Sseterr(s_, which, message))
 _SWI_CPP2_CPP_check_rc(int, set_exception(term_t ex), Sset_exception(s_, ex))
 _SWI_CPP2_CPP_check_rc(int, setenc(IOENC new_enc, IOENC *old_enc), Ssetenc(s_, new_enc, old_enc))
@@ -913,8 +943,8 @@ _SWI_CPP2_CPP_check_rc(int, tell(), Stell(s_))
 _SWI_CPP2_CPP_check_rc(int, close(), Sclose(s_))
 _SWI_CPP2_CPP_check_rc(int, gcclose(int flags), Sgcclose(s_, flags))
 _SWI_CPP2_CPP_check_rc(ssize_t, read_pending(char *buf, size_t limit, int flags), Sread_pending(s_, buf, limit, flags))
-_SWI_CPP2_CPP_check_rc(size_t, pending(), Spending(s_))
-_SWI_CPP2_CPP_check_rc(int, puts(const char *q), Sfputs(q, s_))
+_SWI_CPP2_CPP_nocheck(size_t, pending(), Spending(s_))
+_SWI_CPP2_CPP_check_rc(int, fputs(const char *q), Sfputs(q, s_))
 _SWI_CPP2_CPP_check_rc(int, vprintf(const char *fm, va_list args), Svfprintf(s_, fm, args))
 _SWI_CPP2_CPP_check_rc(int, lock(), Slock(s_))
 _SWI_CPP2_CPP_check_rc(int, tryLock(), StryLock(s_))
@@ -924,16 +954,16 @@ _SWI_CPP2_CPP_check_rc(int64_t, tell64(), Stell64(s_))
 _SWI_CPP2_CPP_check_rc(int, seek64(int64_t pos, int whence), Sseek64(s_, pos, whence))
 _SWI_CPP2_CPP_check_rc(int, checkBOM(), ScheckBOM(s_))
 _SWI_CPP2_CPP_check_rc(int, writeBOM(), SwriteBOM(s_))
-_SWI_CPP2_CPP_check_rc(int, qlf_get_int64(int64_t *ip), PL_qlf_get_int64(s_, ip))
-_SWI_CPP2_CPP_check_rc(int, qlf_get_int32(int32_t *ip), PL_qlf_get_int32(s_, ip))
-_SWI_CPP2_CPP_check_rc(int, qlf_get_uint32(uint32_t *ip), PL_qlf_get_uint32(s_, ip))
-_SWI_CPP2_CPP_check_rc(int, qlf_get_double(double *fp), PL_qlf_get_double(s_, fp))
-_SWI_CPP2_CPP_check_rc(int, qlf_get_atom(atom_t *a), PL_qlf_get_atom(s_, a))
-_SWI_CPP2_CPP_check_rc(int, qlf_put_int64(int64_t i), PL_qlf_put_int64(i, s_))
-_SWI_CPP2_CPP_check_rc(int, qlf_put_int32(int32_t i), PL_qlf_put_int32(i, s_))
-_SWI_CPP2_CPP_check_rc(int, qlf_put_uint32(uint32_t i), PL_qlf_put_uint32(i, s_))
-_SWI_CPP2_CPP_check_rc(int, qlf_put_double(double f), PL_qlf_put_double(f, s_))
-_SWI_CPP2_CPP_check_rc(int, qlf_put_atom(atom_t a), PL_qlf_put_atom(a, s_))
+_SWI_CPP2_CPP_check_brc(bool, qlf_get_int64(int64_t *ip), PL_qlf_get_int64(s_, ip))
+_SWI_CPP2_CPP_check_brc(bool, qlf_get_int32(int32_t *ip), PL_qlf_get_int32(s_, ip))
+_SWI_CPP2_CPP_check_brc(bool, qlf_get_uint32(uint32_t *ip), PL_qlf_get_uint32(s_, ip))
+_SWI_CPP2_CPP_check_brc(bool, qlf_get_double(double *fp), PL_qlf_get_double(s_, fp))
+_SWI_CPP2_CPP_check_brc(bool, qlf_get_atom(atom_t *a), PL_qlf_get_atom(s_, a))
+_SWI_CPP2_CPP_check_brc(bool, qlf_put_int64(int64_t i), PL_qlf_put_int64(i, s_))
+_SWI_CPP2_CPP_check_brc(bool, qlf_put_int32(int32_t i), PL_qlf_put_int32(i, s_))
+_SWI_CPP2_CPP_check_brc(bool, qlf_put_uint32(uint32_t i), PL_qlf_put_uint32(i, s_))
+_SWI_CPP2_CPP_check_brc(bool, qlf_put_double(double f), PL_qlf_put_double(f, s_))
+_SWI_CPP2_CPP_check_brc(bool, qlf_put_atom(atom_t a), PL_qlf_put_atom(a, s_))
 
 _SWI_CPP2_CPP_inline
 void
@@ -979,7 +1009,7 @@ PlStream::printfX(const char *fm, ...)
 }
 
 
-
 #undef _SWI_CPP2_CPP_check_rc
+#undef _SWI_CPP2_CPP_nocheck
 
 #endif /*_SWI_CPP2_CPP*/

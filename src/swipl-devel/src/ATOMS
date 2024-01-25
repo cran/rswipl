@@ -599,6 +599,7 @@ A offset		"offset"
 A on			"on"
 A on_error		"on_error"
 A on_warning		"on_warning"
+A oneof			"oneof"
 A opaque		"opaque"
 A open			"open"
 A operator		"operator"
@@ -867,6 +868,7 @@ A threads_created	"threads_created"
 A threads_peak		"threads_peak"
 A thread_update_options	"thread_update_options"
 A thread_wait_options	"thread_wait_options"
+A transact		"transact"
 A trienode		"trienode"
 A tripwire		"tripwire"
 A throw			"throw"
@@ -958,6 +960,7 @@ A wait_preds		"wait_preds"
 A waiting		"waiting"
 A wakeup		"wakeup"
 A walltime		"walltime"
+A warn_not_accessed	"warn_not_accessed"
 A warning		"warning"
 A warnings		"warnings"
 A wchar_t		"wchar_t"
@@ -1020,7 +1023,7 @@ F buffer_size		1
 F busy			2
 F call			1
 F call_continuation	1
-F call_site		3
+F call_site		2
 F callable		1
 F callpred		2
 F catch			3
@@ -1191,6 +1194,7 @@ F number		1
 F numerator		1
 F occurs_check		2
 F offset		1
+F oneof			1
 F open			2
 F or			1
 F output		0

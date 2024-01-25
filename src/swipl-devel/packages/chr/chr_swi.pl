@@ -51,11 +51,15 @@
 	    op(1150, fx, (?)),
 	    chr_show_store/1,		% +Module
 	    find_chr_constraint/1,	% +Pattern
+	    current_chr_constraint/1,	% :Pattern
 	    chr_trace/0,
 	    chr_notrace/0,
 	    chr_leash/1			% +Ports
 	  ]).
 :- use_module(library(dialect), [expects_dialect/1]).
+:- use_module(library(apply), [maplist/3]).
+:- use_module(library(lists), [member/2]).
+
 :- expects_dialect(swi).
 
 :- set_prolog_flag(generate_debug_info, false).

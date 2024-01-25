@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1995-2022, University of Amsterdam
+    Copyright (c)  1995-2023, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
@@ -125,6 +125,11 @@ predicate defined in C.
     error/2,
     foreign_predicate/2,
     current_library/5.
+
+:- '$notransact'((loading/1,
+                  error/2,
+                  foreign_predicate/2,
+                  current_library/5)).
 
 :- (   current_prolog_flag(open_shared_object, true)
    ->  true
@@ -580,23 +585,49 @@ win_add_dll_directory(Dir) :-
     atomic_list_concat([Path0, OSDir], ';', Path),
     setenv('PATH', Path).
 
-% Under MSYS2, the program is invoked from a bash, with the dll
-% dependencies (zlib1.dll etc.) in %MINGW_PREFIX%/bin instead of
-% the installation directory). Here we add this folder to the dll
-% search path.
+% Environments such as MSYS2 and  CONDA   install  DLLs in some separate
+% directory. We add these directories to   the  search path for indirect
+% dependencies from ours foreign plugins.
 
-add_mingw_dll_directory :-
+add_dll_directories :-
     current_prolog_flag(msys2, true),
     !,
-    getenv('MINGW_PREFIX', Prefix),
-    atomic_list_concat([Prefix, bin], /, Bin),
-    win_add_dll_directory(Bin).
+    env_add_dll_dir('MINGW_PREFIX', '/bin').
+add_dll_directories :-
+    current_prolog_flag(conda, true),
+    !,
+    env_add_dll_dir('CONDA_PREFIX', '/Library/bin'),
+    ignore(env_add_dll_dir('PREFIX', '/Library/bin')).
+add_dll_directories.
 
-add_mingw_dll_directory.
+env_add_dll_dir(Var, Postfix) :-
+    getenv(Var, Prefix),
+    atom_concat(Prefix, Postfix, Dir),
+    win_add_dll_directory(Dir).
 
-:- initialization(add_mingw_dll_directory).
+:- initialization
+    add_dll_directories.
 
 :- endif.
+
+		 /*******************************
+		 *          SEARCH PATH		*
+		 *******************************/
+
+:- dynamic
+    user:file_search_path/2.
+:- multifile
+    user:file_search_path/2.
+
+user:file_search_path(foreign, swi(ArchLib)) :-
+    current_prolog_flag(arch, Arch),
+    atom_concat('lib/', Arch, ArchLib).
+user:file_search_path(foreign, swi(SoLib)) :-
+    (   current_prolog_flag(windows, true)
+    ->  SoLib = bin
+    ;   SoLib = lib
+    ).
+
 
                  /*******************************
                  *            MESSAGES          *

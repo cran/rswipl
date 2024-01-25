@@ -87,6 +87,14 @@ expansion.
     system:goal_expansion/4,
     user:term_expansion/4,
     user:goal_expansion/4.
+:- '$notransact'((system:term_expansion/2,
+                  system:goal_expansion/2,
+                  user:term_expansion/2,
+                  user:goal_expansion/2,
+                  system:term_expansion/4,
+                  system:goal_expansion/4,
+                  user:term_expansion/4,
+                  user:goal_expansion/4)).
 
 :- meta_predicate
     expand_terms(4, +, ?, -, -).
@@ -774,25 +782,26 @@ expand_meta(Spec, G0, P0, G, P, M, MList, Term, Done) :-
     functor(Spec, _, Arity),
     functor(G0, Name, Arity),
     functor(G1, Name, Arity),
-    f_pos(P0, ArgPos0, P, ArgPos),
+    f_pos(P0, ArgPos0, G1P, ArgPos),
     expand_meta(1, Arity, Spec,
-                G0, ArgPos0, Eval,
+                G0, ArgPos0, Eval, EvalPos,
                 G1,  ArgPos,
                 M, MList, Term, Done),
-    conj(Eval, G1, G).
+    conj(Eval, EvalPos, G1, G1P, G, P).
 
-expand_meta(I, Arity, Spec, G0, ArgPos0, Eval, G, [P|PT], M, MList, Term, Done) :-
+expand_meta(I, Arity, Spec, G0, ArgPos0, Eval, EvalPos, G, [P|PT],
+            M, MList, Term, Done) :-
     I =< Arity,
     !,
     arg_pos(ArgPos0, P0, PT0),
     arg(I, Spec, Meta),
     arg(I, G0, A0),
     arg(I, G, A),
-    expand_meta_arg(Meta, A0, P0, EvalA, A, P, M, MList, Term, Done),
+    expand_meta_arg(Meta, A0, P0, EvalA, EPA, A, P, M, MList, Term, Done),
     I2 is I + 1,
-    expand_meta(I2, Arity, Spec, G0, PT0, EvalB, G, PT, M, MList, Term, Done),
-    conj(EvalA, EvalB, Eval).
-expand_meta(_, _, _, _, _, true, _, [], _, _, _, _).
+    expand_meta(I2, Arity, Spec, G0, PT0, EvalB,EPB, G, PT, M, MList, Term, Done),
+    conj(EvalA, EPA, EvalB, EPB, Eval, EvalPos).
+expand_meta(_, _, _, _, _, true, _, _, [], _, _, _, _).
 
 arg_pos(List, _, _) :- var(List), !.    % no position info
 arg_pos([H|T], H, T) :- !.              % argument list
@@ -835,7 +844,7 @@ extended_pos(F-T,
 extended_pos(Pos, N, Pos) :-
     '$print_message'(warning, extended_pos(Pos, N)).
 
-%!  expand_meta_arg(+MetaSpec, +Arg0, +ArgPos0, -Eval,
+%!  expand_meta_arg(+MetaSpec, +Arg0, +ArgPos0, -Eval, -EvalPos,
 %!                  -Arg, -ArgPos, +ModuleList, +Term, +Done) is det.
 %
 %   Goal expansion for a meta-argument.
@@ -844,11 +853,11 @@ extended_pos(Pos, N, Pos) :-
 %           functions on such positions.  This requires proper
 %           position management for function expansion.
 
-expand_meta_arg(0, A0, PA0, true, A, PA, M, MList, Term, Done) :-
+expand_meta_arg(0, A0, PA0, true, _, A, PA, M, MList, Term, Done) :-
     !,
     expand_goal(A0, PA0, A1, PA, M, MList, Term, Done),
     compile_meta_call(A1, A, M, Term).
-expand_meta_arg(N, A0, P0, true, A, P, M, MList, Term, Done) :-
+expand_meta_arg(N, A0, P0, true, _, A, P, M, MList, Term, Done) :-
     integer(N), callable(A0),
     replace_functions(A0, true, _, M),
     !,
@@ -859,11 +868,11 @@ expand_meta_arg(N, A0, P0, true, A, P, M, MList, Term, Done) :-
     compile_meta_call(A2, A3, M, Term),
     term_variables(A0, VL),
     remove_arg_pos(A3, PA2, M, VL, Ex, A, P).
-expand_meta_arg(^, A0, PA0, true, A, PA, M, MList, Term, Done) :-
+expand_meta_arg(^, A0, PA0, true, _, A, PA, M, MList, Term, Done) :-
     !,
     expand_setof_goal(A0, PA0, A, PA, M, MList, Term, Done).
-expand_meta_arg(S, A0, _PA0, Eval, A, _PA, M, _MList, _Term, _Done) :-
-    replace_functions(A0, Eval, A, M), % TBD: pass positions
+expand_meta_arg(S, A0, PA0, Eval, EPA, A, PA, M, _MList, _Term, _Done) :-
+    replace_functions(A0, PA0, Eval, EPA, A, PA, M),
     (   Eval == true
     ->  true
     ;   same_functor(A0, A)
@@ -1181,9 +1190,7 @@ map_functions(I0, Arity, Term0, LPos0, Term, LPos, Eval, EP, Ctx) :-
     map_functions(I, Arity, Term0, APT0, Term, APT, Eval1, EP1, Ctx),
     conj(Eval0, EP0, Eval1, EP1, Eval, EP).
 
-conj(true, X, X) :- !.
-conj(X, true, X) :- !.
-conj(X, Y, (X,Y)).
+%!  conj(+G1, +P1, +G2, +P2, -G, -P)
 
 conj(true, _, X, P, X, P) :- !.
 conj(X, P, true, _, X, P) :- !.
@@ -1560,9 +1567,8 @@ cond_compilation((:- if(G)), []) :-
     ).
 cond_compilation((:- elif(G)), []) :-
     source_location(File, Line),
-    (   clause('$include_code'(Old, OF, _), _, Ref)
-    ->  same_source(File, OF, elif),
-        erase(Ref),
+    (   clause('$include_code'(Old, File, _), _, Ref)
+    ->  erase(Ref),
         (   Old == true
         ->  asserta('$include_code'(else_false, File, Line))
         ;   Old == false,
@@ -1574,9 +1580,8 @@ cond_compilation((:- elif(G)), []) :-
     ).
 cond_compilation((:- else), []) :-
     source_location(File, Line),
-    (   clause('$include_code'(X, OF, _), _, Ref)
-    ->  same_source(File, OF, else),
-        erase(Ref),
+    (   clause('$include_code'(X, File, _), _, Ref)
+    ->  erase(Ref),
         (   X == true
         ->  X2 = false
         ;   X == false
@@ -1600,20 +1605,14 @@ cond_compilation(end_of_file, end_of_file) :-   % TBD: Check completeness
 cond_compilation((:- endif), []) :-
     !,
     source_location(File, _),
-    (   (   clause('$include_code'(_, OF, _), _, Ref)
-        ->  same_source(File, OF, endif),
-            erase(Ref)
+    (   (   clause('$include_code'(_, File, _), _, Ref)
+        ->  erase(Ref)
         )
     ->  true
     ;   throw(error(conditional_compilation_error(no_if, endif), _))
     ).
 cond_compilation(_, []) :-
     \+ '$including'.
-
-same_source(File, File, _) :- !.
-same_source(_,    _,    Op) :-
-    throw(error(conditional_compilation_error(no_if, Op), _)).
-
 
 '$eval_if'(G) :-
     expand_goal(G, G2),

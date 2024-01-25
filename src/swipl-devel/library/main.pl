@@ -53,6 +53,9 @@
 :- autoload(library(prolog_debug), [spy/1]).
 :- autoload(library(dcg/high_order), [sequence//3, sequence//2]).
 :- autoload(library(option), [option/2]).
+:- if(exists_source(library(doc_markdown))).
+:- autoload(library(doc_markdown), [print_markdown/2]).
+:- endif.
 
 :- meta_predicate
     argv_options(:, -, -),
@@ -624,6 +627,7 @@ prolog:message(opt_usage(M)) -->
 usage(M) -->
     usage_text(M:header),
     usage_line(M),
+    usage_text(M:description),
     usage_options(M),
     usage_text(M:footer).
 
@@ -636,8 +640,8 @@ usage_text(M:Which) -->
     { in(M:opt_help(help(Which), Help))
     },
     !,
-    (   {Which == header}
-    ->  user_text(M:Help), [nl]
+    (   {Which == header ; Which == description}
+    ->  user_text(M:Help), [nl, nl]
     ;   [nl], user_text(M:Help)
     ).
 usage_text(_) -->
@@ -645,7 +649,21 @@ usage_text(_) -->
 
 user_text(M:Entries) -->
     { is_list(Entries) },
+    !,
     sequence(help_elem(M), Entries).
+:- if(current_predicate(print_markdown/2)).
+user_text(_:md(Help)) -->
+    !,
+    { with_output_to(string(String),
+                     ( current_output(S),
+                       set_stream(S, tty(true)),
+                       print_markdown(Help, []))) },
+    [ '~s'-[String] ].
+:- else.
+user_text(_:md(Help)) -->
+    !,
+    [ '~w'-[Help] ].
+:- endif.
 user_text(_:Help) -->
     [ '~w'-[Help] ].
 
@@ -657,14 +675,26 @@ help_elem(_M, Elem) -->
     [ Elem ].
 
 usage_line(M) -->
+    { findall(Help, in(M:opt_help(help(usage), Help)), HelpLines)
+    },
     [ ansi(comment, 'Usage: ', []) ],
-    cmdline(M),
-    (   {in(M:opt_help(help(usage), Help))}
-    ->  user_text(M:Help)
-    ;   [ ' [options]'-[] ]
+    (   {HelpLines == []}
+    ->  cmdline(M), [ ' [options]'-[] ]
+    ;   sequence(usage_line(M), [nl], HelpLines)
     ),
     [ nl, nl ].
 
+usage_line(M, Help) -->
+    [ '~t~8|'-[] ],
+    cmdline(M),
+    user_text(M:Help).
+
+cmdline(_M) -->
+    { current_prolog_flag(app_name, App),
+      !,
+      current_prolog_flag(os_argv, [Argv0|_])
+    },
+    cmdarg(Argv0), [' '-[], ansi(bold, '~w', [App])].
 cmdline(_M) -->
     { current_prolog_flag(associated_file, AbsFile),
       file_base_name(AbsFile, Base),

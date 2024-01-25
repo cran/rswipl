@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1996-2021, University of Amsterdam
+    Copyright (c)  1996-2023, University of Amsterdam
                               VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -121,6 +121,7 @@ void		initialiseForeign(int argc, char **argv);
 void		cleanupInitialiseHooks(void);
 void		cleanAbortHooks(PL_local_data_t *ld);
 atom_t		codeToAtom(int code);
+int		atom_to_bool(atom_t a);
 int		PL_unify_term(term_t t, ...);
 int		PL_unify_termv(term_t t, va_list args);
 term_t		pushWordAsTermRef(Word p);
@@ -128,7 +129,7 @@ void		popTermRef(void);
 int		_PL_get_arg(size_t index, term_t t, term_t a);
 term_t		PL_new_term_ref(void);
 term_t		PL_new_term_ref_noshift(void);
-term_t		PL_new_term_refs(int n);
+term_t		PL_new_term_refs(size_t n);
 functor_t	PL_new_functor_sz(atom_t f, size_t arity);
 int		globalizeTermRef(term_t t);
 void		PL_reset_term_refs(term_t r);

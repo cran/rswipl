@@ -53,6 +53,21 @@
 	      attrs_classes/2, style_css_attrs/2
 	    ]).
 
+:- predicate_options(html_text/2, 2,
+                     [ margin_left(integer),
+                       margin_right(integer),
+                       width(integer),
+                       text_align(oneof([justify, left]))
+                     ]).
+
+/** <module> Render HTML as plain text
+
+This module renders HTML markup as plain text, just like the open _lynx_
+program does. It is (as yet),  limited   to  and spacialized for dealing
+with the SWI-Prolog documentation. This library   first  of all supports
+help/1.
+*/
+
 %!  html_text(+Input) is det.
 %!  html_text(+Input, +Options) is det.
 %
@@ -509,10 +524,21 @@ emit_block([], _, _) :-
     !.
 emit_block(Words, Options, State) :-
     state_par_properties(State, Options, BlockOptions),
+    use_current_position(BlockOptions, BlockOptions1),
     ask_nl(1),
     emit_nl,
-    format_paragraph(Words, BlockOptions),
+    format_paragraph(Words, BlockOptions1),
     ask_nl(1).
+
+use_current_position(Options0, Options) :-
+    nb_current(nl_pending, start),
+    line_position(current_output, Pos),
+    Pos > 0,
+    !,
+    Hang is -Pos,
+    Options = [hang(Hang)|Options0].
+use_current_position(Options, Options).
+
 
 %!  init_nl is det.
 %!  init_nl(-State) is det.

@@ -264,7 +264,9 @@ clearSourceAdmin(atom_t sf_name)
 static atom_t
 destroySourceFile(SourceFile sf)
 { if ( sf->magic == SF_MAGIC )
-  { atom_t name;
+  { GET_LD
+
+    atom_t name;
     SourceFile f;
 
     sf->magic = SF_MAGIC_DESTROYING;
@@ -1210,7 +1212,7 @@ associateSource(SourceFile sf, Procedure proc)
 
 int
 setAttrProcedureSource(DECL_LD SourceFile sf, Procedure proc,
-		       unsigned attr, int val)
+		       uint64_t attr, int val)
 { if ( val && (attr&PROC_DEFINED) )
     associateSource(sf, proc);
 

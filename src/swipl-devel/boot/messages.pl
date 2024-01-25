@@ -1780,6 +1780,25 @@ prolog_message(backcomp(init_file_moved(FoundFile))) -->
       '  to   "~w"'-[InitFile], nl,
       '  See https://www.swi-prolog.org/modified/config-files.html'-[]
     ].
+prolog_message(not_accessed_flags(List)) -->
+    [ 'The following Prolog flags have been set but not used:', nl ],
+    flags(List).
+prolog_message(prolog_flag_invalid_preset(Flag, Preset, _Type, New)) -->
+    [ 'Prolog flag ', ansi(code, '~q', Flag), ' has been (re-)created with a type that is \c
+       incompatible with its value.', nl,
+      'Value updated from ', ansi(code, '~p', [Preset]), ' to default (',
+      ansi(code, '~p', [New]), ')'
+    ].
+
+
+flags([H|T]) -->
+    ['  ', ansi(code, '~q', [H])],
+    (   {T == []}
+    ->  []
+    ;   [nl],
+        flags(T)
+    ).
+
 
 		 /*******************************
 		 *          DEPRECATED		*
@@ -1950,6 +1969,9 @@ default_theme(message(Level),         Attrs) :-
 :- thread_local
     user:thread_message_hook/3.
 :- '$hide'((push_msg/1,pop_msg/0)).
+:- '$notransact'((user:message_hook/3,
+                  prolog:message_prefix_hook/2,
+                  user:thread_message_hook/3)).
 
 %!  print_message(+Kind, +Term)
 %

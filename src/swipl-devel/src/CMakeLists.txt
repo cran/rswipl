@@ -77,7 +77,7 @@ set(SRC_CORE pl-atom.c pl-wam.c pl-arith.c pl-bag.c pl-error.c
     pl-funct.c pl-gc.c pl-privitf.c pl-list.c pl-string.c
     pl-load.c pl-modul.c pl-op.c pl-prims.c pl-pro.c
     pl-proc.c pl-prof.c pl-read.c pl-rec.c pl-setup.c
-    pl-sys.c pl-trace.c pl-util.c pl-wic.c pl-write.c
+    pl-sys.c pl-trace.c pl-util.c pl-qlf.c pl-write.c
     pl-term.c pl-thread.c pl-xterm.c pl-srcfile.c
     pl-attvar.c pl-gvar.c pl-btree.c
     pl-init.c pl-gmp.c pl-segstack.c pl-hash.c
@@ -97,6 +97,9 @@ set(LIBSWIPL_SRC
     ${SRC_BF}
     ${SRC_MINIZIP})
 set(SWIPL_SRC pl-main.c)
+if(MSVC AND WIN32)
+list(APPEND SWIPL_SRC os/windows/ssl_applink.c)
+endif()
 
 set(SRC_SWIPL_LD swipl-ld.c)
 if(WIN32)
@@ -117,7 +120,7 @@ set(SWIPL_DATA_DIRS
     library/dialect library/dialect/swi library/dialect/eclipse
     library/dialect/hprolog library/dialect/sicstus library/dialect/sicstus4 library/dialect/iso
     library/dialect/yap library/dialect/xsb library/theme library/iri_scheme library/build
-    demo cmake)
+    demo cmake app)
 
 set(SWIPL_DATA_boot init.pl syspred.pl toplevel.pl license.pl bags.pl apply.pl
     expand.pl dcg.pl history.pl attvar.pl packs.pl dwim.pl rc.pl predopts.pl
@@ -148,12 +151,13 @@ set(SWIPL_DATA_library explain.pl sort.pl prolog_config.pl
     random.pl prolog_breakpoints.pl prolog_autoload.pl
     prolog_colour.pl varnumbers.pl codesio.pl prolog_codewalk.pl
     prolog_pack.pl git.pl prolog_metainference.pl quasi_quotations.pl
-    sandbox.pl prolog_format.pl prolog_install.pl check_installation.pl
+    sandbox.pl prolog_format.pl check_installation.pl
     solution_sequences.pl iostream.pl dicts.pl yall.pl tabling.pl
     lazy_lists.pl prolog_jiti.pl zip.pl obfuscate.pl wfs.pl
     prolog_wrap.pl prolog_trace.pl prolog_code.pl intercept.pl
     prolog_deps.pl tables.pl hashtable.pl strings.pl increval.pl
-    prolog_debug.pl prolog_versions.pl prolog_evaluable.pl macros.pl)
+    prolog_debug.pl prolog_versions.pl prolog_evaluable.pl macros.pl
+    prolog_coverage.pl)
 if(INSTALL_DOCUMENTATION)
   set(SWIPL_DATA_library ${SWIPL_DATA_library} help.pl)
 endif()
@@ -221,6 +225,8 @@ endif()
 
 set(SWIPL_DATA_demo likes.pl README.md)
 set(SWIPL_DATA_cmake swipl.cmake)
+
+set(SWIPL_DATA_app pack.pl app.pl qlf.pl README.md)
 
 ################
 # Custom targets and commands
@@ -647,7 +653,7 @@ install(TARGETS swipl ${SWIPL_INSTALLED_LIBRARIES} EXPORT SWIPL_EXPORT
 install(FILES ${SWIPL_BOOT_FILE}
 	DESTINATION ${SWIPL_INSTALL_PREFIX}
 )
-if(WIN32)
+if(MINGW)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libswipl.dll.a
 	DESTINATION ${LIBSWIPL_DIR}
 	RENAME libswipl.lib)
@@ -714,25 +720,16 @@ install(TARGETS swipl-win
 	RUNTIME DESTINATION ${SWIPL_INSTALL_ARCH_EXE}
         LIBRARY DESTINATION ${SWIPL_INSTALL_ARCH_LIB}
 )
+# helper dlls (MinGW runtime, pthread-win32, etc.)
 prepend(WIN32_DLL_FILES ${CMAKE_CURRENT_BINARY_DIR}/ ${WIN32_DLLS})
 install(FILES ${WIN32_DLL_FILES} DESTINATION ${SWIPL_INSTALL_ARCH_EXE})
 install_src(core_swipl_ico
 	    FILES ${CMAKE_CURRENT_SOURCE_DIR}/swipl.ico
 	    DESTINATION ${SWIPL_INSTALL_PREFIX})
 
-if(MSYS2)
-  install(DIRECTORY DESTINATION bin)
-  file(WRITE ${CMAKE_CURRENT_SOURCE_DIR}/swipl
-       "#!/usr/bin/bash\n${CMAKE_INSTALL_PREFIX}/${SWIPL_INSTALL_ARCH_EXE}/swipl $@\n")
-  file(WRITE ${CMAKE_CURRENT_SOURCE_DIR}/swipl-ld
-       "#!/usr/bin/bash\n${CMAKE_INSTALL_PREFIX}/${SWIPL_INSTALL_ARCH_EXE}/swipl-ld $@\n")
-  install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/swipl DESTINATION bin)
-  install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/swipl-ld DESTINATION bin)
-endif()
-
 else(WIN32)
 
-if(NOT BUILD_MACOS_BUNDLE)
+if(SWIPL_INSTALL_AS_LINK)
 # Create symbolic link from public installation dir to executables
 install(DIRECTORY DESTINATION bin)
 ilink(${CMAKE_INSTALL_PREFIX}/${SWIPL_INSTALL_ARCH_EXE}/swipl

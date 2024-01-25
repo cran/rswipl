@@ -25,7 +25,7 @@
     if(length(libswipl))
       rswipl.ok <- TRUE
   }
-
+  
   if(.Platform$OS.type == "unix")
   {
     pl0 <- file.path(libname, pkgname)
@@ -41,12 +41,11 @@
       libswipl <- dir(lib, pattern="libswipl.dylib$", full.names=TRUE)
 
     if(length(libswipl) == 1)
-    {
       dyn.load(libswipl, local=FALSE)
-      rswipl.ok <- TRUE
-    }
+    
+    rswipl.ok <- TRUE
   }
-
+  
   if(!rswipl.ok)
     msg <- "Unable to locate the SWI-Prolog runtime."
 

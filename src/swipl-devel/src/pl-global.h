@@ -718,13 +718,7 @@ struct PL_local_data
   { FindData	find;			/* /<ports> <goal> in tracer */
   } trace;
 
-  struct
-  { struct findall_bag *bags;		/* Known bags */
-    struct findall_bag *default_bag;	/* Bag we keep around */
-#if defined(O_ATOMGC) && defined(O_PLMT)
-    simpleMutex mutex;			/* Atom GC scanning synchronization */
-#endif
-  } bags;
+  struct findall_state *bags;		/* findall/3 store  */
 
   struct
   { AbortHandle	_abort_head;		/* PL_abort_hook() */
@@ -906,12 +900,12 @@ GLOBAL PL_local_data_t *PL_current_engine_ptr;
 #define gc_status		(LD->gc.status)
 #define debugstatus		(LD->_debugstatus)
 #define base_addresses		(LD->bases)
-#define Suser_input		(LD->IO.streams[0])
-#define Suser_output		(LD->IO.streams[1])
-#define Suser_error		(LD->IO.streams[2])
-#define Scurin			(LD->IO.streams[3])
-#define Scurout			(LD->IO.streams[4])
-#define Sprotocol		(LD->IO.streams[5])
+#define Suser_input		(LD->IO.streams[SNO_USER_INPUT])
+#define Suser_output		(LD->IO.streams[SNO_USER_OUTPUT])
+#define Suser_error		(LD->IO.streams[SNO_USER_ERROR])
+#define Scurin			(LD->IO.streams[SNO_CURRENT_INPUT])
+#define Scurout			(LD->IO.streams[SNO_CURRENT_OUTPUT])
+#define Sprotocol		(LD->IO.streams[SNO_PROTOCOL])
 #define Sdin			Suser_input		/* not used for now */
 #define Sdout			Suser_error
 

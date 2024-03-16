@@ -3957,7 +3957,7 @@ PL_free_blob(atom_t a)
 { Atom x = atomValue(a);
   const PL_blob_t *type = x->type;
 
-  if ( true(type, PL_BLOB_NOCOPY) && type->release )
+  if ( true(type, PL_BLOB_NOCOPY) && type->release && x->name )
   { if ( (*type->release)(a) )
     { x->length = 0;
       x->name = NULL;
@@ -4599,9 +4599,13 @@ bindForeign(Module m, const char *name, int arity, Func f, int flags)
 
   if ( def->impl.any.defined )
     PL_linger(def->impl.any.defined);	/* Dubious: what if a clause list? */
-  def->impl.foreign.function = f;
-  def->flags &= ~(P_DYNAMIC|P_TRANSACT|P_THREAD_LOCAL|P_TRANSPARENT|P_NONDET|P_VARARG);
-  def->flags |= (P_FOREIGN|TRACE_ME);
+  if ( true(def, P_FOREIGN) && !def->impl.foreign.function )
+  { def->impl.foreign.function = f;	/* predefined from saved state */
+  } else
+  { def->impl.foreign.function = f;
+    def->flags &= ~(P_DYNAMIC|P_TRANSACT|P_THREAD_LOCAL|P_TRANSPARENT|P_NONDET|P_VARARG);
+    def->flags |= (P_FOREIGN|TRACE_ME);
+  }
 
   if ( m == MODULE_system || SYSTEM_MODE )
     set(def, P_LOCKED|HIDE_CHILDS);

@@ -2414,12 +2414,15 @@ load_program(include-1) :-
                  *******************************/
 
 :- dynamic
-    th_data/1,
-    at_exit_called/0.
+    th_data/1.
+
+:- if(current_predicate(thread_exit/1)).
+:- dynamic at_exit_called/0.
 
 at_exit_work :-
     thread_at_exit(assert(at_exit_called)),
     thread_exit(true).
+:- endif.
 
 th_do_something :-
     forall(between(1, 5, X),
@@ -2444,11 +2447,13 @@ thread(signal-1) :-
     thread_signal(Id, throw(stopit)),
     thread_join(Id, Exit),
     Exit == exception(stopit).
+:- if(current_predicate(at_exit_work/0)).
 thread(at_exit-1) :-
     retractall(at_exit_called),
     thread_create(at_exit_work, Id, []),
     thread_join(Id, exited(true)),
     retract(at_exit_called).
+:- endif.
 thread(status-1) :-
     thread_create(true, Id, []),
     between(0, 100, _),
@@ -2628,8 +2633,6 @@ testset(exception).
 testset(term_atom).
 testset(os).
 testset(io).
-testset(popen) :-
-    current_prolog_flag(pipe, true).
 testset(timeout).
 testset(file).
 testset(unicode_file) :-
@@ -2713,8 +2716,23 @@ testdir('Tests/rational') :-
 
 test :-
     current_prolog_flag(argv, Argv),
-    argv_options(Argv, Files, Options),
+    argv_options(test:Argv, Files, Options),
     test(Files, Options).
+
+test:opt_type(list,     list_test_dirs, boolean).
+test:opt_type(l,        list_test_dirs, boolean).
+test:opt_type(core,     core,           boolean).
+test:opt_type(subdirs,  subdirs,        (boolean|term)).
+test:opt_type(packages, packages,       boolean).
+test:opt_type(package,  package,        atom).
+test:opt_type(output,   output,         oneof([always,never,on_failure])).
+
+test:opt_help(list_test_dirs, "List available directories with tests").
+test:opt_help(core,           "Run core tests").
+test:opt_help(subdirs,        "Prolog list of subdirectories to test").
+test:opt_help(packages,       "Test all packages").
+test:opt_help(package,        "Test named package").
+test:opt_help(output,         "When to write test output").
 
 %!  test(+Files, +Options)
 %
@@ -2744,6 +2762,8 @@ test(_, Options) :-
 test(Files, Options) :-
     retractall(failed(_)),
     retractall(blocked(_,_)),
+    option(output(Output), Options, on_failure),
+    set_test_options([output(Output)]),
     (   option(core(false), Options)
     ->  true
     ;   forall(testset(Set), runtest(Set))

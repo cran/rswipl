@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2021, University of Amsterdam
+    Copyright (c)  1985-2024, University of Amsterdam
                               VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -537,7 +537,7 @@ lookupBlob(DECL_LD const char *s, size_t length, PL_blob_t *type, int *new)
   if ( !type->registered )		/* avoid deadlock */
     PL_register_blob_type(type);
 
-  if ( alltrue(type, PL_BLOB_UNIQUE|PL_BLOB_NOCOPY) )
+  if ( true(type, PL_BLOB_NOCOPY) )
     v0 = MurmurHashAligned2(&s, sizeof(s), MURMUR_SEED);
   else
     v0 = MurmurHashAligned2(s, length, MURMUR_SEED);
@@ -1635,7 +1635,7 @@ cleanupAtoms(void)
       if ( !ATOM_IS_VALID(ref) )
         continue;
 
-      if ( a->type->release )
+      if ( a->name && a->type->release )
         (*a->type->release)(a->atom);
       else if ( GD->atoms.gc_hook )
         (*GD->atoms.gc_hook)(a->atom);

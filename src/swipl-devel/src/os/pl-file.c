@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2023, University of Amsterdam
+    Copyright (c)  2011-2024, University of Amsterdam
 			      VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -131,9 +131,8 @@ static int
 standardStreamIndexFromStream(IOSTREAM *s)
 { GET_LD
   IOSTREAM **sp = LD->IO.streams;
-  int i = 0;
 
-  for( ; i<6; i++, sp++ )
+  for(int i=0; i <= SNO_MAX; i++, sp++ )
   { if ( *sp == s )
       return i;
   }
@@ -214,7 +213,7 @@ aliasStream(IOSTREAM *s, atom_t name)
   ctx = getStreamContext(s);
   addNewHTable(streamAliases, (void *)name, s);
   PL_register_atom(name);
-  Sreference(s);
+  Sacquire(s);
 
   a = allocHeapOrHalt(sizeof(*a));
   a->next = NULL;
@@ -258,7 +257,7 @@ unaliasStream(IOSTREAM *s, atom_t name)
       }
 
       PL_unregister_atom(name);
-      Sunreference(s);
+      Srelease(s);
     }
   } else				/* delete them all */
   { stream_context *ctx;
@@ -272,7 +271,7 @@ unaliasStream(IOSTREAM *s, atom_t name)
 	if ( lookupHTable(streamAliases, (void *)a->name) )
 	{ deleteHTable(streamAliases, (void *)a->name);
 	  PL_unregister_atom(a->name);
-	  Sunreference(s);
+	  Srelease(s);
 	}
 
 	freeHeap(a, sizeof(*a));
@@ -294,7 +293,7 @@ referenceStandardStreams(PL_local_data_t *ld)
     { IOSTREAM *s;
 
       if ( (s=LD->IO.streams[i]) )
-	Sreference(s);
+	Sacquire(s);
     }
   }
 }
@@ -310,7 +309,7 @@ unreferenceStandardStreams(PL_local_data_t *ld)
     { IOSTREAM *s;
 
       if ( (s=LD->IO.streams[i]) )
-	Sunreference(s);
+	Srelease(s);
     }
   }
 }
@@ -322,12 +321,34 @@ static void
 setStandardStream(DECL_LD int i, IOSTREAM *s)
 { IOSTREAM *old = LD->IO.streams[i];
 
-  LD->IO.streams[i] = s;
   if ( old != s )
-  { if ( old )
-      Sunreference(old);
+  { if ( s ) Sacquire(s);
+    LD->IO.streams[i] = s;
+    if ( old ) Srelease(old);
+  }
+}
+
+
+void
+copyStandardStreams(PL_local_data_t *ldnew, PL_local_data_t *ldold,
+		    intptr_t flags)
+{ ldnew->IO.stream_type_check = ldold->IO.stream_type_check;
+  int upto = (flags&PL_THREAD_CUR_STREAMS) ? SNO_MAX : SNO_USER_ERROR;
+
+  for(int i=0; i <= upto; i++)
+  { IOSTREAM *s = ldold->IO.streams[i];
     if ( s )
-      Sreference(s);
+      Sacquire(s);
+    ldnew->IO.streams[i] = s;
+  }
+
+  if ( upto == SNO_USER_ERROR )
+  { WITH_LD(ldnew)
+    { Scurin  = Suser_input;
+      Scurout = Suser_output;
+      Sacquire(Scurin);
+      Sacquire(Scurout);
+    }
   }
 }
 
@@ -346,11 +367,11 @@ restoreStandardStream(DECL_LD int i)
 { IOSTREAM *s;
 
   switch(i)
-  { case 0:
-    case 3:
+  { case SNO_USER_INPUT:
+    case SNO_CURRENT_INPUT:
       s = Sinput;
       break;
-    case 2:
+    case SNO_USER_ERROR:
       s = Serror;
       break;
     default:
@@ -401,16 +422,31 @@ freeStream(IOSTREAM *s)
        LD &&
 #endif
        (sp=LD->IO.streams) )
-  { for(i=0; i<6; i++, sp++)
+  { for(i=0; i <= SNO_MAX; i++, sp++)
     { if ( *sp == s )
-      { *sp = NULL;
+      { IOSTREAM *new;
 
-	if ( s->flags & SIO_INPUT )
-	  setStandardStream(i, Sinput);
-	else if ( sp == &Suser_error )
-	  setStandardStream(i, Serror);
-	else if ( sp != &Sprotocol )
-	  setStandardStream(i, Soutput);
+	switch(i)
+	{ case SNO_USER_INPUT:
+	    new = Sinput;
+	    break;
+	  case SNO_USER_OUTPUT:
+	    new = Soutput;
+	    break;
+	  case SNO_USER_ERROR:
+	    new = Serror;
+	    break;
+	  case SNO_CURRENT_INPUT:
+	    new = Suser_input;
+	    break;
+	  case SNO_CURRENT_OUTPUT:
+	    new = Suser_output;
+	    break;
+	  case SNO_PROTOCOL:
+	    new = NULL;
+	    break;
+	}
+	setStandardStream(i, new);
       }
     }
   }
@@ -646,9 +682,9 @@ acquire_stream_ref(atom_t aref)
 { stream_ref *ref = PL_blob_data(aref, NULL, NULL);
 
   if ( ref->read )
-    Sreference(ref->read);
+    Sacquire(ref->read);
   if ( ref->write )
-    Sreference(ref->write);
+    Sacquire(ref->write);
 }
 
 
@@ -807,7 +843,7 @@ get_stream_handle(DECL_LD atom_t a, IOSTREAM **sp, int flags)
     { IOSTREAM *stream;
       uintptr_t n = (uintptr_t)s0 & ~STD_HANDLE_MASK;
 
-      if ( n < 6 )			/* standard stream! */
+      if ( n <= SNO_MAX )		/* standard stream! */
       { stream = LD->IO.streams[n];	/* TBD: No need to lock for std-streams */
 	if ( stream->magic == SIO_CMAGIC )
 	  stream = restoreStandardStream((int)n);
@@ -1557,32 +1593,35 @@ PRED_IMPL("$input_context", 1, input_context, 0)
 
 
 void
-pushOutputContext(void)
-{ GET_LD
-  OutputContext c = allocHeapOrHalt(sizeof(struct output_context));
-
+pushOutputContext(DECL_LD IOSTREAM *s)
+{ OutputContext c      = allocHeapOrHalt(sizeof(struct output_context));
   c->stream            = Scurout;
   c->previous          = output_context_stack;
   output_context_stack = c;
+
+  Sacquire(c->stream);
+  setStandardStream(SNO_CURRENT_OUTPUT, s);
 }
 
 
 void
-popOutputContext(void)
-{ GET_LD
-  OutputContext c = output_context_stack;
+popOutputContext(DECL_LD)
+{ OutputContext c = output_context_stack;
 
   if ( c )
-  { if ( c->stream->magic == SIO_MAGIC )
-      Scurout = c->stream;
-    else
-    { Sdprintf("Oops, current stream closed?");
-      Scurout = Soutput;
+  { IOSTREAM *s = c->stream;
+
+    if ( s->magic != SIO_MAGIC )
+    { Sdprintf("[%d] current_output closed; set to user_output\n",
+	       PL_thread_self());
+      s = Soutput;
     }
+    setStandardStream(SNO_CURRENT_OUTPUT, s);
     output_context_stack = c->previous;
+    Srelease(c->stream);
     freeHeap(c, sizeof(struct output_context));
   } else
-    Scurout = Soutput;
+    setStandardStream(SNO_CURRENT_OUTPUT, Soutput);
 }
 
 
@@ -1646,9 +1685,7 @@ setupOutputRedirect(term_t to, redir_context *ctx, int redir)
   ctx->magic = REDIR_MAGIC;
 
   if ( redir )
-  { pushOutputContext();
-    Scurout = ctx->stream;
-  }
+    pushOutputContext(ctx->stream);
 
   return TRUE;
 }
@@ -1663,7 +1700,9 @@ closeOutputRedirect(redir_context *ctx)
   ctx->magic = 0;
 
   if ( ctx->redirected )
+  { GET_LD
     popOutputContext();
+  }
 
   if ( ctx->is_stream )
   { rval = streamStatus(ctx->stream);
@@ -1712,7 +1751,9 @@ discardOutputRedirect(redir_context *ctx)
   ctx->magic = 0;
 
   if ( ctx->redirected )
+  { GET_LD
     popOutputContext();
+  }
 
   if ( ctx->is_stream )
   { streamStatus(ctx->stream);
@@ -2478,8 +2519,7 @@ tellString(char **s, size_t *size, IOENC enc)
 
   stream = Sopenmem(s, size, "w");
   stream->encoding = enc;
-  pushOutputContext();
-  Scurout = stream;
+  pushOutputContext(stream);
 
   return TRUE;
 }
@@ -2494,8 +2534,8 @@ toldString()
     return TRUE;
 
   if ( s->functions == &Smemfunctions )
-  { closeStream(s);
-    popOutputContext();
+  { popOutputContext();
+    closeStream(s);
   } else
     releaseStream(s);
 
@@ -4342,15 +4382,15 @@ do_tell(term_t f, atom_t m)
 
   PL_LOCK(L_SEETELL);
   if ( get_stream_handle(a, &s, SH_UNLOCKED) )
-  { Scurout = s;
+  { setStandardStream(SNO_CURRENT_OUTPUT, s);
     goto ok;
   }
   if ( a == ATOM_user )
-  { Scurout = Suser_output;
+  { setStandardStream(SNO_CURRENT_OUTPUT, Suser_output);
     goto ok;
   }
   if ( (s = findStreamFromFile(a, IO_TELL)) )
-  { Scurout = s;
+  { setStandardStream(SNO_CURRENT_OUTPUT, s);
     goto ok;
   }
 
@@ -4362,8 +4402,7 @@ do_tell(term_t f, atom_t m)
   }
 
   set(getStreamContext(s), IO_TELL);
-  pushOutputContext();
-  Scurout = s;
+  pushOutputContext(s);
 
 ok:
   PL_UNLOCK(L_SEETELL);
@@ -5193,8 +5232,13 @@ PRED_IMPL("$streams_properties", 2, dstreams_properties, 0)
 
     PL_LOCK(L_FILE);
     while( advanceTableEnum(e, (void**)&s, NULL))
-    { rc = ( s->context != NULL &&
-	     unify_stream_property(s, p, pt) &&
+    { Sacquire(s);
+      rc = ( s->magic == SIO_MAGIC &&
+	     s->context != NULL &&
+	     unify_stream_property(s, p, pt) );
+      if ( Srelease(s) )
+	rc = FALSE;
+      rc = ( rc &&
 	     can_unify(valTermRef(A1), valTermRef(pt), ex) &&
 	     PL_unify_list(tail, head, tail) &&
 	     PL_unify_functor(head, FUNCTOR_minus2) &&
@@ -5453,7 +5497,7 @@ PRED_IMPL("set_input", 1, set_input, PL_FA_ISO)
   IOSTREAM *s;
 
   if ( getInputStream(A1, S_DONTCARE, &s) )
-  { Scurin = s;
+  { setStandardStream(SNO_CURRENT_INPUT, s);
     releaseStream(s);
     return TRUE;
   }
@@ -5468,7 +5512,7 @@ PRED_IMPL("set_output", 1, set_output, PL_FA_ISO)
   IOSTREAM *s;
 
   if ( getOutputStream(A1, S_DONTCARE, &s) )
-  { Scurout = s;
+  { setStandardStream(SNO_CURRENT_OUTPUT, s);
     releaseStream(s);
     return TRUE;
   }
@@ -5904,18 +5948,18 @@ PRED_IMPL("set_prolog_IO", 3, set_prolog_IO, 0)
 
   PL_LOCK(L_FILE);
 
-  setStandardStream(1, out);		/* user_output */
-  setStandardStream(2, error);		/* user_error */
-  setStandardStream(4, out);		/* current_output */
+  setStandardStream(SNO_USER_OUTPUT,    out);
+  setStandardStream(SNO_USER_ERROR,     error);
+  setStandardStream(SNO_CURRENT_OUTPUT, out);
 
   if ( wrapin )
-  { setStandardStream(3, in);		/* current_input */
-    setStandardStream(0, in);		/* user_input */
+  { setStandardStream(SNO_CURRENT_INPUT, in);
+    setStandardStream(SNO_USER_INPUT,    in);
     wrapIO(in, Sread_user, NULL);
     LD->prompt.next = TRUE;
   }
 
-  for(i=0; i<3; i++)
+  for(i=SNO_USER_INPUT; i<=SNO_USER_ERROR; i++)
   { LD->IO.streams[i]->position = &LD->IO.streams[0]->posbuf;
     LD->IO.streams[i]->flags |= SIO_RECORDPOS;
   }

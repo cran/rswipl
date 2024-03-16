@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker and Peter Ludemann
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2022-2023, SWI-Prolog Solutions b.v.
+    Copyright (c)  2022-2024, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -68,6 +68,7 @@ how the various predicates can be called from Prolog.
 #include <limits>
 #include <string>
 #include <map>
+#include <vector>
 using namespace std;
 
 #ifdef _MSC_VER
@@ -143,6 +144,16 @@ PREDICATE(hello3, 2)
   return false;
 }
 
+// TODO: add tests
+PREDICATE(as_string, 2)
+{ return A2.unify_string(A1.as_string());
+}
+
+// TODO: add tests
+PREDICATE(as_wstring, 2)
+{ return A2.unify_wstring(A1.as_wstring());
+}
+
 PREDICATE(add, 3)
 { // as_long() converts integral floats to integers
   return A3.unify_integer(A1.as_long() + A2.as_long());
@@ -182,7 +193,7 @@ PREDICATE(name_arity, 3)		/* name_arity(+Term, -Name, -Arity) */
 }
 
 PREDICATE(name_arity_bool, 3)  // like name_arity/3 but doesn't throw
-{ auto term = A1; auto name = A2; auto arity = A3;
+{ PlTerm term(A1), name(A2), arity(A3);
   PlAtom name_a(PlAtom::null);
   size_t arity_a;
   if ( !term.name_arity(&name_a, &arity_a) )
@@ -245,6 +256,10 @@ PREDICATE(call_cpp, 1)
   return true;
 }
 
+PREDICATE(call_cpp_obj, 1)
+{ return A1.call();
+}
+
 PREDICATE(call_cpp_ex, 2)
 { try
   { PlCheckFail(PlCall(A1, PL_Q_CATCH_EXCEPTION));
@@ -289,13 +304,69 @@ PREDICATE(term, 2)
   throw PlDomainError("type", A1);
 }
 
+PREDICATE(call_chars_discard, 1)
+{ PlFrame fr;
+  PlCompound goal(A1.as_string());
+  bool rval = goal.call();
+  fr.discard();
+  return rval;
+}
 
+PREDICATE(call_chars, 1)
+{ A1.must_be_atom_or_string();
+  PlCompound goal(A1.as_string());
+  return goal.call();
+}
+
+/* can_unify(A1, A2) :- unifiable(A1, A2, _) */
 PREDICATE(can_unify, 2)
 { PlFrame fr;
 
   bool rval = A1.unify_term(A2);
-  fr.rewind();
+  fr.discard(); // or: PL.rewind()
   return rval;
+}
+
+PREDICATE(can_unify_ffi, 2)
+{ fid_t fid = PL_open_foreign_frame();
+
+  int rval = PL_unify(A1.unwrap(), A2.unwrap());
+  PL_discard_foreign_frame(fid);
+  return rval;
+}
+
+/* if_then(A1,A2,A3,A4) :- A1 = A2 -> once(A3) ; once(A4) */
+PREDICATE(if_then_a, 4)
+{ PlFrame fr;
+  bool t1_t2_unified = A1.unify_term(A2);
+  if ( ! t1_t2_unified )
+    fr.rewind();
+  return PlCall(t1_t2_unified ? A3 : A4);
+}
+
+/* if_then(A1,A2,A3,A4) :- A1 = A2 -> once(A3) ; once(A4) */
+PREDICATE(if_then_b, 4)
+{ return PlCall(PlRewindOnFail([t1=A1,t2=A2]()->bool
+                { return t1.unify_term(t2); }) ? A3 : A4);
+}
+
+
+PREDICATE(if_then_ffi, 4)
+{ fid_t fid = PL_open_foreign_frame();
+  term_t t1 = A1.unwrap(), t2 = A2.unwrap();
+  int t1_t2_unified = PL_unify(t1, t2);
+  if ( !t1_t2_unified )
+  { if ( PL_exception(0) )
+      { PL_close_foreign_frame(fid);
+        return FALSE;
+      }
+    PL_rewind_foreign_frame(fid);
+  }
+  int rc;
+  rc = PL_call((t1_t2_unified ? A3 : A4).unwrap(), (module_t)0);
+
+  PL_close_foreign_frame(fid);
+  return rc;
 }
 
 PREDICATE(eq1, 2)
@@ -326,6 +397,7 @@ PREDICATE(write_list, 1)
   { while( tail.next(e) )
       strm.printf("%s\n", e.as_string().c_str());
   } PREDICATE_CATCH({strm.release(); return false;})
+  PlCheckFail(tail.unify_nil());
   return true;
 }
 
@@ -488,6 +560,7 @@ PREDICATE(delete_chars, 1)
   return true;
 }
 
+
 class MyClass
 {
 public:
@@ -512,6 +585,7 @@ PREDICATE(free_my_object, 1)
   delete myobj;
   return true;
 }
+
 
 PREDICATE(make_functor, 3)  // make_functor(foo, x, foo(x))
 { auto f = PlFunctor(A1.as_atom().as_string(), 1);
@@ -576,13 +650,21 @@ PREDICATE(hostname2, 1)
   return true;
 }
 
-PREDICATE(eq_int64, 2)
-{ return A1 == A2.as_int64_t();
-}
+// PREDICATE(eq_int64, 2)
+// {
+//   #pragma GCC diagnostic push
+//   #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+//   return A1 == A2.as_int64_t();
+//   #pragma GCC diagnostic pop
+// }
 
-PREDICATE(lt_int64, 2)
-{ return A1 < A2.as_int64_t();
-}
+// PREDICATE(lt_int64, 2)
+// {
+//   #pragma GCC diagnostic push
+//   #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+//   return A1 < A2.as_int64_t();
+//   #pragma GCC diagnostic pop
+// }
 
 PREDICATE(get_atom_ex, 2)
 { PlAtom a(PlTerm::null);
@@ -1006,6 +1088,36 @@ PREDICATE(pl_write_atoms_c, 1)
   return rc && PL_get_nil_ex(tail); /* test end for [] */
 }
 
+static const std::map<const std::string, std::pair<PlRecord, PlRecord>> name_to_term =
+  { {"one", {PlTerm_integer(1).record(), PlTerm_string("eins").record()}},
+    {"two", {PlTerm_integer(2).record(), PlTerm_string("zwei").record()}}
+  };
+
+PREDICATE(name_to_terms, 3)
+{ A1.must_be_atom_or_string();
+  const auto it = name_to_term.find(A1.as_string());
+  return it != name_to_term.cend() &&
+    PlRewindOnFail([t1=A2,t2=A3,&it]()
+                   { return t1.unify_term(it->second.first.term()) &&
+                            t2.unify_term(it->second.second.term()); });
+}
+
+PREDICATE(name_to_terms2, 3)
+{ PlTerm key(A1), t1(A2), t2(A3);
+  key.must_be_atom_or_string();
+  const auto it = name_to_term.find(key.as_string());
+  if ( it == name_to_term.cend() )
+    return false;
+  if ( !t1.unify_term(it->second.first.term()) )
+    return false;
+  PlFrame fr;
+  if ( !t2.unify_term(it->second.second.term()) )
+  { fr.discard();
+    return false;
+  }
+  return true;
+}
+
 // Predicates for checking native integer handling
 // See https://en.cppreference.com/w/cpp/types/numeric_limits
 
@@ -1073,20 +1185,27 @@ struct IntInfoCtxt
 
 // int_info_(name, result, ctx) is called from int_info/2 to do a
 // lookup of the name in ctx->int_info (see the IntInfoCtxt
-// constructor for how this gets initialized). This finds a recored
+// constructor for how this gets initialized). This finds a recorded
 // term, from which a fresh term is concstructed using
 // PlRecord::term(), and the unification is done in the context of
 // PlRewindOnFail(). This ensures that if the unification fails, any
 // partial bindings will be removed.
 
 static bool
-int_info_(const std::string name, PlTerm result, IntInfoCtxt *ctxt)
+int_info_RewindOnFail(const std::string name, PlTerm result, IntInfoCtxt *ctxt)
 { const auto it = ctxt->int_info->find(name);
   if ( it == ctxt->int_info->cend() )
     return false;
 
-  return PlRewindOnFail([&result,&it]() -> bool
+  return PlRewindOnFail([&result,&it]()
                         { return result.unify_term(it->second.term()); });
+}
+
+static bool
+int_info_noRewind(const std::string name, PlTerm result, IntInfoCtxt *ctxt)
+{ const auto it = ctxt->int_info->find(name);
+  return it != ctxt->int_info->cend() &&
+    result.unify_term(it->second.term());
 }
 
 PREDICATE_NONDET(int_info, 2)
@@ -1100,7 +1219,7 @@ PREDICATE_NONDET(int_info, 2)
   switch( handle.foreign_control() )
   { case PL_FIRST_CALL:
       if ( !A1.is_variable() ) // int_info is a map, so unique on lookup
-	return int_info_(A1.as_string(), A2, ctxt.get());
+	return int_info_RewindOnFail(A1.as_string(), A2, ctxt.get());
       ctxt.reset(new IntInfoCtxt());
       break;
     case PL_REDO:
@@ -1112,8 +1231,9 @@ PREDICATE_NONDET(int_info, 2)
       return false;
   }
   assert(A1.is_variable());
+  // Note that int_info_RewindOnFail() has its own frame to undo unification
   while ( ctxt->it != ctxt->int_info->cend() )
-  { if ( int_info_(ctxt->it->first, A2, ctxt.get()) )
+  { if ( int_info_RewindOnFail(ctxt->it->first, A2, ctxt.get()) )
     { if ( !A1.unify_atom(ctxt->it->first) )
         return false; // Shouldn't happen because A1 is a varaible
       ctxt->it++;
@@ -1127,6 +1247,41 @@ PREDICATE_NONDET(int_info, 2)
   return false;
 }
 
+// Same as int_info, but uses PlFrame instead of PlRewindOnFail()
+PREDICATE_NONDET(int_info2, 2)
+{ auto ctxt = handle.context_unique_ptr<IntInfoCtxt>();
+  PlFrame fr;
+
+  switch( handle.foreign_control() )
+  { case PL_FIRST_CALL:
+      if ( !A1.is_variable() ) // int_info is a map, so unique on lookup
+	return int_info_noRewind(A1.as_string(), A2, ctxt.get());
+      ctxt.reset(new IntInfoCtxt());
+      [[fallthrough]];
+  case PL_REDO:
+    assert(A1.is_variable());
+    while ( ctxt->it != ctxt->int_info->cend() )
+    { if ( int_info_noRewind(ctxt->it->first, A2, ctxt.get()) )
+      { if ( !A1.unify_atom(ctxt->it->first) )
+          return false; // Shouldn't happen because A1 is a varaible
+        ctxt->it++;
+        if ( ctxt->it == ctxt->int_info->cend() )
+        { return true; // Last result: no choice point
+        }
+        PL_retry_address(ctxt.release()); // Succeed with choice point
+      }
+      ctxt->it++;
+      fr.rewind();
+    }
+    return false;
+    break;
+  case PL_PRUNED:
+    return true;
+  default:
+    assert(0);
+    return false;
+  }
+}
 
 PREDICATE(type_error_string, 3)
 { PlException e(PlTypeError("foofoo", A1));
@@ -1141,13 +1296,11 @@ PREDICATE(type_error_string, 3)
 // Re-implementing w_atom_ffi_/2:
 
 PREDICATE(w_atom_cpp_, 2)
-{ auto stream = A1, t = A2;
-  IOSTREAM* s;
-  Plx_get_stream(stream.unwrap(), &s, SIO_INPUT);
-  PlStream strm(Scurrent_output);
+{ auto stream(A1), term(A2);
+  PlStream strm(stream, SIO_OUTPUT);
   PlStringBuffers _string_buffers;
-  size_t len;
-  const pl_wchar_t *sa = Plx_atom_wchars(t.as_atom().unwrap(), &len);
+  size_t len; // Documentation sample code omits this
+  const pl_wchar_t *sa = Plx_atom_wchars(term.as_atom().unwrap(), &len);
   strm.printfX("/%Ws/%zd", sa, len);
   return true;
 }
@@ -1337,13 +1490,16 @@ static PL_blob_t my_blob = PL_BLOB_DEFINITION(MyBlob, "my_blob");
 
 struct MyBlob : public PlBlob
 { std::unique_ptr<MyConnection> connection;
+  std::string blob_name; // for debugging ... during shutdown, connection can
+                         // be deleted before the blob is deleted
 
   explicit MyBlob()
     : PlBlob(&my_blob) { }
 
   explicit MyBlob(const std::string& connection_name)
     : PlBlob(&my_blob),
-      connection(std::make_unique<MyConnection>(connection_name))
+      connection(std::make_unique<MyConnection>(connection_name)),
+      blob_name(connection_name)
   { assert(connection); // make_unique should have thrown exception if it can't allocate
     if ( !connection->open() )
       throw MyBlobError("my_blob_open_error");
@@ -1351,9 +1507,11 @@ struct MyBlob : public PlBlob
 
   PL_BLOB_SIZE
 
-  ~MyBlob() noexcept
+  virtual ~MyBlob() noexcept
   { if ( !close() )
-      Sdprintf("***ERROR: Close MyBlob failed: %s\n", name().c_str()); // Can't use PL_warning()
+      // Can't use PL_warning()
+      Sdprintf("***ERROR: Close MyBlob failed: (%s) (%s)\n",
+               name().c_str(), blob_name.c_str());
   }
 
   inline std::string
@@ -1402,7 +1560,7 @@ struct MyBlob : public PlBlob
   }
 };
 
-// %! create_my_blob(+Name: atom, -MyBlob) is semidet.
+// %! create_my_blob(+Name: atom, -MyBlob) is det.
 PREDICATE(create_my_blob, 2)
 { auto ref = std::unique_ptr<PlBlob>(new MyBlob(A1.as_atom().as_string()));
   return A2.unify_blob(&ref);
@@ -1474,4 +1632,348 @@ PREDICATE(atom_term_erase, 1)
 
 PREDICATE(atom_term_size, 1)
 { return A1.unify_integer(map_atom_term.size());
+}
+
+
+// ============  map_str_str blob (std::map<std::string,std::string> =====
+
+class MapStrStr;
+
+static PL_blob_t map_str_str_blob = PL_BLOB_DEFINITION(MapStrStr, "map_str_str");
+
+class MapStrStr : public PlBlob
+{
+public:
+  explicit MapStrStr()
+    : PlBlob(&map_str_str_blob) { }
+  virtual ~MapStrStr() = default;
+
+  MapStrStr(const MapStrStr&) = delete;
+  MapStrStr(MapStrStr&&) = delete;
+  MapStrStr& operator =(const MapStrStr&) = delete;
+  MapStrStr& operator =(MapStrStr&&) = delete;
+
+  PL_BLOB_SIZE
+
+  typedef std::map<const std::string, std::string>::iterator iterator;
+  typedef std::map<const std::string, std::string>::const_iterator const_iterator;
+
+  iterator begin() { return data.begin(); }
+  const_iterator cbegin() { return data.cbegin(); }
+
+  iterator end() { return data.end(); }
+  const_iterator cend() { return data.cend(); }
+
+  void insert_or_assign(const std::string& key, const std::string& value)
+  { data[key] = value;
+    // C17: data.insert_or_assign(key, value);
+    // C11: auto [it, success] = data.insert({key, value});
+    //      if ( ! success )
+    //        it->second = value;
+  }
+
+  void erase_if_present(const std::string& key)
+  { auto it = data.find(key);
+    if ( it != data.end() )
+      data.erase(it);
+  }
+
+  iterator find(const std::string& key)
+  { return data.find(key);
+  }
+
+  const_iterator find(const std::string& key) const
+  { return data.find(key);
+  }
+
+  iterator lower_bound(const std::string& key)
+  { return data.lower_bound(key);
+  }
+
+  const_iterator lower_bound(const std::string& key) const
+  { return data.lower_bound(key);
+  }
+
+  void incr_ref()
+  { std::lock_guard<std::mutex> lock_(refcount_lock);
+    refcount++;
+    register_ref();
+  }
+
+  void decr_ref() {
+    std::lock_guard<std::mutex> lock_(refcount_lock);
+    refcount--;
+    unregister_ref();
+  }
+
+private:
+  std::mutex refcount_lock;
+  long int refcount = 0;
+  std::map<const std::string, std::string> data;
+};
+
+static bool
+str_starts_with(const std::string& str, const std::string& prefix)
+{ // TODO: C20 provides std::string::starts_with()
+  return str.length() >= prefix.length() &&
+    str.substr(0, prefix.length()) == prefix;
+}
+
+class MapStrStrEnumState
+{
+public:
+  MapStrStrEnumState(MapStrStr* _ref, const std::string& _prefix)
+    : ref(_ref), // initialization of ref must be first
+      it(_prefix.empty() ? ref->begin() : ref->lower_bound(_prefix)),
+      prefix(_prefix)
+  { ref->incr_ref();
+  }
+
+  explicit MapStrStrEnumState() = delete;
+  explicit MapStrStrEnumState(const MapStrStrEnumState&) = delete;
+  explicit MapStrStrEnumState(MapStrStrEnumState&&) = delete;
+  MapStrStrEnumState& operator =(const MapStrStrEnumState&) = delete;
+
+  ~MapStrStrEnumState()
+  { ref->decr_ref();
+  }
+
+  bool key_starts_with_prefix() const
+  { return it != ref->end() && str_starts_with(it->first, prefix);
+  }
+
+private:
+  MapStrStr *ref = nullptr;
+
+public:
+  MapStrStr::iterator it;
+  std::string prefix;
+};
+
+// %! create_map_str_str(-Map) is det.
+PREDICATE(create_map_str_str, 1)
+{ auto ref = std::unique_ptr<PlBlob>(new MapStrStr());
+  return A1.unify_blob(&ref);
+}
+
+// %! insert_or_assign_map_str_str(+Map, +Key:string, +Value:string) is det.
+PREDICATE(insert_or_assign_map_str_str, 3)
+{ auto ref = PlBlobV<MapStrStr>::cast_ex(A1, map_str_str_blob);
+  ref->insert_or_assign(A2.as_string(), A3.as_string());
+  return true;
+}
+
+// %! erase_if_present_map_str_str(+Map, +Key:string) is det.
+PREDICATE(erase_if_present_map_str_str, 2)
+{ auto ref = PlBlobV<MapStrStr>::cast_ex(A1, map_str_str_blob);
+  ref->erase_if_present(A2.as_string());
+  return true;
+}
+
+// %! find_map_str_str(+Map, +Key:string, -Value:string) is semidet.
+PREDICATE(find_map_str_str, 3)
+{ auto ref = PlBlobV<MapStrStr>::cast_ex(A1, map_str_str_blob);
+  auto it = ref->find(A2.as_string());
+  if ( it == ref->end() )
+    return false;
+  return A3.unify_string(it->second);
+}
+
+// %! enum_map_str_str(+Map, +Prefix:string, -Key:string, -Value:string) is nodet.
+PREDICATE_NONDET(enum_map_str_str, 4)
+{ // "state" needs to be acquired so that automatic cleaup deletes it
+  auto state = handle.context_unique_ptr<MapStrStrEnumState>();
+  const auto control = handle.foreign_control();
+  if ( control == PL_PRUNED )
+    return true;
+
+  // Can use A1, A2, etc. after we know control != PL_PRUNED
+
+  auto ref = PlBlobV<MapStrStr>::cast_ex(A1, map_str_str_blob);
+  PlTerm prefix(A2), key(A3), value(A4);
+  std::string prefix_str(prefix.get_nchars(CVT_STRING|CVT_ATOM|REP_UTF8));
+
+  if ( key.is_ground() )
+  { assert(control == PL_FIRST_CALL);
+    const auto key_str(key.get_nchars(CVT_STRING|CVT_ATOM|REP_UTF8));
+    if ( !str_starts_with(key_str, prefix_str) )
+      return false;
+    const auto f = ref->find(key_str);
+    return f != ref->cend() && value.unify_string(f->second);
+  }
+
+  if ( control == PL_FIRST_CALL )
+    state.reset(new MapStrStrEnumState(ref, prefix_str));
+  else
+    assert(control == PL_REDO);
+
+  PlFrame fr;
+  for ( ; state->key_starts_with_prefix() ; state->it++ )
+  { if ( key.unify_string(state->it->first ) &&
+         value.unify_string(state->it->second) )
+    { state->it++;
+      if ( state->key_starts_with_prefix() )
+        PL_retry_address(state.release());
+      else
+        return true;
+    }
+    fr.rewind();
+  }
+  return false;
+}
+
+static
+void append_sep(std::string *str, unsigned int *flags,
+                const std::string& app, unsigned int one_flag)
+{ if ( (*flags & one_flag) == one_flag )
+  { str->append(",");
+    str->append(app);
+    *flags &= ~one_flag;
+  }
+}
+
+static
+std::string nchars_flags_string(unsigned int flags)
+{ std::string result;
+
+  // "Compound" flags are first - they change `flags`,
+  // so that, e.g. "number" doesn't also output "rational,float,integer".
+  // But "xinteger" is special.
+  unsigned int flags_o = flags;
+  if( (flags & CVT_XINTEGER) == CVT_XINTEGER )
+  { result.append(",xinteger");
+    flags &= ~CVT_XINTEGER;
+  }
+  append_sep(&result, &flags, "all",             CVT_ALL);
+  append_sep(&result, &flags, "atomic",          CVT_ATOMIC);
+  append_sep(&result, &flags, "number",          CVT_NUMBER);
+
+  append_sep(&result, &flags, "atom",            CVT_ATOM);
+  append_sep(&result, &flags, "string",          CVT_STRING);
+  if ( !((flags_o & CVT_XINTEGER) == CVT_XINTEGER ) )
+    append_sep(&result, &flags, "integer",         CVT_INTEGER);
+  append_sep(&result, &flags, "list",            CVT_LIST);
+  append_sep(&result, &flags, "rational",        CVT_RATIONAL);
+  append_sep(&result, &flags, "float",           CVT_FLOAT);
+  append_sep(&result, &flags, "variable",        CVT_VARIABLE);
+  append_sep(&result, &flags, "write",           CVT_WRITE);
+  append_sep(&result, &flags, "write_canonical", CVT_WRITE_CANONICAL);
+  append_sep(&result, &flags, "writeq",          CVT_WRITEQ);
+
+  append_sep(&result, &flags, "exception",       CVT_EXCEPTION);
+  append_sep(&result, &flags, "varnofail",       CVT_VARNOFAIL);
+
+  append_sep(&result, &flags, "stack",           BUF_STACK);
+  append_sep(&result, &flags, "malloc",          BUF_MALLOC);
+  append_sep(&result, &flags, "allow_stack",     BUF_ALLOW_STACK);
+
+  append_sep(&result, &flags, "utf8",            REP_UTF8);
+  append_sep(&result, &flags, "mb",              REP_MB);
+  append_sep(&result, &flags, "diff_list",       PL_DIFF_LIST);
+
+  if ( flags )
+    throw PlDomainError("write-options-flag", PlTerm_integer(flags));
+
+  return result.empty() ? "" : result.substr(1);
+}
+
+static const std::map<const std::string, unsigned int> write_option_to_flag =
+{ { "atom",            CVT_ATOM },
+  { "string",          CVT_STRING },
+  { "list",            CVT_LIST },
+  { "integer",         CVT_INTEGER },
+  { "rational",        CVT_RATIONAL },
+  { "float",           CVT_FLOAT },
+  { "variable",        CVT_VARIABLE },
+  { "write",           CVT_WRITE },
+  { "write_canonical", CVT_WRITE_CANONICAL },
+  { "writeq",          CVT_WRITEQ },
+
+  { "exception",       CVT_EXCEPTION },
+  { "varnofail",       CVT_VARNOFAIL },
+
+  { "stack",           BUF_STACK },
+  { "malloc",          BUF_MALLOC },
+  { "allow_stack",     BUF_ALLOW_STACK },
+
+  { "utf8",            REP_UTF8 },
+  { "mb",              REP_MB },
+  { "diff_list",       PL_DIFF_LIST },
+
+  // combination flags:
+  { "number",          CVT_NUMBER },
+  { "atomic",          CVT_ATOMIC },
+  { "all",             CVT_ALL },
+  { "xinteger",        CVT_XINTEGER },
+};
+
+// For verifying the test_cpp.pl values:
+// PREDICATE(p_flags, 0)
+// { Sdprintf("%x\n", CVT_XINTEGER|CVT_ALL|CVT_ATOMIC|CVT_NUMBER);
+//   Sdprintf("%x\n", CVT_ALL|CVT_ATOMIC|CVT_NUMBER);
+//   Sdprintf("%x\n", CVT_ATOM|CVT_STRING|CVT_INTEGER|CVT_LIST|CVT_RATIONAL|CVT_FLOAT|CVT_VARIABLE|CVT_NUMBER|CVT_ATOMIC|CVT_WRITE|CVT_WRITE_CANONICAL|CVT_WRITEQ|CVT_ALL|CVT_XINTEGER);
+//   Sdprintf("%x\n", CVT_ATOMIC|CVT_LIST);
+//   Sdprintf("%x\n", CVT_NUMBER|CVT_ATOM|CVT_STRING);
+//   return true;
+// }
+
+static
+unsigned int nchars_flag(PlTerm list)
+{ PlTerm_tail tail(list);
+  PlTerm_var e;
+  unsigned int flags = 0;
+  while ( tail.next(e) )
+  { e.must_be_atomic();
+    const auto it = write_option_to_flag.find(e.as_string());
+    if ( it == write_option_to_flag.cend() )
+      throw PlDomainError("write-option", e);
+    flags |= it->second;
+  }
+  return flags;
+}
+
+PREDICATE(nchars_flags, 2)
+{ return A2.unify_integer(nchars_flag(A1));
+}
+
+PREDICATE(nchars_flags_string, 2)
+{ return A2.unify_string(nchars_flags_string(A1.as_uint()));
+}
+
+PREDICATE(get_nchars_string, 4)
+{ unsigned int flags =
+    A2.is_integer() ? A2.as_uint() : nchars_flag(A2);
+  return A3.unify_string(A1.get_nchars(flags)) &&
+    A4.unify_string(nchars_flags_string(flags));
+}
+
+NAMED_PREDICATE("#", hash, 2)
+{ return A2.unify_string(A1.as_string());
+}
+
+PREDICATE(malloc_free, 2)
+{ // For verifying that example code of unique_ptr with PLfree() compiles
+  std::unique_ptr<void, decltype(&PL_free)> ptr(PL_malloc(100), &PL_free);
+
+  size_t len;
+  char *str = nullptr;
+  int rc = Plx_get_nchars(A1.unwrap(), &len, &str, BUF_MALLOC|CVT_ALL|CVT_WRITEQ|CVT_VARIABLE|REP_UTF8|CVT_EXCEPTION);
+  std::unique_ptr<char, decltype(&PL_free)> _str(str, &PL_free);
+  return rc && A2.unify_string(std::string(str, len));
+}
+
+static std::vector<std::string> lookup_unifies =
+  { "item(one, 1)",
+    "item(two, 2)",
+    "item(three, 3)",
+  };
+
+PREDICATE(lookup_unify, 1)
+{ PlFrame fr;
+  for ( auto& s : lookup_unifies )
+  { if ( A1.unify_term(PlCompound(s)) )
+      return true;
+    fr.rewind();
+  }
+  return false;
 }

@@ -60,7 +60,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 90122
+#define PLVERSION 90303
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -78,7 +78,7 @@ numbers are atomic type.
 #define PL_FLI_VERSION      2		/* PL_*() functions */
 #define	PL_REC_VERSION      3		/* PL_record_external(), fastrw */
 #define PL_QLF_LOADVERSION 68		/* load all versions later >= X */
-#define PL_QLF_VERSION     68		/* save version number */
+#define PL_QLF_VERSION     69		/* save version number */
 
 
 		 /*******************************
@@ -520,8 +520,7 @@ PL_EXPORT(int)		PL_get_atom(term_t t, atom_t *a) WUNUSED;
 PL_EXPORT(int)		PL_get_bool(term_t t, int *value) WUNUSED;
 PL_EXPORT(int)		PL_get_atom_chars(term_t t, char **a) WUNUSED;
 #define PL_get_string_chars(t, s, l) PL_get_string(t,s,l)
-					/* PL_get_string() is deprecated */
-PL_EXPORT(int)		PL_get_string(term_t t, char **s, size_t *len) WUNUSED;
+PL_EXPORT(int)		PL_get_string(term_t t, char **s, size_t *len) WUNUSED; /* WDEPRECATED */
 PL_EXPORT(int)		PL_get_chars(term_t t, char **s, unsigned int flags) WUNUSED;
 PL_EXPORT(int)		PL_get_list_chars(term_t l, char **s,
 					  unsigned int flags) WUNUSED;
@@ -1290,6 +1289,7 @@ PL_EXPORT(intptr_t)	PL_query(int);	/* get information from Prolog */
 
 #define PL_THREAD_NO_DEBUG	0x01	/* Start thread in nodebug mode */
 #define PL_THREAD_NOT_DETACHED	0x02	/* Allow Prolog to join */
+#define PL_THREAD_CUR_STREAMS   0x04	/* Copy current{input,output} */
 
 typedef enum
 { PL_THREAD_CANCEL_FAILED = FALSE,	/* failed to cancel; try abort */

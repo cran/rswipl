@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2007-2020, University of Amsterdam,
+    Copyright (c)  2007-2024, University of Amsterdam,
 			      VU University Amsterdam,
 			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -174,9 +175,10 @@ range_close(void *handle)
        )
     { term_t ex;
       IOSTREAM *parent = ctx->stream;
+      module_t m = ctx->context;
 
       free_range_context(ctx);
-      if ( PL_call_predicate(ctx->context, PL_Q_PASS_EXCEPTION, call3, av) )
+      if ( PL_call_predicate(m, PL_Q_PASS_EXCEPTION, call3, av) )
       { rc = 0;
       } else if ( (ex=PL_exception(0)) )
       { Sset_exception(parent, ex);
@@ -289,5 +291,6 @@ install_stream_range()
 { ATOM_size    = PL_new_atom("size");
   ATOM_onclose = PL_new_atom("onclose");
 
-  PL_register_foreign("stream_range_open",  3, pl_stream_range_open,  0);
+  PL_register_foreign("stream_range_open", 3, pl_stream_range_open,
+		      PL_FA_META, "+-:");
 }

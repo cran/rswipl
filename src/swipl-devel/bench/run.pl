@@ -1,9 +1,9 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
-    WWW:           http://www.swi-prolog.org
-    Copyright (c)  2018-2023, VU University Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2018-2024, VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -105,9 +105,19 @@ use_program(P, N, F) :-
 	N is max(1, round(N0*F)).
 
 :- if(current_prolog_flag(static, true)).
+% Allows compiling to a single SWI-Prolog .qlf file.  First,
+% create the include files using
+%
+%    swipl port/tools/modularize.pl --dir=port/programs/swi \
+%                  --include-all=include_all.pl programs/*.pl
+%
+% Next, compile using (--no-threads if you want to use this in e.g.
+% WASM)
+%
+%    swipl -Dstatic --no-threads -O qlf compile --include run.pl
 compile_programs.
 :- multifile(has_program/1).
-:- include('prefixed/include_all').
+:- include('port/programs/swi/include_all').
 :- else.
 compile_programs :-
 	\+ ( use_program(P, _),		       % = forall/2.

@@ -10,14 +10,16 @@ swipl:
 	cd ../mingw64 && cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl\
 		-DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF\
 		-DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_PYTHON=OFF\
-		-DUSE_GMP=OFF -DBUILD_TESTING=OFF\
+		-DUSE_GMP=OFF\
 		-DMINGW_ROOT=$(R_TOOLS_SOFT)\
 		-DLibArchive_INCLUDE_DIRS="-I."\
 		-DLibArchive_LIBRARIES="-larchive -lnettle -lxml2 -liconv -lregex -lexpat -llzma -lzstd -llz4 -lbz2 -lz -lbcrypt -lws2_32"\
 		-DCMAKE_BUILD_TYPE=Release ../src/swipl-devel
 	# dos2unix all Makefiles
 	find ../mingw64 -name Makefile -exec sed -i 's/\r//' \{\} \;
-	cd ../mingw64 && make install
+	make -C ../mingw64 install
+	echo -e "check:\n\tctest -E rational\n" > ../mingw64/Makefile.check
+	$(MAKE) -C ../mingw64 -f Makefile.check check
 	rm ../inst/swipl/bin/swipl.exe
 	rm ../inst/swipl/bin/swipl-win.exe
 	rm ../inst/swipl/bin/swipl-ld.exe

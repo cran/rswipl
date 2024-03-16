@@ -1,9 +1,14 @@
-# rswipl 9.1.22
+# rswipl 9.3.3
 
-see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-1-22/7197
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-3/7311
 
-maintainance release, silences Windows Defender warnings during cmake,
-sets LD-LIBRARY-PATH during build to avoid installed swipl
+includes fix for RTools 4.4
+
+# rswipl 9.3.2
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-2-2-9-3-2/7270
+
+adds unit tests during installation
 
 # rswipl 9.1.21
 

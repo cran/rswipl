@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2018-2023, CWI Amsterdam
+    Copyright (c)  2018-2024, CWI Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
@@ -115,12 +115,23 @@ By default the result of  help/1  is   sent  through  a  _pager_ such as
 %       be unbound.
 %     - Name//Arity
 %       Give help on the matching DCG rule (non-terminal)
+%     - Module:Name
+%       Give help on predicates with Name in Module and any arity.
+%       Used for loaded code only.
+%     - Module:Name/Arity
+%       Give help on predicates with Name in Module and Arity.
+%       Used for loaded code only.
 %     - f(Name/Arity)
 %       Give help on the matching Prolog arithmetic functions.
 %     - c(Name)
 %       Give help on the matching C interface function
 %     - section(Label)
 %       Show the section from the manual with matching Label.
+%
+%   help/1 shows documentation from the manual   as  well as from loaded
+%   user code if the code is documented   using  PlDoc. To show only the
+%   documentatoion of the  loaded  predicate   we  may  prefix predicate
+%   indicator with the module in which it is defined.
 %
 %   If an exact match fails this predicates attempts fuzzy matching and,
 %   when successful, display the results headed   by  a warning that the
@@ -278,9 +289,15 @@ help_object(Module, _How, Module:Name/Arity, _ID) :-
     atom_concat('sec:', Module, SecLabel),
     \+ man_object_property(section(_,_,SecLabel,_), _), % not a section
     current_predicate_help(Module:Name/Arity).
-help_object(Name/Arity, _How, Name/Arity, _ID) :-
+help_object(Module:Name, _How, Module:Name/Arity, _ID) :-
     atom(Name),
-    current_predicate_help(_:Name/Arity).
+    current_predicate_help(Module:Name/Arity).
+help_object(Module:Name/Arity, _How, Module:Name/Arity, _ID) :-
+    atom(Name),
+    current_predicate_help(Module:Name/Arity).
+help_object(Name/Arity, _How, Module:Name/Arity, _ID) :-
+    atom(Name),
+    current_predicate_help(Module:Name/Arity).
 help_object(Fuzzy, How, Module:Name/Arity, _ID) :-
     atom(Fuzzy),
     match_name(How, Fuzzy, Name),
@@ -297,11 +314,11 @@ current_predicate_help(M:Name/Arity) :-
     current_predicate(M:Name/Arity),
     pi_head(Name/Arity,Head),
     \+ predicate_property(M:Head, imported_from(_)),
-    \+ man_object_property(Name/Arity, _), % must not be indexed already
+    module_property(M, class(user)),
     (   mode(M:_, _)             % Some predicates are documented
     ->  true
     ;   \+ module_property(M, class(system)),
-	predicate_property(M:Head,file(File)),
+        main_source_file(M:Head, File),
 	xref_source(File,[comments(store)])
     ),
     mode(M:Head, _).             % Test that our predicate is documented
@@ -309,6 +326,22 @@ current_predicate_help(M:Name/Arity) :-
 match_name(exact, Name, Name).
 match_name(dwim,  Name, Fuzzy) :-
     freeze(Fuzzy, dwim_match(Fuzzy, Name)).
+
+%!  main_source_file(+Pred, -File) is semidet.
+%
+%   True when File is the main (not included) file that defines Pred.
+
+main_source_file(Pred, File) :-
+    predicate_property(Pred, file(File0)),
+    main_source(File0, File).
+
+main_source(File, Main) :-
+    source_file(File),
+    !,
+    Main = File.
+main_source(File, Main) :-
+    source_file_property(File, included_in(Parent, _Time)),
+    main_source(Parent, Main).
 
 
 %!  with_pager(+Goal)

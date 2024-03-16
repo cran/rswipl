@@ -1145,9 +1145,6 @@ colour_dict_braces(TB, dict_position(_F,T,_TF,TT,_KVPos)) :-
     !,
     BStart is TT+1,
     colour_item(dict_content, TB, BStart-T).
-colour_dict_braces(TB, brace_term_position(F,T,_Arg)) :-
-    !,
-    colour_item(brace_term, TB, F-T).
 colour_dict_braces(_, _).
 
 %!  colourise_goal_args(+Goal, +TB, +Pos)
@@ -2242,6 +2239,7 @@ known_flag(gmp_version).
 known_flag(gui).
 known_flag(max_rational_size).
 known_flag(mitigate_spectre).
+known_flag(msys2).
 known_flag(pid).
 known_flag(pipe).
 known_flag(posix_shell).

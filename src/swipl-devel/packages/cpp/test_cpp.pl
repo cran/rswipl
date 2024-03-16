@@ -5,7 +5,7 @@
     Author:        Jan Wielemaker and Peter Ludemann
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2022-2023, SWI-Prolog Solutions b.v.
+    Copyright (c)  2022-2024, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -57,10 +57,14 @@ user:portray(MyBlob) :-
     blob(MyBlob, my_blob), !,
     portray_my_blob(current_output, MyBlob).
 
+% test_cpp :-
+%     run_tests([ cpp,
+%                 cpp_atommap,
+%                 cpp_map_str_str
+%	      ]).
+
 test_cpp :-
-    run_tests([ cpp,
-                cpp_atommap
-	      ]).
+    run_tests.
 
 % Some of the tests can result in crashes if there's a bug, so the
 % `output(on_failure)` option results in nothing being written.
@@ -178,11 +182,30 @@ test(term_1, Result == hello(world)) :-
 test(term_1, error(domain_error(type,foo))) :-
     term(foo, _Result).
 
-test(can_unify_2, [true(X\==Y)]) :-
+test(can_unify, [true(X\==Y)]) :-
     can_unify(f(X), f(Y)).
-test(can_unify_2) :-
+test(can_unify) :-
     can_unify(a(X), a(1)),
     assertion(var(X)).
+test(can_unify, fail) :-
+    can_unify(a(1), a(2)).
+
+test(can_unify_ffi, [true(X\==Y)]) :-
+    can_unify_ffi(f(X), f(Y)).
+test(can_unify_ffi) :-
+    can_unify_ffi(a(X), a(1)),
+    assertion(var(X)).
+test(can_unify_ffi, fail) :-
+    can_unify_ffi(a(1), a(2)).
+
+test(call_chars, Out=="1") :-
+    with_output_to(string(Out), call_chars("X=1, write(X)")).
+test(call_chars, Out=="1") :-
+    with_output_to(string(Out), call_chars('X=1, write(X)')).
+test(call_chars, fail) :-
+    call_chars("1=2").
+test(call_chars, error(syntax_error(operator_expected),string("1(2 . ",0))) :-
+    call_chars("1(2").
 
 % Note: unify_error has additional tests for eq1/2
 test(eq1_2, X == a) :-
@@ -600,6 +623,27 @@ test(type_error_string) :-
 
 :- if(\+ current_prolog_flag(asan, true)).
 
+% TODO: a better test that name_to_terms("two", X, "deux") cleans up `X`
+test(name_to_terms, [T1,T2] = [1,"eins"]) :-
+    name_to_terms("one", T1, T2).
+test(name_to_terms, [T1,T2] = [2,"zwei"]) :-
+    name_to_terms("two", T1, T2).
+test(name_to_terms, fail) :-
+    name_to_terms("foo", _, _).
+test(name_to_terms, fail) :-
+    name_to_terms("two", _, "deux").
+test(name_to_terms, error(type_error('atom or string',A))) :-
+     name_to_terms(A, 1, 2).
+
+test(name_to_terms2, [T1,T2] = [1,"eins"]) :-
+    name_to_terms2("one", T1, T2).
+test(name_to_terms2, [T1,T2] = [2,"zwei"]) :-
+    name_to_terms2("two", T1, T2).
+test(name_to_terms2, fail) :-
+    name_to_terms2("foo", _, _).
+test(name_to_terms2, fail) :-
+    name_to_terms2("two", _, "deux").
+
 % test(int_info) causes a memory leak because the IntInfo map doesn't
 % destruct the elements on cleanup. (At least, I think that's the
 % cause of the memory leak.)
@@ -615,6 +659,34 @@ test(int_info) :-
     Info = int_info(_,_,0,_),
     findall(Name:Info, int_info(Name, Info), Infos),
     assertion(memberchk(uint16_t:int_info(uint16_t,2,0,65535), Infos)).
+test(int_info) :-
+    Info = int_info(_,_,-128,_), % skip over first result: int_info(bool,1,0,1)
+    int_info(_Name, Info),
+    !.
+test(int_info) :-
+    int_info(_Name, Info),
+    Info = int_info(_,_,-128,_), % force backtracking
+    !.
+
+test(int_info2) :-
+    findall(Name:Info, int_info2(Name, Info), Infos),
+    assertion(memberchk(uint32_t:int_info(uint32_t,4,0,4294967295), Infos)).
+test(int_info2, [nondet, Name:Info == uint32_t:int_info(uint32_t,4,0,4294967295)]) :-
+    Info = int_info(_,_,0,_),
+    int_info2(Name, Info),
+    Info = int_info(uint32_t,_,_,_).
+test(int_info2) :-
+    Info = int_info(_,_,0,_),
+    findall(Name:Info, int_info2(Name, Info), Infos),
+    assertion(memberchk(uint16_t:int_info(uint16_t,2,0,65535), Infos)).
+test(int_info2) :-
+    Info = int_info(_,_,-128,_), % skip over first result: int_info(bool,1,0,1)
+    int_info2(_Name, Info),
+    !.
+test(int_info2) :-
+    int_info2(_Name, Info),
+    Info = int_info(_,_,-128,_), % force backtracking
+    !.
 
 :- endif.
 
@@ -701,6 +773,7 @@ test(throw, error(permission_error(operation, type, the(culprit)))) :-
 test(throw, error(resource_error('NO_RESOURCE'))) :-
     throw_resource_error_cpp('NO_RESOURCE').
 
+/*
 test(compare) :-
     eq_int64(1, 1).
 test(compare, fail) :-
@@ -717,6 +790,7 @@ test(compare, error(type_error(integer,a))) :-
     lt_int64(1, a).
 test(compare, error(type_error(integer,b))) :-
     lt_int64(b, 1).
+*/
 
 test(get_atom, A == abc) :-
     get_atom_ex(abc, A).
@@ -823,6 +897,87 @@ test(blob_portray, S == "MyBlob(closed)") :-
     create_my_blob(foo, B),
     close_my_blob(B),
     with_output_to(string(S), print(B)).
+
+test(nchars_flags, F-S == 0x43f-"xinteger,all") :-
+    nchars_flags([xinteger,all,atomic,number], F),
+    nchars_flags_string(F, S).
+test(nchars_flags, F-S == 0x37-"all") :-
+    nchars_flags([all,atomic,number], F),
+    nchars_flags_string(F, S).
+test(nchars_flags, F-S == 0x7ff-"xinteger,all,variable,write,write_canonical,writeq") :-
+    nchars_flags([atom,string,integer,list,rational,float,variable,number,atomic,write,write_canonical,writeq,all,xinteger], F),
+    nchars_flags_string(F, S).
+test(nchars_flags, F-S == 0x37-"all") :-
+    nchars_flags([atomic,list], F),
+    nchars_flags_string(F, S).
+test(nchars_flags, F-S == 0x33-"atomic") :-
+    nchars_flags([number,atom,string], F),
+    nchars_flags_string(F, S).
+
+test(nchars, S-FS-FS2 == "123"-"atomic"-"atomic") :-
+    nchars_flags([atomic], F),
+    nchars_flags_string(F, FS),
+    get_nchars_string(123, F, S, FS2).
+test(nchars, S-F == "123"-"atomic") :-
+    get_nchars_string(123, [atomic], S, F).
+test(nchars, error(type_error(atomic,f(a)))) :-
+    get_nchars_string(f(a), [atomic], _, _).
+test(nchars, S-F == "+(a,b)"-"all,write_canonical") :-
+    get_nchars_string(a+b, [write_canonical,all], S, F).
+
+% The flags to PlTerm::as_string are [all,writeq].
+% TODO: try more flag combinations
+
+test(nchars, [S-F == "a b"-"all,writeq"]) :-
+    get_nchars_string('a b', [all,writeq], S, F).
+test(nchars, [S-F == "a b"-"all,writeq"]) :-
+    get_nchars_string("a b", [all,writeq], S, F).
+test(nchars, [S-F == "'a b'"-"writeq"]) :-
+    get_nchars_string('a b', [writeq], S, F).
+test(nchars, [S-F == "\"a b\""-"writeq"]) :-
+    get_nchars_string("a b", [writeq], S, F).
+test(nchars, S-F == "f('a b')"-"all,writeq") :-
+    get_nchars_string(f('a b'), [all,writeq], S, F).
+test(nchars, S-F == "f(\"a b\")"-"all,writeq") :-
+    get_nchars_string(f("a b"), [all,writeq], S, F).
+test(nchars, S-F == "f(A,_,b,A)"-"writeq") :-
+    get_nchars_string(f(X,_,b,X), [writeq], S, F).
+
+test(nchars, S-F == "an atom"-"atom") :-
+    get_nchars_string('an atom', [atom], S, F).
+test(nchars, S-F == "a string"-"string") :-
+    get_nchars_string("a string", [string], S, F).
+test(nchars, S-F == "abc"-"list") :-
+    get_nchars_string([a,b,c], [list], S, F).
+test(nchars, S-F == "abcd"-"list") :-
+    get_nchars_string([0'a,0'b,0'c,0'd], [list], S, F).
+test(nchars, S-F == "10r3"-"rational") :-
+    get_nchars_string(20r6, [rational], S, F).
+test(nchars, S-F == "ar3"-"xinteger,rational") :-
+    get_nchars_string(20r6, [xinteger,rational], S, F).
+test(nchars, S-F == "14"-"xinteger,rational") :-
+    get_nchars_string(20, [xinteger,rational], S, F).
+test(nchars, S-F == "14"-"xinteger") :-
+    get_nchars_string(20, [xinteger], S, F).
+test(nchars, S-F == "0.25"-"xinteger,float") :-
+    get_nchars_string(0.25, [xinteger,float], S, F).
+
+% TODO: the type_error always shows atom - but making it more accurate
+%       would be more work than it's worth.
+test(nchars, error(type_error(atom,0.25))) :-
+    get_nchars_string(0.25, [xinteger], _S, _F).
+
+test(lookup_unify, N == 1) :-
+    lookup_unify(item(one, N)).
+test(lookup_unify, S == three) :-
+    lookup_unify(item(S, 3)).
+test(lookup_unify, fail) :-
+    lookup_unify(xxx).
+
+test(#, S == "abc") :-
+    #(abc, S).
+test(#, S == "foo(abc)") :-
+    #(foo(abc), S).
 
 compare_write_form(Compare, A, B) :-
     with_output_to(string(Astr), write(A)),
@@ -938,6 +1093,69 @@ test(atom_term_map) :-
     assertion(Size == 0).
 
 :- end_tests(cpp_atommap).
+
+:- begin_tests(cpp_map_str_str).
+
+test(map, KVs == ["b"-"two","c"-"three"]) :-
+    create_map_str_str(Map),
+    insert_or_assign_map_str_str(Map, "a", "one"),
+    insert_or_assign_map_str_str(Map, "c", "three"),
+    insert_or_assign_map_str_str(Map, "b", "two"),
+    find_map_str_str(Map, "a", One),
+    assertion(One == "one"),
+    assertion(find_map_str_str(Map, "a", "one")),
+    erase_if_present_map_str_str(Map, "a"),
+    erase_if_present_map_str_str(Map, "axx"),
+    assertion(\+ find_map_str_str(Map, "a", _)),
+    findall(K-V, enum_map_str_str(Map, "", K, V), KVs).
+
+test(map, KVs = ["ab"-"two","ac"-"three"]) :-
+    create_map_str_str(Map),
+    maplist(insert_or_assign_map_str_str(Map), ["ab","ac","d"], ["two","three","four"]),
+    findall(K-V, enum_map_str_str(Map, "a", K, V), KVs).
+
+test(map) :-
+    create_map_str_str(Map),
+    maplist(insert_or_assign_map_str_str(Map), ["ab","ac","d"], ["two","three","four"]),
+    enum_map_str_str(Map, "", K, V),
+    !, % cut after PL_FIRST_CALL
+    assertion(K == "ab"),
+    assertion(V == "two"),
+    enum_map_str_str(Map, "", K, V). % verify lookup with ground args, no choicepoint
+test(map, [nondet, K-V == "ab"-"two"]) :-
+    create_map_str_str(Map),
+    maplist(insert_or_assign_map_str_str(Map), ["ab","ac","d"], ["two","three","four"]),
+    enum_map_str_str(Map, "", K, V),
+    enum_map_str_str(Map, "", K, V). % verify lookup with ground args, no choicepoint
+test(map, K-V == "ac"-"three") :-
+    create_map_str_str(Map),
+    maplist(insert_or_assign_map_str_str(Map), ["ab","ac","d"], ["two","three","four"]),
+    enum_map_str_str(Map, "", K, V),
+    K \= "ab",
+    !, % cut after PL_REDO
+    assertion(K == "ac"),
+    assertion(V == "three"),
+    enum_map_str_str(Map, "", K, V). % verify lookup with ground args, no choicepoint
+test(map) :-
+    create_map_str_str(Map),
+    maplist(insert_or_assign_map_str_str(Map), ["ab","ac","d"], ["two","three","four"]),
+    enum_map_str_str(Map, "", K, V),
+    K \= "ab",
+    K \= "ac",
+    !, % cut after deterministic return
+    assertion(K == "d"),
+    assertion(V == "four"),
+    enum_map_str_str(Map, "", K, V). % verify lookup with ground args, no choicepoint
+test(map, Ks == ["ab", "x"]) :-
+    create_map_str_str(Map),
+    maplist(insert_or_assign_map_str_str(Map), ["ab","ac","d","x"], ["two","three","four","two"]),
+    findall(K, enum_map_str_str(Map, "", K, "two"), Ks).
+test(map, Ks == ["ab"]) :-
+    create_map_str_str(Map),
+    maplist(insert_or_assign_map_str_str(Map), ["ab","ac","d","x"], ["two","three","four","two"]),
+    findall(K, enum_map_str_str(Map, "a", K, "two"), Ks).
+
+:- end_tests(cpp_map_str_str).
 
 w_atom_cpp(Atom, String) :-
     with_output_to(string(String), w_atom_cpp_(current_output, Atom)).

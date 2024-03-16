@@ -290,7 +290,9 @@ findHome(const char *symbols, int argc, const char **argv)
     Ssnprintf(buf, sizeof(buf), "%s/" PLHOMEFILE, pparent);
 
     if ( (fd = Sopen_file(buf, "r")) )
-    { if ( Sfgets(buf, sizeof(buf), fd) )
+    { DEBUG(MSG_INITIALISE, Sdprintf("Found home link file %s\n", buf));
+
+      if ( Sfgets(buf, sizeof(buf), fd) )
       { size_t l = strlen(buf);
 
 	while(l > 0 && buf[l-1] <= ' ')
@@ -318,7 +320,7 @@ findHome(const char *symbols, int argc, const char **argv)
 	if ( ExistsDirectory(maybe_home) )
 	{ home = maybe_home;
 	  DEBUG(MSG_INITIALISE,
-		Sdprintf("Found home using %s from %s\n", buf));
+		Sdprintf("Found home %s using link file\n", home));
 	}
       }
       Sclose(fd);
@@ -352,7 +354,7 @@ findHome(const char *symbols, int argc, const char **argv)
 	 ExistsDirectory(maybe_home)
        ) )
   { home = maybe_home;
-    DEBUG(MSG_INITIALISE, Sdprintf("Found home using %s\n", PLHOME));
+    DEBUG(MSG_INITIALISE, Sdprintf("Using compiled-in home at %s\n", PLHOME));
   }
 #endif
 
@@ -527,8 +529,6 @@ initPaths(int argc, const char **argv)
 
     DEBUG(MSG_INITIALISE, Sdprintf("rc-module: %s\n", symbols));
 
-    systemDefaults.home	       = findHome(symbols, argc, argv);
-
 #ifdef __WINDOWS__			/* we want no module but the .EXE */
     GD->paths.module	       = store_string(symbols);
     symbols = findExecutable(NULL, plp, sizeof(plp));
@@ -536,6 +536,8 @@ initPaths(int argc, const char **argv)
 #endif
     GD->paths.executable       = store_string(symbols);
     GD->options.systemInitFile = defaultSystemInitFile(argv[0]);
+
+    systemDefaults.home	       = findHome(symbols, argc, argv);
   } else
   { systemDefaults.home	       = findHome(NULL, argc, argv);
     GD->options.systemInitFile = store_string("none");
@@ -564,12 +566,13 @@ initPaths(int argc, const char **argv)
 
 static void
 setStringP(char **loc, const char *val)
-{ char *s;
+{ char *s = *loc;
 
-  if ( (s=*loc) )
-  { *loc = val ? store_string(val) : NULL;
+  if ( s && val && streq(s,val) )
+    return;
+  *loc = val ? store_string(val) : NULL;
+  if ( s )
     remove_string(s);
-  }
 }
 
 static void
@@ -696,40 +699,43 @@ do_value:
 }
 
 
+static int
+loadStateOptions(IOSTREAM *opts)
+{ int rc = FALSE;
+  tmp_buffer name;
+  tmp_buffer val;
+
+  while( getVarFromStream(opts, &name, &val) )
+  { set_pl_option(baseBuffer(&name, char), baseBuffer(&val, char));
+    discardBuffer(&name);
+    discardBuffer(&val);
+    rc = TRUE;		/* check really modified? */
+  }
+
+  return rc;
+}
+
+
 static void
 initDefaultOptions(void)
-{ GD->options.compileOut       = store_string("a.out");
-  GD->options.stackLimit       = systemDefaults.stack_limit;
+{ GD->options.stackLimit       = systemDefaults.stack_limit;
   GD->options.tableSpace       = systemDefaults.table_space;
 #ifdef O_PLMT
   GD->options.sharedTableSpace = systemDefaults.shared_table_space;
 #endif
-  GD->options.topLevel	       = store_string(systemDefaults.toplevel);
-  GD->options.initFile	       = store_string(systemDefaults.startup);
-  GD->options.scriptFiles      = NULL;
-  GD->options.saveclass	       = store_string("none");
-  GD->options.on_error	       = store_string("print");
-  GD->options.on_warning       = store_string("print");
+  setStringP(&GD->options.compileOut, "a.out");
+  setStringP(&GD->options.topLevel,   systemDefaults.toplevel);
+  setStringP(&GD->options.initFile,   systemDefaults.startup);
+  setStringP(&GD->options.saveclass,  "none");
+  setStringP(&GD->options.on_error,   "print");
+  setStringP(&GD->options.on_warning, "print");
+  setStringP(&GD->options.bootFrom,   NULL);
+
+  cleanupOptListP(&GD->options.scriptFiles);
+  cleanupOptListP(&GD->options.goals);
 
   if ( systemDefaults.goal )
     opt_append(&GD->options.goals, systemDefaults.goal);
-
-  if ( !GD->bootsession && GD->resources.DB )
-  { IOSTREAM *op = SopenZIP(GD->resources.DB, "$prolog/options.txt", RC_RDONLY);
-
-    if ( op )
-    { tmp_buffer name;
-      tmp_buffer val;
-
-      while( getVarFromStream(op, &name, &val) )
-      { set_pl_option(baseBuffer(&name, char), baseBuffer(&val, char));
-	discardBuffer(&name);
-	discardBuffer(&val);
-      }
-
-      Sclose(op);
-    }
-  }
 }
 
 
@@ -751,7 +757,7 @@ overnight. Returns -1 on error.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static int
-parseCommandLineOptions(int argc0, char **argv0, char **argvleft, int compile)
+parseCommandLineOptions(int argc0, char **argv0, char **argvleft)
 { GET_LD
   int argc;
   char **argv;
@@ -882,7 +888,7 @@ parseCommandLineOptions(int argc0, char **argv0, char **argvleft, int compile)
 	  setStringP(&GD->options.on_warning, optval);
 	else
 	  return -1;
-      } else if ( !compile )
+      } else if ( !GD->options.compile )
       { argvleft[argcleft++] = argv[0];
       }
 
@@ -918,7 +924,8 @@ parseCommandLineOptions(int argc0, char **argv0, char **argvleft, int compile)
 			break;
 	case 'O':	GD->cmdline.optimise = TRUE; /* see initPrologFlags() */
 			break;
-	case 'x':
+	case 'x':	optionString(GD->options.bootFrom);
+			break;
 	case 'o':	optionString(GD->options.compileOut);
 			break;
 	case 'f':	optionString(GD->options.initFile);
@@ -932,8 +939,10 @@ parseCommandLineOptions(int argc0, char **argv0, char **argvleft, int compile)
 			break;
 	case 't':	optionString(GD->options.topLevel);
 			break;
-	case 'c':
-	case 'b':	break;			/* already processed */
+	case 'c':	GD->options.compile = TRUE;
+			break;
+	case 'b':	GD->bootsession = TRUE;
+			break;
 	case 'q':	GD->options.silent = TRUE;
 			break;
 	default:
@@ -984,54 +993,30 @@ Find the resource database.
 #endif
 
 static zipper *
-openResourceDB(int argc, char **argv, int is_hash_bang)
+openResourceDB(int is_hash_bang)
 { zipper *rc;
-  char *xfile = NULL;
-  int flags = (GD->bootsession ? RC_WRONLY|RC_CREATE|RC_TRUNC : RC_RDONLY);
   char tmp[PATH_MAX];
   char plp[PATH_MAX];
   char *exe, *exedir;
-  int n;
 
-  if ( !is_hash_bang )
-  { for(n=0; n<argc-1; n++)
-    { if ( argv[n][0] == '-' && argv[n][2] == EOS ) /* -? */
-      { if ( argv[n][1] == '-' )
-	  break;				/* trapped -- */
-	if ( GD->bootsession )
-	{ if ( argv[n][1] == 'o' )
-	  { xfile = argv[n+1];
-	    break;
-	  }
-	} else
-	{ if ( argv[n][1] == 'x' )
-	  { xfile = argv[n+1];
-	    break;
-	  }
-	}
-      }
-    }
-
-    if ( xfile )
-    { errno = 0;
-      if ( !(rc = zip_open_archive(xfile, flags)) )
-	fatalError("Could not open resource database \"%s\": %s",
-		   xfile, errno ? OsError() : "not a ZIP file");
-
-      return rc;
-    }
+  errno = 0;
+  if ( !is_hash_bang && GD->options.bootFrom )	/* -x file */
+  { if ( !(rc = zip_open_archive(GD->options.bootFrom, RC_RDONLY)) )
+      fatalError("Could not open resource database \"%s\": %s",
+		 GD->options.bootFrom, errno ? OsError() : "not a ZIP file");
+    return rc;
   }
 
   strcpy(tmp, GD->paths.executable);
   replace_extension(tmp, "prc");
 
-  if ( (rc=zip_open_archive(tmp, flags)) )
+  if ( (rc=zip_open_archive(tmp, RC_RDONLY)) )
     return rc;
   if ( (exe = PrologPath(tmp, plp, sizeof(plp))) &&
        (exedir = DirName(exe, plp)) &&
        strlen(exedir)+strlen("/swipl.prc")+1 < PATH_MAX )
   { strcat(exedir, "/swipl.prc");
-    if ( (rc=zip_open_archive(exedir, flags)) )
+    if ( (rc=zip_open_archive(exedir, RC_RDONLY)) )
       return rc;
   }
 
@@ -1041,7 +1026,7 @@ openResourceDB(int argc, char **argv, int is_hash_bang)
       strcat(tmp, "/");
       strcat(tmp, SWIPL_BOOT_BASE);
 
-      return zip_open_archive(tmp, flags);
+      return zip_open_archive(tmp, RC_RDONLY);
     } else
       errno = ENAMETOOLONG;
   }
@@ -1112,20 +1097,47 @@ PL_winitialise(int argc, wchar_t **wargv)
 }
 
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Initialize  the Prolog  system.   Commandline processing  is a  little
+complicated as  commandline options may  come from the  commandline as
+well as from the loaded state.  Conceptually:
+
+  - If we have a `runtime` state on our back, process the Prolog flags
+    from ``$prolog/options.txt``.  All commandline arguments are for
+    the application.
+  - If we have a `development` state, first process the options from
+    ``$prolog/options.txt`` and next from the commandline.  Only leave
+    options we do not know to the application.
+
+Steps:
+
+  - If argv[1] == -d, set debug flags (with -DO_DEBUG)
+  - If there is a state at the end of the executable, load it and
+    set the default options, possibly from the state using
+    initDefaultOptions().  If the state is a _runtime_ state, we are
+    done with argv as far as Prolog is concerned.
+  - Else, parse the commandline options and
+    - If we have a boot session, create the resource file
+    - Else, find and open the resource DB
+      - If the resource DB contains a ``$prolog/options.txt``
+        - Redo the option processing, first processing the options
+          from options.txt.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
 int
 PL_initialise(int argc, char **argv)
-{ int n;
-  bool compile = FALSE;
-  int is_hash_bang = FALSE;
+{ int is_hash_bang = FALSE;
   const char *rcpath = "<none>";
 
   if ( GD->initialised )
     succeed;
 
+#ifdef O_DEBUG
   /* Initialize debug flag early, if first argument */
   if (argc > 2 && strcmp(argv[1],"-d") == 0)
     /* One's complement tells p_d_f_s not to bail on error, just return */
     prolog_debug_from_string(argv[2], ~TRUE);
+#endif
 
   initAlloc();
   initPrologThreads();			/* initialise thread system */
@@ -1153,8 +1165,15 @@ PL_initialise(int argc, char **argv)
       rcpath = GD->paths.module;
 #endif
   }
+  initDefaultOptions();
   if ( GD->resources.DB )
-    initDefaultOptions();
+  { IOSTREAM *opts;
+
+    if ( (opts=SopenZIP(GD->resources.DB, "$prolog/options.txt", RC_RDONLY)) )
+    { loadStateOptions(opts);
+      Sclose(opts);
+    }
+  }
 
   if ( !GD->resources.DB ||
        !streq(GD->options.saveclass, "runtime") )
@@ -1166,41 +1185,48 @@ PL_initialise(int argc, char **argv)
       exit(0);
 
     if ( argc > 1 && argv[0][0] != '-' && is_hash_bang_file(argv[0]) )
-    { is_hash_bang = TRUE;
-    } else
-    { for(n=0; n<argc; n++)		/* need to check this first */
-      { if ( streq(argv[n], "--" ) )	/* --: terminates argument list */
-	  break;
-	if ( streq(argv[n], "-b" ) )	/* -b: boot compilation */
-	{ GD->bootsession = TRUE;
-	  break;
-	}
-	if ( streq(argv[n], "-c" ) )	/* -c: compilation */
-	{ compile = TRUE;
-	  break;
-	}
-      }
-    }
-
-    DEBUG(MSG_INITIALISE, if (GD->bootsession) Sdprintf("Boot session\n"););
-
-    if ( !GD->resources.DB )
-    { if ( !(GD->resources.DB = openResourceDB(argc, argv, is_hash_bang)) )
-      { fatalError("Could not find system resources");
-      }
-      rcpath = zipper_file(GD->resources.DB);
-
-      initDefaultOptions();
-    }
+      is_hash_bang = TRUE;
 
     argvleft = PL_malloc(argc*sizeof(*argvleft));
-    if ( (done = parseCommandLineOptions(argc, argv, argvleft, compile)) < 0 )
+    if ( (done = parseCommandLineOptions(argc, argv, argvleft)) < 0 )
     { usage();
       fail;
     }
     argc = done;
     argv = argvleft;
     GD->cmdline.appl_malloc = TRUE;
+
+    if ( GD->bootsession )
+    { DEBUG(MSG_INITIALISE, Sdprintf("Boot session\n"));
+
+      errno = 0;
+      if ( !(GD->resources.DB=zip_open_archive(GD->options.compileOut,
+					       RC_WRONLY|RC_CREATE|RC_TRUNC)) )
+	fatalError("Could not create boot file \"%s\": %s",
+		   GD->options.bootFrom, OsError());
+    } else if ( !GD->resources.DB )
+    { IOSTREAM *opts = NULL;
+
+      if ( !(GD->resources.DB = openResourceDB(is_hash_bang)) )
+	fatalError("Could not find system resources");
+      rcpath = zipper_file(GD->resources.DB);
+
+      opts = SopenZIP(GD->resources.DB, "$prolog/options.txt", RC_RDONLY);
+      if ( opts )
+      { initDefaultOptions();
+	loadStateOptions(opts);
+	Sclose(opts);
+
+	argc = GD->cmdline.os_argc-1;
+	argv = GD->cmdline.os_argv+1;
+	if ( (done = parseCommandLineOptions(argc, argv, argvleft)) < 0 )
+	{ usage();
+	  fail;
+	}
+	argc = done;
+	argv = argvleft;
+      }
+    }
   } else
   { argc--;				/* saved state: only drop program */
     argv++;
@@ -1282,7 +1308,7 @@ PL_initialise(int argc, char **argv)
   { int status = prologToplevel(PL_new_atom("$config")) ? 0 : 1;
     PL_halt(status);
     fail;				/* make compiler happy */
-  } else if ( compile )
+  } else if ( GD->options.compile )
   { int status = prologToplevel(PL_new_atom("$compile")) ? 0 : 1;
     PL_halt(status);
     fail;				/* make compiler happy */
@@ -1417,6 +1443,7 @@ abi_version(void)
 	  PL_QLF_LOADVERSION,
 	  GD->foreign.signature,
 	  VM_SIGNATURE);
+  PL_cleanup(0);
 
   return TRUE;
 }

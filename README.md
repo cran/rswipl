@@ -1,6 +1,6 @@
 # rswipl: Embed SWI-Prolog into an R package
 
-_Matthias Gondan, Universität Innsbruck, Austria_
+_Matthias Gondan, Department of Psychology, Universität Innsbruck, Austria_
 
 Supported by the Erasmus+ programme of the European Commission, 2019-1-EE01-KA203-051708
 
@@ -27,4 +27,5 @@ If you need an installation from the current sources, use
 
 `remotes::install_github("mgondan/rswipl")`
 
-Please note that under Windows, you need the RTools42 or RTools43 build system. 
+Please note that under Windows, you need the RTools build system in the version
+of your R program. 

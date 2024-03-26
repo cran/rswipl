@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1997-2023, University of Amsterdam
+    Copyright (c)  1997-2024, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
@@ -214,6 +214,9 @@ iso_message(existence_error(matching_rule, Goal)) -->
     [ 'No rule matches ~p'-[Goal] ].
 iso_message(existence_error(Type, Object)) -->
     [ '~w `~p'' does not exist'-[Type, Object] ].
+iso_message(existence_error(export, PI, module(M))) --> % not ISO
+    [ 'Module ', ansi(code, '~q', [M]), ' does not export ',
+      ansi(code, '~q', [PI]) ].
 iso_message(existence_error(Type, Object, In)) --> % not ISO
     [ '~w `~p'' does not exist in ~p'-[Type, Object, In] ].
 iso_message(busy(Type, Object)) -->
@@ -1844,6 +1847,10 @@ target_module(Module) -->
 		 *           TRIPWIRES		*
 		 *******************************/
 
+tripwire_message(max_integer_size, Bytes) -->
+    !,
+    [ 'Trapped tripwire max_integer_size: big integers and \c
+       rationals are limited to ~D bytes'-[Bytes] ].
 tripwire_message(Wire, Context) -->
     [ 'Trapped tripwire ~w for '-[Wire] ],
     tripwire_context(Wire, Context).

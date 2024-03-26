@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2005-2023, University of Amsterdam
+    Copyright (c)  2005-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -205,49 +205,52 @@ get_rational(DECL_LD word w, Number n)
 		 *******************************/
 
 #define FE_NOTSET (-1)
+#define GMP_STACK_ALLOC 1024	/* in size_t units */
 
 #if O_MY_GMP_ALLOC
 typedef struct mp_mem_header
 { struct mp_mem_header *prev;
   struct mp_mem_header *next;
-  struct ar_context *context;
 } mp_mem_header;
 
 typedef struct ar_context
-{ struct ar_context *parent;
-  size_t	     allocated;
+{ mp_mem_header	    *head;
+  mp_mem_header	    *tail;
   int		     femode;
+  size_t	     allocated;
+  size_t	    *alloc_buf;
 } ar_context;
 
-#define O_GMP_LEAK_CHECK 0
-#if O_GMP_LEAK_CHECK
-#define GMP_LEAK_CHECK(g) g
-#else
-#define GMP_LEAK_CHECK(g)
-#endif
+#define AR_CTX \
+	size_t     __PL_ar_buf[GMP_STACK_ALLOC]; \
+	ar_context __PL_ar_ctx = {.alloc_buf = __PL_ar_buf};
 
-#define AR_CTX	ar_context __PL_ar_ctx = {0};
 #define AR_BEGIN() \
 	do \
-	{ __PL_ar_ctx.parent    = LD->gmp.context; \
+	{ assert(LD->gmp.context == NULL); \
 	  __PL_ar_ctx.femode    = FE_NOTSET; \
 	  LD->gmp.context	= &__PL_ar_ctx; \
-	  GMP_LEAK_CHECK(__PL_ar_ctx.allocated = LD->gmp.allocated); \
 	} while(0)
 #define AR_END() \
 	do \
-	{ LD->gmp.context = __PL_ar_ctx.parent; \
-	  GMP_LEAK_CHECK(if ( __PL_ar_ctx.allocated != LD->gmp.allocated ) \
-			 { Sdprintf("GMP: lost %ld bytes\n", \
-				    LD->gmp.allocated-__PL_ar_ctx.allocated); \
-			 }) \
+	{ LD->gmp.context = NULL; \
 	} while(0)
 #define AR_CLEANUP() \
 	do \
-	{ if ( __PL_ar_ctx.femode != FE_NOTSET ) \
+	{ LD->gmp.context = NULL; \
+          if ( __PL_ar_ctx.femode != FE_NOTSET )	    \
 	    fesetround(__PL_ar_ctx.femode); \
 	  mp_cleanup(&__PL_ar_ctx); \
 	} while(0)
+
+#define AR_PERSISTENT(g)				\
+  do							\
+  { ar_context *__PL_ar_ctx_saved = LD->gmp.context;	\
+  LD->gmp.context = NULL;				\
+  g;							\
+  LD->gmp.context = __PL_ar_ctx_saved;			\
+  } while(0)
+
 
 void	mp_cleanup(ar_context *ctx);
 

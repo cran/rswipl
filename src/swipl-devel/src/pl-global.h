@@ -592,11 +592,8 @@ struct PL_local_data
 
 #ifdef O_BIGNUM
   struct
-  { int		persistent;		/* do persistent operations */
-    size_t	allocated;		/* memory allocated */
-    ar_context *context;		/* current allocation context */
-    mp_mem_header *head;		/* linked list of allocated chunks */
-    mp_mem_header *tail;
+  { ar_context *context;		/* current allocation context */
+    size_t	max_integer_size;	/* Max size of MPZ data */
   } gmp;
 #endif
 

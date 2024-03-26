@@ -109,8 +109,8 @@ PlEx_fail(qid_t qid)
 _SWI_CPP2_CPP_inline
 const std::string
 PlTerm::get_nchars(unsigned int flags) const
-{ flags &= ~(BUF_STACK|BUF_MALLOC|BUF_ALLOW_STACK);
-  flags |= BUF_DISCARDABLE|CVT_EXCEPTION;
+{ flags &= ~static_cast<unsigned int>(BUF_STACK|BUF_MALLOC|BUF_ALLOW_STACK);
+  flags |= static_cast<unsigned int>(BUF_DISCARDABLE|CVT_EXCEPTION);
   char *s = nullptr;
   size_t len = 0;
   PlStringBuffers _string_buffers;
@@ -123,8 +123,8 @@ PlTerm::get_nchars(unsigned int flags) const
 _SWI_CPP2_CPP_inline
 const std::wstring
 PlTerm::get_wchars(unsigned int flags) const
-{ flags &= ~(BUF_STACK|BUF_MALLOC|BUF_ALLOW_STACK);
-  flags |= BUF_DISCARDABLE|CVT_EXCEPTION;
+{ flags &= ~static_cast<unsigned int>(BUF_STACK|BUF_MALLOC|BUF_ALLOW_STACK);
+  flags |= static_cast<unsigned int>(BUF_DISCARDABLE|CVT_EXCEPTION);
   pl_wchar_t *s;
   size_t len;
   PlStringBuffers _string_buffers;
@@ -308,7 +308,7 @@ void PlBlob::save(IOSTREAM *fd) const
 _SWI_CPP2_CPP_inline
 PlAtom PlBlob::load(IOSTREAM *fd)
 { (void)PL_warning("Cannot load reference to <%s>", blob_t_->name);
-  PL_fatal_error("Cannot load reference to <%s>", blob_t_->name);
+  PL_system_error("Cannot load reference to <%s>", blob_t_->name);
   return PlAtom(PlAtom::null);
 }
 
@@ -982,8 +982,8 @@ _SWI_CPP2_CPP_check_rc(int, setenc(IOENC new_enc, IOENC *old_enc), Ssetenc(s_, n
 _SWI_CPP2_CPP_check_rc(int, setlocale(struct PL_locale *new_loc, struct PL_locale **old_loc), Ssetlocale(s_, new_loc, old_loc))
 _SWI_CPP2_CPP_check_rc(int, flush(), Sflush(s_))
 _SWI_CPP2_CPP_check_rc(int64_t, size(), Ssize(s_))
-_SWI_CPP2_CPP_check_rc(int, seek(long pos, int whence), Sseek(s_, pos, whence))
-_SWI_CPP2_CPP_check_rc(int, tell(), Stell(s_))
+_SWI_CPP2_CPP_check_rc(int, seek(int64_t pos, int whence), Sseek64(s_, pos, whence))
+_SWI_CPP2_CPP_check_rc(int64_t, tell(), Stell64(s_))
 _SWI_CPP2_CPP_check_rc(int, close(), Sclose(s_))
 _SWI_CPP2_CPP_check_rc(int, gcclose(int flags), Sgcclose(s_, flags))
 _SWI_CPP2_CPP_check_rc(ssize_t, read_pending(char *buf, size_t limit, int flags), Sread_pending(s_, buf, limit, flags))

@@ -66,6 +66,7 @@ particularly integer conversions.
 #include <string>
 #include <cassert>
 #include <memory>
+#include <typeinfo>
 
 #if INT_MAX != 0x7fffffff
   #error "Unexpected value for INT_MAX"
@@ -1098,8 +1099,7 @@ public:
   // plThrow() is for the try-catch in PREDICATE - returns the result
   // of Plx_raise_exception(), which is always `false`, as a foreign_t.
   virtual foreign_t plThrow() const
-  { foreign_t rc = static_cast<foreign_t>(Plx_raise_exception(term().unwrap()));
-    return rc;
+  { return static_cast<foreign_t>(Plx_raise_exception(term().unwrap()));
   }
 
   // The following method needs to be used with care (e.g., not when
@@ -1511,8 +1511,8 @@ public:
   int setlocale(struct PL_locale *new_loc, struct PL_locale **old_loc);
   int flush();
   int64_t size();
-  int seek(long pos, int whence);
-  int tell();
+  [[deprecated("Use seek64()")]] int seek(int64_t pos, int whence);
+  [[deprecated("Use tell64()")]] int64_t tell();
   int close();
   int gcclose(int flags);
   char *gets(char *buf, int n);
@@ -1712,11 +1712,14 @@ public:
   cast(PlAtom aref)
   { size_t len;
     PL_blob_t *type;
+    if ( aref.is_null() )
+      return nullptr;
     auto ref = static_cast<C_t *>(aref.blob_data(&len, &type));
     // Can't throw PlException here because might be in a context
     // outside of a PREDICATE.
     if ( ref && type == ref->blob_t_ )
-    { assert(len == sizeof *ref);
+    { if ( len != sizeof *ref )
+        PL_system_error("Invalid size %zd (should be %zd) for %s", len, sizeof *ref, typeid(C_t).name());
       return ref;
     }
     return nullptr;
@@ -1728,7 +1731,8 @@ public:
   { auto ref = cast(aref);
     // Can't throw PlException here because might be in a context
     // outside of a PREDICATE.
-    assert(ref);
+    if ( !ref )
+      PL_system_error("Failed cast to %s", typeid(C_t).name());
     return ref;
   }
 
@@ -1750,15 +1754,15 @@ public:
       rc = true;
     }
     PREDICATE_CATCH(rc = false)
-      // TODO: if ( ! rc ) Plx_clear_exception() ?
-    assert(rc);
-    (void)rc;
+    if ( !rc )
+      PL_system_error("Failed acquire() for %s", typeid(C_t).name());
+    // TODO: if ( ! rc ) Plx_clear_exception() ?
   }
 
   [[nodiscard]]
   static int release(atom_t a) noexcept
   { auto data = cast(PlAtom(a));
-    if ( !data ) // PL_free_blob() has been used.
+    if ( !data ) // Shouldn't happen, even if PL_free_blob() has been used.
       return true;
     try
     { if ( !data->pre_delete() )
@@ -1777,27 +1781,28 @@ public:
     // types - they should have been already compared by standard
     // order of types; but use cast_check() anyway (which will be
     // optimised away if NDEBUG).
-    bool rc_try;
-    int rc = -1; // Stop the compiler warning about uninitialized
+    bool rc_try = false;
+    int rc;
     try
-    { const auto a_data = cast_check(PlAtom(a)); // TODO: cast(PlAtom(a))
-      const auto b_data = cast_check(PlAtom(b));
-      rc = a_data->compare_fields(b_data);
+    { const auto a_data = cast(PlAtom(a));
+      const auto b_data = cast(PlAtom(b));
+      rc = ( a_data && b_data ) ? a_data->compare_fields(b_data) : 0;
       if ( rc == 0 )
-      { rc = (a_data < b_data) ? -1 : (a_data > b_data) ? 1 : 0;
-      }
+        rc = (a_data < b_data) ? -1 : (a_data > b_data) ? 1 : 0;
       rc_try = true;
     }
-    PREDICATE_CATCH(rc_try = false)
-      // TODO: if ( ! rc_try ) Plx_clear_exception() ?
-    assert(rc_try);
-    (void)rc_try;
+    PREDICATE_CATCH(rc_try = false; rc = 0;)
+    if ( !rc_try )
+      PL_system_error("Failed compare() for %s", typeid(C_t).name());
     return rc;
   }
 
   [[nodiscard]]
   static int write(IOSTREAM *s, atom_t a, int flags)
-  { const auto data = cast_check(PlAtom(a));
+  { const auto data = cast(PlAtom(a));
+    if ( !data )
+      // TODO: demangle typeid::name()
+      return Sfprintf(s, "<%s>(%p)", typeid(C_t).name(), data) >= 0;
     int rc;
     try
     { rc = data->write(s, flags);
@@ -1809,7 +1814,9 @@ public:
 
   [[nodiscard]]
   static int save(atom_t a, IOSTREAM *fd)
-  { const auto data = cast_check(PlAtom(a));
+  { const auto data = cast(PlAtom(a));
+    if ( !data )
+      return false;
     bool rc;
     try
     { data->save(fd);
@@ -1874,6 +1881,7 @@ public:
 
   virtual size_t blob_size_() const = 0; // See PL_BLOB_SIZE
 
+  // acquire() is not virtual and subclass must not override it.
   void acquire(PlAtom _symbol)
   { symbol_ = _symbol;
     // Don't: symbol_.register_ref() because it's already got a
@@ -1888,10 +1896,12 @@ public:
   { return 0; // compare() will do bitwise comparison
   }
 
+  // write() is not virtual and subclass must not override it. write_fields() is virtual.
   bool write(IOSTREAM *s, int flags) const;
 
   bool virtual write_fields(IOSTREAM *s, int flags) const
-  { return true; }
+  { return true;
+  }
 
   virtual void save(IOSTREAM *fd) const;
 

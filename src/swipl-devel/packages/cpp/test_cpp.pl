@@ -815,17 +815,28 @@ test(blob) :-
     assertion(blob(Blob, my_blob)),
     close_my_blob(Blob).
 test(blob, error(my_blob_open_error(_),_)) :-
-    create_my_blob('FAIL', _).
+    create_my_blob('-FAIL_open-', _).
 test(blob, error(my_blob_close_error(Blob))) :-
-    create_my_blob('FAIL_close', Blob),
+    create_my_blob('-FAIL_close-', Blob),
     assertion(blob(Blob, my_blob)),
     close_my_blob(Blob).
+test(blob) :-
+    create_my_blob('foo', A),
+    with_output_to(string(Astr), write(current_output, A)),
+    assertion(string_concat("<my_blob>(", _, Astr)), % The pointer part is implementation-defined
+    free_blob(A),
+    with_output_to(string(Astr_freed), write(current_output, A)),
+    nil_repr(Nil),
+    format(string(Rstr), ">(~w)", [Nil]),
+    % The name part implementation-defined (e.g., mangled type name)
+    assertion(string_concat("<", _, Astr_freed)),
+    assertion(string_concat(_, Rstr, Astr_freed)).
 
 % The following attempts to test the handling of close errors in the
 % "release" callback, which calls ~MyBlob. It doesn't throw an error
 % (because it can't) but does output an error message.
 % You can run this test by hand:
-%    ?- create_fail_blob.
+%    ?- create_fail_close_blob.
 %    ?- force_gc.
 % and that should print:
 %    Close MyBlob failed: FAIL_close
@@ -833,11 +844,25 @@ test(blob, [blocked(cant_throw_error),
             error(e),
             setup(force_gc(GC_thread)),
             cleanup(restore_gc(GC_thread))]) :-
-    create_fail_blob,
+    create_fail_close_blob,
     garbage_collect,
     garbage_collect_atoms.
-create_fail_blob :-
-    create_my_blob('FAIL_close', Blob),
+test(blob, blocked(calls_PL_system_error)) :-
+    create_my_blob('-FAIL_connection-', _Blob).
+test(blob, error(my_blob_open_error(_))) :-
+    create_my_blob('-FAIL_open-', _Blob).
+test(blob, error(my_blob_fail_new(_))) :-
+    create_my_blob('-FAIL_new-', _Blob).
+test(blob, fail) :-
+    create_my_blob('-FAIL_compare-1', Blob1),
+    create_my_blob('-Fail_compare-2', Blob2),
+    Blob1 = Blob2.
+test(blob, error(my_blob_write_error(_))) :-
+    create_my_blob('-FAIL_write-', Blob),
+    with_output_to(string(_), write(current_output, Blob)).
+
+create_fail_close_blob :-
+    create_my_blob('-FAIL_close-', Blob),
     assertion(blob(Blob, my_blob)).
 
 test(blob, cleanup(close_my_blob(A))) :-

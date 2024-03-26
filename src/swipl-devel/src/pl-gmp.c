@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2005-2022, University of Amsterdam
+    Copyright (c)  2005-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -86,61 +87,127 @@ static void *(*smp_realloc)(void *, size_t, size_t);
 static void  (*smp_free)(void *, size_t);
 
 #define NOT_IN_PROLOG_ARITHMETIC() \
-	(LD == NULL || LD->gmp.context == NULL || LD->gmp.persistent)
+	(LD == NULL || LD->gmp.context == NULL)
 
-static int
-gmp_too_big(void)
-{ GET_LD
+#define ROUND_SIZE(n) (((n) + (sizeof(size_t) - 1))/sizeof(size_t))
 
-  DEBUG(1, Sdprintf("Signalling GMP overflow\n"));
+typedef enum
+{ GMO_TB_OK = 0,
+  GMP_TB_RESTRAINT,
+  GMP_TB_STACK,
+  GMP_TB_MALLOC
+} gmp_tb;
 
-  return (int)outOfStack((Stack)&LD->stacks.global, STACK_OVERFLOW_THROW);
+#define gmp_too_big(why)      LDFUNC(gmp_too_big, why)
+#define gmp_check_size(bytes) LDFUNC(gmp_check_size, bytes)
+
+static void*			/* Actually, does not return */
+gmp_too_big(DECL_LD gmp_tb why)
+{ DEBUG(MSG_GMP_OVERFLOW, Sdprintf("Signalling GMP overflow\n"));
+
+  switch(why)
+  { case GMP_TB_RESTRAINT:
+    { number max = { .type = V_INTEGER };
+      max.value.i = LD->gmp.max_integer_size;
+      PL_error(NULL, 0, "requires more than max_integer_size bytes",
+	       ERR_AR_TRIPWIRE, ATOM_max_integer_size, &max);
+      PL_rethrow();
+    }
+    case GMP_TB_STACK:
+      outOfStack((Stack)&LD->stacks.global, STACK_OVERFLOW_THROW);
+      break;
+    case GMP_TB_MALLOC:
+    default:
+      PL_no_memory();
+      PL_rethrow();
+  }
+
+  abortProlog();		/* Just in case the above fails */
+  PL_rethrow();
+  return FALSE;
 }
 
-#define TOO_BIG_GMP(n) ((n) > 1000 && (n) > (size_t)globalStackLimit())
+
+static int
+gmp_check_size(DECL_LD size_t bytes)
+{ gmp_tb why = GMO_TB_OK;
+
+  if ( bytes <= 1000 )
+    return TRUE;
+  if ( bytes > LD->gmp.max_integer_size )
+    why = GMP_TB_RESTRAINT;
+  else if ( bytes > (size_t)globalStackLimit())
+    why = GMP_TB_STACK;
+  else
+    return TRUE;
+
+  gmp_too_big(why);
+  return FALSE;
+}
+
+
+#define TOO_BIG_GMP(n) ((n) > 1000 &&			   \
+			((n) > LD->gmp.max_integer_size || \
+			 (n) > (size_t)globalStackLimit()))
 
 static void *
 mp_alloc(size_t bytes)
 { GET_LD
+  ar_context *ctx;
   mp_mem_header *mem;
 
   if ( NOT_IN_PROLOG_ARITHMETIC() )
     return smp_alloc(bytes);
 
-  if ( TOO_BIG_GMP(bytes) ||
-       !(mem = malloc(sizeof(mp_mem_header)+bytes)) )
-  { gmp_too_big();
-    abortProlog();
-    PL_rethrow();
-    return NULL;			/* make compiler happy */
-  }
+  if ( !gmp_check_size(bytes) )
+    return NULL;
 
 #if O_BF
   if ( bytes == 0 )
     return NULL;
 #endif
+  ctx = LD->gmp.context;
 
-  GMP_LEAK_CHECK(LD->gmp.allocated += bytes);
-
-  mem->next = NULL;
-  mem->context = LD->gmp.context;
-  if ( LD->gmp.tail )
-  { mem->prev = LD->gmp.tail;
-    LD->gmp.tail->next = mem;
-    LD->gmp.tail = mem;
-  } else
-  { mem->prev = NULL;
-    LD->gmp.head = LD->gmp.tail = mem;
+  size_t fastunits = ROUND_SIZE(bytes)+1;
+  if ( ctx->allocated+fastunits <= GMP_STACK_ALLOC )
+  { size_t *data = &ctx->alloc_buf[ctx->allocated];
+    *data++ = fastunits;
+    ctx->allocated += fastunits;
+    DEBUG(MSG_GMP_ALLOC, Sdprintf("GMP: from stack %zd@%p\n", bytes, data));
+    return data;
   }
-  DEBUG(9, Sdprintf("GMP: alloc %ld@%p\n", bytes, &mem[1]));
 
-  return &mem[1];
+  if ( (mem = tmp_malloc(sizeof(mp_mem_header)+bytes)) )
+  { mem->next = NULL;
+    if ( ctx->tail )
+    { mem->prev = ctx->tail;
+      ctx->tail->next = mem;
+      ctx->tail = mem;
+    } else
+    { mem->prev = NULL;
+      ctx->head = ctx->tail = mem;
+    }
+    DEBUG(MSG_GMP_ALLOC, Sdprintf("GMP: malloc %zd@%p\n", bytes, &mem[1]));
+
+    return &mem[1];
+  } else
+    return gmp_too_big(GMP_TB_MALLOC);
+}
+
+
+static inline size_t *
+mp_on_stack(ar_context *ctx, void *ptr)
+{ if ( ptr > (void*)ctx->alloc_buf && ptr < (void*)&ctx->alloc_buf[GMP_STACK_ALLOC] )
+    return &((size_t*)ptr)[-1];
+
+  return NULL;
 }
 
 
 static void
 mp_free(void *ptr, size_t size)
 { GET_LD
+  ar_context *ctx;
   mp_mem_header *mem;
 
   if ( NOT_IN_PROLOG_ARITHMETIC() )
@@ -152,32 +219,39 @@ mp_free(void *ptr, size_t size)
   if ( !ptr )
     return;
 #endif
+  ctx = LD->gmp.context;
+  size_t *base = mp_on_stack(ctx, ptr);
+  if ( base )
+  { if ( (base-ctx->alloc_buf) + base[0] == ctx->allocated )
+      ctx->allocated -= base[0];
+    return;
+  }
 
   mem = ((mp_mem_header*)ptr)-1;
 
-  if ( mem == LD->gmp.head )
-  { LD->gmp.head = LD->gmp.head->next;
-    if ( LD->gmp.head )
-      LD->gmp.head->prev = NULL;
+  if ( mem == ctx->head )
+  { ctx->head = ctx->head->next;
+    if ( ctx->head )
+      ctx->head->prev = NULL;
     else
-      LD->gmp.tail = NULL;
-  } else if ( mem == LD->gmp.tail )
-  { LD->gmp.tail = LD->gmp.tail->prev;
-    LD->gmp.tail->next = NULL;
+      ctx->tail = NULL;
+  } else if ( mem == ctx->tail )
+  { ctx->tail = ctx->tail->prev;
+    ctx->tail->next = NULL;
   } else
   { mem->prev->next = mem->next;
     mem->next->prev = mem->prev;
   }
 
-  free(mem);
-  DEBUG(9, Sdprintf("GMP: free: %ld@%p\n", size, ptr));
-  GMP_LEAK_CHECK(LD->gmp.allocated -= size);
+  tmp_free(mem);
+  DEBUG(MSG_GMP_ALLOC, Sdprintf("GMP: free: %zd@%p\n", size, ptr));
 }
 
 
 static void *
 mp_realloc(void *ptr, size_t oldsize, size_t newsize)
 { GET_LD
+  ar_context *ctx;
   mp_mem_header *oldmem, *newmem;
 
   if ( NOT_IN_PROLOG_ARITHMETIC() )
@@ -192,53 +266,106 @@ mp_realloc(void *ptr, size_t oldsize, size_t newsize)
   }
 #endif
 
+  if ( newsize > oldsize && !gmp_check_size(newsize) )
+    return NULL;
+
+  ctx = LD->gmp.context;
+  size_t *base = mp_on_stack(ctx, ptr);
+  if ( base )
+  { size_t fastunits = ROUND_SIZE(newsize)+1;
+    size_t alloc0 = base-ctx->alloc_buf;
+
+    if ( alloc0 + base[0] == ctx->allocated ) /* at the top */
+    { if ( alloc0+fastunits-1 <= GMP_STACK_ALLOC )
+      { base[0] = fastunits;		      /* and still fits */
+	ctx->allocated = alloc0+fastunits;
+	return ptr;
+      }
+    } else if ( fastunits <= base[0] )	      /* shrink */
+    { base[0] = fastunits;
+      return ptr;
+    }
+
+    void *new = mp_alloc(newsize);
+    if ( new )
+    { size_t cp = base[0]*sizeof(size_t);
+      if ( newsize < cp )
+	cp = newsize;
+      memcpy(new, ptr, cp);
+    }
+    return new;
+  }
+
   oldmem = ((mp_mem_header*)ptr)-1;
-  if ( TOO_BIG_GMP(newsize) ||
-       !(newmem = realloc(oldmem, sizeof(mp_mem_header)+newsize)) )
-  { gmp_too_big();
-    abortProlog();
-    PL_rethrow();
-    return NULL;			/* make compiler happy */
-  }
+  if ( (newmem = tmp_realloc(oldmem, sizeof(mp_mem_header)+newsize)) )
+  { if ( oldmem != newmem )		/* re-link if moved */
+    { if ( newmem->prev )
+	newmem->prev->next = newmem;
+      else
+	ctx->head = newmem;
 
-  if ( oldmem != newmem )		/* re-link if moved */
-  { if ( newmem->prev )
-      newmem->prev->next = newmem;
-    else
-      LD->gmp.head = newmem;
+      if ( newmem->next )
+	newmem->next->prev = newmem;
+      else
+	ctx->tail = newmem;
+    }
 
-    if ( newmem->next )
-      newmem->next->prev = newmem;
-    else
-      LD->gmp.tail = newmem;
-  }
-
-  GMP_LEAK_CHECK(LD->gmp.allocated -= oldsize;
-		 LD->gmp.allocated += newsize);
-  DEBUG(9, Sdprintf("GMP: realloc %ld@%p --> %ld@%p\n", oldsize, ptr, newsize, &newmem[1]));
-
-  return &newmem[1];
+    DEBUG(MSG_GMP_ALLOC, Sdprintf("GMP: realloc %zd@%p --> %zd@%p\n", oldsize, ptr, newsize, &newmem[1]));
+    return &newmem[1];
+  } else
+    return gmp_too_big(GMP_TB_MALLOC);
 }
 
 
 void
 mp_cleanup(ar_context *ctx)
-{ GET_LD
-  mp_mem_header *mem, *next;
+{ mp_mem_header *mem, *next;
 
-  if ( LD->gmp.context )
-  { for(mem=LD->gmp.head; mem; mem=next)
-    { next = mem->next;
-      if ( mem->context == LD->gmp.context )
-      { DEBUG(9, Sdprintf("GMP: cleanup of %p\n", &mem[1]));
-	mp_free(&mem[1], 0);
-      }
-    }
+  for(mem=ctx->head; mem; mem=next)
+  { next = mem->next;
+    DEBUG(MSG_GMP_ALLOC, Sdprintf("GMP: cleanup of %p\n", &mem[1]));
+    mp_free(&mem[1], 0);
   }
+}
 
-  LD->gmp.context = ctx->parent;
+#ifdef O_DEBUG
+static int
+mp_test_alloc(void)
+{ GET_LD
+  AR_CTX;
+
+  AR_BEGIN();
+
+  char *first  = mp_alloc(8);
+  strcpy(first, "hello");
+  char *second = mp_alloc(8);
+  assert(second-first == sizeof(size_t)+8);
+  /* realloc top */
+  char *ext = mp_realloc(second, 8, 12);
+  assert(ext == second);
+  assert(__PL_ar_ctx.allocated == ROUND_SIZE(8)+1+ROUND_SIZE(12)+1);
+  /* free top */
+  mp_free(ext, 12);
+  assert(__PL_ar_ctx.allocated == ROUND_SIZE(8)+1);
+  /* re-add second */
+  second = mp_alloc(8);
+  assert(second-first == sizeof(size_t)+8);
+  /* realloc non-first (move) */
+  ext = mp_realloc(first, 8, 25);
+  assert(ext-second == sizeof(size_t)+8);
+  assert(strcmp(ext, "hello") == 0);
+  /* shrink last */
+  char *ext2 = mp_realloc(ext, 25, 8);
+  assert(ext == ext2);
+  assert(mp_on_stack(&__PL_ar_ctx, ext2)[0] == ROUND_SIZE(8)+1);
+
+  AR_END();
+
+  return TRUE;
 }
 #endif
+
+#endif /*O_MY_GMP_ALLOC*/
 
 
 #ifdef __WINDOWS__
@@ -1091,6 +1218,7 @@ initGMP(void)
     { mp_get_memory_functions(&smp_alloc, &smp_realloc, &smp_free);
       mp_set_memory_functions(mp_alloc, mp_realloc, mp_free);
     }
+    DEBUG(0, mp_test_alloc());
 #endif
 
 #if O_GMP
@@ -2123,8 +2251,10 @@ PL_get_mpq(term_t t, mpq_t mpq)
 { if ( PL_is_rational(t) )
   { GET_LD
     number n;
+    Word p = valTermRef(t);
 
-    get_rational(t, &n);
+    deRef(p);
+    get_rational(*p, &n);
     switch(n.type)
     { case V_INTEGER:
 	if ( n.value.i >= LONG_MIN && n.value.i <= LONG_MAX )

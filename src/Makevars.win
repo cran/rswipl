@@ -1,4 +1,4 @@
-PKG_CPPFLAGS=-I../inst/swipl/include -Iswipl-devel/packages/cpp $(CXXPICFLAGS) -D_REENTRANT -D__SWI_PROLOG__ -O2 -gdwarf-2 -g3 -Wall -fno-strict-aliasing -D__WINDOWS__ -D_WINDOWS -D_WIN32_WINNT=0x0600 -DWIN64
+PKG_CPPFLAGS=-I../inst/swipl/include $(CXXPICFLAGS) -D_REENTRANT -D__SWI_PROLOG__ -O2 -gdwarf-2 -g3 -Wall -fno-strict-aliasing -D__WINDOWS__ -D_WINDOWS -D_WIN32_WINNT=0x0600 -DWIN64
 PKG_LIBS=-Wl,-Bsymbolic-functions -L../inst/swipl/bin -lswipl -lgmp -lz -lm -lpthread -lws2_32 -lpsapi -lwinmm -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
 
 all: swipl $(SHLIB)
@@ -7,19 +7,21 @@ swipl:
 	mkdir -p ../mingw64
 	mkdir -p ../inst/swipl/bin
 	rm -f ../inst/swipl/bin/*.dll
-	cd ../mingw64 && cmake -DCMAKE_INSTALL_PREFIX=../inst/swipl\
+	( cd ../mingw64 ;\
+		CC="$(CC)" CFLAGS="$(subst -pedantic,,$(subst -Wstrict-prototypes,,$(CFLAGS)))" CPPFLAGS="$(CPPFLAGS)" LDFLAGS="$(LDFLAGS)" cmake\
+		-DCMAKE_INSTALL_PREFIX=../inst/swipl\
 		-DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF\
 		-DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_PYTHON=OFF\
-		-DUSE_GMP=OFF\
+		-DBUILD_TESTING=OFF\
+		-DCMAKE_CXX_STANDARD=17\
+		-DUSE_GMP=ON\
 		-DMINGW_ROOT=$(R_TOOLS_SOFT)\
 		-DLibArchive_INCLUDE_DIRS="-I."\
 		-DLibArchive_LIBRARIES="-larchive -lnettle -lxml2 -liconv -lregex -lexpat -llzma -lzstd -llz4 -lbz2 -lz -lbcrypt -lws2_32"\
-		-DCMAKE_BUILD_TYPE=Release ../src/swipl-devel
+		-DCMAKE_BUILD_TYPE=Release ../src/swipl-devel )
 	# dos2unix all Makefiles
 	find ../mingw64 -name Makefile -exec sed -i 's/\r//' \{\} \;
 	make -C ../mingw64 install
-	echo -e "check:\n\tctest -E rational\n" > ../mingw64/Makefile.check
-	$(MAKE) -C ../mingw64 -f Makefile.check check
 	rm ../inst/swipl/bin/swipl.exe
 	rm ../inst/swipl/bin/swipl-win.exe
 	rm ../inst/swipl/bin/swipl-ld.exe

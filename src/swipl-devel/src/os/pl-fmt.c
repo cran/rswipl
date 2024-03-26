@@ -640,6 +640,7 @@ do_format(IOSTREAM *fd, PL_chars_t *fmt, int argc, term_t argv, Module m)
 		{ AR_CTX
 		  number i;
 		  tmp_buffer b;
+		  char *si;
 
 		  NEED_ARG;
 		  AR_BEGIN();
@@ -672,8 +673,7 @@ do_format(IOSTREAM *fd, PL_chars_t *fmt, int argc, term_t argv, Module m)
 
 		    if ( arg == DEFAULT )
 		      arg = 0;
-		    if ( !formatInteger(l, arg, 10, TRUE, &i, (Buffer)&b) )
-		      FMT_EXEPTION();
+		    si = formatInteger(l, arg, 10, TRUE, &i, (Buffer)&b);
 		  } else if ( c == 'I' )
 		  { PL_locale ltmp;
 		    char grouping[2];
@@ -683,8 +683,7 @@ do_format(IOSTREAM *fd, PL_chars_t *fmt, int argc, term_t argv, Module m)
 		    ltmp.thousands_sep = L"_";
 		    ltmp.grouping = grouping;
 
-		    if ( !formatInteger(&ltmp, 0, 10, TRUE, &i, (Buffer)&b) )
-		      FMT_EXEPTION();
+		    si = formatInteger(&ltmp, 0, 10, TRUE, &i, (Buffer)&b);
 		  } else			/* r,R */
 		  { if ( arg == DEFAULT )
 		      arg = 8;
@@ -692,15 +691,17 @@ do_format(IOSTREAM *fd, PL_chars_t *fmt, int argc, term_t argv, Module m)
 		    { term_t r = PL_new_term_ref();
 
 		      PL_put_integer(r, arg);
-		      return PL_error(NULL, 0, NULL, ERR_DOMAIN,
-				      ATOM_radix, r);
-		    }
-		    if ( !formatInteger(NULL, 0, arg, c == 'r', &i, (Buffer)&b) )
-		      FMT_EXEPTION();
+		      PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_radix, r);
+		      si = NULL;
+		    } else
+		      si = formatInteger(NULL, 0, arg, c == 'r', &i, (Buffer)&b);
 		  }
 		  clearNumber(&i);
 		  AR_END();
-		  rc = oututf80(&state, baseBuffer(&b, char));
+		  if ( si )
+		    rc = oututf80(&state, si);
+		  else
+		    rc = FALSE;
 		  discardBuffer(&b);
 		  if ( !rc )
 		    goto out;
@@ -1105,19 +1106,17 @@ formatInteger(PL_locale *locale, int div, int radix, bool smll, Number i,
       size_t len = (double)mpz_sizeinbase(i->value.mpz, 2) * log(radix)/log(2) * 1.2;
       char tmp[256];
       char *buf;
-      int rc = TRUE;
+      int rc;
 
       if ( len+2 > sizeof(tmp) )
-	buf = PL_malloc(len+2);
+	buf = tmp_malloc(len+2);
       else
 	buf = tmp;
 
-      EXCEPTION_GUARDED({ LD->gmp.persistent++;
-			  mpz_get_str(buf, radix, i->value.mpz);
-			  LD->gmp.persistent--;
+      EXCEPTION_GUARDED({ mpz_get_str(buf, radix, i->value.mpz);
+			  rc = TRUE;
 			},
-			{ LD->gmp.persistent--;
-			  rc = PL_rethrow();
+			{ rc = FALSE;
 			});
       if ( !rc )
 	return NULL;
@@ -1162,7 +1161,7 @@ formatInteger(PL_locale *locale, int div, int radix, bool smll, Number i,
       }
 
       if ( buf != tmp )
-	PL_free(buf);
+	tmp_free(buf);
 
       addBuffer(out, EOS, char);
       return baseBuffer(out, char);

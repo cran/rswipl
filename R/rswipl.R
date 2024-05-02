@@ -18,7 +18,8 @@
   {
     pl0 <- file.path(libname, pkgname)
     home <- dir(pl0, pattern="swipl$", full.names=TRUE)
-    libswipl <- dir(file.path(home, "bin"),
+    lib = file.path(home, "bin")
+    libswipl <- dir(lib,
       pattern=paste("libswipl", .Platform$dynlib.ext, "$", sep=""),
       full.names=TRUE)
 
@@ -29,20 +30,17 @@
   if(.Platform$OS.type == "unix")
   {
     pl0 <- file.path(libname, pkgname)
-    home <- dir(file.path(pl0, "swipl", "lib"), pattern="swipl$", full.names=TRUE)
-    arch <- R.Version()$arch
-    lib <- dir(file.path(home, "lib"), pattern=arch, full.names=TRUE)
-    if(length(lib) == 0 & arch == "aarch64")
-      lib <- dir(file.path(home, "lib"), pattern="arm64", full.names=TRUE)
-
-    if(R.Version()$os == "linux-gnu")
-      libswipl <- dir(lib, pattern="libswipl.so$", full.names=TRUE)
-    else
+    home <- file.path(pl0, "swipl", "lib", "swipl")
+    lib <- file.path(pl0, "swipl", "lib")
+    if(grepl("darwin", R.version$os))
       libswipl <- dir(lib, pattern="libswipl.dylib$", full.names=TRUE)
+    else
+      libswipl <- dir(lib, pattern="libswipl.so$", full.names=TRUE)
 
     if(length(libswipl) == 1)
-      dyn.load(libswipl, local=FALSE)
+      s <- dyn.load(libswipl, local=FALSE)
     
+    # Even if there isn't any .so (we also have static builds)
     rswipl.ok <- TRUE
   }
   
@@ -61,18 +59,10 @@
     options(op.rswipl[set])
 
   if(!options()$rswipl.ok)
-  {
-    warning(options()$rswipl.message)
     return(FALSE)
-  }
 
-  if(.Platform$OS.type == "windows")
-    library.dynam("rswipl", package=pkgname, lib.loc=libname, 
-      DLLpath=file.path(home, "bin"))
-
-  if(.Platform$OS.type == "unix")
-    library.dynam(chname="rswipl", package=pkgname, lib.loc=libname, local=FALSE)
-
+  library.dynam(chname="rswipl", package=pkgname, lib.loc=libname, DLLpath=lib,
+    local=FALSE)
   invisible()
 }
 
@@ -83,9 +73,9 @@
 
   if(options()$rswipl.ok & .Platform$OS.type == "unix")
   {
-    lib <- options()$rswipl.lib
-    if(length(lib))
-      dyn.unload(lib)
+    libswipl <- options()$rswipl.lib
+    if(length(libswipl))
+      dyn.unload(libswipl)
   }
 
   invisible()

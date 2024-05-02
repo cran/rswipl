@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1997-2023, University of Amsterdam
+    Copyright (c)  1997-2024, University of Amsterdam
 			      VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -1094,10 +1094,15 @@ PL_get_size_ex(DECL_LD term_t t, size_t *i)
 
   deRef(p);
   if ( isTaggedInt(*p) )
-  { intptr_t v = valInt(*p);
+  { sword v = valInt(*p);
 
     if ( v >= 0 )
-    { *i = v;
+    {
+#if SIZEOF_VOIDP < SIZEOF_WORD
+      if ( v > SIZE_MAX )
+	return PL_error(NULL, 0, NULL, ERR_REPRESENTATION, ATOM_size_t);
+#endif
+      *i = (size_t)v;
       return TRUE;
     }
     return PL_error(NULL, 0, NULL, ERR_DOMAIN,
@@ -1109,7 +1114,7 @@ PL_get_size_ex(DECL_LD term_t t, size_t *i)
     { case V_INTEGER:
 	if ( n.value.i >= 0 )
 	{ if ( fits_size(n.value.i) )
-	  { *i = n.value.i;
+	  { *i = (size_t)n.value.i;
 	    return TRUE;
 	  }
 	  return FALSE;
@@ -1154,7 +1159,7 @@ pl_get_uint64(DECL_LD term_t t, uint64_t *i, int ex)
 
   deRef(p);
   if ( isTaggedInt(*p) )
-  { intptr_t v = valInt(*p);
+  { sword v = valInt(*p);
 
     if ( v >= 0 )
     { *i = v;

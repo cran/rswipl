@@ -71,7 +71,7 @@ endif()
 if(NOT DEFINED GET0SIG_CONST_T)
   if(HAVE_X509_GET0_SIGNATURE)
     set(_cmake_saved_dlags ${CMAKE_REQUIRED_FLAGS})
-    set(CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS} -Werror=incompatible-pointer-types -c)
+    set(CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS} -Werror -c)
     check_c_source_compiles(
 	"#include <openssl/x509.h>
 

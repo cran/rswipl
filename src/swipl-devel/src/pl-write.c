@@ -193,14 +193,14 @@ writeNumberVar(DECL_LD term_t t, write_options *options)
 
     FLI_ASSERT_VALID(fr);
     if ( false(options, PL_WRT_NUMBERVARS) &&
-         fr->mark.globaltop > (Word)f )
+         fr->mark.globaltop.as_ptr > (Word)f )
       return FALSE;			/* older $VAR term */
   }
 
   p = &f->arguments[0];
   deRef(p);
-  if ( isTaggedInt(*p) || isBignum(*p) )
-  { int64_t n = valInteger(*p);
+  if ( isTaggedInt(*p) )
+  { int64_t n = valInt(*p);
     char buf[32];			/* Max is H354745078340568300 */
 
     if ( n < 0 )
@@ -210,7 +210,7 @@ writeNumberVar(DECL_LD term_t t, write_options *options)
       int64_t j = n / 26;
 
       if ( j == 0 )
-      { buf[0] = i+'A';
+      { buf[0] = (char)(i+'A');
 	buf[1] = EOS;
       } else
       { sprintf(buf, "%c%" PRId64, i+'A', j);
@@ -220,11 +220,11 @@ writeNumberVar(DECL_LD term_t t, write_options *options)
     return PutToken(buf, options->out) ? TRUE : -1;
   }
 
-  if ( isAtom(*p) && atomIsVarName(*p) )
+  if ( isAtom(*p) && atomIsVarName(word2atom(*p)) )
   { write_options o2 = *options;
     clear(&o2, PL_WRT_QUOTED);
 
-    return writeAtom(*p, &o2) ? TRUE : -1;
+    return writeAtom(word2atom(*p), &o2) ? TRUE : -1;
   }
 
   return FALSE;
@@ -575,7 +575,7 @@ putQuoted(int c, int quote, int flags, IOSTREAM *stream)
       esc[1] = EOS;
 
       if ( c == quote )
-      { esc[0] = c;
+      { esc[0] = (char)c;
       } else
       { switch(c)
 	{ case 7:
@@ -1201,6 +1201,21 @@ format_float(double f, char *buf)
 }
 
 #ifdef O_BIGNUM
+static int
+mpz_get_str_ex(char *buf, int base, mpz_t mpz)
+{ int rc;
+
+  /* mpz_get_str() can perform large intermediate allocations */
+  EXCEPTION_GUARDED({ mpz_get_str(buf, 10, mpz);
+                      rc = TRUE;
+		    },
+		    { rc = FALSE;
+		    });
+
+  return rc;
+}
+
+
 #define writeMPZ(mpz, options) LDFUNC(writeMPZ, mpz, options)
 static int
 writeMPZ(DECL_LD mpz_t mpz, write_options *options)
@@ -1208,21 +1223,21 @@ writeMPZ(DECL_LD mpz_t mpz, write_options *options)
   char *buf;
   size_t sz = (mpz_sizeinbase(mpz, 2)*10)/3 + 10; /* log2(10)=3.322 */
   int rc;
-  AR_CTX;
 
   if ( sz <= sizeof(tmp) )
     buf = tmp;
   else if ( !(buf = tmp_malloc(sz)) )
     return PL_no_memory();
 
-  /* mpz_get_str() can perform large intermediate allocations */
-  AR_BEGIN();
-  EXCEPTION_GUARDED({ mpz_get_str(buf, 10, mpz);
-                      rc = TRUE;
-		    },
-		    { rc = FALSE;
-		    });
-  AR_END();
+  if ( LD->gmp.context )
+  { rc = mpz_get_str_ex(buf, 10, mpz);
+  } else
+  { AR_CTX;
+    AR_BEGIN();
+    rc = mpz_get_str_ex(buf, 10, mpz);
+    AR_END();
+  }
+
   rc = rc && PutToken(buf, options->out);
   if ( buf != tmp )
     tmp_free(buf);
@@ -1586,7 +1601,8 @@ writeTerm2(term_t t, int prec, write_options *options, int flags)
 { GET_LD
   atom_t functor;
   size_t arity, n;
-  int op_type, op_pri;
+  unsigned char op_type;
+  short op_pri;
   atom_t a;
   IOSTREAM *out = options->out;
 
@@ -2174,7 +2190,7 @@ PL_write_term(IOSTREAM *s, term_t term, int precedence, int flags)
 }
 
 
-static word
+static foreign_t
 do_write2(term_t stream, term_t term, int flags, int canonical)
 { GET_LD
   IOSTREAM *s;
@@ -2239,11 +2255,11 @@ pl_print2(term_t stream, term_t term)
   return rc;
 }
 
-word
+foreign_t
 pl_write_canonical2(term_t stream, term_t term)
 { GET_LD
   nv_options options;
-  word rc;
+  foreign_t rc;
 
   BEGIN_NUMBERVARS(TRUE);
 

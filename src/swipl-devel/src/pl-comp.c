@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2022, University of Amsterdam
+    Copyright (c)  1985-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -87,9 +87,6 @@ checkCodeTable(void)
 { const code_info *ci;
   int n;
 
-  if ( sizeof(struct clause) % sizeof(word) != 0 )
-    sysError("Invalid alignment of struct clause");
-
   for(ci = codeTable, n = 0; ci->name != NULL; ci++, n++ )
   { if ( (int)ci->code != n )
       sysError("Wrong entry in codeTable: %d", n);
@@ -151,11 +148,11 @@ initWamTable(DECL_LD)
       sysError("Could not initialise VM jump table");
   }
 
-  wam_table[0] = (code) (interpreter_jmp_table[0]);
+  wam_table[0] = ptr2code(interpreter_jmp_table[0]);
   maxcoded = mincoded = wam_table[0];
 
   for(n = 1; n < I_HIGHEST; n++)
-  { wam_table[n] = (code) (interpreter_jmp_table[n]);
+  { wam_table[n] = ptr2code(interpreter_jmp_table[n]);
     if ( wam_table[n] > maxcoded )
       maxcoded = wam_table[n];
     if ( wam_table[n] < mincoded )
@@ -214,7 +211,6 @@ cleanupWamTable(void)
 
 #endif /* VMCODE_IS_ADDRESS */
 
-
 		 /*******************************
 		 *     WARNING DECLARATIONS	*
 		 *******************************/
@@ -260,30 +256,45 @@ typedef struct c_warning
 		 *	  PORTABLE CHECK	*
 		 *******************************/
 
-#if SIZEOF_VOIDP == 4
-#define is_portable_smallint(w) (tagex(w) == (TAG_INTEGER|STG_INLINE))
-#define is_portable_constant(w) isConst(w)
-#else
 #define is_portable_smallint(w) LDFUNC(is_portable_smallint, w)
-#define is_portable_constant(w) (isAtom(w) || is_portable_smallint(w))
+#define is_portable_constant(w) LDFUNC(is_portable_constant, w)
 
-#define PORTABLE_INT_MASK 0xffffffff80000000
-
+/* Integer constant fits on (portable) code */
 static inline int
 is_portable_smallint(DECL_LD word w)
-{ if ( tagex(w) == (TAG_INTEGER|STG_INLINE) )
+{ if ( isTaggedInt(w) )
   { if ( truePrologFlag(PLFLAG_PORTABLE_VMI) )
-    { word masked = w&PORTABLE_INT_MASK;
+    { sword i = valInt(w);
 
-      return !masked || masked == PORTABLE_INT_MASK;
-    } else
-    { return TRUE;
+      return i >= INT32_MIN && i <= INT32_MAX;
     }
+    return TRUE;
   } else
     return FALSE;
 }
 
+/* w doesn't change when put in code (anyway) or 32-bit code (portable) */
+static inline int
+is_portable_constant(DECL_LD word w)
+{ if ( isAtom(w) )
+    return TRUE;
+
+  if ( isTaggedInt(w) )
+  {
+#if SIZEOF_CODE < SIZEOF_WORD
+    code c = word2code(w);
+    return code2word(c) == w;
+#else
+    if ( truePrologFlag(PLFLAG_PORTABLE_VMI) )
+    { uint32_t c = (uint32_t)w;
+      return (word)(sword)(int32_t)c == w;
+    }
+    return TRUE;
 #endif
+  }
+
+  return FALSE;
+}
 
 		 /*******************************
 		 *	     COMPILER		*
@@ -328,7 +339,7 @@ with  a  structure  that  mimics  a term, but isn't one.
 
 #define isVarInfo(w)	(tagex(w) == (TAG_VAR|STG_RESERVED))
 #define setVarInfo(w,i)	(w = (((word)(i))<<LMASK_BITS)|TAG_VAR|STG_RESERVED)
-#define varIndex(w)	((w)>>LMASK_BITS)
+#define varIndex(w)	((size_t)((w)>>LMASK_BITS))
 #define varInfo(w)	(LD->comp.vardefs[varIndex(w)])
 
 
@@ -418,8 +429,24 @@ typedef struct
 } compileInfo, *CompileInfo;
 
 
+		 /*******************************
+		 *          PROTOTYPES          *
+		 *******************************/
+
+
+#if USE_LD_MACROS
+#define output_indirect(ci, op, ptr) LDFUNC(output_indirect, ci, op, ptr)
 #define link_local_var(v, iv, ci) LDFUNC(link_local_var, v, iv, ci)
-static int link_local_var(DECL_LD Word v, int iv, CompileInfo ci);
+#define make_atoms_reachable(p, sz, code) LDFUNC(make_atoms_reachable, p, sz, code)
+#endif /*USE_LD_MACROS*/
+
+#define LDFUNC_DECLARATIONS
+static int	output_indirect(compileInfo *ci, code op, Word p);
+static int	link_local_var(Word v, int iv, CompileInfo ci);
+#if SIZEOF_CODE < SIZEOF_WORD
+static Word	make_atoms_reachable(Word p, size_t size, const Code code);
+#endif
+#undef LDFUNC_DECLARATIONS
 
 
 		 /*******************************
@@ -668,7 +695,7 @@ get_variable_names(DECL_LD CompileInfo ci)
 	deRef(v);
 	if ( isAtom(*n) && isVarInfo(*v) )
 	{ VarDef vd = varInfo(*v);
-	  vd->name = *n;
+	  vd->name = word2atom(*n);
 	  found++;
 	}
       }
@@ -736,7 +763,7 @@ is_argument_var(DECL_LD Word p, CompileInfo ci)
 { deRef(p);
 
   if ( isVarInfo(*p) )
-  { int index = varIndex(*p);
+  { size_t index = varIndex(*p);
 
     if ( index < ci->arity )
       return varInfo(*p);
@@ -921,7 +948,8 @@ right_recursion:
     if ( ci->islocal )
     { if ( ci->subclausearg )
       { DEBUG(MSG_COMP_ARGVAR,
-	      Sdprintf("argvar for %s\n", functorName(f->definition)));
+	      Sdprintf("argvar for %s\n",
+		       functorName(word2functor(f->definition))));
 	ci->argvars++;
 
 	return nvars;
@@ -1242,7 +1270,7 @@ calculation at runtime.
 static void Output_0(CompileInfo ci, vmi c);
 
 #define Output_a(ci,c)		addBuffer(&(ci)->codes, c, code)
-#define Output_an(ci,p,n)	addMultipleBuffer(&(ci)->codes, p, n, word)
+#define Output_an(ci,p,n)	addMultipleBuffer(&(ci)->codes, p, n, code)
 #define Output_1(ci,c,a)	BLOCK(Output_0(ci, c); \
 				      Output_a(ci, a))
 #define Output_2(ci,c,a0,a1)	BLOCK(Output_1(ci, c, a0); \
@@ -1574,7 +1602,7 @@ getTargetModule(DECL_LD target_module *tm, Word t, CompileInfo ci)
       return FALSE;
     }
   } else if ( isTextAtom(*t) )
-  { tm->module = lookupModule(*t);
+  { tm->module = lookupModule(word2atom(*t));
     tm->type = TM_MODULE;
     if ( !ci->islocal && tm->module->class == ATOM_temporary )
       return PL_error(NULL, 0, "temporary module", ERR_PERMISSION,
@@ -1974,7 +2002,7 @@ that have an I_CONTEXT because we need to reset the context.
 
       if ( true(def, P_MFCONTEXT) )
       { set(&clause, CL_BODY_CONTEXT);
-	Output_1(ci, I_CONTEXT, (code)ci->module);
+	Output_1(ci, I_CONTEXT, ptr2code(ci->module));
       }
     }
 
@@ -2039,11 +2067,11 @@ Finish up the clause.
     ATOMIC_ADD(&GD->statistics.codes, clause.code_size);
     ATOMIC_INC(&GD->statistics.clauses);
   } else
-  { LocalFrame fr = lTop;
+  { size_t space;
+    LocalFrame fr = lTop;
     Word p0 = argFrameP(fr, clause.variables);
     Word p = p0;
-    ClauseRef cref;
-    size_t space;
+    ClauseRef cref = (ClauseRef)p;
 
     DEBUG(MSG_COMP_ARGVAR,
 	  Sdprintf("%d argvars; %d prolog vars; %d vars",
@@ -2054,20 +2082,19 @@ Finish up the clause.
     space = ( clause.variables*sizeof(word) +
 	      sizeofClause(clause.code_size) +
 	      SIZEOF_CREF_CLAUSE +
-	      sizeof(word) +		/* possible alignment */
+	      sizeof(uintptr_t)*2 +     /* possible alignment */
 	      (size_t)argFrameP((LocalFrame)NULL, MAXARITY) +
 	      sizeof(struct choice)
 	    );
-    if ( addPointer(lTop, space) >= (void*)lMax )
+    if ( !hasLocalSpace(space) )
     { rc = LOCAL_OVERFLOW;
       goto exit_fail;
     }
 
-    cref = (ClauseRef)p;
     p = addPointer(p, SIZEOF_CREF_CLAUSE);
 #if ALIGNOF_INT64_T != ALIGNOF_VOIDP
     if ( (uintptr_t)p % sizeof(gen_t) != 0 )
-    { p = addPointer(p, sizeof(word));
+    { p = addPointer(p, sizeof(void*));
       assert((uintptr_t)p % sizeof(gen_t) == 0);
     }
 #endif
@@ -2076,8 +2103,24 @@ Finish up the clause.
     memcpy(cl, &clause, sizeofClause(0));
     memcpy(cl->codes, baseBuffer(&ci->codes, code), sizeOfBuffer(&ci->codes));
     p = addPointer(p, sizeofClause(clause.code_size));
-    cl->variables += (int)(p-p0);
 
+#if SIZEOF_CODE != ALIGNOF_WORD
+    if ( (uintptr_t)p % sizeof(word) != 0 )
+    { p = addPointer(p, sizeof(void*));
+      IS_WORD_ALIGNED(p);
+    }
+#endif
+
+#if SIZEOF_CODE < SIZEOF_WORD
+    p = make_atoms_reachable(p, clause.code_size,
+			     baseBuffer(&ci->codes, code));
+    if ( !p )
+    { rc = LOCAL_OVERFLOW;
+      goto exit_fail;
+    }
+#endif
+
+    cl->variables += (unsigned int)(p-p0);
     fr->clause = cref;
     fr->predicate = getProcDefinition(proc);
     setNextFrameFlags(fr, environment_frame);
@@ -2085,7 +2128,10 @@ Finish up the clause.
 
     DEBUG(MSG_COMP_ARGVAR, Sdprintf("; now %d vars\n", clause.variables));
     DEBUG(MSG_COMP_ARGVAR, vm_list(cl->codes, NULL));
+
     lTop = (LocalFrame)p;
+    DEBUG(0, assert(argFrameP(fr, fr->clause->value.clause->variables)
+		    == (Word)lTop));
   }
 
   discardBuffer(&ci->codes);
@@ -2098,6 +2144,61 @@ exit_fail:
   discardBuffer(&ci->codes);
   return rc;
 }
+
+
+#if SIZEOF_CODE < SIZEOF_WORD
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+If we  compile a  clause to the  local stack we  must ensure  that all
+atoms  in this  clause are  reachable by  the atom  garbage collector.
+This is fine if `sizeof(word)  == sizeof(code)` as the normal scanning
+does its work.   If not though, AGC  won't find them.  We  fix this by
+pushing these atoms  to the local stack just below  the clause itself.
+So, we get:W
+
+  Old lTop
+     frame
+     clause
+     atom_1
+     ...
+     atom_n
+  New lTop
+
+The function make_atoms_reachable()  pushes the atoms as  long as they
+fit and returns the number of atoms.  If the total size computation is
+ok, `lTop`  is moved and the  clause is added.  Otherwise  this is all
+simply discarded.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+typedef struct
+{ Word here;
+  Word max;
+} mkatom_reach_t;
+
+static int
+make_atom_reachable(atom_t a, void *ctx)
+{ mkatom_reach_t *r = ctx;
+
+  if ( !isBuiltInAtom(a) )
+  { if ( r->here < r->max )
+    { *r->here++ = atom2word(a);
+      return TRUE;
+    }
+    return FALSE;
+  }
+  return TRUE;
+}
+
+
+static Word
+make_atoms_reachable(DECL_LD Word base, size_t size, const Code code)
+{ mkatom_reach_t ctx = {.here = base, .max = (Word)lMax};
+
+  if ( forAtomsInCodes(size, code, make_atom_reachable, &ctx) )
+    return ctx.here;
+
+  return NULL;
+}
+#endif /*SIZEOF_CODE < SIZEOF_WORD*/
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 compileBody() compiles the clause's body.  Within a body,  a  number  of
@@ -2416,7 +2517,7 @@ try_fast_condition(CompileInfo ci, size_t tc_or)
       case A_VAR2:
       case A_VAR:
       case A_INTEGER:
-      case A_INT64:
+      case A_INTEGERW:
       case A_MPZ:
       case A_MPQ:
       case A_DOUBLE:
@@ -2525,77 +2626,52 @@ A void.  Generate either B_VOID or H_VOID.
       { goto var;
       }
     case TAG_INTEGER:
-      if ( storage(*arg) != STG_INLINE )
-      {	Word p = addressIndirect(*arg);
-	size_t n = wsizeofInd(*p);
+      if ( storage(*arg) == STG_INLINE )
+      { sword i = valInt(*arg);
 
-	if ( n == WORDS_PER_INT64 )
-	{
-#if ( SIZEOF_VOIDP == 8 )
-	  int64_t val = *(int64_t*)(p+1);
+#if CODES_PER_WORD == 1
+	Output_1(ci, (where & A_BODY) ? B_SMALLINT : H_SMALLINT, (scode)i);
 #else
-	  union
-	  { int64_t i;
-	    word w[WORDS_PER_INT64];
-	  } cvt;
-	  int64_t val;
-
-	  cvt.w[0] = p[1];
-	  cvt.w[1] = p[2];
-	  val = cvt.i;
-#endif
-
-#if SIZEOF_VOIDP == 8
-	  Output_1(ci, (where&A_HEAD) ? H_INTEGER : B_INTEGER, (intptr_t)val);
-#else
-	  if ( val >= INTPTR_MIN && val <= INTPTR_MAX )
-	  { Output_1(ci, (where&A_HEAD) ? H_INTEGER : B_INTEGER, (intptr_t)val);
-	  } else
-	  { int c = ((where&A_HEAD) ? H_INT64 : B_INT64);
-	    Output_n(ci, c, (Word)&val, WORDS_PER_INT64);
-	  }
-#endif
-	} else				/* MPZ/MPQ NUMBER */
-	{ int c;
-
-	  if ( p[1]&MP_RAT_MASK )
-	    c = (where & A_HEAD) ? H_MPQ : B_MPQ;
-	  else
-	    c = (where & A_HEAD) ? H_MPZ : B_MPZ;
-
-	  Output_n(ci, c, p, n+1);
-	  return TRUE;
+	if ( (scode)i == i )
+	{ Output_1(ci, (where & A_BODY) ? B_SMALLINT : H_SMALLINT, (scode)i);
+	} else
+	{ Output_n(ci, (where & A_BODY) ? B_SMALLINTW : H_SMALLINTW, &i, CODES_PER_WORD);
 	}
-	return TRUE;
+#endif
+      } else
+      { int op;
+
+	if ( isMPQNum(*arg) )
+	  op = (where & A_HEAD) ? H_MPQ : B_MPQ;
+	else
+	  op = (where & A_HEAD) ? H_MPZ : B_MPZ;
+
+	output_indirect(ci, op, addressIndirect(*arg));
       }
-      Output_1(ci, (where & A_BODY) ? B_SMALLINT : H_SMALLINT, *arg);
       return TRUE;
     case TAG_ATOM:
       if ( isNil(*arg) )
       {	Output_0(ci, (where & A_BODY) ? B_NIL : H_NIL);
       } else
       { if ( !ci->islocal )
-	  PL_register_atom(*arg);
-	Output_1(ci, (where & A_BODY) ? B_ATOM : H_ATOM, *arg);
+	  PL_register_atom(word2atom(*arg));
+	Output_1(ci, (where & A_BODY) ? B_ATOM : H_ATOM, word2code(*arg));
       }
       return TRUE;
     case TAG_FLOAT:
     { Word p = valIndirectP(*arg);
       int c =  (where & A_BODY) ? B_FLOAT : H_FLOAT;
 
-      Output_n(ci, c, p, WORDS_PER_DOUBLE);
+      Output_n(ci, c, p, CODES_PER_DOUBLE);
       return TRUE;
     }
     case TAG_STRING:
     if ( ci->islocal )
     { goto argvar;
     } else
-    { Word p = addressIndirect(*arg);
-      size_t n = wsizeofInd(*p);
-      int c = (where & A_HEAD) ? H_STRING : B_STRING;
-
-      Output_n(ci, c, p, n+1);
-      return TRUE;
+    { return output_indirect(ci,
+			     (where & A_HEAD) ? H_STRING : B_STRING,
+			     addressIndirect(*arg));
     }
   }
 
@@ -3009,7 +3085,7 @@ A non-void variable. Create a I_USERCALL0 instruction for it.
     { Output_0(ci, I_DET);
       succeed;
     } else
-    { functor = lookupFunctorDef(*arg, 0);
+    { functor = lookupFunctorDef(word2functor(*arg), 0);
       fdef = NULL;				/* NULL --> no arguments */
     }
   } else
@@ -3064,24 +3140,24 @@ appropriate calling instruction.
   if ( ci->at_context.type != TM_NONE )
   { if ( ci->at_context.type == TM_MODULE )
     { Module cm = ci->at_context.module;
-      code ctm = (tm==ci->module) ? (code)0 : (code)tm;
+      code ctm = (tm==ci->module) ? (code)0 : ptr2code(tm);
 
-      Output_3(ci, callatm(call), ctm, (code)cm, (code)proc);
+      Output_3(ci, callatm(call), ctm, ptr2code(cm), ptr2code(proc));
     } else
     { int idx = ci->at_context.var_index;
-      code ctm = (tm==ci->module) ? (code)0 : (code)tm;
+      code ctm = (tm==ci->module) ? (code)0 : ptr2code(tm);
 
-      Output_3(ci, callatmv(call), ctm, VAROFFSET(idx), (code)proc);
+      Output_3(ci, callatmv(call), ctm, VAROFFSET(idx), ptr2code(proc));
     }
   } else
 #endif
   { if ( tm == ci->module )
-    { Output_1(ci, call, (code) proc);
+    { Output_1(ci, call, ptr2code(proc));
       if ( call == I_DEPART &&
 	   ci->procedure )
 	lco(ci, pc0);
     } else
-    { Output_2(ci, mcall(call), (code)tm, (code)proc);
+    { Output_2(ci, mcall(call), ptr2code(tm), ptr2code(proc));
     }
   }
 
@@ -3121,13 +3197,13 @@ compileSimpleAddition(DECL_LD Word sc, compileInfo *ci)
 	if ( (vi=isIndexedVarTerm(*a1)) >= 0 &&
 	     !isFirstVar(ci->used_var, vi) &&
 	     is_portable_smallint(*a2) )
-	{ intptr_t i = valInt(*a2);
+	{ sword i = valInt(*a2);
 
 	  if ( neg )
 	    i = -i;			/* tagged int: cannot overflow */
 
 	  isFirstVarSet(ci->used_var, rvar);
-	  Output_3(ci, A_ADD_FC, VAROFFSET(rvar), VAROFFSET(vi), i);
+	  Output_3(ci, A_ADD_FC, VAROFFSET(rvar), VAROFFSET(vi), (code)i);
 	  succeed;
 	}
 
@@ -3146,7 +3222,14 @@ compileSimpleAddition(DECL_LD Word sc, compileInfo *ci)
 
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-Perform LCO optimization when possible.
+Perform LCO optimization  when possible.  `pc0` is the  PC offset that
+starts  the  instructions preparing  the  last  call and  ending  with
+I_DEPART <proc>
+
+This code analyses  the code that sets up the  arguments to <proc> and
+emits code  to deal  with the  LCO case, ending  either in  I_TCALL or
+I_LCALL <proc>.  Finally, we swap the LCO and non-LCO code using three
+calls to reverse_code().
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static void
@@ -3219,6 +3302,15 @@ lco(CompileInfo ci, size_t pc0)
 	Output_2(ci, L_SMALLINT, VAROFFSET(oarg), a);
 	break;
       }
+#if CODES_PER_WORD > 1
+      case B_SMALLINTW:
+      { word a;
+	s = code_get_word(s, &a);
+	Output_1(ci, L_SMALLINTW, VAROFFSET(oarg));
+	Output_an(ci, &a, CODES_PER_WORD);
+	break;
+      }
+#endif
       case B_ATOM:
       { code a = *s++;
 	PL_register_atom(a);		/* TBD: unregister on failure */
@@ -3235,12 +3327,12 @@ lco(CompileInfo ci, size_t pc0)
     FIX_BUFFER_SHIFT();
   }
 
-  Procedure depart_proc = (Procedure)e[-1];
+  Procedure depart_proc = code2ptr(Procedure, e[-1]);
 
   if ( ci->procedure ==	depart_proc )
     Output_0(ci, I_TCALL);
   else
-    Output_1(ci, I_LCALL, (code)depart_proc);
+    Output_1(ci, I_LCALL, ptr2code(depart_proc));
 
   FIX_BUFFER_SHIFT();
 
@@ -3375,47 +3467,27 @@ compileArithArgument(DECL_LD Word arg, compileInfo *ci)
 
   if ( isRational(*arg) )
   { if ( storage(*arg) == STG_INLINE )
-    { Output_1(ci, A_INTEGER, valInt(*arg));
-    } else
-    { Word p = addressIndirect(*arg);
-      size_t  n = wsizeofInd(*p);
-
-      if ( n == sizeof(int64_t)/sizeof(word) )
-      { p++;
-	{
-#if SIZEOF_VOIDP == 8
-	  int64_t val = *(int64_t*)p;
-	  Output_1(ci, A_INTEGER, val);
+    { sword i = valInt(*arg);
+#if CODES_PER_WORD == 1
+      Output_1(ci, A_INTEGER, i);
 #else
-	  union
-	  { int64_t val;
-	    word w[WORDS_PER_INT64];
-	  } cvt;
-	  Word vp = cvt.w;
-
-	  cpInt64Data(vp, p);
-
-	  if ( cvt.val >= LONG_MIN && cvt.val <= LONG_MAX )
-	  { Output_1(ci, A_INTEGER, (word)cvt.val);
-	  } else
-	  { Output_n(ci, A_INT64, cvt.w, WORDS_PER_INT64);
-	  }
-#endif
-	}
-#ifdef O_BIGNUM
-      } else if ( p[1]&MP_RAT_MASK )
-      { Output_n(ci, A_MPQ, p, n+1);
+      if ( (scode)i == i )
+      { Output_1(ci, A_INTEGER, (scode)i);
       } else
-      { Output_n(ci, A_MPZ, p, n+1);
-#endif
+      { Output_n(ci, A_INTEGERW, &i, CODES_PER_WORD);
       }
+#endif
+    } else
+    { int op = isMPQNum(*arg) ? A_MPQ : A_MPZ;
+
+      output_indirect(ci, op, addressIndirect(*arg));
     }
     succeed;
   }
   if ( isFloat(*arg) )
   { Word p = valIndirectP(*arg);
 
-    Output_n(ci, A_DOUBLE, p, WORDS_PER_DOUBLE);
+    Output_n(ci, A_DOUBLE, p, CODES_PER_DOUBLE);
     succeed;
   }
 
@@ -3436,7 +3508,7 @@ compileArithArgument(DECL_LD Word arg, compileInfo *ci)
     Word a;
 
     if ( isTextAtom(*arg) )
-    { fdef = lookupFunctorDef(*arg, 0);
+    { fdef = lookupFunctorDef(word2functor(*arg), 0);
       ar = 0;
       a = NULL;
     } else if ( isTerm(*arg) )
@@ -3449,7 +3521,7 @@ compileArithArgument(DECL_LD Word arg, compileInfo *ci)
     case_char_constant:
       if ( !getCharExpression(arg, &n) )
 	return FALSE;
-      Output_1(ci, A_INTEGER, n.value.i);
+      Output_1(ci, A_INTEGER, (code)n.value.i);
       return TRUE;
     } else
     { PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_evaluable, pushWordAsTermRef(arg));
@@ -3473,7 +3545,7 @@ compileArithArgument(DECL_LD Word arg, compileInfo *ci)
       int vindex;
 
       deRef2(a+1, m);
-      if ( isAtom(*m) && atom_to_rounding(*m, &mode) )
+      if ( isAtom(*m) && atom_to_rounding(word2atom(*m), &mode) )
       { Output_1(ci, A_ROUNDTOWARDS_A, mode);
       } else if ( (rc=arithVarOffset(m, ci, &vindex)) == TRUE )
       { Output_1(ci, A_ROUNDTOWARDS_V, VAROFFSET(vindex));
@@ -3656,9 +3728,9 @@ compileBodyUnify(DECL_LD Word arg, compileInfo *ci)
   unify_term:
     first = isFirstVarSet(ci->used_var, i1);
     if ( is_portable_constant(*a2) )
-    { Output_2(ci, first ? B_UNIFY_FC : B_UNIFY_VC, VAROFFSET(i1), *a2);
+    { Output_2(ci, first ? B_UNIFY_FC : B_UNIFY_VC, VAROFFSET(i1), word2code(*a2));
       if ( isAtom(*a2) )
-	PL_register_atom(*a2);
+	PL_register_atom(word2atom(*a2));
     } else
     { int where = (first ? A_BODY : A_HEAD|A_ARG);
       Output_1(ci, first ? B_UNIFY_FIRSTVAR : B_UNIFY_VAR, VAROFFSET(i1));
@@ -3743,18 +3815,18 @@ compileBodyEQ(DECL_LD Word arg, compileInfo *ci)
   { int f1 = isFirstVar(ci->used_var, i1);
 
     if ( f1 ) Output_1(ci, C_VAR, VAROFFSET(i1));
-    Output_2(ci, B_EQ_VC, VAROFFSET(i1), *a2);
+    Output_2(ci, B_EQ_VC, VAROFFSET(i1), word2code(*a2));
     if ( isAtom(*a2) )
-      PL_register_atom(*a2);
+      PL_register_atom(word2atom(*a2));
     return TRUE;
   }
   if ( i2 >= 0 && is_portable_constant(*a1) )	/* const == Var */
   { int f2 = isFirstVar(ci->used_var, i2);
 
     if ( f2 ) Output_1(ci, C_VAR, VAROFFSET(i2));
-    Output_2(ci, B_EQ_VC, VAROFFSET(i2), *a1);
+    Output_2(ci, B_EQ_VC, VAROFFSET(i2), word2code(*a1));
     if ( isAtom(*a1) )
-      PL_register_atom(*a1);
+      PL_register_atom(word2atom(*a1));
     return TRUE;
   }
 
@@ -3822,18 +3894,18 @@ compileBodyNEQ(DECL_LD Word arg, compileInfo *ci)
   { int f1 = isFirstVar(ci->used_var, i1);
 
     if ( f1 ) Output_1(ci, C_VAR, VAROFFSET(i1));
-    Output_2(ci, B_NEQ_VC, VAROFFSET(i1), *a2);
+    Output_2(ci, B_NEQ_VC, VAROFFSET(i1), word2code(*a2));
     if ( isAtom(*a2) )
-      PL_register_atom(*a2);
+      PL_register_atom(word2atom(*a2));
     return TRUE;
   }
   if ( i2 >= 0 && is_portable_constant(*a1) )	/* const == Var */
   { int f2 = isFirstVar(ci->used_var, i2);
 
     if ( f2 ) Output_1(ci, C_VAR, VAROFFSET(i2));
-    Output_2(ci, B_NEQ_VC, VAROFFSET(i2), *a1);
+    Output_2(ci, B_NEQ_VC, VAROFFSET(i2), word2code(*a1));
     if ( isAtom(*a1) )
-      PL_register_atom(*a1);
+      PL_register_atom(word2atom(word2atom(*a1)));
     return TRUE;
   }
 
@@ -3872,8 +3944,9 @@ compileBodyArg3(DECL_LD Word arg, compileInfo *ci)
 
       deRef2(&av[0], a1);
       if ( isTaggedInt(*a1) )
-      { isFirstVarSet(ci->used_var, v3);
-	Output_3(ci, B_ARG_CF, *a1, VAROFFSET(v2), VAROFFSET(v3));
+      { scode i = (scode)valInt(*a1); /* TBD: check negative/overflow? */
+	isFirstVarSet(ci->used_var, v3);
+	Output_3(ci, B_ARG_CF, i, VAROFFSET(v2), VAROFFSET(v3));
 	return TRUE;
       }
       if ( (v1=isIndexedVarTerm(*a1)) >= 0 &&
@@ -4077,7 +4150,31 @@ compileBodyShift(DECL_LD Word arg, compileInfo *ci, int for_copy)
   return FALSE;
 }
 
+		 /*******************************
+		 *       INDIRECT IN CODE       *
+		 *******************************/
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Add an indirect to the code.  It is not clear how this should be done.
+Typically, the alignment requirements of  the stacks are now different
+than in the code space.
+
+Note  that we  could also  consider  adding such  terms "outside"  the
+stacks, notably if we have unconstrained 64 bit pointers.
+
+For now, we copy the indirect using  the layout of the stacks into the
+code space.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static int
+output_indirect(DECL_LD compileInfo *ci, code op, Word p)
+{ word m = *p;
+  size_t wn = wsizeofInd(m);
+  size_t codesize = (wn+1)*sizeof(word)/sizeof(code);
+  Output_0(ci, op);
+  Output_an(ci, p, codesize);
+  return TRUE;
+}
 
 		 /*******************************
 		 *	     ATOM-GC		*
@@ -4085,27 +4182,20 @@ compileBodyShift(DECL_LD Word arg, compileInfo *ci, int for_copy)
 
 #ifdef O_ATOMGC
 
-void
-forAtomsInClause(Clause clause, void (func)(atom_t a))
-{ Code PC, ep;
-  code c;
-
-  PC = clause->codes;
-  ep = PC + clause->code_size;
+int
+forAtomsInCodes(size_t size, Code PC, int (func)(atom_t a, void*), void *ctx)
+{ Code ep = PC + size;
 
   for( ; PC < ep; PC = stepPC(PC) )
-  { c = fetchop(PC);
+  { code c = fetchop(PC);
 
     switch(c)
     { case H_ATOM:
       case B_ATOM:
       { word w = PC[1];
 
-	if ( isAtom(w) )
-	{ atom_t a = w;
-
-	  (*func)(a);
-	}
+	if ( isAtom(w) && !(*func)(word2atom(w), ctx) )
+	  return FALSE;
 	break;
       }
       case B_EQ_VC:
@@ -4113,12 +4203,19 @@ forAtomsInClause(Clause clause, void (func)(atom_t a))
       case B_UNIFY_VC:			/* var, const */
       { word w = PC[2];
 
-	if ( isAtom(w) )
-	  PL_unregister_atom(w);
+	if ( isAtom(w) && !(*func)(word2atom(w), ctx) )
+	  return FALSE;
 	break;
       }
     }
   }
+
+  return TRUE;
+}
+
+int
+forAtomsInClause(Clause clause, int (func)(atom_t a, void*), void *ctx)
+{ return forAtomsInCodes(clause->code_size, clause->codes, func, ctx);
 }
 
 #endif /*O_ATOMGC*/
@@ -4137,15 +4234,18 @@ stepDynPC(Code PC, const code_info *ci)
     { case CA1_STRING:
       case CA1_MPZ:
       case CA1_MPQ:
-      { word m = *PC++;
-	PC += wsizeofInd(m);
+      { word m;
+	Word data;
+	PC = code_get_indirect(PC, &m, &data);
+	(void)m;
+	(void)data;
 	break;
       }
       case CA1_FLOAT:
-	PC += WORDS_PER_DOUBLE;
+	PC += CODES_PER_DOUBLE;
 	break;
-      case CA1_INT64:
-	PC += WORDS_PER_INT64;
+      case CA1_WORD:
+	PC += CODES_PER_WORD;
 	break;
       default:
 	PC++;
@@ -4655,9 +4755,8 @@ skipArgs(Code PC, int skip)
 	return PC;			/* See (*) */
       case H_ATOM:
       case H_SMALLINT:
+      case H_SMALLINTW:
       case H_NIL:
-      case H_INT64:
-      case H_INTEGER:
       case H_FLOAT:
       case H_STRING:
       case H_MPZ:
@@ -4668,9 +4767,8 @@ skipArgs(Code PC, int skip)
       case H_LIST_FF:
       case B_ATOM:
       case B_SMALLINT:
+      case B_SMALLINTW:
       case B_NIL:
-      case B_INT64:
-      case B_INTEGER:
       case B_FLOAT:
       case B_STRING:
       case B_MPZ:
@@ -4741,12 +4839,24 @@ argKey(Code PC, int skip, word *key)
     switch(c)
     { case H_FUNCTOR:
       case H_RFUNCTOR:
-	*key = (functor_t)*PC;
+	*key = code2functor(*PC);
 	return TRUE;
       case H_ATOM:
-      case H_SMALLINT:
-	*key = *PC;
+	*key = code2atom(*PC);
 	return TRUE;
+      case H_SMALLINT:
+      { scode i = *PC;
+	*key = consInt(i);
+	return TRUE;
+      }
+#if CODES_PER_WORD > 1
+      case H_SMALLINTW:
+      { word m;
+	code_get_word(PC, &m);
+	*key = consInt(m);
+	return TRUE;
+      }
+#endif
       case H_NIL:
 	*key = ATOM_nil;
 	return TRUE;
@@ -4755,29 +4865,16 @@ argKey(Code PC, int skip, word *key)
       case H_RLIST:
 	*key = FUNCTOR_dot2;
 	return TRUE;
-#if SIZEOF_VOIDP == 4
-      case H_INT64:			/* only on 32-bit hardware! */
-	*key = murmur_key(PC, 2*sizeof(*PC));
-	return TRUE;
-#endif
-      case H_INTEGER:
-#if SIZEOF_VOIDP == 4
-      { int64_t val;
-	val = (int64_t)(intptr_t)*PC;
-	*key = murmur_key(&val, sizeof(val));
-      }
-#else
-	*key = murmur_key(PC, sizeof(*PC));
-#endif
-	return TRUE;
       case H_FLOAT:
 	*key = murmur_key(PC, sizeof(double));
 	return TRUE;
       case H_STRING:
-      { word m = *PC++;
+      { word m;
+	Word data;
+	PC = code_get_indirect(PC, &m, &data);
 	size_t n = wsizeofInd(m);
 
-	*key = murmur_key(PC, n*sizeof(*PC));
+	*key = murmur_key(data, n*sizeof(word));
 	return TRUE;
       }
 #if O_BIGNUM
@@ -4837,12 +4934,24 @@ arg1Key(Code PC, word *key)
     switch(c)
     { case H_FUNCTOR:
       case H_RFUNCTOR:
-	*key = (functor_t)*PC;
+	*key = code2functor(*PC);
 	return TRUE;
       case H_ATOM:
-      case H_SMALLINT:
-	*key = *PC;
+	*key = code2atom(*PC);
 	return TRUE;
+      case H_SMALLINT:
+      { scode i = *PC;
+	*key = consInt(i);
+	return TRUE;
+      }
+#if CODES_PER_WORD > 1
+      case H_SMALLINTW:
+      { word w;
+	code_get_word(PC, &w);
+	*key = consInt((sword)w);
+	return TRUE;
+      }
+#endif
       case H_NIL:
 	*key = ATOM_nil;
 	return TRUE;
@@ -4851,8 +4960,6 @@ arg1Key(Code PC, word *key)
       case H_RLIST:
 	*key = FUNCTOR_dot2;
 	return TRUE;
-      case H_INT64:
-      case H_INTEGER:
       case H_FLOAT:
       case H_STRING:
       case H_MPZ:
@@ -4904,7 +5011,7 @@ clauseBodyContext(const Clause cl)
 
       switch(op)
       { case I_CONTEXT:
-	  return (Module)PC[1];
+	  return code2ptr(Module, PC[1]);
 	case I_EXIT:
 	case I_EXITFACT:
 	  assert(0);
@@ -5288,30 +5395,9 @@ decompile_head(DECL_LD Clause clause, term_t head, decompileInfo *di)
       case H_MPZ:
       case H_MPQ:
 	{ word copy = globalIndirectFromCode(&PC);
-	  if ( !copy || !_PL_unify_atomic(argp, copy) )
+	  if ( !copy || !PL_unify_atomic(argp, copy) )
 	    return FALSE;
 	  break;
-	}
-      case H_INTEGER:
-	{ intptr_t *p = (intptr_t*)PC;
-	  intptr_t v = *p++;
-	  PC = (Code)p;
-	  TRY(PL_unify_int64(argp, v));
-	  break;
-	}
-      case H_INT64:
-	{ Word p = allocGlobal(2+WORDS_PER_INT64);
-	  word w;
-
-	  if ( p )
-	  { w = consPtr(p, TAG_INTEGER|STG_GLOBAL);
-	    *p++ = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-	    cpInt64Data(p, PC);
-	    *p   = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-	    TRY(_PL_unify_atomic(argp, w));
-	    break;
-	  } else
-	    return FALSE;
 	}
       case H_FLOAT:
 	{ Word p = allocGlobal(2+WORDS_PER_DOUBLE);
@@ -5322,15 +5408,25 @@ decompile_head(DECL_LD Clause clause, term_t head, decompileInfo *di)
 	    *p++ = mkIndHdr(WORDS_PER_DOUBLE, TAG_FLOAT);
 	    cpDoubleData(p, PC);
 	    *p   = mkIndHdr(WORDS_PER_DOUBLE, TAG_FLOAT);
-	    TRY(_PL_unify_atomic(argp, w));
+	    TRY(PL_unify_atomic(argp, w));
 	    break;
 	  } else
 	    return FALSE;
 	}
       case H_ATOM:
-      case H_SMALLINT:
-	  TRY(_PL_unify_atomic(argp, XR(*PC++)));
+	  TRY(PL_unify_atomic(argp, XR(*PC++)));
 	  break;
+      case H_SMALLINT:
+        { scode i = *PC++;
+	  TRY(PL_unify_atomic(argp, consInt(i)));
+	  break;
+	}
+      case H_SMALLINTW:
+        { word w;
+	  PC = code_get_word(PC, &w);
+	  TRY(PL_unify_atomic(argp, consInt((sword)w)));
+	  break;
+	}
       case H_FIRSTVAR:
       case H_VAR:
 	  TRY(unifyVarGC(valTermRef(argp), di->variables,
@@ -5443,8 +5539,8 @@ decompile_head(DECL_LD Clause clause, term_t head, decompileInfo *di)
 }
 
 #define makeVarRef(i)	((i)<<LMASK_BITS|TAG_REFERENCE)
-#define isVarRef(w)	((tag(w) == TAG_REFERENCE && \
-			  storage(w) == STG_INLINE) ? valInt(w) : -1)
+#define isVarRef(w)	((ssize_t)((tag(w) == TAG_REFERENCE &&		\
+				    storage(w) == STG_INLINE) ? valInt(w) : -1))
 
 static functor_t
 clause_functor(const Clause cl)
@@ -5568,7 +5664,7 @@ decompile(Clause clause, term_t term, term_t bindings)
   }
 
   if ( fetchop(PC) == I_CONTEXT )
-  { Module context = (Module)PC[1];
+  { Module context = code2ptr(Module, PC[1]);
     term_t a = PL_new_term_ref();
 
     PC += 2;
@@ -5709,41 +5805,27 @@ decompileBodyNoShift(DECL_LD decompileInfo *di, code end, Code until)
 			    continue;
 	case H_ATOM:
 	case B_ATOM:
-	case H_SMALLINT:
-	case B_SMALLINT:
 			    *ARGP++ = XR(*PC++);
 			    continue;
+	case H_SMALLINT:
+	case B_SMALLINT:
+        case A_INTEGER:
+			  { scode i = *PC++;
+			    *ARGP++ = consInt(i);
+			    continue;
+			  }
+	case H_SMALLINTW:
+	case B_SMALLINTW:
+        case A_INTEGERW:
+			  { word w;
+			    PC = code_get_word(PC,&w);
+			    *ARGP++ = consInt((sword)w);
+			    continue;
+			  }
 	case H_NIL:
 	case B_NIL:
 			    *ARGP++ = ATOM_nil;
 			    continue;
-	case H_INTEGER:
-	case B_INTEGER:
-	case A_INTEGER:
-			  { intptr_t i = (intptr_t)*PC++;
-			    int rc;
-
-			    if ( (rc=put_int64(ARGP++, i, 0)) != TRUE )
-			      return rc;
-			    continue;
-			  }
-	case H_INT64:
-	case B_INT64:
-	case A_INT64:
-			  { Word p;
-
-			    if ( !hasGlobalSpace(2+WORDS_PER_INT64) )
-			      return GLOBAL_OVERFLOW;
-
-			    p = gTop;
-			    gTop += 2+WORDS_PER_INT64;
-
-			    *ARGP++ = consPtr(p, TAG_INTEGER|STG_GLOBAL);
-			    *p++ = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-			    cpInt64Data(p, PC);
-			    *p   = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-			    continue;
-			  }
 	case H_FLOAT:
 	case B_FLOAT:
 	case A_DOUBLE:
@@ -5852,13 +5934,15 @@ decompileBodyNoShift(DECL_LD decompileInfo *di, code end, Code until)
 			    *ARGP++ = makeVarRef((int)*PC++);
 			    goto arg_vf_cont;
       case B_ARG_CF:
-			    *ARGP++ = (word)*PC++;
+			  { scode i = *PC++;
+			    *ARGP++ = consInt(i);
 			    arg_vf_cont:
 			    *ARGP++ = makeVarRef((int)*PC++);
 			    *ARGP++ = makeVarRef((int)*PC++);
 			    BUILD_TERM(FUNCTOR_arg3);
 			    pushed++;
 			    continue;
+			  }
       case H_VOID:
       case B_VOID:
 			    setVar(*ARGP++);
@@ -6060,16 +6144,16 @@ decompileBodyNoShift(DECL_LD decompileInfo *di, code end, Code until)
 			    assert(0);	/* should never happen */
 			    continue;
       case I_DEPART:
-      case I_CALL:        { Procedure proc = (Procedure)XR(*PC++);
+      case I_CALL:        { Procedure proc = code2ptr(Procedure, XR(*PC++));
 			    BUILD_TERM(proc->definition->functor->functor);
 			    pushed++;
 			    continue;
 			  }
 #ifdef O_CALL_AT_MODULE
       case I_DEPARTATMV:
-      case I_CALLATMV:	  { Module pm = (Module)XR(*PC++);
+      case I_CALLATMV:	  { Module pm = code2ptr(Module, XR(*PC++));
 			    size_t cm = XR(*PC++);
-			    Procedure proc = (Procedure)XR(*PC++);
+			    Procedure proc = code2ptr(Procedure, XR(*PC++));
 			    BUILD_TERM(proc->definition->functor->functor);
 			    if ( pm )
 			    { ARGP++;
@@ -6090,9 +6174,9 @@ decompileBodyNoShift(DECL_LD decompileInfo *di, code end, Code until)
 			    continue;
 			  }
       case I_DEPARTATM:
-      case I_CALLATM:     { Module pm = (Module)XR(*PC++);
-			    Module cm = (Module)XR(*PC++);
-			    Procedure proc = (Procedure)XR(*PC++);
+      case I_CALLATM:     { Module pm = code2ptr(Module, XR(*PC++));
+			    Module cm = code2ptr(Module, XR(*PC++));
+			    Procedure proc = code2ptr(Procedure, XR(*PC++));
 			    BUILD_TERM(proc->definition->functor->functor);
 			    if ( pm )
 			    { ARGP++;
@@ -6107,8 +6191,8 @@ decompileBodyNoShift(DECL_LD decompileInfo *di, code end, Code until)
 			  }
 #endif
       case I_DEPARTM:
-      case I_CALLM:       { Module m = (Module)XR(*PC++);
-			    Procedure proc = (Procedure)XR(*PC++);
+      case I_CALLM:       { Module m = code2ptr(Module, XR(*PC++));
+			      Procedure proc = code2ptr(Procedure, XR(*PC++));
 			    BUILD_TERM(proc->definition->functor->functor);
 			    ARGP++;
 			    ARGP[-1] = ARGP[-2];	/* swap arguments */
@@ -7005,7 +7089,7 @@ PRED_IMPL("$xr_member", 2, xr_member, PL_FA_NONDETERMINISTIC)
 	switch(ats[an++])
 	{ case CA1_PROC:
 	  { size_t i;
-	    Procedure proc = (Procedure) PC[an];
+	    Procedure proc = code2ptr(Procedure, PC[an]);
 	    rc = unify_definition(MODULE_user, term, getProcDefinition(proc), 0, 0);
 	  hit:
 	    if ( !rc )
@@ -7019,12 +7103,12 @@ PRED_IMPL("$xr_member", 2, xr_member, PL_FA_NONDETERMINISTIC)
 	    goto hit;
 	  }
 	  case CA1_DATA:
-	  { word xr = PC[an];
-	    rc = _PL_unify_atomic(term, xr);
+	  { word xr = code2word(PC[an]);
+	    rc = PL_unify_atomic(term, xr);
 	    goto hit;
 	  }
 	  case CA1_MODULE:
-	  { Module xr = (Module)PC[an];
+	  { Module xr = code2ptr(Module, PC[an]);
 	    rc = PL_unify_atom(term, xr->name);
 	    goto hit;
 	  }
@@ -7046,11 +7130,11 @@ PRED_IMPL("$xr_member", 2, xr_member, PL_FA_NONDETERMINISTIC)
 	while(ats[an])
 	{ switch(ats[an++])
 	  { case CA1_DATA:
-	      if ( _PL_unify_atomic(term, PC[an]) )
+	      if ( PL_unify_atomic(term, code2word(PC[an])) )
 		succeed;
 	      break;
 	    case CA1_MODULE:
-	    { Module xr = (Module)PC[an];
+	    { Module xr = code2ptr(Module, PC[an]);
 
 	      if ( xr && PL_unify_atom(term, xr->name) )
 		succeed;
@@ -7090,7 +7174,7 @@ PRED_IMPL("$xr_member", 2, xr_member, PL_FA_NONDETERMINISTIC)
 	while(ats[an])
 	{ switch(ats[an++])
 	  { case CA1_PROC:
-	    { Procedure pa = (Procedure)PC[an];
+	    { Procedure pa = code2ptr(Procedure, PC[an]);
 	      Definition def = getProcDefinition(pa);
 
 	      if ( pd == def )
@@ -7194,7 +7278,7 @@ unify_vmi(term_t t, Code bp)
 	}
 	case CA1_INTEGER:
 	case CA1_JUMP:
-	{ intptr_t i = (intptr_t)*bp++;
+	{ scode i = (scode)*bp++;
 
 	  rc = PL_put_int64(av+an, i);
 	  break;
@@ -7210,16 +7294,14 @@ unify_vmi(term_t t, Code bp)
 	  rc = PL_put_float(av+an, v.d);
 	  break;
 	}
-	case CA1_INT64:
-	{ int64_t i;
-	  Word dp = (Word)&i;
-
-	  cpInt64Data(dp, bp);
-	  rc = PL_put_int64(av+an, i);
+	case CA1_WORD:
+	{ word w;
+	  bp = code_get_word(bp, &w);
+	  rc = PL_put_int64(av+an, (sword)w);
 	  break;
 	}
 	case CA1_DATA:
-	{ rc = _PL_unify_atomic(av+an, *bp++);
+	{ rc = PL_unify_atomic(av+an, code2word(*bp++));
 	  break;
 	}
 	case CA1_FUNC:
@@ -7228,21 +7310,21 @@ unify_vmi(term_t t, Code bp)
 	  break;
 	}
 	case CA1_MODULE:
-	{ Module m = (Module)*bp++;
+	{ Module m = code2ptr(Module, *bp++);
 	  if ( m )			/* I_DEPARTAM can have NULL module */
 	    PL_put_atom(av+an, m->name);
 	  rc = TRUE;
 	  break;
 	}
 	case CA1_PROC:
-	{ Procedure proc = (Procedure)*bp++;
+	{ Procedure proc = code2ptr(Procedure, *bp++);
 
 	  rc = unify_definition(MODULE_user, av+an, proc->definition, 0,
 				GP_QUALIFY|GP_NAMEARITY);
 	  break;
 	}
 	case CA1_CLAUSEREF:
-	{ ClauseRef cref = (ClauseRef)*bp++;
+	{ ClauseRef cref = code2ptr(ClauseRef, *bp++);
 
 	  rc = PL_unify_term(av+an, PL_FUNCTOR, FUNCTOR_clause1,
 			     PL_POINTER, cref->value.clause);
@@ -7250,7 +7332,7 @@ unify_vmi(term_t t, Code bp)
 	  break;
 	}
 	case CA1_FOREIGN:
-	{ void *func = (void*)*bp++;
+	{ void *func = code2ptr(void*, *bp++);
 
 #if defined(HAVE_DLADDR) && !defined(O_STATIC_EXTENSIONS)
 	  Dl_info info;
@@ -7280,7 +7362,7 @@ unify_vmi(term_t t, Code bp)
 	case CA1_MPQ:
 	case CA1_STRING:
 	{ word c = globalIndirectFromCode(&bp);
-	  rc = _PL_unify_atomic(av+an, c);
+	  rc = PL_unify_atomic(av+an, c);
 	  break;
 	}
 	default:
@@ -7483,23 +7565,23 @@ wrapper library in Prolog.
 static const code_info *
 lookup_vmi(atom_t name)
 { GET_LD
-  static Table ctable = NULL;
+  static TableWP ctable = NULL;	/* TBD: Must be cleared in PL_cleanup() */
 
   if ( !ctable )
   { PL_LOCK(L_MISC);
     if ( !ctable )
     { int i;
 
-      ctable = newHTable(32);
+      ctable = newHTableWP(32);
       for(i=0; i<I_HIGHEST; i++)
-	addNewHTable(ctable,
-		     (void*)PL_new_atom(codeTable[i].name),
-		     (void*)&codeTable[i]);
+	addNewHTableWP(ctable,
+		       PL_new_atom(codeTable[i].name),
+		       (code_info*)&codeTable[i]);
     }
     PL_UNLOCK(L_MISC);
   }
 
-  return lookupHTable(ctable, (void*)name);
+  return lookupHTableWP(ctable, name);
 }
 
 
@@ -7567,13 +7649,13 @@ vm_compile_instruction(term_t t, CompileInfo ci)
 	      Output_an(ci, p, WORDS_PER_DOUBLE);
 	      break;
 	    }
-	    case CA1_INT64:
+	    case CA1_WORD:
 	    { int64_t val;
-	      Word p = (Word)&val;
 
 	      if ( !PL_get_int64_ex(a, &val) )
 		fail;
-	      Output_an(ci, p, WORDS_PER_INT64);
+	      sword w = val;
+	      Output_an(ci, (Code)&w, CODES_PER_WORD);
 	      break;
 	    }
 	    case CA1_MPZ:
@@ -7612,9 +7694,9 @@ vm_compile_instruction(term_t t, CompileInfo ci)
 	      if ( !isConst(val) )
 		return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_atomic, a);
 	      if ( isAtom(val) )
-		PL_register_atom(val);
+		PL_register_atom(word2atom(val));
 
-	      Output_a(ci, val);
+	      Output_a(ci, word2code(val));
 	      break;
 	    }
 	    case CA1_FUNC:
@@ -7649,7 +7731,7 @@ vm_compile_instruction(term_t t, CompileInfo ci)
 	    { Procedure proc;
 
 	      if ( get_procedure(a, &proc, 0, GP_CREATE|GP_NAMEARITY) )
-	      { Output_a(ci, (code)proc);
+	      { Output_a(ci, ptr2code(proc));
 		break;
 	      }
 	      fail;
@@ -8230,9 +8312,9 @@ matching_unify_break(Clause clause, int offset, code op)
 
 
 static void
-free_break_symbol(void *name, void *value)
-{ BreakPoint bp = value;
-  Code PC = name;
+free_break_symbol(table_key_t name, table_value_t value)
+{ BreakPoint bp = val2ptr(value);
+  Code PC = val2ptr(name);
 
   *PC = bp->saved_instruction;
 
@@ -8242,7 +8324,7 @@ free_break_symbol(void *name, void *value)
 void
 cleanupBreakPoints(void)
 { if ( breakTable )
-  { destroyHTable(breakTable);
+  { destroyHTablePP(breakTable);
     breakTable = NULL;
   }
 }
@@ -8264,7 +8346,7 @@ set_second:
   dop = decode(op);
 
   if ( !breakTable )
-  { breakTable = newHTable(16);
+  { breakTable = newHTablePP(16);
     breakTable->free_symbol = free_break_symbol;
   }
 
@@ -8278,7 +8360,7 @@ set_second:
     bp->offset = offset;
     bp->saved_instruction = op;
 
-    addNewHTable(breakTable, PC, bp);
+    addNewHTablePP(breakTable, PC, bp);
     *PC = encode(D_BREAK);
     set(clause, HAS_BREAKPOINTS);
 
@@ -8303,7 +8385,7 @@ clearBreak(Clause clause, int offset)
 
 clear_second:
   PC = PC0 = clause->codes + offset;
-  if ( !breakTable || !(bp = lookupHTable(breakTable, PC)) )
+  if ( !breakTable || !(bp = lookupHTablePP(breakTable, PC)) )
   { term_t brk, cl;
 
     if ( second_bp )
@@ -8321,7 +8403,7 @@ clear_second:
   }
 
   *PC = bp->saved_instruction;
-  deleteHTable(breakTable, PC0);
+  deleteHTablePP(breakTable, PC0);
   freeHeap(bp, sizeof(*bp));
 
   if ( (offset=matching_unify_break(clause, offset, decode(*PC))) )
@@ -8343,7 +8425,7 @@ clearBreakPointsClause(Clause clause)
     delayEvents();
     PL_LOCK(L_BREAK);
     FOR_TABLE(breakTable, name, value)
-    { BreakPoint bp = (BreakPoint)value;
+    { BreakPoint bp = val2ptr(value);
       if ( bp->clause == clause )
       { int offset = bp->offset;
 	clearBreak(clause, bp->offset);
@@ -8367,7 +8449,7 @@ replacedBreakUnlocked(Code PC)
 
   c = decode(*PC);
   if ( c == D_BREAK )
-  { if ( (bp = lookupHTable(breakTable, PC)) )
+  { if ( (bp = lookupHTablePP(breakTable, PC)) )
     { c = bp->saved_instruction;
     } else
     { sysError("No saved instruction for break at %p", PC);
@@ -8439,14 +8521,14 @@ static
 PRED_IMPL("$current_break", 2, current_break, PL_FA_NONDETERMINISTIC)
 { GET_LD
   TableEnum e = NULL;			/* make gcc happy */
-  BreakPoint bp;
+  table_value_t tv;
 
   if ( !breakTable )
     fail;
 
   switch( CTX_CNTRL )
   { case FRG_FIRST_CALL:
-      e = newTableEnum(breakTable);
+      e = newTableEnumPP(breakTable);
       break;
     case FRG_REDO:
       e = CTX_PTR;
@@ -8459,8 +8541,9 @@ PRED_IMPL("$current_break", 2, current_break, PL_FA_NONDETERMINISTIC)
       assert(0);
   }
 
-  while( advanceTableEnum(e, NULL, (void**)&bp) )
-  { fid_t cid;
+  while( advanceTableEnum(e, NULL, &tv) )
+  { BreakPoint bp = val2ptr(tv);
+    fid_t cid;
 
     if ( !(cid=PL_open_foreign_frame()) )
     { freeTableEnum(e);

@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2016-2022, VU University Amsterdam
+    Copyright (c)  2016-2024, VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -80,9 +80,9 @@ TODO
 #define TRIE_ERROR_VAL       RESERVED_TRIE_VAL(1)
 #define TRIE_KEY_POP(n)      RESERVED_TRIE_VAL(10+(n))
 
-#define IS_TRIE_KEY_POP(w)   ((tagex(w) == (TAG_VAR|STG_LOCAL) && \
-			       ((w)>>LMASK_BITS) > 10) ? ((w)>>LMASK_BITS) - 10 \
-						       : 0)
+#define IS_TRIE_KEY_POP(w)   ((size_t)((tagex(w) == (TAG_VAR|STG_LOCAL) && \
+					((w)>>LMASK_BITS) > 10) ? ((w)>>LMASK_BITS) - 10 \
+								: 0))
 
 #define NVARS_FAST 100
 
@@ -200,13 +200,13 @@ static inline void	release_value(word value);
 static inline void
 acquire_key(word key)
 { if ( isAtom(key) )
-    PL_register_atom(key);
+    PL_register_atom(word2atom(key));
 }
 
 static inline void
 release_key(word key)
 { if ( isAtom(key) )
-    PL_unregister_atom(key);
+    PL_unregister_atom(word2atom(key));
 }
 
 
@@ -239,7 +239,7 @@ trie_discard_clause(trie *trie)
 { atom_t dbref;
 
   if ( (dbref=trie->clause) )
-  { if ( COMPARE_AND_SWAP_WORD(&trie->clause, dbref, 0) &&
+  { if ( COMPARE_AND_SWAP_ATOM(&trie->clause, dbref, 0) &&
 	 GD->cleaning == CLN_NORMAL )		/* otherwise reclaims clause */
     { ClauseRef cref = clause_clref(dbref);	/* from two ends */
 
@@ -289,7 +289,7 @@ get_child(DECL_LD trie_node *n, word key)
 	  return children.key->child;
         return NULL;
       case TN_HASHED:
-	return lookupHTable(children.hash->table, (void*)key);
+	return lookupHTableWP(children.hash->table, key);
       default:
 	assert(0);
     }
@@ -364,21 +364,20 @@ next:
 	goto next;
       }
       case TN_HASHED:
-      { Table table = children.hash->table;
-	TableEnum e = newTableEnum(table);
-	void *k, *v;
+      { TableWP table = children.hash->table;
+	TableEnum e = newTableEnumWP(table);
 	trie_children_key *os;
 
 	if ( (os=children.hash->old_single) )	/* see insert_child() (*) note */
 	  free_to_pool(trie->alloc_pool, os, sizeof(*os));
 	free_to_pool(trie->alloc_pool, children.hash, sizeof(*children.hash));
 
-	while(advanceTableEnum(e, &k, &v))
-	{ clear_node(trie, v, TRUE);
-	}
+	table_value_t tv;
+	while(advanceTableEnum(e, NULL, &tv))
+	  clear_node(trie, val2ptr(tv), TRUE);
 
 	freeTableEnum(e);
-	destroyHTable(table);
+	destroyHTableWP(table);
 	break;
       }
     }
@@ -420,7 +419,7 @@ prune_node(trie *trie, trie_node *n)
 	  }
 	  break;
 	case TN_HASHED:
-	  deleteHTable(children.hash->table, (void*)n->key);
+	  deleteHTableWP(children.hash->table, n->key);
 	  empty = children.hash->table->size == 0;
 	  break;
       }
@@ -464,17 +463,17 @@ prune_trie(trie *trie, trie_node *root,
 	  continue;
 	}
 	case TN_HASHED:
-	{ Table table = children.hash->table;
-	  TableEnum e = newTableEnum(table);
-	  void *k, *v;
+	{ TableWP table = children.hash->table;
+	  TableEnum e = newTableEnumWP(table);
+	  table_value_t v;
 
-	  if ( advanceTableEnum(e, &k, &v) )
+	  if ( advanceTableEnum(e, NULL, &v) )
 	  { if ( !pushSegStack(&stack, ps, prune_state) )
 	      outOfCore();
 	    ps.e = e;
 	    ps.n = n;
 
-	    n = v;
+	    n = val2ptr(v);
 	    continue;
 	  } else
 	  { freeTableEnum(e);
@@ -502,7 +501,7 @@ prune_trie(trie *trie, trie_node *root,
 	      free_to_pool(trie->alloc_pool, children.key, sizeof(*children.key));
 	    break;
 	  case TN_HASHED:
-	    deleteHTable(children.hash->table, (void*)n->key);
+	    deleteHTableWP(children.hash->table, n->key);
 	    choice = TRUE;
 	    break;
 	}
@@ -515,10 +514,10 @@ prune_trie(trie *trie, trie_node *root,
 
   next_choice:
     if ( ps.e )
-    { void *k, *v;
+    { table_value_t v;
 
-      if ( advanceTableEnum(ps.e, &k, &v) )
-      { n = v;
+      if ( advanceTableEnum(ps.e, NULL, &v) )
+      { n = val2ptr(v);
 	continue;
       } else
       { n = ps.n;
@@ -594,11 +593,10 @@ insert_child(DECL_LD trie *trie, trie_node *n, word key)
 	    }
 
 	    hnode->type     = TN_HASHED;
-	    hnode->table    = newHTable(4);
+	    hnode->table    = newHTableWP(4);
 	    hnode->var_mask = 0;
-	    addHTable(hnode->table, (void*)children.key->key,
-				    children.key->child);
-	    addHTable(hnode->table, (void*)key, (void*)new);
+	    addHTableWP(hnode->table, children.key->key, children.key->child);
+	    addHTableWP(hnode->table, key, new);
 	    update_var_mask(hnode, children.key->key);
 	    update_var_mask(hnode, new->key);
 	    new->parent = n;
@@ -609,15 +607,14 @@ insert_child(DECL_LD trie *trie, trie_node *n, word key)
 	    } else
 	    { hnode->old_single = NULL;
 	      destroy_node(trie, new);
-	      destroyHTable(hnode->table);
+	      destroyHTableWP(hnode->table);
 	      free_to_pool(trie->alloc_pool, hnode, sizeof(*hnode));
 	      continue;
 	    }
 	  }
 	}
 	case TN_HASHED:
-	{ trie_node *old = addHTable(children.hash->table,
-				     (void*)key, (void*)new);
+	{ trie_node *old = addHTableWP(children.hash->table, key, new);
 
 	  if ( new == old )
 	  { new->parent = n;
@@ -995,12 +992,14 @@ next:
 	goto next;
       }
       case TN_HASHED:
-      { Table table = children.hash->table;
-	TableEnum e = newTableEnum(table);
-	void *k, *v;
+      { TableWP table = children.hash->table;
+	TableEnum e = newTableEnumWP(table);
+	table_value_t v;
 
-	while(advanceTableEnum(e, &k, &v))
-	{ if ( (rc=map_trie_node(v, map, ctx)) != NULL )
+	while(advanceTableEnum(e, NULL, &v))
+	{ trie_node *n2 = val2ptr(v);
+
+	  if ( (rc=map_trie_node(n2, map, ctx)) != NULL )
 	  { freeTableEnum(e);
 	    return rc;
 	  }
@@ -1040,7 +1039,7 @@ stat_node(trie_node *n, void *ctx)
 	stats->bytes += sizeof(*children.key);
         break;
       case TN_HASHED:
-	stats->bytes += sizeofTable(children.hash->table);
+	stats->bytes += sizeofTableWP(children.hash->table);
 	stats->hashes++;
 	break;
       default:
@@ -1233,7 +1232,7 @@ intern_value(DECL_LD term_t value)
     if ( isAtom(*vp) || isTaggedInt(*vp) )
       return *vp;
 
-    return (word)PL_record(value);
+    return ptr2word(PL_record(value));
   } else
   { return ATOM_trienode;
   }
@@ -1243,9 +1242,9 @@ intern_value(DECL_LD term_t value)
 static inline void
 release_value(word value)
 { if ( isAtom(value) )
-    PL_unregister_atom(value);
+    PL_unregister_atom(word2atom(value));
   else if ( isRecord(value) )
-    PL_erase((record_t)value);
+    PL_erase(word2ptr(record_t, value));
 }
 
 
@@ -1255,7 +1254,7 @@ equal_value(word v1, word v2)
     return TRUE;
 
   if ( isRecord(v1) && isRecord(v2) )
-    return variantRecords((record_t)v1, (record_t)v2);
+    return variantRecords(word2ptr(record_t, v1), word2ptr(record_t, v2));
 
   return FALSE;
 }
@@ -1265,12 +1264,12 @@ equal_value(word v1, word v2)
 static int
 unify_value(DECL_LD term_t t, word value)
 { if ( !isRecord(value) )
-  { return _PL_unify_atomic(t, value);
+  { return PL_unify_atomic(t, value);
   } else
   { term_t t2;
 
     return ( (t2=PL_new_term_ref()) &&
-	     PL_recorded((record_t)value, t2) &&
+	     PL_recorded(word2ptr(record_t, value), t2) &&
 	     PL_unify(t, t2)
 	   );
   }
@@ -1283,7 +1282,7 @@ put_trie_value(DECL_LD term_t t, trie_node *node)
   { *valTermRef(t) = node->value;
     return TRUE;
   } else
-  { return PL_recorded((record_t)node->value, t);
+  { return PL_recorded(word2ptr(record_t, node->value), t);
   }
 }
 
@@ -1321,7 +1320,7 @@ set_trie_value(DECL_LD trie *trie, trie_node *node, term_t value)
 
   if ( !set_trie_value_word(trie, node, val) &&
        isRecord(val) )
-    PL_erase((record_t)val);
+    PL_erase(word2ptr(record_t, val));
 
   return TRUE;
 }
@@ -1414,7 +1413,7 @@ trie_insert(DECL_LD term_t Trie, term_t Key, term_t Value, trie_node **nodep,
 	    release_value(old);
 	    trie_discard_clause(trie);
 	  } else if ( isRecord(val) )
-	  { PL_erase((record_t)val);
+	  { PL_erase(word2ptr(record_t, val));
 	  }
 
 	  return TRUE;
@@ -1422,7 +1421,7 @@ trie_insert(DECL_LD term_t Trie, term_t Key, term_t Value, trie_node **nodep,
 	{ if ( !equal_value(node->value, val) )
 	    PL_permission_error("modify", "trie_key", Key);
 	  if ( isRecord(val) )
-	    PL_erase((record_t)val);
+	    PL_erase(word2ptr(record_t, val));
 
 	  return FALSE;
 	}
@@ -1678,7 +1677,7 @@ unify_key(DECL_LD ukey_state *state, word key)
 
       DEBUG(MSG_TRIE_PUT_TERM,
 	    Sdprintf("U Pushed %s %zd, mode=%d\n",
-		     functorName(key), state->ptr+1-gBase, state->umode));
+		     functorName(word2functor(key)), state->ptr+1-gBase, state->umode));
       pushArgumentStack((Word)((intptr_t)(p + 1)|state->umode));
 
       if ( state->umode == uwrite )
@@ -1809,7 +1808,7 @@ unify_key(DECL_LD ukey_state *state, word key)
       break;
     }
     case TAG_ATOM:
-      pushVolatileAtom(key);
+      pushVolatileAtom(word2atom(key));
       /*FALLTHROUGH*/
     case TAG_INTEGER:
     { if ( state->umode == uwrite )
@@ -1841,7 +1840,7 @@ unify_key(DECL_LD ukey_state *state, word key)
 
 typedef struct trie_choice
 { TableEnum  table_enum;
-  Table      table;
+  TableWP    table;
   unsigned   var_mask;
   unsigned   var_index;
   word       novar;
@@ -1938,7 +1937,7 @@ get_key(DECL_LD trie_gen_state *state, descent_state *dstate, word *key)
     desc_tstate dts;
 
     DEBUG(MSG_TRIE_GEN,
-	  Sdprintf("get_key() for %s\n", functorName(f->definition)));
+	  Sdprintf("get_key() for %s\n", functorName(word2functor(f->definition))));
 
     *key = f->definition;
     if ( dstate->size > 1 )
@@ -2037,13 +2036,11 @@ add_choice(DECL_LD trie_gen_state *state, descent_state *dstate, trie_node *node
 	  return NULL;
 	}
       case TN_HASHED:
-      { void *tk, *tv;
-
-	if ( has_key )
+      { if ( has_key )
 	{ if ( children.hash->var_mask == 0 )
 	  { trie_node *child;
 
-	    if ( (child = lookupHTable(children.hash->table, (void*)k)) )
+	    if ( (child = lookupHTableWP(children.hash->table, k)) )
 	    { ch = allocFromBuffer(&state->choicepoints, sizeof(*ch));
 	      ch->key        = k;
 	      ch->child	     = child;
@@ -2078,10 +2075,12 @@ add_choice(DECL_LD trie_gen_state *state, descent_state *dstate, trie_node *node
 	dstate->prune = FALSE;
 	ch = allocFromBuffer(&state->choicepoints, sizeof(*ch));
 	ch->table = NULL;
-	ch->table_enum = newTableEnum(children.hash->table);
+	ch->table_enum = newTableEnumWP(children.hash->table);
+	table_key_t tk;
+	table_value_t tv;
 	advanceTableEnum(ch->table_enum, &tk, &tv);
-	ch->key   = (word)tk;
-	ch->child = (trie_node*)tv;
+	ch->key   = tk;
+	ch->child = val2ptr(tv);
 	break;
       }
       default:
@@ -2113,17 +2112,18 @@ descent_node(DECL_LD trie_gen_state *state, descent_state *dstate, trie_choice *
 static int
 advance_node(DECL_LD trie_choice *ch)
 { if ( ch->table_enum )
-  { void *k, *v;
+  { table_key_t k;
+    table_value_t v;
 
     if ( advanceTableEnum(ch->table_enum, &k, &v) )
-    { ch->key   = (word)k;
-      ch->child = (trie_node*)v;
+    { ch->key   = k;
+      ch->child = val2ptr(v);
 
       return TRUE;
     }
   } else if ( ch->table )
   { if ( ch->novar )
-    { if ( (ch->child=lookupHTable(ch->table, (void*)ch->novar)) )
+    { if ( (ch->child=lookupHTableWP(ch->table, ch->novar)) )
       { ch->key = ch->novar;
 	ch->novar = 0;
 	return TRUE;
@@ -2133,7 +2133,7 @@ advance_node(DECL_LD trie_choice *ch)
     { if ( (ch->var_mask & (0x1<<(ch->var_index-1))) )
       { word key = ((((word)ch->var_index))<<LMASK_BITS)|TAG_VAR;
 
-	if ( (ch->child=lookupHTable(ch->table, (void*)key)) )
+	if ( (ch->child=lookupHTableWP(ch->table, key)) )
 	{ ch->key = key;
 	  ch->var_index++;
 	  return TRUE;
@@ -2477,8 +2477,8 @@ PRED_IMPL("$trie_property", 2, trie_property, 0)
 	} else if ( name == ATOM_idg_size )
 	{ size_t size = sizeof(*idg);
 
-	  if ( idg->affected )  size += sizeofTable(idg->affected);
-	  if ( idg->dependent ) size += sizeofTable(idg->dependent);
+	  if ( idg->affected )  size += sizeofTablePP(idg->affected);
+	  if ( idg->dependent ) size += sizeofTablePP(idg->dependent);
 
 	  return PL_unify_int64(arg, size);
 	}
@@ -2637,6 +2637,13 @@ add_vmi_d(trie_compile_state *state, vmi c, code d)
 }
 
 static void
+add_vmi_w(trie_compile_state *state, vmi c, word d)
+{ addBuffer(&state->codes, encode(c), code);
+  addBuffer(&state->codes, d, word);
+}
+
+
+static void
 add_vmi_else_d(trie_compile_state *state, vmi c, code d)
 { size_t el;
 
@@ -2648,6 +2655,17 @@ add_vmi_else_d(trie_compile_state *state, vmi c, code d)
 }
 
 static void
+add_vmi_else_w(trie_compile_state *state, vmi c, word d)
+{ size_t el;
+
+  addBuffer(&state->codes, encode(c), code);
+  el = entriesBuffer(&state->codes, code);
+  addBuffer(&state->codes, (code)state->else_loc, code);
+  state->else_loc = el;
+  addBuffer(&state->codes, d, word);
+}
+
+static void
 fixup_else(trie_compile_state *state)
 { Code base = baseBuffer(&state->codes, code);
   size_t pc = entriesBuffer(&state->codes, code);
@@ -2655,6 +2673,55 @@ fixup_else(trie_compile_state *state)
 
   state->else_loc = base[el];
   base[el] = pc-el-1;
+}
+
+static void
+add_indirect(trie_compile_state *state, vmi op, word w)
+{ Word p = addressIndirect(w);
+  size_t wsize = wsizeofInd(*p);
+
+  add_vmi(state, op);
+  addMultipleBuffer(&state->codes, p, wsize, word);
+}
+
+static void
+add_smallint(trie_compile_state *state, vmi c1, vmi c2, word w)
+{ sword i = valInt(w);
+#if CODES_PER_WORD == 1
+  add_vmi_d(state, c1, (scode)i);
+#else
+  if ( (scode)i == i )
+  { add_vmi_d(state, c1, (scode)i);
+  } else
+  { add_vmi(state, c2);
+    addMultipleBuffer(&state->codes, &i, CODES_PER_WORD, code);
+  }
+#endif
+}
+
+static void
+add_vmi_else_i(trie_compile_state *state, vmi c1, vmi c2, word w)
+{ size_t el;
+  sword i = valInt(w);
+  vmi op;
+#if CODES_PER_WORD == 1
+  op = c1;
+#else
+  op =  (scode)i == i ? c1 : c2;
+#endif
+
+  addBuffer(&state->codes, encode(op), code);
+  el = entriesBuffer(&state->codes, code);
+  addBuffer(&state->codes, (code)state->else_loc, code);
+  state->else_loc = el;
+#if CODES_PER_WORD == 1
+  addBuffer(&state->codes, i, scode);
+#else
+  if ( (scode)i == i )
+    addBuffer(&state->codes, (scode)i, scode);
+  else
+    addMultipleBuffer(&state->codes, &i, CODES_PER_WORD, code);
+#endif
 }
 
 
@@ -2705,41 +2772,23 @@ compile_trie_value(DECL_LD Word v, trie_compile_state *state)
 	  break;
 	case TAG_INTEGER:
 	  if ( storage(w) == STG_INLINE)
-	  { add_vmi_d(state, T_SMALLINT, (code)w);
+	  { add_smallint(state, T_SMALLINT, T_SMALLINTW, w);
+#ifdef O_BIGNUM
 	  } else
-	  { size_t wsize = wsizeofIndirect(w);
-	    Word ip = valIndirectP(w);
-
-	    if ( wsize == sizeof(int64_t)/sizeof(word))
-	    {
-#if SIZEOF_VOIDP == 8
-	      add_vmi_d(state, T_INTEGER, (code)ip[0]);
-#else
-	      add_vmi_d(state, T_INT64, (code)ip[0]);
-	      addBuffer(&state->codes, (code)ip[1], code);
+	  { add_indirect(state, T_MPZ, w);
 #endif
-#ifdef O_GMP
-	    } else
-	    { add_vmi_d(state, T_MPZ, (code)ip[-1]);
-	      addMultipleBuffer(&state->codes, ip, wsize, code);
-#endif
-	    }
 	  }
 	  break;
 	case TAG_FLOAT:
 	{ Word ip = valIndirectP(w);
 	  add_vmi_d(state, T_FLOAT, (code)ip[0]);
-#if SIZEOF_VOIDP == 4
+#if SIZEOF_CODE == 4
 	  addBuffer(&state->codes, (code)ip[1], code);
 #endif
           break;
 	}
 	case TAG_STRING:
-	{ size_t wsize = wsizeofIndirect(w);
-	  Word ip = valIndirectP(w);
-
-	  add_vmi_d(state, T_STRING, (code)ip[-1]);
-	  addMultipleBuffer(&state->codes, ip, wsize, code);
+	{ add_indirect(state, T_STRING, w);
 	  break;
 	}
 	case TAG_COMPOUND:
@@ -2821,70 +2870,50 @@ next:
     case STG_GLOBAL|TAG_INTEGER:		/* indirect data */
     case STG_GLOBAL|TAG_STRING:
     case STG_GLOBAL|TAG_FLOAT:
-    { size_t index = key>>LMASK_BITS;
+    { size_t index = (size_t)(key>>LMASK_BITS);
       int idx = MSB(index);
       indirect *h = &state->trie->indirects->array.blocks[idx][index];
       size_t wsize = wsizeofInd(h->header);
 
       switch(tag(key))
       { case TAG_INTEGER:
-#if SIZEOF_VOIDP == 8
-	  if ( wsize == 1 )			/* 64-bit integer */
 	  { if ( state->try )
-	      add_vmi_else_d(state, T_TRY_INTEGER, (code)h->data[0]);
+	      add_vmi_else_w(state, T_TRY_MPZ, h->header);
 	    else
-	      add_vmi_d(state, T_INTEGER, (code)h->data[0]);
-	    goto indirect_done;
-	  } else
-#else
-	  if ( wsize == 2 )			/* 64-bit integer */
-	  { if ( state->try )
-	      add_vmi_else_d(state, T_TRY_INT64, (code)h->data[0]);
-	    else
-	      add_vmi_d(state, T_INT64, (code)h->data[0]);
-	    addBuffer(&state->codes, (code)h->data[1], code);
-	    goto indirect_done;
-	  } else
-#endif
-	  { if ( state->try )
-	      add_vmi_else_d(state, T_TRY_MPZ, (code)h->header);
-	    else
-	      add_vmi_d(state, T_MPZ, (code)h->header);
+	      add_vmi_w(state, T_MPZ, h->header);
 	  }
 	  break;
         case TAG_STRING:
 	  if ( state->try )
-	    add_vmi_else_d(state, T_TRY_STRING, (code)h->header);
+	    add_vmi_else_w(state, T_TRY_STRING, h->header);
 	  else
-	    add_vmi_d(state, T_STRING, (code)h->header);
+	    add_vmi_w(state, T_STRING, h->header);
 	  break;
         case TAG_FLOAT:
+	  { static_assertion(sizeof(h->data[0]) == sizeof(word)); }
 	  if ( state->try )
-	    add_vmi_else_d(state, T_TRY_FLOAT, (code)h->data[0]);
+	    add_vmi_else_w(state, T_TRY_FLOAT, h->data[0]);
 	  else
-	    add_vmi_d(state, T_FLOAT, (code)h->data[0]);
-#if SIZEOF_VOIDP == 4
-	  addBuffer(&state->codes, (code)h->data[1], code);
-#endif
+	    add_vmi_w(state, T_FLOAT, h->data[0]);
 	  goto indirect_done;
       }
 
-      addMultipleBuffer(&state->codes, h->data, wsize, code);
+      addMultipleBuffer(&state->codes, h->data, wsize, word);
     indirect_done:
       break;
     }
     case TAG_ATOM:
     { if ( state->try )
-	add_vmi_else_d(state, T_TRY_ATOM, (code)key);
+	add_vmi_else_d(state, T_TRY_ATOM, code2atom(key));
       else
-	add_vmi_d(state, T_ATOM, (code)key);
+	add_vmi_d(state, T_ATOM, code2atom(key));
       break;
     }
     case TAG_INTEGER:
     { if ( state->try )
-	add_vmi_else_d(state, T_TRY_SMALLINT, (code)key);
+	add_vmi_else_i(state, T_TRY_SMALLINT, T_TRY_SMALLINTW, key);
       else
-	add_vmi_d(state, T_SMALLINT, (code)key);
+	add_smallint(state, T_SMALLINT, T_SMALLINTW, key);
       break;
     }
     default:
@@ -2900,9 +2929,10 @@ children:
 	goto next;
       }
       case TN_HASHED:
-      { Table table = children.hash->table;
-	TableEnum e = newTableEnum(table);
-	void *k, *v;
+      { TableWP table = children.hash->table;
+	TableEnum e = newTableEnumWP(table);
+	table_key_t k;
+	table_value_t v;
 
 	if ( !advanceTableEnum(e, &k, &v) )
 	{ freeTableEnum(e);
@@ -2910,7 +2940,7 @@ children:
 	}
 
 	for(;;)
-	{ n = v;
+	{ n = val2ptr(v);
 
 	  if ( !(state->try = advanceTableEnum(e, &k, &v)) )
 	  { freeTableEnum(e);
@@ -2928,7 +2958,7 @@ children:
   } else
   { if ( n->value )			/* what if we have none? */
     { if ( answer_is_conditional(n) )
-	add_vmi_d(state, T_DELAY, (code)n);
+	add_vmi_d(state, T_DELAY, ptr2code(n));
 
       if ( true(state->trie, TRIE_ISMAP) )
       { add_vmi(state, T_VALUE);
@@ -2942,7 +2972,7 @@ children:
 	{ term_t t2;
 
 	  if ( (t2=PL_new_term_ref()) &&
-	       PL_recorded((record_t)n->value, t2) )
+	       PL_recorded(word2ptr(record_t, n->value), t2) )
 	  { Word p = valTermRef(t2);
 
 	    deRef(p);
@@ -3006,7 +3036,7 @@ retry:
   if ( !(dbref = trie->clause) )
   { if ( trie->value_count == 0 )
     { dbref = ATOM_fail;
-      if ( !COMPARE_AND_SWAP_WORD(&trie->clause, 0, dbref) )
+      if ( !COMPARE_AND_SWAP_ATOM(&trie->clause, 0, dbref) )
 	goto retry;
     } else
     { trie_compile_state state;
@@ -3021,7 +3051,7 @@ retry:
       { cref = assertDefinition(def, cl, CL_END);
 	if ( cref )
 	{ dbref = lookup_clref(cref->value.clause);
-	  if ( !COMPARE_AND_SWAP_WORD(&trie->clause, 0, dbref) )
+	  if ( !COMPARE_AND_SWAP_ATOM(&trie->clause, 0, dbref) )
 	  { PL_unregister_atom(dbref);
 	    retractClauseDefinition(def, cref->value.clause, FALSE);
 	    goto retry;
@@ -3048,7 +3078,7 @@ PRED_IMPL("$trie_compile", 2, trie_compile, 0)
 			     : GD->procedures.trie_gen_compiled2);
     atom_t clref = compile_trie(proc->definition, trie);
 
-    return _PL_unify_atomic(A2, clref);
+    return PL_unify_atomic(A2, clref);
   }
 
   return FALSE;
@@ -3067,7 +3097,7 @@ set_trie_clause_general_undefined(Clause clause)
 
     switch(c)
     { case T_DELAY:
-	PC[1] = (code)NULL;
+	PC[1] = ptr2code(NULL);
         break;
     }
   }

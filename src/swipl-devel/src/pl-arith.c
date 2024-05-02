@@ -290,9 +290,9 @@ PRED_IMPL("succ", 2, succ, 0)
 
   if ( isInteger(*p1) )
   { if ( isTaggedInt(*p1) )
-    { intptr_t v = valInt(*p1);
+    { sword v = valInt(*p1);
       if ( v >= 0 && ++v >= 0 )
-	return PL_unify_integer(A2, v);
+	return PL_unify_int64(A2, v);
     }
 
     get_integer(*p1, &i1);
@@ -308,9 +308,9 @@ PRED_IMPL("succ", 2, succ, 0)
   p2 = valTermRef(A2); deRef(p2);
 
   if ( isTaggedInt(*p2) )
-  { intptr_t v = valInt(*p2);
+  { sword v = valInt(*p2);
     if ( v > 0 )
-      return PL_unify_integer(A1, v-1);
+      return PL_unify_int64(A1, v-1);
     if ( v == 0 )
       return FALSE;
   }
@@ -648,7 +648,7 @@ ar_compare(Number n1, Number n2, int what)
 
 
 #define compareNumbers(n1, n2, what) LDFUNC(compareNumbers, n1, n2, what)
-static word
+static foreign_t
 compareNumbers(DECL_LD term_t n1, term_t n2, int what)
 { AR_CTX
   number left, right;
@@ -962,7 +962,7 @@ single pointer for each recursion level in the evaluable term.
 
 static int
 pushForMark(segstack *stack, Word p, int wr)
-{ word w = ((word)p)|wr;
+{ word w = ptr2word(p)|wr;
 
   return pushSegStack(stack, w, word);
 }
@@ -973,14 +973,14 @@ popForMark(segstack *stack, Word *pp, int *wr)
 
   popSegStack(stack, &w, word);
   *wr = w & (word)0x1;
-  *pp = (Word)(w & ~(word)0x1);
+  *pp = word2ptr(Word, (w & ~(word)0x1));
 }
 
 int
 evalExpression(DECL_LD term_t expr, number *result)
 { segstack term_stack;
   segstack arg_stack;
-  Word term_buf[16];
+  word term_buf[16];
   number arg_buf[16];
   number *n = result;
   number n_tmp;
@@ -1023,7 +1023,7 @@ retry:
       case TAG_ATOM:
       { ArithF0 f;
 
-	functor = lookupFunctorDef(*p, 0);
+	functor = lookupFunctorDef(word2atom(*p), 0);
       arity0:
 	if ( (f = (ArithF0)isCurrentArithFunction(functor)) )
 	{ if ( (*f)(n) != TRUE )
@@ -1055,12 +1055,12 @@ retry:
 	}
 
 	if ( arity == 0 )
-	{ functor = term->definition;
+	{ functor = word2functor(term->definition);
 	  goto arity0;
 	}
 
 	if ( p == start )
-	{ initSegStack(&term_stack, sizeof(Word), sizeof(term_buf), term_buf);
+	{ initSegStack(&term_stack, sizeof(word), sizeof(term_buf), term_buf);
 	  initSegStack(&arg_stack, sizeof(number), sizeof(arg_buf), arg_buf);
 	}
 
@@ -1131,7 +1131,7 @@ retry:
     }
 
     while ( tagex(*--p) == (TAG_ATOM|STG_GLOBAL) )
-    { functor_t functor = *p;
+    { functor_t functor = word2functor(*p);
       ArithF f;
 
       DEBUG(1, Sdprintf("Eval %s/%d\n",
@@ -1241,6 +1241,7 @@ error:
 int
 valueExpression(DECL_LD term_t expr, number *n)
 { Word p = valTermRef(expr);
+  int rc;
 
   deRef(p);
   if ( tagex(*p) == (TAG_INTEGER|STG_INLINE) )
@@ -1254,7 +1255,8 @@ valueExpression(DECL_LD term_t expr, number *n)
     return TRUE;
   }
 
-  return evalExpression(expr, n);
+  EXCEPTION_GUARDED(rc=evalExpression(expr, n), rc=FALSE);
+  return rc;
 }
 
 
@@ -1269,7 +1271,7 @@ arithChar(DECL_LD Word p)
 { deRef(p);
 
   if ( isTaggedInt(*p) )
-  { intptr_t chr = valInt(*p);
+  { sword chr = valInt(*p);
 
     if ( VALID_CODE_POINT(chr) )
       return (int)chr;
@@ -2312,7 +2314,7 @@ bn_pow_ui(mpz_t r, const mpz_t base, uint64_t exp)
     } else
       return -1;
 
-    mpz_pow_ui(r, base, exp);
+    mpz_pow_ui(r, base, (unsigned long)exp);
   }
 
   return 0;
@@ -2365,12 +2367,13 @@ get_int_exponent(Number n, unsigned long *expp)
   return TRUE;
 }
 
+/* get -1, 0, or 1 */
 static int
 ar_smallint(Number n, int *i)
 { switch(n->type)
   { case V_INTEGER:
       if ( n->value.i >= -1 && n->value.i <= 1 )
-      { *i = n->value.i;
+      { *i = (int)n->value.i;
 	return TRUE;
       }
       return FALSE;
@@ -2608,7 +2611,7 @@ ar_pow(Number n1, Number n2, Number r)
 
     switch (n1->type)
     { case V_INTEGER:
-      { mpz_init_set_si(r->value.mpz,n1->value.i);
+      { mpz_init_set_si(r->value.mpz, (long)n1->value.i);
 	goto int_to_rat;
       }
       case V_MPZ:
@@ -2624,11 +2627,11 @@ ar_pow(Number n1, Number n2, Number r)
 	  return check_float(r);
 	}
 
-	if ( mpz_root(r->value.mpz,r->value.mpz,r_den))
+	if ( mpz_root(r->value.mpz, r->value.mpz, (long)r_den))
 	{ uint64_t r_num;
 
 	  if ( mpz_to_uint64(mpq_numref(n2->value.mpq), &r_num) ||
-	       bn_pow_ui(r->value.mpz,r->value.mpz,r_num) )
+	       bn_pow_ui(r->value.mpz, r->value.mpz, (unsigned long)r_num) )
 	    goto maybe_real_mpq;
 
 	  if (exp_sign == -1)		/* create mpq=1/r->value */
@@ -2668,9 +2671,9 @@ ar_pow(Number n1, Number n2, Number r)
 	}
 
 	rat_result = ( mpz_root(mpq_numref(r->value.mpq),
-				mpq_numref(r->value.mpq),r_den) &&
+				mpq_numref(r->value.mpq), (unsigned long)r_den) &&
 		       mpz_root(mpq_denref(r->value.mpq),
-				mpq_denref(r->value.mpq),r_den)
+				mpq_denref(r->value.mpq), (unsigned long)r_den)
 		     );
 
 	if ( rat_result )
@@ -2795,8 +2798,8 @@ ar_powm(Number base, Number exp, Number mod, Number r)
     PL_error("powm", 3, NULL, ERR_AR_TYPE, ATOM_integer, base);
   if ( !intNumber(exp) )
     PL_error("powm", 3, NULL, ERR_AR_TYPE, ATOM_integer, exp);
-  if ( !intNumber(exp) )
-    PL_error("powm", 3, NULL, ERR_AR_TYPE, ATOM_integer, exp);
+  if ( !intNumber(mod) )
+    PL_error("powm", 3, NULL, ERR_AR_TYPE, ATOM_integer, mod);
 
 #ifdef O_BIGNUM
   promoteToMPZNumber(base);
@@ -3193,7 +3196,7 @@ ar_roundtoward(Number n1, Number n2, Number r)
 { cpNumber(r, n1);
 
   assert(n2->type == V_INTEGER);
-  fesetround(n2->value.i);
+  fesetround((int)n2->value.i);
 
   return TRUE;
 }
@@ -3910,7 +3913,7 @@ ar_getbit(Number I, Number K, Number r)
 	r->type    = V_INTEGER;
 	return TRUE;
       }
-      bit = K->value.i;
+      bit = (mp_bitcnt_t)K->value.i;
       break;
 #ifdef O_BIGNUM
     case V_MPZ:

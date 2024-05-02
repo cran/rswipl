@@ -506,6 +506,10 @@ test(set, [Max == 10 000, cleanup(cleanup)]) :-
 % Note that this tests the _allocated_ size.  LibBF does not store
 % the least significant zero bits, so we must make sure the least
 % significant bit is set.
+%
+% Emscripten does not handle the longjmp() correctly, so we disable
+% this test for now.
+
 test(overflow,
      [ error(resource_error(tripwire(max_integer_size, 1000))),
        cleanup(cleanup)

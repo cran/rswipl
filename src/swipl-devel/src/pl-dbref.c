@@ -150,17 +150,14 @@ static PL_blob_t record_blob =
 
 atom_t
 lookup_clref(Clause clause)
-{ clause_ref ref;
+{ clause_ref ref = { .next=NULL, .d.key=0, .value.clause = clause };
   int new;
 
-  DEBUG(0,
+  DEBUG(CHK_SECURE,
 	{ GET_LD
 	  assert(!onStackArea(local, clause));
 	});
 
-  ref.next = NULL;
-  ref.d.key = 0;
-  ref.value.clause = clause;
   return lookupBlob((const char*)&ref, SIZEOF_CREF_CLAUSE, &clause_blob, &new);
 }
 
@@ -183,7 +180,7 @@ int
 PL_unify_clref(term_t t, Clause clause)
 { GET_LD
   atom_t a = lookup_clref(clause);
-  int rc = _PL_unify_atomic(t, a);
+  int rc = PL_unify_atomic(t, a);
 
   PL_unregister_atom(a);
 

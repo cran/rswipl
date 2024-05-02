@@ -178,7 +178,7 @@ typedef struct message_queue
 { struct thread_message   *head;	/* Head of message queue */
   struct thread_message   *tail;	/* Tail of message queue */
   uint64_t	       sequence_next;	/* next for sequence id */
-  word		       id;		/* Id of the queue */
+  atom_t	       id;		/* Id of the queue */
   size_t	       size;		/* # terms in queue */
   size_t	       max_size;	/* Max # terms in queue */
   int		       waiting;		/* # waiting threads */
@@ -516,10 +516,10 @@ static inline	PL_local_data_t *acquire_ldata(DECL_LD PL_thread_info_t *info);
 
 int		exitPrologThreads(void);
 bool		aliasThread(int tid, atom_t type, atom_t name);
-word		pl_thread_create(term_t goal, term_t id,
+foreign_t	pl_thread_create(term_t goal, term_t id,
 				 term_t options);
 #if HAVE_PTHREAD_EXIT
-word		pl_thread_exit(term_t retcode);
+foreign_t	pl_thread_exit(term_t retcode);
 #endif
 
 foreign_t	pl_thread_at_exit(term_t goal);

@@ -1463,20 +1463,10 @@ initPrologStacks(size_t limit)
   LD->stacks.trail.overflow_id    = TRAIL_OVERFLOW;
   LD->stacks.argument.overflow_id = ARGUMENT_OVERFLOW;
 
-  base_addresses[STG_LOCAL]  = (uintptr_t)lBase;
-  base_addresses[STG_GLOBAL] = (uintptr_t)gBase;
-  base_addresses[STG_TRAIL]  = (uintptr_t)tBase;
   *gBase++ = MARK_MASK;			/* see sweep_global_mark() */
   gMax--;				/*  */
   tMax--;
   emptyStacks();
-
-  DEBUG(1, Sdprintf("base_addresses[STG_LOCAL] = %p\n",
-		    base_addresses[STG_LOCAL]));
-  DEBUG(1, Sdprintf("base_addresses[STG_GLOBAL] = %p\n",
-		    base_addresses[STG_GLOBAL]));
-  DEBUG(1, Sdprintf("base_addresses[STG_TRAIL] = %p\n",
-		    base_addresses[STG_TRAIL]));
 
   return TRUE;
 }
@@ -1490,7 +1480,8 @@ valid while the stack is unrolled after an exception.
 
 static void
 emptyStack(Stack s)
-{ s->top       = s->base;
+{ IS_WORD_ALIGNED(s->base);
+  s->top       = s->base;
   s->gced_size = 0L;
 }
 
@@ -1567,10 +1558,10 @@ init_stack(Stack s, char *name, size_t size, size_t spare, int gc)
 
 static int
 allocStacks(DECL_LD)
-{ size_t minglobal = 8*SIZEOF_VOIDP K;
-  size_t minlocal  = 4*SIZEOF_VOIDP K;
-  size_t mintrail  = 4*SIZEOF_VOIDP K;
-  size_t minarg    = 1*SIZEOF_VOIDP K;
+{ size_t minglobal = 8*SIZEOF_WORD K;
+  size_t minlocal  = 4*SIZEOF_WORD K;
+  size_t mintrail  = 4*SIZEOF_WORD K;
+  size_t minarg    = 1*SIZEOF_WORD K;
 
   size_t itrail  = nextStackSizeAbove(mintrail-1);
   size_t iglobal = nextStackSizeAbove(minglobal-1);
@@ -1598,11 +1589,11 @@ allocStacks(DECL_LD)
   lBase   = (LocalFrame) addPointer(gBase, iglobal);
 
   init_stack((Stack)&LD->stacks.global,
-	     "global",   iglobal, 512*SIZEOF_VOIDP, TRUE);
+	     "global",   iglobal, 512*SIZEOF_WORD, TRUE);
   init_stack((Stack)&LD->stacks.local,
-	     "local",    ilocal,  512*SIZEOF_VOIDP + LOCAL_MARGIN, FALSE);
+	     "local",    ilocal,  512*SIZEOF_WORD + LOCAL_MARGIN, FALSE);
   init_stack((Stack)&LD->stacks.trail,
-	     "trail",    itrail,  256*SIZEOF_VOIDP, TRUE);
+	     "trail",    itrail,  256*SIZEOF_WORD, TRUE);
   init_stack((Stack)&LD->stacks.argument,
 	     "argument", minarg,  0,                FALSE);
 
@@ -1752,7 +1743,7 @@ freePrologLocalData(PL_local_data_t *ld)
 #ifdef O_PLMT
   if ( ld->prolog_flag.table )
   { PL_LOCK(L_PLFLAG);
-    destroyHTable(ld->prolog_flag.table);
+    destroyHTableWP(ld->prolog_flag.table);
     PL_UNLOCK(L_PLFLAG);
   }
   free_predicate_references(ld);

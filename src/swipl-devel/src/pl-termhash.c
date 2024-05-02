@@ -70,21 +70,6 @@ typedef struct th_data
 } th_data;
 
 
-static void *
-allocBuffer(Buffer b, size_t size)
-{ void *ptr;
-
-  if ( b->top + size > b->max )
-  { if ( !growBuffer(b, size) )
-      return NULL;
-  }
-  ptr = b->top;
-  b->top += size;
-
-  return ptr;
-}
-
-
 #define primitiveHashValue(term, hval) LDFUNC(primitiveHashValue, term, hval)
 static int
 primitiveHashValue(DECL_LD word term, unsigned int *hval)
@@ -145,7 +130,7 @@ start_term(DECL_LD th_data *work, Buffer b, word w)
 { atom_t name;
 
   work->term     = valueTerm(w);
-  work->functor  = work->term->definition;
+  work->functor  = word2functor(work->term->definition);
   work->hash     = MURMUR_SEED;
   work->arg      = 0;
   work->in_cycle = 0;
@@ -247,7 +232,7 @@ termHashValue(DECL_LD Word p, unsigned int *hval)
     Functor t = valueTerm(*p);
 
     initBuffer(&tmp);
-    work = allocBuffer(b, sizeof(*work));	/* cannot fail */
+    work = allocFromBuffer(b, sizeof(*work));	/* cannot fail */
     start_term(work, b, *p);
     work->parent_offset = (size_t)-1;
     t->definition = consInt(0);
@@ -283,7 +268,7 @@ termHashValue(DECL_LD Word p, unsigned int *hval)
 	} else
 	{ size_t parent = nodeID(work, b);
 
-	  if ( !(work = allocBuffer(b, sizeof(*work))) )
+	  if ( !(work = allocFromBuffer(b, sizeof(*work))) )
 	  { rc = -1;			/* out of memory */
 	    goto out;
 	  }
@@ -440,7 +425,7 @@ push_var(Word p, sha1_state *state)
 
 static int
 push_attvar(Word p, sha1_state *state)
-{ Word w = (Word)*p;
+{ Word w = word2ptr(Word, *p);
   return ( pushSegStack(&state->vars, p, Word) &&
 	   pushSegStack(&state->vars, w, Word) );
 }
@@ -504,7 +489,7 @@ variant_sha1(DECL_LD ac_term_agenda *agenda, sha1_state *state)
       }
       case TAG_INTEGER:
       { if ( !isIndirect(w) )
-	{ int64_t val = valInteger(w);
+	{ int64_t val = valInt(w);
 
 	  HASH("i", 1);
 	  HASH(&val, sizeof(val));
@@ -575,7 +560,7 @@ variant_hash(DECL_LD term_t term, termhash_t *hash, hash_algo algorithm)
   rc = variant_sha1(&agenda, &state);
   ac_clearTermAgenda(&agenda);
   while(popSegStack(&state.vars, &p, Word))
-  { word w = (word)p;
+  { word w = ptr2word(p);
     if ( unlikely(isAttVar(w)) )
     { popSegStack(&state.vars, &p, Word);
       *p = w;

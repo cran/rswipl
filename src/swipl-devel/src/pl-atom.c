@@ -527,7 +527,7 @@ same_name(const Atom a, const char *s, size_t length, const PL_blob_t *type)
 }
 
 
-word
+atom_t
 lookupBlob(DECL_LD const char *s, size_t length, PL_blob_t *type, int *new)
 { unsigned int v0, v, ref;
   Atom *table;
@@ -654,7 +654,7 @@ redo:
 }
 
 
-word
+atom_t
 lookupAtom(DECL_LD const char *s, size_t length)
 { int new;
 
@@ -716,7 +716,7 @@ _PL_debug_unregister_atom(atom_t a,
 }
 
 
-word
+foreign_t
 pl_track_atom(term_t which, term_t stream)
 { char *s;
 
@@ -1445,7 +1445,7 @@ redo:
 }
 
 
-word
+foreign_t
 pl_atom_hashstat(term_t idx, term_t n)
 { GET_LD
   long i, m;
@@ -1686,7 +1686,7 @@ cleanupAtoms(void)
 
 
 #define current_blob(a, type, call, state) LDFUNC(current_blob, a, type, call, state)
-static word
+static atom_t
 current_blob(DECL_LD term_t a, term_t type, frg_code call, intptr_t state)
 { atom_t type_name = 0;
   size_t index;

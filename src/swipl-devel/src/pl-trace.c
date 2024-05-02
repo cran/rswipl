@@ -328,7 +328,7 @@ canUnifyTermWithGoal(LocalFrame fr)
 
 	    a = valTermRef(t);
 	    deRef(a);
-	    a = argFrameP(*a, i);
+	    a = argFrameP(word2ptr(LocalFrame, *a), i);
 	    fr = (LocalFrame)valTermRef(frref);
 	    b = argFrameP(fr, i);
 
@@ -514,7 +514,7 @@ again:
       { action = exitFromDebugger("EOF: ", 4);
 	goto out;
       }
-      buf[0] = c;
+      buf[0] = (char)c;
       buf[1] = EOS;
       if ( isDigit(buf[0]) || buf[0] == '/' || buf[0] == '-' )
       { Sfprintf(Sdout, "%s", buf);
@@ -2065,9 +2065,9 @@ debugmode(debug_type doit, debug_type *old)
   if ( debugstatus.debugging != doit )
   { if ( doit )
     { if ( have_space_for_debugging() &&
-	   !enlargeMinFreeStacks(8*1024*SIZEOF_VOIDP,
-				 8*1024*SIZEOF_VOIDP,
-				 8*1024*SIZEOF_VOIDP) )
+	   !enlargeMinFreeStacks(8*1024*SIZEOF_WORD,
+				 8*1024*SIZEOF_WORD,
+				 8*1024*SIZEOF_WORD) )
 	return FALSE;
 
       debugstatus.skiplevel = SKIP_VERY_DEEP;
@@ -2109,17 +2109,17 @@ debugmode(debug_type doit, debug_type *old)
 
 #endif
 
-word
+foreign_t
 pl_trace()
 { return tracemode(TRUE, NULL);
 }
 
-word
+foreign_t
 pl_notrace()
 { return tracemode(FALSE, NULL);
 }
 
-word
+foreign_t
 pl_tracing()
 { GET_LD
 
@@ -2179,7 +2179,7 @@ PRED_IMPL("prolog_skip_frame", 1, prolog_skip_frame, PL_FA_NOTRACE)
 }
 
 
-word
+foreign_t
 pl_spy(term_t p)
 { GET_LD
   Procedure proc;
@@ -2202,7 +2202,7 @@ pl_spy(term_t p)
   return FALSE;
 }
 
-word
+foreign_t
 pl_nospy(term_t p)
 { GET_LD
   Procedure proc;
@@ -2224,26 +2224,26 @@ pl_nospy(term_t p)
   return FALSE;
 }
 
-word
+foreign_t
 pl_leash(term_t old, term_t new)
 { GET_LD
   return setInteger(&debugstatus.leashing, old, new);
 }
 
-word
+foreign_t
 pl_visible(term_t old, term_t new)
 { GET_LD
   return setInteger(&debugstatus.visible, old, new);
 }
 
 
-word
+foreign_t
 pl_debuglevel(term_t old, term_t new)
 { return setInteger(&GD->debug_level, old, new);
 }
 
 
-word
+foreign_t
 pl_prolog_current_frame(term_t frame)
 { GET_LD
   LocalFrame fr = environment_frame;

@@ -99,7 +99,7 @@ lookupProcedure(functor_t f, Module m)
   Procedure proc, oproc;
   Definition def;
 
-  if ( (proc = lookupHTable(m->procedures, (void *)f)) )
+  if ( (proc = lookupHTableWP(m->procedures, f)) )
   { DEBUG(MSG_PROC, Sdprintf("lookupProcedure(%s) --> %s\n",
 			     PL_atom_chars(m->name),
 			     procedureName(proc)));
@@ -143,7 +143,7 @@ lookupProcedure(functor_t f, Module m)
   ATOMIC_INC(&GD->statistics.predicates);
   ATOMIC_ADD(&m->code_size, SIZEOF_PROC);
 
-  if ( (oproc=addHTable(m->procedures, (void *)f, proc)) == proc )
+  if ( (oproc=addHTableWP(m->procedures, f, proc)) == proc )
   { return proc;
   } else
   { unallocProcedure(proc);
@@ -295,9 +295,9 @@ unallocProcedure(Procedure proc)
 
 
 static void
-free_ddi_symbol(void *name, void *value)
-{ DirtyDefInfo ddi = value;
-  Definition def = name;
+free_ddi_symbol(table_key_t name, table_value_t value)
+{ DirtyDefInfo ddi = val2ptr(value);
+  Definition def = val2ptr(name);
 
   PL_free(ddi);
   if ( true(def, P_ERASED) )
@@ -307,7 +307,7 @@ free_ddi_symbol(void *name, void *value)
 
 void
 initProcedures(void)
-{ GD->procedures.dirty = newHTable(32);
+{ GD->procedures.dirty = newHTablePP(32);
   GD->procedures.dirty->free_symbol = free_ddi_symbol;
 }
 
@@ -320,7 +320,7 @@ allocations pending on clause GC.
 void
 cleanupProcedures(void)
 { if ( GD->procedures.dirty )
-  { destroyHTable(GD->procedures.dirty);
+  { destroyHTablePP(GD->procedures.dirty);
     GD->procedures.dirty = NULL;
   }
 
@@ -341,7 +341,7 @@ importDefinitionModule(Module m, Definition def, int flags)
   int rc = TRUE;
 
   LOCKMODULE(m);
-  if ( (proc = lookupHTable(m->procedures, (void *)functor)) )
+  if ( (proc = lookupHTableWP(m->procedures, functor)) )
   { if ( proc->definition != def )
     { if ( !isDefinedProcedure(proc) )
       { Definition odef = proc->definition;
@@ -362,7 +362,7 @@ importDefinitionModule(Module m, Definition def, int flags)
     proc->definition = def;
     proc->flags      = flags;
     proc->source_no  = 0;
-    addNewHTable(m->procedures, (void *)functor, proc);
+    addNewHTableWP(m->procedures, functor, proc);
     DEBUG(MSG_PROC_COUNT, Sdprintf("Created %s at %p\n",
 				   procedureName(proc), proc));
   }
@@ -420,7 +420,7 @@ resetProcedure(Procedure proc, bool isnew)
 
 Procedure
 isCurrentProcedure(DECL_LD functor_t f, Module m)
-{ return lookupHTable(m->procedures, (void *)f);
+{ return lookupHTableWP(m->procedures, f);
 }
 
 
@@ -815,7 +815,7 @@ reconsidered and probably a large part of this function should be  moved
 to C.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-word
+foreign_t
 pl_current_predicate(term_t name, term_t spec, control_t h)
 { GET_LD
   TableEnum e;
@@ -853,13 +853,15 @@ pl_current_predicate(term_t name, term_t spec, control_t h)
 	return PL_unify_atom(name, nameFunctor(f));
       fail;
     }
-    e = newTableEnum(m->procedures);
+    e = newTableEnumWP(m->procedures);
   } else
     e = ForeignContextPtr(h);
 
-  while( advanceTableEnum(e, NULL, (void**)&proc) )
+  table_value_t tv;
+  while( advanceTableEnum(e, NULL, &tv) )
   { FunctorDef fdef;
 
+    proc = val2ptr(tv);
     fdef = proc->definition->functor;
 
     if ( (n && n != fdef->name) ||
@@ -1033,7 +1035,7 @@ PRED_IMPL("current_predicate", 1, current_predicate,
 	  goto clean;
 	}
       } else
-      { e->epred = newTableEnum(e->module->procedures);
+      { e->epred = newTableEnumWP(e->module->procedures);
       }
 
       e = allocForeignState(sizeof(*e));
@@ -1067,10 +1069,13 @@ PRED_IMPL("current_predicate", 1, current_predicate,
 	}
       }
     } else
-    { functor_t f;
-      Procedure proc;
-      while( advanceTableEnum(e->epred, (void**)&f, (void**)&proc) )
-      { FunctorDef fd = valueFunctor(f);
+    { table_key_t tk;
+      table_value_t tv;
+
+      while( advanceTableEnum(e->epred, &tk, &tv) )
+      { functor_t f = (functor_t)tk;
+	FunctorDef fd = valueFunctor(f);
+	Procedure proc = val2ptr(tv);
 
 	if ( (!e->name     || e->name == fd->name) &&
 	     (e->arity < 0 || (unsigned int)e->arity == fd->arity) &&
@@ -1110,7 +1115,7 @@ PRED_IMPL("current_predicate", 1, current_predicate,
 
     if ( !e->functor )
     { freeTableEnum(e->epred);
-      e->epred = newTableEnum(e->super->procedures);
+      e->epred = newTableEnumWP(e->super->procedures);
     }
   }
 
@@ -1139,7 +1144,7 @@ typeerror:
 		 *******************************/
 
 #ifdef O_DEBUG
-static Table retracted_clauses = NULL;
+static TablePW retracted_clauses = NULL;
 
 static void
 registerRetracted(Clause cl)
@@ -1147,8 +1152,8 @@ registerRetracted(Clause cl)
   DEBUG(MSG_CGC_CREF_PL, Sdprintf("/**/ r(%p).\n", cl));
   DEBUG(MSG_CGC_CREF_TRACK,
 	{ if ( !retracted_clauses )
-	    retracted_clauses = newHTable(1024);
-	  addNewHTable(retracted_clauses, cl, (void*)1);
+	    retracted_clauses = newHTablePW(1024);
+	  addNewHTablePW(retracted_clauses, cl, 1);
 	});
 }
 
@@ -1156,8 +1161,9 @@ static void
 reclaimRetracted(Clause cl)
 { DEBUG(MSG_CGC_CREF_TRACK,
 	{ GET_LD
-	  void *v = deleteHTable(retracted_clauses, cl);
-	  if ( v != (void*)1 && GD->cleaning == CLN_NORMAL )
+	  table_value_t v = deleteHTablePW(retracted_clauses, cl);
+
+	  if ( v != 1 && GD->cleaning == CLN_NORMAL )
 	  { Definition def = cl->predicate;
 	    Sdprintf("reclaim not retracted from %s\n", predicateName(def));
 	  }
@@ -1741,29 +1747,23 @@ unallocClause(Clause c)
   PL_free(c);
 }
 
-
-#ifdef O_DEBUG_ATOMGC
-static void
-unregister_atom_clause(atom_t a)
-{ PL_unregister_atom(a);
+static int
+unregister_atom_clause(atom_t a, void *ctx)
+{ (void)ctx;
+  PL_unregister_atom(a);
+  return TRUE;
 }
 
-static void
-register_atom_clause(atom_t a)
-{ PL_register_atom(a);
+static int
+register_atom_clause(atom_t a, void *ctx)
+{ (void)ctx;
+  PL_register_atom(a);
+  return TRUE;
 }
-#endif
 
 void
 freeClause(Clause c)
-{
-#ifdef O_ATOMGC
-#ifdef O_DEBUG_ATOMGC
-  forAtomsInClause(c, unregister_atom_clause);
-#else
-  forAtomsInClause(c, PL_unregister_atom);
-#endif
-#endif
+{ forAtomsInClause(c, unregister_atom_clause, NULL);
 
   if ( true(c, DBREF_CLAUSE) )		/* will be freed from symbol */
     set(c, DBREF_ERASED_CLAUSE);
@@ -2047,18 +2047,18 @@ meta_declaration(term_t spec)
     _PL_get_arg(i+1, head, arg);
 
     if ( PL_is_integer(arg) )
-    { int e;
+    { unsigned int e;
 
-      if ( !PL_get_integer_ex(arg, &e) )
+      if ( !PL_cvt_i_uint(arg, &e) )
 	return FALSE;
-      if ( e < 0 || e > 9 )
+      if ( e > 9 )
       { domain_error:
 	return PL_error(NULL, 0, "0..9",
 			ERR_DOMAIN, ATOM_meta_argument_specifier, arg);
       }
-      args[i].meta = e;
+      args[i].meta = e&0xf;
     } else if ( PL_get_atom(arg, &ma) )
-    { int m;
+    { unsigned int m;
 
       if      ( ma == ATOM_plus )          m = MA_NONVAR;
       else if ( ma == ATOM_minus )         m = MA_VAR;
@@ -2069,7 +2069,7 @@ meta_declaration(term_t spec)
       else if ( ma == ATOM_gdiv )          m = MA_DCG;
       else goto domain_error;
 
-      args[i].meta = m;
+      args[i].meta = m&0xf;
     } else
     { return PL_error(NULL, 0, "0..9",
 			ERR_TYPE, ATOM_meta_argument_specifier, arg);;
@@ -2166,7 +2166,7 @@ PL_meta_predicate(predicate_t proc, const char *spec_s)
 
   for(i=0; i<arity; i++, s++)
   { int spec_c = *s;
-    int spec;
+    unsigned int spec;
 
     switch(spec_c)
     { case '+':
@@ -2202,7 +2202,7 @@ PL_meta_predicate(predicate_t proc, const char *spec_s)
 	return FALSE;
     }
 
-    def->impl.any.args[i].meta = spec;
+    def->impl.any.args[i].meta = spec&0xf;
     if ( MA_NEEDS_TRANSPARENT(spec) )
       transparent = TRUE;
   }
@@ -2538,22 +2538,22 @@ ddi_oldest_generation(DirtyDefInfo ddi)
 }
 
 #ifdef O_DEBUG
-static Table protectedCRefs = NULL;
+static TablePW protectedCRefs = NULL;
 
 static void
 protectCRef(ClauseRef cref)
 { GET_LD
-  void *k;
+  table_value_t k;
 
   if ( !protectedCRefs )		/* may waste a table.  Only O_DEBUG */
-    COMPARE_AND_SWAP_PTR(&protectedCRefs, NULL, newHTable(64));
+    COMPARE_AND_SWAP_PTR(&protectedCRefs, NULL, newHTablePW(64));
 
-  if ( (k=lookupHTable(protectedCRefs, cref)) )
-  { k = (void*)((intptr_t)k+1);
-    updateHTable(protectedCRefs, cref, k);
+  if ( (k=lookupHTablePW(protectedCRefs, cref)) )
+  { k = k+1;
+    updateHTablePW(protectedCRefs, cref, k);
     // Sdprintf("Protect %p --> %zd\n", cref, (intptr_t)k);
   } else
-  { addNewHTable(protectedCRefs, cref, (void*)1);
+  { addNewHTablePW(protectedCRefs, cref, 1);
     // Sdprintf("Protect %p\n", cref);
   }
 }
@@ -2561,15 +2561,15 @@ protectCRef(ClauseRef cref)
 static void
 unprotectCRef(ClauseRef cref)
 { GET_LD
-  void *k;
+  table_value_t k;
 
-  if ( (k=lookupHTable(protectedCRefs, cref)) )
-  { k = (void*)((intptr_t)k-1);
+  if ( (k=lookupHTablePW(protectedCRefs, cref)) )
+  { k = k-1;
     if ( k )
-    { updateHTable(protectedCRefs, cref, k);
+    { updateHTablePW(protectedCRefs, cref, k);
       // Sdprintf("UnProtect %p --> %zd\n", cref, (intptr_t)k);
     } else
-    { deleteHTable(protectedCRefs, cref);
+    { deleteHTablePW(protectedCRefs, cref);
       // Sdprintf("UnProtect %p\n", cref);
     }
   } else
@@ -2582,7 +2582,7 @@ isProtectedCRef(ClauseRef cref)
 { GET_LD
 
   return ( protectedCRefs &&
-	   lookupHTable(protectedCRefs, cref) );
+	   lookupHTablePW(protectedCRefs, cref) );
 }
 #endif /*O_DEBUG*/
 
@@ -2600,7 +2600,7 @@ registerDirtyDefinition(DECL_LD Definition def)
   if ( false(def, P_DIRTYREG) )
   { DirtyDefInfo ddi = ddi_new(def);
 
-    if ( addHTable(GD->procedures.dirty, def, ddi) == ddi )
+    if ( addHTablePP(GD->procedures.dirty, def, ddi) == ddi )
     { set(def, P_DIRTYREG);
       ATOMIC_ADD(&GD->clauses.dirty, def->impl.clauses.number_of_clauses);
     } else
@@ -2627,7 +2627,7 @@ unregisterDirtyDefinition(Definition def)
 { GET_LD
   DirtyDefInfo ddi;
 
-  if ( (ddi=deleteHTable(GD->procedures.dirty, def)) )
+  if ( (ddi=deleteHTablePP(GD->procedures.dirty, def)) )
   { PL_free(ddi);
     clear(def, P_DIRTYREG);
     ATOMIC_SUB(&GD->clauses.dirty, def->impl.clauses.number_of_clauses);
@@ -2698,10 +2698,10 @@ pl_garbage_collect_clauses(void)
 
 					/* sanity-check */
     FOR_TABLE(GD->procedures.dirty, n, v)
-    { DirtyDefInfo ddi = v;
+    { DirtyDefInfo ddi = val2ptr(v);
 
       DEBUG(CHK_SECURE,
-	    { Definition def = n;
+	    { Definition def = key2ptr(n);
 	      LOCKDEF(def);
 	      checkDefinition(def);
 	      UNLOCKDEF(def);
@@ -2719,8 +2719,8 @@ pl_garbage_collect_clauses(void)
     DEBUG(MSG_CGC, Sdprintf("(marking done)\n"));
 
     FOR_TABLE(GD->procedures.dirty, n, v)
-    { Definition def = n;
-      DirtyDefInfo ddi = v;
+    { Definition def = key2ptr(n);
+      DirtyDefInfo ddi = val2ptr(v);
 
       if ( false(def, P_FOREIGN) &&
 	   def->impl.clauses.erased_clauses > 0 )
@@ -2779,7 +2779,7 @@ pl_garbage_collect_clauses(void)
 		 *	    CHECKING		*
 		 *******************************/
 
-word
+foreign_t
 pl_check_definition(term_t spec)
 { GET_LD
   Procedure proc;
@@ -3061,7 +3061,7 @@ error:
 		 *	  REQUIRE SUPPORT	*
 		 *******************************/
 
-word
+foreign_t
 pl_require(term_t pred)
 { Procedure proc;
 
@@ -3397,7 +3397,7 @@ PRED_IMPL("retractall", 1, retractall, PL_FA_NONDETERMINISTIC|PL_FA_ISO)
 		*       PROLOG PREDICATES       *
 		*********************************/
 
-static word
+static foreign_t
 do_abolish(Module m, term_t atom, term_t arity)
 { GET_LD
   functor_t f;
@@ -3423,7 +3423,7 @@ do_abolish(Module m, term_t atom, term_t arity)
 }
 
 
-word
+foreign_t
 pl_abolish(term_t name, term_t arity)	/* Name, Arity */
 { GET_LD
   Module m = NULL;
@@ -3434,7 +3434,7 @@ pl_abolish(term_t name, term_t arity)	/* Name, Arity */
 }
 
 
-word
+foreign_t
 pl_abolish1(term_t spec)		/* Name/Arity */
 { GET_LD
   term_t name  = PL_new_term_ref();
@@ -4038,18 +4038,18 @@ remoduleClause(Clause cl, Module old, Module new)
       for(an=0; ats[an]; an++)
       { switch(ats[an])
 	{ case CA1_PROC:
-	  { Procedure op = (Procedure)PC[an+1];
+	  { Procedure op = code2ptr(Procedure, PC[an+1]);
 
 	    if ( op->definition->module != MODULE_system )
 	    { functor_t f = op->definition->functor->functor;
 
-	      PC[an+1] = (code)lookupProcedure(f, new);
+	      PC[an+1] = ptr2code(lookupProcedure(f, new));
 	    }
 	    break;
 	  }
 	  case CA1_MODULE:
-	  { if ( old == (Module)PC[an+1] )
-	      PC[an+1] = (code)new;
+	  { if ( old == code2ptr(Module, PC[an+1]) )
+	      PC[an+1] = ptr2code(new);
 	  }
 	}
       }
@@ -4105,13 +4105,7 @@ PRED_IMPL("copy_predicate_clauses", 2, copy_predicate_clauses, PL_FA_TRANSPARENT
       copy->predicate = copy_def;
       if ( def->module != copy_def->module )
 	remoduleClause(copy, def->module, copy_def->module);
-#ifdef O_ATOMGC
-#ifdef O_DEBUG_ATOMGC
-      forAtomsInClause(copy, register_atom_clause);
-#else
-      forAtomsInClause(copy, PL_register_atom);
-#endif
-#endif
+      forAtomsInClause(copy, register_atom_clause, NULL);
       assertProcedure(to, copy, CL_END);
     }
   }

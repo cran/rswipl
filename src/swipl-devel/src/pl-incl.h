@@ -589,11 +589,14 @@ them.  Descriptions:
 #define INT64BITSIZE		(8 * sizeof(int64_t))
 #define WORDS_PER_DOUBLE        ((sizeof(double)+sizeof(word)-1)/sizeof(word))
 #define WORDS_PER_INT64		(sizeof(int64_t)/sizeof(word))
+#define CODES_PER_DOUBLE        ((sizeof(double)+sizeof(code)-1)/sizeof(code))
+#define CODES_PER_WORD		(SIZEOF_WORD/SIZEOF_CODE)
+#define WORDS_PER_BIGNUM64	(5)
 
 				/* Prolog's integer range */
-#define PLMINTAGGEDINT		(-(intptr_t)((word)1<<(WORDBITSIZE-LMASK_BITS-1)))
+#define PLMINTAGGEDINT		(-(sword)((word)1<<(WORDBITSIZE-LMASK_BITS-1)))
 #define PLMAXTAGGEDINT		(-PLMINTAGGEDINT - 1)
-#define PLMINTAGGEDINT32	(-(intptr_t)((word)1<<(32-LMASK_BITS-1)))
+#define PLMINTAGGEDINT32	(-(sword)((word)1<<(32-LMASK_BITS-1)))
 #define PLMAXTAGGEDINT32	(-PLMINTAGGEDINT32 - 1)
 #define inTaggedNumRange(n)	(valInt(consInt(n)) == (n))
 #define PLMININT		(-PLMAXINT - 1)
@@ -619,7 +622,6 @@ sizes  of  the  hash  tables are defined.  Note that these should all be
 #define PUBLICHASHSIZE		8	/* Module export table */
 #define FLAGHASHSIZE		16	/* global flag/3 table */
 
-#include "os/pl-table.h"
 #include "pl-vmi.h"
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -754,11 +756,20 @@ must ensure that sizeof(struct clause) is  a multiple of sizeof(word) to
 place them on the stack (see I_USERCALL).
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#ifdef __GNUC__
-#define WORD_ALIGNED __attribute__ ((aligned (sizeof(word))))
+#define SIZEOF_WORD  8
+#define ALIGNOF_WORD 8
+
+#if SIZEOF_VOIDP == SIZEOF_WORD
+#define ALIGN(n)
+#define IS_WORD_ALIGNED(ptr)
+#elif defined(__GNUC__) || defined(__clang__)
+#define ALIGN(n) __attribute__ ((aligned (n)))
+#define IS_WORD_ALIGNED(ptr) DEBUG(0, assert(((uintptr_t)(ptr)&(sizeof(word)-1)) == 0))
 #else
-#define WORD_ALIGNED
+#error "Do not know how to specify alignment"
 #endif
+
+#define WORD_ALIGNED ALIGN(sizeof(word))
 
 #if 0
 /* The following have all been defined in SWI-Prolog.h, included above,
@@ -771,7 +782,7 @@ typedef word			functor_t;	/* encoded functor */
 typedef struct module *		module_t;	/* a module */
 typedef struct procedure *	predicate_t;	/* a predicate handle */
 typedef struct record *		record_t;	/* handle to a recorded term */
-typedef uintptr_t		term_t;		/* external term-reference */
+typedef word			term_t;		/* external term-reference */
 typedef uintptr_t		qid_t;		/* external query-id */
 typedef uintptr_t		PL_fid_t;	/* external foreign context-id */
 typedef struct foreign_context *control_t;	/* non-deterministic control arg */
@@ -782,15 +793,18 @@ typedef wchar_t			pl_wchar_t;	/* Prolog wide character */
 typedef foreign_t		(*pl_function_t)(); /* foreign language functions */
 typedef uintptr_t		buf_mark_t;	/* buffer mark handle */
 
-#define				fid_t \
-	PL_fid_t				/* avoid AIX name-clash */
-#endif
+#define fid_t			PL_fid_t        /* avoid AIX name-clash */
+#endif /*0*/
 
-typedef uintptr_t		word;		/* Anonymous ptr-sized object*/
+typedef uint64_t		word WORD_ALIGNED; /* Prolog data cell */
+typedef int64_t			sword WORD_ALIGNED; /* Signed version */
+#define SIZEOF_ATOM SIZEOF_VOIDP
+#define SIZEOF_CODE SIZEOF_VOIDP
 typedef word *			Word;		/* a pointer to anything */
-typedef word			atom_t;		/* encoded atom */
-typedef word			functor_t;	/* encoded functor */
-typedef uintptr_t		code WORD_ALIGNED; /* bytes codes */
+typedef uintptr_t		atom_t;		/* encoded atom */
+typedef uintptr_t		functor_t;	/* encoded functor */
+typedef uintptr_t		code;		/* VM instructions */
+typedef intptr_t		scode;		/* signed VM instruction argument */
 typedef code *			Code;		/* pointer to byte codes */
 typedef int			Char;		/* char that can pass EOF */
 typedef foreign_t		(*Func)();	/* foreign functions */
@@ -819,8 +833,6 @@ typedef struct choice *		Choice;		/* Choice-point */
 typedef struct clause_choice *  ClauseChoice;   /* firstClause()/nextClause() */
 typedef struct queryFrame *	QueryFrame;     /* toplevel query frame */
 typedef struct fliFrame *	FliFrame;	/* FLI interface frame */
-typedef struct trail_entry *	TrailEntry;	/* Entry of trail stack */
-typedef struct gc_trail_entry *	GCTrailEntry;	/* Entry of trail stack (GC) */
 typedef struct mark		mark;		/* backtrack mark */
 typedef struct stack *		Stack;		/* machine stack */
 typedef struct _varDef *	VarDef;		/* pl-comp.c */
@@ -834,6 +846,29 @@ typedef struct feature *	Feature;	/* pl-prims.c */
 typedef struct dirty_def_info * DirtyDefInfo;
 typedef struct counting_mutex	counting_mutex;
 typedef struct pl_mutex		pl_mutex;
+
+static inline code
+ptr2code(void *ptr)
+{ return (code)(uintptr_t)ptr;
+}
+
+static inline code
+ptr2word(void *ptr)
+{ return (word)(uintptr_t)ptr;
+}
+
+#define word2ptr(type, w) ((type)(uintptr_t)(w))
+#define code2ptr(type, c) ((type)(uintptr_t)(c))
+#define word2atom(w)	  ((atom_t)(w))
+#define word2functor(w)	  ((functor_t)(w))
+#define atom2word(a)	  ((word)(a))
+#define code2atom(c)	  ((atom_t)(c))
+#define atom2code(w)	  ((code)(w))
+#define code2functor(c)	  ((functor_t)(c))
+#define functor2code(f)	  ((code)(f))
+#define word2code(w)	  ((code)(w))
+#define code2word(c)	  ((word)(sword)(scode)(c))
+
 
 		 /*******************************
 		 *	    ARITHMETIC		*
@@ -1004,10 +1039,10 @@ with one operation, it turns out to be faster as well.
 #define PROC_DEFINED		(P_DYNAMIC|P_FOREIGN|P_MULTIFILE|\
 				 P_DISCONTIGUOUS|P_LOCKED_SUPERVISOR)
 /* flags for p_reload data (reconsult) */
-#define P_MODIFIED		P_DIRTYREG
-#define P_NEW			SPY_ME
-#define P_NO_CLAUSES		TRACE_ME
-#define P_CHECK_SSU		HIDE_CHILDS
+#define P_MODIFIED	      (0x1000000000LL) /* Clause list as modified */
+#define P_NEW		      (0x2000000000LL) /* New predicate */
+#define P_NO_CLAUSES	      (0x4000000000LL) /* Foreign or thread local */
+#define P_CHECK_SSU	      (0x8000000000LL) /* Check mixed => and :- */
 
 /* Flags on clauses (unsigned int) */
 
@@ -1056,6 +1091,7 @@ with one operation, it turns out to be faster as well.
 #define M_VARPREFIX		(0x00008000) /* _var, Atom */
 #define M_DESTROYED		(0x00010000)
 #define M_WAITED_FOR		(0x00020000) /* thread_wait/2 on this module */
+#define M_RDSTRING_TERM		(0x00040000) /* read/1 and friends: demand a term */
 
 /* Flags on functors */
 
@@ -1117,8 +1153,8 @@ Macros for environment frames (local stack frames)
 #define refFliP(f, n)		((Word)((f)+1) + (n))
 #define parentFrame(f)		((f)->parent \
 				  ? (f)->parent \
-				  : (LocalFrame)varFrame( \
-				    (f), -QF_PARENT_ENV_OFFSET))
+				 : word2ptr(LocalFrame, varFrame( \
+				    (f), -QF_PARENT_ENV_OFFSET)))
 #define slotsFrame(f)		(true((f)->predicate, P_FOREIGN) ? \
 				      (f)->predicate->functor->arity : \
 				      (f)->clause->clause->prolog_vars)
@@ -1262,27 +1298,13 @@ We assume the compiler will optimise this properly.
 	  } \
 	}
 
-#define cpInt64Data(to, from) \
-	{ Word _f = (Word)(from); \
-	  switch(WORDS_PER_INT64) \
-	  { case 2: \
-	      *(to)++ = *_f++; \
-	    case 1: \
-	      *(to)++ = *_f++; \
-	      from = (void *)_f; \
-	      break; \
-	    default: \
-	      assert(0); \
-	  } \
-	}
-
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Structure declarations that must be shared across multiple files.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 struct atom
 { Atom		next;		/* next in chain */
-  word		atom;		/* as appearing on the global stack */
+  atom_t	atom;		/* as appearing on the global stack */
 #ifdef O_TERMHASH
   unsigned int  hash_value;	/* hash-key value */
 #endif
@@ -1344,8 +1366,8 @@ extern IOSTREAM *atomLogFd;
 
 struct functorDef
 { FunctorDef	next;		/* next in chain */
-  word		functor;	/* as appearing on the global stack */
-  word		name;		/* Name of functor */
+  functor_t	functor;	/* as appearing on the global stack */
+  atom_t	name;		/* Name of functor */
   size_t	arity;		/* arity of functor */
   unsigned      flags;		/* Flag field holding: */
 		  /* CONTROL_F	   Compiled control-structure */
@@ -1407,7 +1429,7 @@ typedef struct arg_info
   unsigned	list	   : 1;		/* Index using lists */
   unsigned	ln_buckets : 5;		/* lg2(bucket count) */
   unsigned	assessed   : 1;		/* Value was assessed */
-  unsigned	meta	   : 4;		/* Meta-argument info */
+  unsigned int	meta	   : 4;		/* Meta-argument info */
 } arg_info;
 
 typedef struct impl_any
@@ -1508,9 +1530,9 @@ typedef struct gc_stats
 #define CA1_PROC	1	/* code arg 1 is procedure */
 #define CA1_FUNC	2	/* code arg 1 is functor */
 #define CA1_DATA	3	/* code arg 2 is prolog data (H_ATOM, H_SMALLINT) */
-#define CA1_INTEGER	4	/* intptr_t value */
-#define CA1_INT64	5	/* int64 value */
-#define CA1_FLOAT	6	/* next WORDS_PER_DOUBLE are double */
+#define CA1_INTEGER	4	/* code value as integer */
+#define CA1_WORD	5	/* word value as integer (CODES_PER_WORD) */
+#define CA1_FLOAT	6	/* next CODES_PER_DOUBLE are double */
 #define CA1_STRING	7	/* inlined string */
 #define CA1_MPZ		8	/* GNU mpz number */
 #define CA1_MPQ		9	/* GNU mpq number */
@@ -1559,10 +1581,25 @@ typedef struct
   char	       _argtype[VM_ARGC]; /* Argument type(s) code takes */
 } code_info;
 
+typedef union trail_entry
+{ Word		address;	/* address of the variable */
+  word		as_word;	/* Tagged during GC */
+} *TrailEntry;
+
+typedef union gc_wordptr
+{ Word		as_ptr;		/* address of the variable */
+  word		as_word;	/* Tagged during GC */
+} gc_wordptr;
+
+typedef union gc_trailptr
+{ TrailEntry	as_ptr;		/* address of the variable */
+  word		as_word;	/* Tagged during GC */
+} gc_trailptr;
+
 struct mark
-{ TrailEntry	trailtop;	/* top of the trail stack */
-  Word		globaltop;	/* top of the global stack */
-  Word		saved_bar;	/* saved LD->mark_bar */
+{ gc_trailptr	trailtop;	/* top of the trail stack */
+  gc_wordptr	globaltop;	/* top of the global stack */
+  gc_wordptr	saved_bar;	/* saved LD->mark_bar */
 };
 
 struct functor
@@ -1680,7 +1717,7 @@ struct localFrame
 #endif
   unsigned int	level;			/* recursion level */
   unsigned int	flags;			/* packed long holding: */
-};
+} WORD_ALIGNED;
 
 
 typedef enum
@@ -1743,7 +1780,7 @@ struct choice
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 EXCEPTION_GUARDED(code, cleanup) must be used  in environments that need
-cleanup  should  a  PL_throw()  happen.  The   most  commpn  reason  for
+cleanup  should  a  PL_throw()  happen.  The   most  common  reason  for
 PL_throw() instead of the nicely   synchronous PL_raise_exception() is a
 stack overflow.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
@@ -1810,12 +1847,12 @@ struct queryFrame
   LocalFrame	saved_ltop;		/* Saved lTop */
   QueryFrame	parent;			/* Parent queryFrame */
   QueryRef	qid;			/* Opaque query id */
-  struct choice	choice;			/* First (dummy) choice-point */
+  struct choice	choice WORD_ALIGNED;	/* First (dummy) choice-point */
   LocalFrame	saved_environment;	/* Parent local-frame */
 					/* Do not put anything between */
 					/* or check parentFrame() */
-  struct localFrame top_frame;		/* The (dummy) top local frame */
-  struct localFrame frame;		/* The initial frame */
+  struct localFrame top_frame WORD_ALIGNED; /* The (dummy) top local frame */
+  struct localFrame frame WORD_ALIGNED;	/* The initial frame */
 };
 
 #define QF_PARENT_ENV_OFFSET \
@@ -1903,6 +1940,14 @@ typedef enum except_class
 		 *	SOURCE FILE ADMIN	*
 		 *******************************/
 
+// Duplicates from pl-table.h.  Mutual type dependencies!
+typedef struct table		*Table;		/* word -> word  */
+typedef struct table_pp		*TablePP;       /* Pointer -> Pointer  */
+typedef struct table_wp		*TableWP;       /* word -> Pointer  */
+typedef struct table_pw		*TablePW;       /* word -> Pointer  */
+typedef struct kvs		*KVS;		/* map of key-values */
+typedef struct table_enum	*TableEnum;	/* Enumerate table entries */
+
 #define SF_MAGIC 0x14a3c90f
 #define SF_MAGIC_DESTROYING 0x14a3c910
 
@@ -1917,14 +1962,14 @@ typedef struct p_reload
 
 typedef struct m_reload
 { Module	module;
-  Table		public;			/* new export list */
+  TableWP	public;			/* new export list (functor_t -> Procedure */
 } m_reload;
 
 typedef struct sf_reload
-{ Table		procedures;		/* Procedures being reloaded */
+{ TablePP	procedures;		/* Procedure -> p_reload* */
   gen_t		reload_gen;		/* Magic gen for reloading */
   size_t	pred_access_count;	/* Top of predicate access stack */
-  Table		modules;		/* Modules seen during reload */
+  TablePP	modules;		/* Module -> m_reload* */
   unsigned	number_of_clauses;	/* reload clause count */
 } sf_reload;
 
@@ -1967,9 +2012,9 @@ struct module
 { atom_t	name;		/* name of module */
   atom_t	class;		/* class of the module */
   SourceFile	file;		/* file from which module is loaded */
-  Table		procedures;	/* predicates associated with module */
-  Table		public;		/* public predicates associated */
-  Table		operators;	/* local operator declarations */
+  TableWP	procedures;	/* predicates associated with module */
+  TableWP	public;		/* public predicates associated */
+  TableWP	operators;	/* local operator declarations */
   ListCell	supers;		/* Import predicates from here */
   ListCell	lingering;	/* Lingering definitions */
   size_t	code_size;	/* #Bytes used for its procedures */
@@ -1996,18 +2041,6 @@ typedef struct module_enum
   int		flags;
 } module_enum, *ModuleEnum;
 
-
-		 /*******************************
-		 *	      TRAIL		*
-		 *******************************/
-
-struct trail_entry
-{ Word		address;	/* address of the variable */
-};
-
-struct gc_trail_entry
-{ word		address;	/* address of the variable */
-};
 
 		 /*******************************
 		 *	   META PREDICATE	*
@@ -2050,27 +2083,27 @@ struct gc_trail_entry
 
 #define NO_MARK_BAR	(Word)(~(uintptr_t)0)
 
-#define Mark(b)		do { (b).trailtop  = tTop; \
-			     (b).saved_bar = LD->mark_bar; \
+#define Mark(b)		do { (b).trailtop.as_ptr  = tTop; \
+			     (b).saved_bar.as_ptr = LD->mark_bar; \
 			     DEBUG(CHK_SECURE, \
-				   assert((b).saved_bar == NO_MARK_BAR || \
-					  ((b).saved_bar >= gBase && \
-					   (b).saved_bar <= gTop))); \
-			     (b).globaltop = gTop; \
+				   assert((b).saved_bar.as_ptr == NO_MARK_BAR || \
+					  ((b).saved_bar.as_ptr >= gBase && \
+					   (b).saved_bar.as_ptr <= gTop))); \
+			     (b).globaltop.as_ptr = gTop; \
 			     if ( LD->mark_bar != NO_MARK_BAR ) \
-			       LD->mark_bar = (b).globaltop; \
+			       LD->mark_bar = (b).globaltop.as_ptr; \
 			   } while(0)
-#define DiscardMark(b)	do { LD->mark_bar = (LD->frozen_bar > (b).saved_bar ? \
-					     LD->frozen_bar : (b).saved_bar); \
+#define DiscardMark(b)	do { LD->mark_bar = (LD->frozen_bar > (b).saved_bar.as_ptr ? \
+					     LD->frozen_bar : (b).saved_bar.as_ptr); \
 			     DEBUG(CHK_SECURE, \
 				   assert(LD->mark_bar == NO_MARK_BAR || \
 					  (LD->mark_bar >= gBase && \
 					   LD->mark_bar <= gTop))); \
 			   } while(0)
-#define NOT_A_MARK	(TrailEntry)(~(word)0)
-#define NoMark(b)	do { (b).trailtop = NOT_A_MARK; \
+#define NOT_A_MARK	(~(word)0)
+#define NoMark(b)	do { (b).trailtop.as_word = NOT_A_MARK; \
 			   } while(0)
-#define isRealMark(b)	((b).trailtop != NOT_A_MARK)
+#define isRealMark(b)	((b).trailtop.as_word != NOT_A_MARK)
 
 
 		 /*******************************
@@ -2117,7 +2150,7 @@ Temporary store/restore pointers to make them safe over GC/shift
 			     *valTermRef(LD->tmp.h[i]) = makeRefLG(p); \
 			   } while(0)
 #define PopPtr(p)	do { int i = --LD->tmp.top; \
-			     p = unRefLG(*valTermRef(LD->tmp.h[i])); \
+			     p = unRef(*valTermRef(LD->tmp.h[i])); \
 			     setVar(*valTermRef(LD->tmp.h[i])); \
 			   } while(0)
 #define PushVal(w)	do { int i = LD->tmp.top++; \
@@ -2393,9 +2426,7 @@ typedef struct
 #define spaceStack(name) spaceStackP(&LD->stacks.name)
 #define narrowStack(name) narrowStackP(&LD->stacks.name)
 
-#define globalStackLimit() (LD->stacks.limit > (MAXTAGGEDPTR+1) ? \
-					       (MAXTAGGEDPTR+1) : \
-					       LD->stacks.limit)
+#define globalStackLimit() (LD->stacks.limit)
 
 #define GROW_TRIM  ((size_t)-1)
 #define GROW_TIGHT ((size_t)1)
@@ -2427,24 +2458,42 @@ typedef enum
 	   } while(0)
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-hasGlobalSpace(n) is true if we have enough space to create an object of
-size N on the global stack AND  can   use  bindConst()  to bind it to an
+hasGlobalSpace(n) is true if we have  enough space to create an object
+of size N on the global stack AND can use bindConst() to bind it to an
 (attributed) variable.
+
+Note that on 32-bit systems the  pointer can easily overflow, so we do
+the arithmetic after dividing by the unit size.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+#define hasSpace(base, top, size) f_hasSpace(base, top, (size)*sizeof(*(base)))
+
+static inline int
+f_hasSpace(void *here, void *top, size_t bytes)
+{
+#if O_DEBUG
+  assert(top>=here);
+#endif
+  return (char*)top-(char*)here >= bytes;
+}
 
 #define BIND_GLOBAL_SPACE (7)
 #define BIND_TRAIL_SPACE (6)
 #define hasGlobalSpace(n) \
 	hasStackSpace(n,0)
 #define hasStackSpace(g, t) \
-	(likely(gTop+(g)+BIND_GLOBAL_SPACE <= gMax) && \
-	 likely(tTop+(t)+BIND_TRAIL_SPACE <= tMax))
+	(hasGlobalSpace_((g)+BIND_GLOBAL_SPACE) && \
+	 hasTrailSpace(t+BIND_TRAIL_SPACE))
+#define hasGlobalSpace_(n) \
+	likely(hasSpace(gTop, gMax, (n)))
 #define hasTrailSpace(t) \
-	likely(tTop+(t) <= tMax)
+	likely(hasSpace(tTop, tMax, (t)))
 #define overflowCode(n) \
-	( (gTop+(n)+BIND_GLOBAL_SPACE > gMax) ? GLOBAL_OVERFLOW \
-					      : TRAIL_OVERFLOW )
+	( !hasGlobalSpace_((n)+BIND_GLOBAL_SPACE) ? GLOBAL_OVERFLOW \
+						  : TRAIL_OVERFLOW )
 #define GLOBAL_TRAIL_RATIO (6)
+#define hasLocalSpace(bytes) \
+	hasSpace((char*)lTop, (char*)lMax, bytes)
 
 
 		 /*******************************
@@ -2457,7 +2506,7 @@ typedef enum
   AV_ERROR
 } av_action;
 
-#define NV_ERROR (PLMINTAGGEDINT-1)
+#define NV_ERROR (-1)
 
 typedef struct
 { functor_t functor;			/* Functor to use ($VAR/1) */
@@ -2554,8 +2603,9 @@ typedef struct
 
 
 typedef struct
-{ int		blocked;		/* No shifts allowed */
-  double	time;			/* time spent in stack shifts */
+{ double	time;			/* time spent in stack shifts */
+  uint64_t	inferences;		/* Inference count at start */
+  int		blocked;		/* No shifts allowed */
   int		local_shifts;		/* Shifts of the local stack */
   int		global_shifts;		/* Shifts of the global stack */
   int		trail_shifts;		/* Shifts of the trail stack */
@@ -2893,6 +2943,7 @@ static inline int __ptr_to_bool(const intptr_t ptr) { return ptr != 0; }
 #include "os/pl-file.h"			/* Stream management */
 #include "pl-global.h"			/* global data */
 #include "pl-hash.h"			/* Murmurhash function */
+#include "os/pl-table.h"		/* Hash tables */
 #include "pl-inline.h"			/* Inline facilities */
 #include "pl-privitf.h"			/* private foreign interface */
 #include "os/pl-text.h"			/* text manipulation */

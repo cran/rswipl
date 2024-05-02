@@ -976,7 +976,7 @@ when_condition(DECL_LD Word cond, Word result, when_state *state)
 
   if ( isTerm(*cond) )
   { Functor term = valueTerm(*cond);
-    functor_t f = term->definition;
+    functor_t f = word2functor(term->definition);
 
     if ( f == FUNCTOR_unify_determined2 ) /* ?=/2 */
     { *result = *cond;
@@ -1235,7 +1235,7 @@ has_attributes_after(DECL_LD Word av, Choice ch)
 	{ char buf[64];
 	  char vname[32];
 	  Sdprintf("has_attributes_after(%s, %s)\n",
-		   var_name_ptr(av, vname), print_addr(ch->mark.globaltop, buf));
+		   var_name_ptr(av, vname), print_addr(ch->mark.globaltop.as_ptr, buf));
 	});
 
   av = deRefM(av, &w);
@@ -1255,7 +1255,7 @@ has_attributes_after(DECL_LD Word av, Choice ch)
 	      Sdprintf("  att/3 at %s\n", print_addr((Word)f, buf));
 	    });
 
-      if ( (Word)f >= ch->mark.globaltop )
+      if ( (Word)f >= ch->mark.globaltop.as_ptr )
 	return TRUE;			/* created after choice */
 
       if ( f->definition == FUNCTOR_att3 )
@@ -1271,7 +1271,7 @@ has_attributes_after(DECL_LD Word av, Choice ch)
 	  return TRUE;			/* modified after choice point */
 	(void)deRefM(pv, &w);
 	if ( isTerm(w) &&
-	     (Word)valueTerm(w) >= ch->mark.globaltop )
+	     (Word)valueTerm(w) >= ch->mark.globaltop.as_ptr )
 	  return TRUE;			/* argument term after choice point */
 
 	l = pv+1;
@@ -1292,7 +1292,7 @@ static void
 scan_trail(DECL_LD Choice ch, int set)
 { TrailEntry te, base;
 
-  base = ch->mark.trailtop;
+  base = ch->mark.trailtop.as_ptr;
 
   for(te=tTop-1; te>=base; te--)
   { if ( isTrailVal(te->address) )

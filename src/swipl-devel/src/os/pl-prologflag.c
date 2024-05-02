@@ -238,8 +238,12 @@ check_oneof_flag(const oneof *of, atom_t a, int error)
   return TRUE;
 }
 
+/* `flags` should be `unsigned short`, but may not be subject to
+ * argument promotion for use with va_start() according to clang
+ */
+
 void
-setPrologFlag(const char *name, int flags, ...)
+setPrologFlag(const char *name, unsigned int flags, ...)
 { GET_LD
   atom_t an = PL_new_atom(name);
   prolog_flag *f;
@@ -252,16 +256,16 @@ setPrologFlag(const char *name, int flags, ...)
   if ( type == FT_INT64 )
     flags = (flags & ~FT_MASK)|FT_INTEGER;
 
-  if ( (f = lookupHTable(GD->prolog_flag.table, (void *)an)) )
+  if ( (f = lookupHTableWP(GD->prolog_flag.table, an)) )
   { assert((f->flags & FT_MASK) == (flags & FT_MASK));
     if ( flags & FF_KEEP )
       return;
   } else
   { f = allocHeapOrHalt(sizeof(*f));
     f->index = 0;
-    f->flags = flags;
+    f->flags = (unsigned short)flags;
     f->oneof = NULL;
-    addNewHTable(GD->prolog_flag.table, (void *)an, f);
+    addNewHTableWP(GD->prolog_flag.table, an, f);
     first_def = TRUE;
   }
 
@@ -272,10 +276,10 @@ setPrologFlag(const char *name, int flags, ...)
       unsigned int flag = va_arg(args, unsigned int);
 
       if ( !first_def && flag && !f->index )	/* type definition */
-      { f->index = flag;
+      { f->index = (short)flag;
 	val = (f->value.a == ATOM_true);
       } else if ( first_def )			/* 1st definition */
-      { f->index = flag;
+      { f->index = (short)flag;
 	DEBUG(MSG_PROLOG_FLAG,
 	      Sdprintf("Prolog flag %s at %d\n", name, flag));
       }
@@ -355,14 +359,6 @@ clean_prolog_flag(prolog_flag *f)
   }
 }
 
-static void
-freePrologFlag(prolog_flag *f)
-{ clean_prolog_flag(f);
-
-  freeHeap(f, sizeof(*f));
-}
-
-
 #ifdef O_PLMT
 static prolog_flag *
 copy_prolog_flag(const prolog_flag *f)
@@ -387,21 +383,28 @@ copy_prolog_flag(const prolog_flag *f)
 
 
 static void
-copySymbolPrologFlagTable(void *name, void **value)
+copySymbolPrologFlagTable(table_key_t name, table_value_t *value)
 { atom_t key = (atom_t)name;
-  prolog_flag *f = *value;
+  prolog_flag *f = val2ptr(*value);
 
   PL_register_atom(key);
-  *value = copy_prolog_flag(f);
+  *value = ptr2val(copy_prolog_flag(f));
 }
 
 
 static void
-freeSymbolPrologFlagTable(void *name, void *value)
+freePrologFlag(prolog_flag *f)
+{ clean_prolog_flag(f);
+
+  freeHeap(f, sizeof(*f));
+}
+
+static void
+freeSymbolPrologFlagTable(table_key_t name, table_value_t value)
 { atom_t key = (atom_t)name;
 
   PL_unregister_atom(key);
-  freePrologFlag(value);
+  freePrologFlag(val2ptr(value));
 }
 #endif
 
@@ -724,7 +727,7 @@ accessed_prolog_flag(prolog_flag *f, atom_t name, int local)
     if ( local )
     { prolog_flag *fg;
 
-      if ( (fg = lookupHTable(GD->prolog_flag.table, (void *)name)) )
+      if ( (fg = lookupHTableWP(GD->prolog_flag.table, name)) )
 	set(fg, FF_ACCESSED);
     }
   }
@@ -797,7 +800,7 @@ set_flag_atom(prolog_flag *f, atom_t a)
 
 
 static int
-keep_flag(atom_t k, prolog_flag *f, int flags, oneof *of, term_t value)
+keep_flag(atom_t k, prolog_flag *f, unsigned short flags, oneof *of, term_t value)
 { if ( (flags&FF_KEEP) )
   { if ( of )
     { if ( check_oneof_flag(of, f->value.a, FALSE) )
@@ -876,14 +879,14 @@ keep_flag(atom_t k, prolog_flag *f, int flags, oneof *of, term_t value)
 	LDFUNC(set_prolog_flag_unlocked, m, k, value, flags, of)
 
 static prolog_flag *
-set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, int flags, oneof *of)
+set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, unsigned short flags, oneof *of)
 { prolog_flag *f;
   int rval = TRUE;
 
 					/* set existing Prolog flag */
 #ifdef O_PLMT
   if ( LD->prolog_flag.table &&
-       (f = lookupHTable(LD->prolog_flag.table, (void *)k)) )
+       (f = lookupHTableWP(LD->prolog_flag.table, k)) )
   { int rc;
     accessed_prolog_flag(f, k, TRUE);
     if ( (rc=keep_flag(k, f, flags, of, value)) == TRUE )
@@ -892,7 +895,7 @@ set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, int flags, on
       return NULL;
   } else
 #endif
-  if ( (f = lookupHTable(GD->prolog_flag.table, (void *)k)) )
+    if ( (f = lookupHTableWP(GD->prolog_flag.table, k)) )
   { int rc;
     accessed_prolog_flag(f, k, FALSE);
     if ( (rc=keep_flag(k, f, flags, of, value)) == TRUE )
@@ -920,13 +923,13 @@ set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, int flags, on
     { f = copy_prolog_flag(f);
 
       if ( !LD->prolog_flag.table )
-      { LD->prolog_flag.table = newHTable(4);
+      { LD->prolog_flag.table = newHTableWP(4);
 
 	LD->prolog_flag.table->copy_symbol = copySymbolPrologFlagTable;
 	LD->prolog_flag.table->free_symbol = freeSymbolPrologFlagTable;
       }
 
-      addNewHTable(LD->prolog_flag.table, (void *)k, f);
+      addNewHTableWP(LD->prolog_flag.table, k, f);
       PL_register_atom(k);
       DEBUG(MSG_PROLOG_FLAG,
 	    Sdprintf("Localised Prolog flag %s\n", PL_atom_chars(k)));
@@ -1015,12 +1018,7 @@ set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, int flags, on
     }
 
     f->flags |= (flags&FF_COPY_FLAGS);
-
-    addNewHTable(GD->prolog_flag.table, (void *)k, f);
-    if ( !(lookupHTable(GD->prolog_flag.table, (void *)k) == f) )
-    { freePrologFlag(f);
-      Sdprintf("OOPS; failed to set Prolog flag!?\n");
-    }
+    addNewHTableWP(GD->prolog_flag.table, k, f);
 
     return f;
   } else
@@ -1165,24 +1163,29 @@ set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, int flags, on
     { int64_t i;
 
       if ( !PL_get_int64_ex(value, &i) )
-	return FALSE;
-      f->value.i = i;
+	return NULL;
 
 #ifdef O_ATOMGC
       if ( k == ATOM_agc_margin )
+      { if ( i < 0 || i > SIZE_MAX )
+	  return PL_representation_error("size_t"),NULL;
 	GD->atoms.margin = (size_t)i;
-      else
+      } else
 #endif
       if ( k == ATOM_table_space )
-      { if ( !LD->tabling.node_pool )
-	  LD->tabling.node_pool = new_alloc_pool("private_table_space", i);
+      { if ( i < 0 || i > SIZE_MAX )
+	  return PL_representation_error("size_t"),NULL;
+	if ( !LD->tabling.node_pool )
+	  LD->tabling.node_pool = new_alloc_pool("private_table_space", (size_t)i);
 	else
 	  LD->tabling.node_pool->limit = (size_t)i;
       }
 #ifdef O_PLMT
       else if ( k == ATOM_shared_table_space )
-      { if ( !GD->tabling.node_pool )
-	{ alloc_pool *pool = new_alloc_pool("shared_table_space", i);
+      { if ( i < 0 || i > SIZE_MAX )
+	  return PL_representation_error("size_t"),NULL;
+	if ( !GD->tabling.node_pool )
+	{ alloc_pool *pool = new_alloc_pool("shared_table_space", (size_t)i);
 	  if ( pool && !COMPARE_AND_SWAP_PTR(&GD->tabling.node_pool, NULL, pool) )
 	    free_alloc_pool(pool);
 	} else
@@ -1190,13 +1193,22 @@ set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, int flags, on
       }
 #endif
       else if ( k == ATOM_stack_limit )
-      { if ( !set_stack_limit((size_t)i) )
+      { if ( i < 0 || i > SIZE_MAX )
+	  return PL_representation_error("size_t"),NULL;
+	if ( !set_stack_limit((size_t)i) )
 	  return FALSE;
       } else if ( k == ATOM_string_stack_tripwire )
-      { LD->fli.string_buffers.tripwire = (unsigned int)i;
+      { if ( i < 0 || i > UINT_MAX )
+	  return PL_representation_error("uint"),NULL;
+	LD->fli.string_buffers.tripwire = (unsigned int)i;
       } else if ( k == ATOM_heartbeat )
-      { LD->yield.frequency = i/16;
+      { if ( i < 0 )
+	  return PL_error(NULL, 0, NULL, ERR_DOMAIN,
+			  ATOM_not_less_than_zero, value),NULL;
+	LD->yield.frequency = i/16;
       }
+
+      f->value.i = i;
       break;
     }
     case FT_FLOAT:
@@ -1222,7 +1234,7 @@ set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, int flags, on
 
 
 static prolog_flag *
-set_prolog_flag_ptr(term_t key, term_t value, int flags, oneof *of)
+set_prolog_flag_ptr(term_t key, term_t value, unsigned short flags, oneof *of)
 { GET_LD
   atom_t k;
   Module m = MODULE_parse;
@@ -1245,7 +1257,7 @@ set_prolog_flag_ptr(term_t key, term_t value, int flags, oneof *of)
 }
 
 int
-set_prolog_flag(term_t key, term_t value, int flags)
+set_prolog_flag(term_t key, term_t value, unsigned short flags)
 { return !!set_prolog_flag_ptr(key, value, flags, NULL);
 }
 
@@ -1272,7 +1284,7 @@ static const PL_option_t prolog_flag_options[] =
 static
 PRED_IMPL("create_prolog_flag", 3, create_prolog_flag, PL_FA_ISO)
 { PRED_LD
-  int flags = 0;
+  unsigned short flags = 0;
   term_t type = 0;
   atom_t access = ATOM_read_write;
   int keep = FALSE;
@@ -1341,11 +1353,11 @@ lookupFlag(atom_t key)
   prolog_flag *f = NULL;
 
   if ( LD->prolog_flag.table &&
-       (f = lookupHTable(LD->prolog_flag.table, (void *)key)) )
+       (f = lookupHTableWP(LD->prolog_flag.table, key)) )
   { return f;
   } else
 #endif
-  { return lookupHTable(GD->prolog_flag.table, (void *)key);
+  { return lookupHTableWP(GD->prolog_flag.table, key);
   }
 }
 
@@ -1560,9 +1572,9 @@ typedef struct
   Module module;
 } prolog_flag_enum;
 
-word
+foreign_t
 pl_prolog_flag5(DECL_LD term_t key, term_t value,
-		word scope, word access, word type,
+		term_t scope, term_t access, term_t type,
 		control_t h)
 { prolog_flag_enum *e;
   fid_t fid;
@@ -1581,14 +1593,14 @@ pl_prolog_flag5(DECL_LD term_t key, term_t value,
 
 #ifdef O_PLMT
 	if ( LD->prolog_flag.table &&
-	     (f = lookupHTable(LD->prolog_flag.table, (void *)k)) )
+	     (f = lookupHTableWP(LD->prolog_flag.table, k)) )
 	{ accessed_prolog_flag(f, k, TRUE);
 	  return ( unify_prolog_flag_value(module, k, f, value) &&
 		   (!access || unify_prolog_flag_access(f, access)) &&
 		   (!type   || unify_prolog_flag_type(f, type)) );
 	}
 #endif
-	if ( (f = lookupHTable(GD->prolog_flag.table, (void *)k)) )
+	if ( (f = lookupHTableWP(GD->prolog_flag.table, k)) )
 	{ accessed_prolog_flag(f, k, FALSE);
 	  return ( unify_prolog_flag_value(module, k, f, value) &&
 		   (!access || unify_prolog_flag_access(f, access)) &&
@@ -1618,9 +1630,9 @@ pl_prolog_flag5(DECL_LD term_t key, term_t value,
 	}
 
 	if ( e->scope == ATOM_local )
-	  e->table_enum = newTableEnum(LD->prolog_flag.table);
+	  e->table_enum = newTableEnumWP(LD->prolog_flag.table);
 	else
-	  e->table_enum = newTableEnum(GD->prolog_flag.table);
+	  e->table_enum = newTableEnumWP(GD->prolog_flag.table);
 
 	break;
       } else
@@ -1642,13 +1654,17 @@ pl_prolog_flag5(DECL_LD term_t key, term_t value,
   fid = PL_open_foreign_frame();
   PL_LOCK(L_PLFLAG);
   for(;;)
-  { atom_t fn;
-    prolog_flag *f;
-    while( advanceTableEnum(e->table_enum, (void**)&fn, (void**)&f) )
-    { if ( e->explicit_scope == FALSE &&
+  { table_key_t tk;
+    table_value_t tv;
+
+    while( advanceTableEnum(e->table_enum, &tk, &tv) )
+    { atom_t fn = (atom_t)tk;
+      prolog_flag *f = val2ptr(tv);
+
+      if ( e->explicit_scope == FALSE &&
 	   e->scope == ATOM_global &&
 	   LD->prolog_flag.table &&
-	   lookupHTable(LD->prolog_flag.table, (void *)fn) )
+	   lookupHTableWP(LD->prolog_flag.table, fn) )
 	continue;
 
       if ( PL_unify_atom(key, fn) &&
@@ -1669,7 +1685,7 @@ pl_prolog_flag5(DECL_LD term_t key, term_t value,
     if ( e->scope == ATOM_local )
     { e->scope = ATOM_global;
       freeTableEnum(e->table_enum);
-      e->table_enum = newTableEnum(GD->prolog_flag.table);
+      e->table_enum = newTableEnumWP(GD->prolog_flag.table);
     } else
       break;
   }
@@ -1775,7 +1791,7 @@ initPrologFlagTable(void)
 { if ( !GD->prolog_flag.table )
   { initPrologThreads();	/* may be called before PL_initialise() */
 
-    GD->prolog_flag.table = newHTable(256);
+    GD->prolog_flag.table = newHTableWP(256);
   }
 }
 
@@ -1894,8 +1910,8 @@ initPrologFlags(void)
   setPrologFlag("max_integer",	   FT_INT64|FF_READONLY, PLMAXINT);
   setPrologFlag("min_integer",	   FT_INT64|FF_READONLY, PLMININT);
 #endif
-  setPrologFlag("max_tagged_integer", FT_INTEGER|FF_READONLY, (intptr_t)PLMAXTAGGEDINT);
-  setPrologFlag("min_tagged_integer", FT_INTEGER|FF_READONLY, (intptr_t)PLMINTAGGEDINT);
+  setPrologFlag("max_tagged_integer", FT_INT64|FF_READONLY, (int64_t)PLMAXTAGGEDINT);
+  setPrologFlag("min_tagged_integer", FT_INT64|FF_READONLY, (int64_t)PLMINTAGGEDINT);
 #ifdef O_BIGNUM
   setPrologFlag("bounded",	      FT_BOOL|FF_READONLY,	   FALSE, 0);
   setPrologFlag("rationals",	      FT_BOOL|FF_READONLY,	   TRUE, 0);
@@ -2182,7 +2198,7 @@ checkPrologFlagsAccess(void)
 
 	FOR_TABLE(GD->prolog_flag.table, n, v)
 	{ atom_t name = (atom_t)n;
-	  prolog_flag *f = (prolog_flag*)v;
+	  prolog_flag *f = val2ptr(v);
 
 	  if ( true(f, FF_WARN_NOT_ACCESSED) &&
 	       false(f, FF_ACCESSED) )
@@ -2213,7 +2229,7 @@ checkPrologFlagsAccess(void)
 void
 cleanupPrologFlags(void)
 { if ( GD->prolog_flag.table )
-  { Table t = GD->prolog_flag.table;
+  { TableWP t = GD->prolog_flag.table;
 
     GD->prolog_flag.table = NULL;
 #ifdef O_PLMT
@@ -2221,7 +2237,7 @@ cleanupPrologFlags(void)
 #else
     t->free_symbol = NULL;
 #endif
-    destroyHTable(t);
+    destroyHTableWP(t);
   }
 }
 

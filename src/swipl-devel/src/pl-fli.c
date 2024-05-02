@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1996-2023, University of Amsterdam
+    Copyright (c)  1996-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -519,15 +519,14 @@ API_STUB(term_t)
 		 *******************************/
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-unifyAtomic(p, a) unifies a term, represented by  a pointer to it, with
-an atomic value. It is intended for foreign language functions.
+PL_unify_atomic(p, a) unifies a term,  represented by a pointer to it,
+with an atomic value. It is intended for foreign language functions.
 
 May call GC/SHIFT
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define unifyAtomic(t, w) LDFUNC(unifyAtomic, t, w)
-static bool
-unifyAtomic(DECL_LD term_t t, word w)
+int
+PL_unify_atomic(DECL_LD term_t t, word w)
 { Word p = valHandleP(t);
 
   for(;;)
@@ -615,6 +614,18 @@ PL_new_blob(void *blob, size_t len, PL_blob_t *type)
 
   int new;
   return (atom_t)lookupBlob(blob, len, type, &new);
+}
+
+
+size_t
+PL_atom_index(atom_t a)
+{ return indexAtom(a);
+}
+
+atom_t
+PL_atom_from_index(size_t i)
+{ Atom a = fetchAtomArray(i);
+  return a->atom;
 }
 
 
@@ -1455,7 +1466,7 @@ PL_get_term_value(term_t t, term_value_t *val)
   { case PL_VARIABLE:
       break;
     case PL_INTEGER:
-      val->i = valInteger(w);		/* TBD: Handle MPZ integers? */
+      get_int64(w, &val->i);		/* TBD: Handle MPZ integers? */
       break;
     case PL_FLOAT:
       val->f = valFloat(w);
@@ -1507,7 +1518,7 @@ PL_get_bool(term_t t, int *b)
   word w = valHandle(t);
 
   if ( isAtom(w) )
-  { int bv = atom_to_bool(w);
+  { int bv = atom_to_bool(word2atom(w));
     if ( bv >= 0 )
     { *b = bv;
       return TRUE;
@@ -1753,41 +1764,13 @@ PL_get_integer(DECL_LD term_t t, int *i)
 { word w = valHandle(t);
 
   if ( isTaggedInt(w) )
-  { intptr_t val = valInt(w);
+  { sword val = valInt(w);
 
     if ( val > INT_MAX || val < INT_MIN )
       fail;
     *i = (int)val;
     succeed;
   }
-#if SIZEOF_VOIDP < 8
-  if ( isBignum(w) )
-  { int64_t val = valBignum(w);
-
-    if ( val > INT_MAX || val < INT_MIN )
-      fail;
-
-    *i = (int)val;
-    succeed;
-  }
-#endif
-#ifndef O_GMP
-  if ( isFloat(w) )
-  { double f = valFloat(w);
-    int l;
-
-#ifdef DOUBLE_TO_LONG_CAST_RAISES_SIGFPE
-    if ( f > (double)INT_MAX || f < (double)INT_MIN )
-      fail;
-#endif
-
-    l = (int)f;
-    if ( (double)l == f )
-    { *i = l;
-      succeed;
-    }
-  }
-#endif
   fail;
 }
 
@@ -1802,41 +1785,13 @@ PL_get_uint(DECL_LD term_t t, unsigned int *i)
 { word w = valHandle(t);
 
   if ( isTaggedInt(w) )
-  { intptr_t val = valInt(w);
+  { sword val = valInt(w);
 
     if ( val < 0 || val > UINT_MAX )
       fail;
     *i = (unsigned int)val;
     succeed;
   }
-#if SIZEOF_VOIDP < 8
-  if ( isBignum(w) )
-  { int64_t val = valBignum(w);
-
-    if ( val < 0 || val > UINT_MAX )
-      fail;
-
-    *i = (unsigned int)val;
-    succeed;
-  }
-#endif
-#ifndef O_GMP
-  if ( isFloat(w) )
-  { double f = valFloat(w);
-    unsigned int l;
-
-#ifdef DOUBLE_TO_LONG_CAST_RAISES_SIGFPE
-    if ( f > (double)UINT_MAX || f < 0.0 )
-      fail;
-#endif
-
-    l = (unsigned int)f;
-    if ( (double)l == f )
-    { *i = l;
-      succeed;
-    }
-  }
-#endif
   fail;
 }
 
@@ -1844,39 +1799,23 @@ PL_get_uint(DECL_LD term_t t, unsigned int *i)
 int
 PL_get_long(DECL_LD term_t t, long *i)
 { word w = valHandle(t);
+  int64_t i64;
 
   if ( isTaggedInt(w) )
-  { intptr_t val = valInt(w);
+  { sword val = valInt(w);
 
     if ( val > LONG_MAX || val < LONG_MIN )
       fail;
     *i = (long)val;
     succeed;
   }
-  if ( isBignum(w) )
-  { int64_t val = valBignum(w);
 
-    if ( val > LONG_MAX || val < LONG_MIN )
-      fail;
-
-    *i = (long)val;
+  if ( get_int64(w, &i64) &&
+       i64 <= LONG_MAX && i64 >= LONG_MIN )
+  { *i = (long)i64;
     succeed;
   }
-  if ( isFloat(w) )
-  { double f = valFloat(w);
-    long l;
 
-#ifdef DOUBLE_TO_LONG_CAST_RAISES_SIGFPE
-    if ( f > (double)LONG_MAX || f < (double)LONG_MIN )
-      fail;
-#endif
-
-    l = (long) f;
-    if ( (double)l == f )
-    { *i = l;
-      succeed;
-    }
-  }
   fail;
 }
 
@@ -1894,27 +1833,7 @@ PL_get_int64(DECL_LD term_t t, int64_t *i)
   { *i = valInt(w);
     succeed;
   }
-  if ( isBignum(w) )
-  { *i = valBignum(w);
-    succeed;
-  }
-  if ( isFloat(w) )
-  { double f = valFloat(w);
-    int64_t l;
-
-#ifdef DOUBLE_TO_LONG_CAST_RAISES_SIGFPE
-    if ( !((f >= LLONG_MAX) && (f <= LLONG_MIN)) )
-      fail;
-#endif
-
-    l = (int64_t) f;
-    if ( (double)l == f )
-    { *i = l;
-      succeed;
-    }
-  }
-
-  fail;
+  return get_int64(w, i);
 }
 
 
@@ -2133,7 +2052,7 @@ PL_get_functor(DECL_LD term_t t, functor_t *f)
     succeed;
   }
   if ( isCallableAtom(w) || isReservedSymbol(w) )
-  { *f = lookupFunctorDef(w, 0);
+  { *f = lookupFunctorDef(word2atom(w), 0);
     succeed;
   }
 
@@ -2327,26 +2246,20 @@ _PL_get_xpce_reference(term_t t, xpceref_t *ref)
   if ( !isTerm(w) )
     fail;
 
-  fd = valueTerm(w)->definition;
+  fd = word2functor(valueTerm(w)->definition);
   if ( fd == FUNCTOR_xpceref1 )		/* @ref */
   { Word p = argTermP(w, 0);
 
     do
     { if ( isTaggedInt(*p) )
       { ref->type    = PL_INTEGER;
-	ref->value.i = valInt(*p);
+	ref->value.i = (intptr_t)valInt(*p);
 
 	goto ok;
       }
       if ( isTextAtom(*p) )
       { ref->type    = PL_ATOM;
-	ref->value.a = (atom_t) *p;
-
-	goto ok;
-      }
-      if ( isBignum(*p) )
-      { ref->type    = PL_INTEGER;
-	ref->value.i = (intptr_t)valBignum(*p);
+	ref->value.a = word2atom(*p);
 
 	goto ok;
       }
@@ -2542,7 +2455,7 @@ PL_unify_string_chars(term_t t, const char *s)
   word str = globalString(strlen(s), (char *)s);
 
   if ( str )
-    return unifyAtomic(t, str);
+    return PL_unify_atomic(t, str);
 
   return FALSE;
 }
@@ -2553,7 +2466,7 @@ PL_unify_string_nchars(term_t t, size_t len, const char *s)
   word str = globalString(len, s);
 
   if ( str )
-    return unifyAtomic(t, str);
+    return PL_unify_atomic(t, str);
 
   return FALSE;
 }
@@ -2767,7 +2680,8 @@ PL_put_uint64(term_t t, uint64_t i)
 
   switch ( (rc=put_uint64(&w, i, ALLOW_GC)) )
   { case TRUE:
-      return setHandle(t, w);
+      setHandle(t, w);
+      return TRUE;
     case LOCAL_OVERFLOW:
       return PL_representation_error("uint64_t");
     default:
@@ -2891,16 +2805,15 @@ _PL_put_xpce_reference_i(term_t t, uintptr_t i)
   Word p;
   word w;
 
-  if ( !hasGlobalSpace(2+2+WORDS_PER_INT64) )
+  if ( !hasGlobalSpace(2) )
   { int rc;
 
-    if ( (rc=ensureGlobalSpace(2+2+WORDS_PER_INT64, ALLOW_GC)) != TRUE )
+    if ( (rc=ensureGlobalSpace(2, ALLOW_GC)) != TRUE )
       return raiseStackOverflow(rc);
   }
 
   w = consInt(i);
-  if ( valInt(w) != i )
-    put_int64(&w, i, 0);
+  assert(valInt(w) == i);
 
   p = gTop;
   gTop += 2;
@@ -2933,12 +2846,12 @@ _PL_put_xpce_reference_a(term_t t, atom_t name)
 
 int
 PL_unify_atom(DECL_LD term_t t, atom_t a)
-{ return unifyAtomic(t, a);
+{ return PL_unify_atomic(t, atom2word(a));
 }
 
 API_STUB(int)
 (PL_unify_atom)(term_t t, atom_t a)
-( return unifyAtomic(t, a); )
+( return PL_unify_atom(t, a); )
 
 
 int
@@ -3039,7 +2952,7 @@ int
 PL_unify_atom_chars(term_t t, const char *chars)
 { GET_LD
   atom_t a = lookupAtom(chars, strlen(chars));
-  int rval = unifyAtomic(t, a);
+  int rval = PL_unify_atom(t, a);
 
   PL_unregister_atom(a);
 
@@ -3051,7 +2964,7 @@ int
 PL_unify_atom_nchars(term_t t, size_t len, const char *chars)
 { GET_LD
   atom_t a = lookupAtom(chars, len);
-  int rval = unifyAtomic(t, a);
+  int rval = PL_unify_atom(t, a);
 
   PL_unregister_atom(a);
 
@@ -3240,10 +3153,10 @@ unify_int64_ex(DECL_LD term_t t, int64_t i, int ex)
   deRef(p);
 
   if ( canBind(*p) )
-  { if ( !hasGlobalSpace(2+WORDS_PER_INT64) )
+  { if ( !hasGlobalSpace(WORDS_PER_BIGNUM64) )
     { int rc;
 
-      if ( (rc=ensureGlobalSpace(2+WORDS_PER_INT64, ALLOW_GC)) != TRUE )
+      if ( (rc=ensureGlobalSpace(WORDS_PER_BIGNUM64, ALLOW_GC)) != TRUE )
 	return raiseStackOverflow(rc);
       p = valHandleP(t);
       deRef(p);
@@ -3259,8 +3172,9 @@ unify_int64_ex(DECL_LD term_t t, int64_t i, int ex)
   if ( w == *p && valInt(w) == i )
     succeed;
 
-  if ( isBignum(*p) )
-    return valBignum(*p) == i;
+  int64_t v;
+  if ( get_int64(*p, &v) )
+    return v == i;
 
   if ( ex && !isInteger(*p) )
     return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_integer, t);
@@ -3291,7 +3205,7 @@ PL_unify_uint64(term_t t, uint64_t i)
 
     switch ( (rc=put_uint64(&w, i, ALLOW_GC)) )
     { case TRUE:
-	return unifyAtomic(t, w);
+	return PL_unify_atomic(t, w);
       case LOCAL_OVERFLOW:
 	return PL_representation_error("uint64_t");
       default:
@@ -3326,7 +3240,7 @@ PL_unify_integer(DECL_LD term_t t, intptr_t i)
 { word w = consInt(i);
 
   if ( valInt(w) == i )
-    return unifyAtomic(t, w);
+    return PL_unify_atomic(t, w);
 
   return unify_int64_ex(t, i, FALSE);
 }
@@ -3473,7 +3387,7 @@ API_STUB(int)
 
 int
 PL_unify_nil(DECL_LD term_t l)
-{ return unifyAtomic(l, ATOM_nil);
+{ return PL_unify_atom(l, ATOM_nil);
 }
 
 API_STUB(int)
@@ -3554,6 +3468,11 @@ cont:
       break;
     case PL_INTPTR:
     { int64_t i = va_arg(args, intptr_t);
+      rval = PL_unify_int64(t, i);
+      break;
+    }
+    case PL_SWORD:
+    { sword i = va_arg(args, sword);
       rval = PL_unify_int64(t, i);
       break;
     }
@@ -3794,8 +3713,8 @@ put_xpce_ref_arg(DECL_LD xpceref_t *ref)
 { if ( ref->type == PL_INTEGER )
   { word w = consInt(ref->value.i);
 
-    if ( valInt(w) != ref->value.i )
-      put_int64(&w, ref->value.i, 0);
+    if ( valInt(w) != ref->value.i)
+      return PL_representation_error("pce_reference");
 
     return w;
   }
@@ -3809,10 +3728,10 @@ _PL_unify_xpce_reference(term_t t, xpceref_t *ref)
 { GET_LD
   Word p;
 
-  if ( !hasGlobalSpace(2+2+WORDS_PER_INT64) )
+  if ( !hasGlobalSpace(2) )
   { int rc;
 
-    if ( (rc=ensureGlobalSpace(2+2+WORDS_PER_INT64, ALLOW_GC)) != TRUE )
+    if ( (rc=ensureGlobalSpace(2, ALLOW_GC)) != TRUE )
       return raiseStackOverflow(rc);
   }
 
@@ -3844,8 +3763,8 @@ _PL_unify_xpce_reference(term_t t, xpceref_t *ref)
 	succeed;
       } else
       { if ( ref->type == PL_INTEGER )
-	  return ( isInteger(*a) &&
-		   valInteger(*a) == ref->value.i );
+	  return ( isTaggedInt(*a) &&
+		   valInt(*a) == ref->value.i );
 	else
 	  return *a == ref->value.a;
       }
@@ -3869,8 +3788,8 @@ _PL_get_atomic(term_t t)
 
 
 API_STUB(int)
-(_PL_unify_atomic)(term_t t, PL_atomic_t a)
-( return unifyAtomic(t, a); )
+(PL_unify_atomic)(term_t t, PL_atomic_t a)
+( return PL_unify_atomic(t, a); )
 
 
 void
@@ -3890,7 +3809,7 @@ PL_unify_blob(term_t t, void *blob, size_t len, PL_blob_t *type)
 { GET_LD
   int new;
   atom_t a = lookupBlob(blob, len, type, &new);
-  int rval = unifyAtomic(t, a);
+  int rval = PL_unify_atom(t, a);
 
   PL_unregister_atom(a);
 
@@ -4054,7 +3973,7 @@ PL_term_type(term_t t)
     { return (isInteger(w) ? PL_INTEGER : PL_RATIONAL);
     }
     case PL_TERM:
-    { functor_t f = valueTerm(w)->definition;
+    { functor_t f = word2functor(valueTerm(w)->definition);
       FunctorDef fd = valueFunctor(f);
 
       if ( f == FUNCTOR_dot2 )
@@ -5177,7 +5096,7 @@ PL_set_prolog_flag(const char *name, int type, ...)
 { GET_LD
   va_list args;
   int rval = TRUE;
-  int flags = (type & FF_MASK);
+  unsigned short flags = ((unsigned short)type & FF_MASK);
   fid_t fid;
   term_t av;
 
@@ -5407,9 +5326,17 @@ PL_query(int query)
     case PL_QUERY_MIN_INTEGER:
       fail;				/* cannot represent (anymore) */
     case PL_QUERY_MAX_TAGGED_INT:
+#if SIZEOF_WORD > SIZEOF_VOIDP
+      fail;				/* cannot represent (anymore) */
+#else
       return PLMAXTAGGEDINT;
+#endif
     case PL_QUERY_MIN_TAGGED_INT:
+#if SIZEOF_WORD > SIZEOF_VOIDP
+      fail;
+#else
       return PLMINTAGGEDINT;
+#endif
     case PL_QUERY_GETC:
       PopTty(Sinput, &ttytab, FALSE);		/* restore terminal mode */
       return (intptr_t) Sgetchar();		/* normal reading */

@@ -94,6 +94,7 @@
 #define	PL_get_functor(t, f)			LDFUNC(PL_get_functor, t, f)
 #define	PL_get_name_arity_sz(t, name, arity)	LDFUNC(PL_get_name_arity_sz, t, name, arity)
 #define	PL_unify_atom(t, a)			LDFUNC(PL_unify_atom, t, a)
+#define	PL_unify_atomic(t, w)			LDFUNC(PL_unify_atomic, t, w)
 #define	PL_unify_pointer(t, ptr)		LDFUNC(PL_unify_pointer, t, ptr)
 #define	PL_get_list(l, h, t)			LDFUNC(PL_get_list, l, h, t)
 #define	PL_is_atom(t)				LDFUNC(PL_is_atom, t)
@@ -104,7 +105,7 @@
 #define	PL_clearsig(sig)			LDFUNC(PL_clearsig, sig)
 #define	classify_exception(ex)			LDFUNC(classify_exception, ex)
 #define	classify_exception_p(p)			LDFUNC(classify_exception_p, p)
-#define	get_string_text(atom, text)		LDFUNC(get_string_text, atom, text)
+#define	get_string_text(w, text)		LDFUNC(get_string_text, w, text)
 #endif /*USE_LD_MACROS*/
 
 #define LDFUNC_DECLARATIONS
@@ -167,6 +168,7 @@ int		PL_get_name_arity_sz(term_t t, atom_t *name,
 					     size_t *arity);
 int		PL_get_uintptr(term_t t, size_t *i);
 int		PL_unify_atom(term_t t, atom_t a);
+int		PL_unify_atomic(term_t t, word a);
 int		PL_unify_pointer(term_t t, void *ptr);
 int		PL_get_list(term_t l, term_t h, term_t t);
 FLI_INLINE int	PL_is_atom(term_t t);
@@ -198,12 +200,11 @@ void		resetForeign(void);
 
 int		get_atom_ptr_text(Atom atom, PL_chars_t *text);
 int		get_atom_text(atom_t atom, PL_chars_t *text);
-int		get_string_text(atom_t atom, PL_chars_t *text);
+int		get_string_text(word w, PL_chars_t *text);
 
 #undef LDFUNC_DECLARATIONS
 
 #define PL_strip_module(q, m, t) PL_strip_module_flags(q, m, t, 0)
-#define _PL_unify_atomic(t, a)	PL_unify_atom(t, a)
 
 		 /*******************************
 		 *	INLINE DEFINITIONS	*

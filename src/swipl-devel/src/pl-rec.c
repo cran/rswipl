@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2020, University of Amsterdam
+    Copyright (c)  1985-2024, University of Amsterdam
                               VU University Amsterdam
 			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -60,8 +61,8 @@ static int  is_external(const char *rec, size_t len);
 #define LD LOCAL_LD
 
 static void
-free_recordlist_symbol(void *name, void *value)
-{ RecordList l = value;
+free_recordlist_symbol(table_key_t name, table_value_t value)
+{ RecordList l = val2ptr(value);
 
   unallocRecordList(l);
 }
@@ -69,18 +70,18 @@ free_recordlist_symbol(void *name, void *value)
 
 void
 initRecords(void)
-{ GD->recorded_db.record_lists = newHTable(8);
+{ GD->recorded_db.record_lists = newHTableWP(8);
   GD->recorded_db.record_lists->free_symbol = free_recordlist_symbol;
 }
 
 
 void
 cleanupRecords(void)
-{ Table t;
+{ TableWP t;
 
   if ( (t=GD->recorded_db.record_lists) )
   { GD->recorded_db.record_lists = NULL;
-    destroyHTable(t);
+    destroyHTableWP(t);
   }
 }
 
@@ -93,15 +94,15 @@ lookupRecordList(word key)
 { GET_LD
   RecordList l;
 
-  if ( (l = lookupHTable(GD->recorded_db.record_lists, (void *)key)) )
+  if ( (l = lookupHTableWP(GD->recorded_db.record_lists, key)) )
   { return l;
   } else
   { if ( isAtom(key) )			/* can also be functor_t */
-      PL_register_atom(key);
+      PL_register_atom(word2atom(key));
     l = allocHeapOrHalt(sizeof(*l));
     memset(l, 0, sizeof(*l));
     l->key = key;
-    addNewHTable(GD->recorded_db.record_lists, (void *)key, l);
+    addNewHTableWP(GD->recorded_db.record_lists, key, l);
 
     return l;
   }
@@ -126,7 +127,7 @@ isCurrentRecordList(word key, int must_be_non_empty)
 { GET_LD
   RecordList rl;
 
-  if ( (rl = lookupHTable(GD->recorded_db.record_lists, (void *)key)) )
+  if ( (rl = lookupHTableWP(GD->recorded_db.record_lists, key)) )
   { if ( must_be_non_empty )
     { RecordRef record;
 
@@ -230,7 +231,7 @@ typedef struct
   int	     external;			/* Allow for external storage */
   int	     lock;			/* lock compiled atoms */
   cerror     error;			/* generated error */
-  word	     econtext[1];		/* error context */
+  atom_t     econtext[1];		/* error context */
 } compile_info, *CompileInfo;
 
 #define	PL_TYPE_VARIABLE	(1)	/* variable */
@@ -280,7 +281,7 @@ addUnalignedBuf(TmpBuffer b, void *ptr, size_t bytes)
 
 static inline void
 addOpCode(CompileInfo info, int code)
-{ addBuffer(&info->code, code, uchar);
+{ addBuffer(&info->code, (uchar)code, uchar);
   DEBUG(9, Sdprintf("Added %d, now %d big\n",
 		    code, sizeOfBuffer(&info->code)));
 }
@@ -310,7 +311,7 @@ addUintBuffer(Buffer b, size_t val)
       if ( d || !leading )
       { if ( zips != 0 )
 	  d |= 0x80;
-	addBuffer(b, d, uchar);
+	addBuffer(b, (uchar)d, uchar);
 	leading = FALSE;
       }
     }
@@ -347,12 +348,12 @@ addInt64(CompileInfo info, int64_t v)
     i = (MSB64(a)+9)/8;
   }
 
-  addBuffer(&info->code, i, uchar);
+  addBuffer(&info->code, (uchar)i, uchar);
 
   while( --i >= 0 )
   { int b = (int)(v>>(i*8)) & 0xff;
 
-    addBuffer(&info->code, b, uchar);
+    addBuffer(&info->code, (uchar)b, uchar);
   }
 }
 
@@ -466,9 +467,17 @@ typedef struct
 } cycle_mark;
 
 
-#define mkAttVarP(p)  ((Word)((word)(p) | 0x1L))
-#define isAttVarP(p)  ((word)(p) & 0x1)
-#define valAttVarP(p) ((Word)((word)(p) & ~0x1L))
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Variable handling.  The buffer info->vars holds addresses of variables
+that we number  while processing the term.  For  normal variables this
+is easy  as the address is  enough.  For attributed variables  we must
+push the value as  well as the address such that we  can put the value
+back where it came.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+#define mkAttVarP(p)  ((Word)((uintptr_t)(p) | 0x1L))
+#define isAttVarP(p)  ((uintptr_t)(p) & 0x1)
+#define valAttVarP(p) ((Word)((uintptr_t)(p) & ~0x1L))
 
 #define compile_term_to_heap(agenda, info) LDFUNC(compile_term_to_heap, agenda, info)
 static int
@@ -523,7 +532,7 @@ compile_term_to_heap(DECL_LD term_agenda *agenda, CompileInfo info)
 	  addSizeInt(info, n);
 	  DEBUG(9, Sdprintf("Added var-link %d\n", n));
 	} else
-	{ if ( !addAtom(info, w) )
+	{ if ( !addAtom(info, word2atom(w)) )
 	    return FALSE;
 	  DEBUG(9, Sdprintf("Added '%s'\n", stringAtom(w)));
 	}
@@ -586,12 +595,12 @@ compile_term_to_heap(DECL_LD term_agenda *agenda, CompileInfo info)
       case TAG_COMPOUND:
       { Functor f = valueTerm(w);
 	int arity;
-	word functor;
+	functor_t functor;
 
 #if O_CYCLIC
 	if ( isInteger(f->definition) )
 	{ addOpCode(info, PL_REC_CYCLE);
-	  addSizeInt(info, valInt(f->definition));
+	  addSizeInt(info, (size_t)valInt(f->definition));
 
 	  DEBUG(1, Sdprintf("Added cycle for offset = %d\n",
 			    valInt(f->definition)));
@@ -601,10 +610,10 @@ compile_term_to_heap(DECL_LD term_agenda *agenda, CompileInfo info)
 	{ cycle_mark mark;
 
 	  arity   = arityFunctor(f->definition);
-	  functor = f->definition;
+	  functor = word2functor(f->definition);
 
 	  mark.term = f;
-	  mark.fdef = f->definition;
+	  mark.fdef = functor;
 	  if ( !pushSegStack(&LD->cycle.lstack, mark, cycle_mark) )
 	    return FALSE;
 	  f->definition = (functor_t)consUInt(info->size);
@@ -661,6 +670,8 @@ static void unvisit(DECL_LD) {}
 
 #endif
 
+/* Restore variable numbered in compile_term_to_heap() */
+
 static void
 restoreVars(compile_info *info)
 { Word *p = topBuffer(&info->vars, Word);
@@ -669,8 +680,9 @@ restoreVars(compile_info *info)
   while(p > b)
   { p--;
     if (isAttVarP(*p) )
-    { *valAttVarP(*p) = (word)p[-1];
-      p--;
+    { Word addr = valAttVarP(*p);
+      p -= sizeof(word)/sizeof(Word);
+      *addr = *(Word)p;
     } else
       setVar(**p);
   }
@@ -768,7 +780,7 @@ variantRecords(const Record r1, const Record r2)
 
 #define REC_SZMASK  (REC_32|REC_64)	/* SIZE_MASK */
 
-#if SIZEOF_VOIDP == 8
+#if SIZEOF_WORD == 8
 #define REC_SZ REC_64
 #else
 #define REC_SZ REC_32
@@ -816,6 +828,7 @@ compile_external_record(DECL_LD term_t t, record_data *data)
   int first = REC_HDR;
   term_agenda agenda;
   int scode, rc;
+  int64_t v;
 
   DEBUG(CHK_SECURE, checkData(valTermRef(t)));
   p = valTermRef(t);
@@ -826,17 +839,8 @@ compile_external_record(DECL_LD term_t t, record_data *data)
   data->info.external = TRUE;
   data->info.lock = FALSE;
 
-  if ( isInteger(*p) )			/* integer-only record */
-  { int64_t v;
-
-    if ( isTaggedInt(*p) )
-      v = valInt(*p);
-    else if ( isBignum(*p) )
-      v = valBignum(*p);
-    else				/* GMP integers */
-      goto general;
-
-    first |= (REC_INT|REC_GROUND);
+  if ( get_int64(*p, &v) )		/* integer-only record */
+  { first |= (REC_INT|REC_GROUND);
     addOpCode(&data->info, first);
     addInt64(&data->info, v);
     data->simple = TRUE;
@@ -845,15 +849,13 @@ compile_external_record(DECL_LD term_t t, record_data *data)
   } else if ( isAtom(*p) )		/* atom-only record */
   { first |= (REC_ATOM|REC_GROUND);
     addOpCode(&data->info, first);
-    if ( !addAtom(&data->info, *p) )
+    if ( !addAtom(&data->info, word2atom(*p)) )
       return FALSE;
     data->simple = TRUE;
 
     return TRUE;
   }
-
 					/* the real stuff */
-general:
   data->simple = FALSE;
   initBuffer(&data->info.vars);
   data->info.size = 0;
@@ -871,7 +873,7 @@ general:
   scode = (int)sizeOfBuffer(&data->info.code);
 
   initBuffer(&data->hdr);
-  addBuffer(&data->hdr, first, uchar);			/* magic code */
+  addBuffer(&data->hdr, (uchar)first, uchar);		/* magic code */
   addUintBuffer((Buffer)&data->hdr, scode);		/* code size */
   addUintBuffer((Buffer)&data->hdr, data->info.size);	/* size on stack */
   if ( data->info.nvars > 0 )
@@ -958,7 +960,7 @@ PRED_IMPL("fast_term_serialized", 2, fast_term_serialized, 0)
 	size_t scode = sizeOfBuffer(&data.info.code);
 	Word p;
 
-	if ( (p=allocString(shdr+scode+1)) )
+	if ( (p=globalBlob(shdr+scode+1, TAG_STRING)) )
 	{ char *q = (char *)&p[1];
 	  word w  = consPtr(p, TAG_STRING|STG_GLOBAL);
 
@@ -966,7 +968,7 @@ PRED_IMPL("fast_term_serialized", 2, fast_term_serialized, 0)
 	  memcpy(q,      data.hdr.base,       shdr);
 	  memcpy(q+shdr, data.info.code.base, scode);
 
-	  rc = _PL_unify_atomic(string, w);
+	  rc = PL_unify_atomic(string, w);
 	  discard_record_data(&data);
 
 	  return rc;
@@ -1047,7 +1049,7 @@ readSizeInt(IOSTREAM *in, char *to, size_t *sz)
       return NULL;
     }
 
-    *t++ = d;
+    *t++ = (char)d;
     if ( t-to > 10 )
       return NULL;
     r = (r<<7)|(d&0x7f);
@@ -1099,8 +1101,8 @@ PRED_IMPL("fast_read", 2, fast_read, 0)
 	{ int size = Sgetc(in)&0xff;
 
 	  if ( size <= 8 )
-	  { rec[0] = m;
-	    rec[1] = size;
+	  { rec[0] = (char)m;
+	    rec[1] = (char)size;
 	    if ( Sfread(&rec[2], 1, size, in) != size )
 	      rc = PL_syntax_error("fastrw_integer", in);
 	    else
@@ -1111,7 +1113,7 @@ PRED_IMPL("fast_read", 2, fast_read, 0)
 	  break;
 	}
 	case REC_HDR|REC_ATOM|REC_GROUND:
-	{ uchar op = Sgetc(in);
+	{ int op = Sgetc(in);
 
 	  switch(op)
 	  { case PL_TYPE_NIL:
@@ -1125,8 +1127,8 @@ PRED_IMPL("fast_read", 2, fast_read, 0)
 	    { size_t bytes;
 	      char *np;
 
-	      rec[0] = m;
-	      rec[1] = op;
+	      rec[0] = (char)m;
+	      rec[1] = (char)op;
 
 	      if ( (np=readSizeInt(in, &rec[2], &bytes)) &&
 		   (rec = realloc_record(rec, &np, bytes)) &&
@@ -1146,7 +1148,7 @@ PRED_IMPL("fast_read", 2, fast_read, 0)
 	{ char *np;
 	  size_t codes, gsize, nvars;
 
-	  rec[0] = m;
+	  rec[0] = (char)m;
 
 	  if ( (np=readSizeInt(in, &rec[1], &codes)) &&
 	       (np=readSizeInt(in, np, &gsize)) &&
@@ -1405,13 +1407,17 @@ copy_record(DECL_LD Word p, CopyInfo b)
 	continue;
       }
       case PL_TYPE_EXT_ATOM:
-      { fetchAtom(b, p);
-	PL_unregister_atom(*p);
+      { atom_t a;
+	fetchAtom(b, &a);
+        *p = atom2word(a);
+	PL_unregister_atom(a);
 	continue;
       }
       case PL_TYPE_EXT_WATOM:
-      { fetchAtomW(b, p);
-	PL_unregister_atom(*p);
+      { atom_t a;
+	fetchAtomW(b, &a);
+	*p = atom2word(a);
+	PL_unregister_atom(a);
 	continue;
       }
       case PL_TYPE_TAGGED_INTEGER:
@@ -1460,10 +1466,10 @@ copy_record(DECL_LD Word p, CopyInfo b)
 	int pad;
 	word hdr;
 
-	lw = (len+sizeof(word))/sizeof(word); /* see globalNString() */
+	lw = (len+sizeof(word))/sizeof(word); /* see globalBlob() */
 	pad = (lw*sizeof(word) - len);
 	*p = consPtr(b->gstore, TAG_STRING|STG_GLOBAL);
-	*b->gstore++ = hdr = mkStrHdr(lw, pad);
+	*b->gstore++ = hdr = mkBlobHdr(lw, pad, TAG_STRING);
 	b->gstore[lw-1] = 0L;		/* zero-padding */
 	fetchChars(b, len, b->gstore);
 	b->gstore += lw;
@@ -1699,7 +1705,7 @@ scanAtomsRecord(CopyInfo b, void (*func)(atom_t a))
 	continue;
       }
       case PL_TYPE_ATOM:
-      { atom_t a = fetchWord(b);
+      { atom_t a = word2atom(fetchWord(b)); /* TBD: Store atom rather than word */
 
 	(*func)(a);
 	continue;
@@ -1955,7 +1961,7 @@ unifyKey(term_t key, word val)
 { GET_LD
 
   if ( isAtom(val) || isTaggedInt(val) )
-  { return _PL_unify_atomic(key, val);
+  { return PL_unify_atomic(key, val);
   } else
   { return PL_unify_functor(key, (functor_t) val);
   }
@@ -1989,7 +1995,7 @@ PRED_IMPL("current_key", 1, current_key, PL_FA_NONDETERMINISTIC)
   switch( CTX_CNTRL )
   { case FRG_FIRST_CALL:
     { if ( PL_is_variable(A1) )
-      { e = newTableEnum(GD->recorded_db.record_lists);
+      { e = newTableEnumWP(GD->recorded_db.record_lists);
 	break;
       } else if ( getKeyEx(A1, &k) &&
 		  isCurrentRecordList(k, TRUE) )
@@ -2009,10 +2015,10 @@ PRED_IMPL("current_key", 1, current_key, PL_FA_NONDETERMINISTIC)
   }
 
   if ( (fid = PL_open_foreign_frame()) )
-  { void *sk, *sv;
+  { table_value_t sv;
 
-    while(advanceTableEnum(e, &sk, &sv))
-    { RecordList rl = sv;
+    while(advanceTableEnum(e, NULL, &sv))
+    { RecordList rl = val2ptr(sv);
       RecordRef record;
 
       PL_LOCK(L_RECORD);
@@ -2214,7 +2220,7 @@ PRED_IMPL("recorded", va, recorded, PL_FA_NONDETERMINISTIC)
 
       memset(state, 0, sizeof(*state));
       if ( PL_is_variable(key) )
-      { state->e = newTableEnum(GD->recorded_db.record_lists);
+      { state->e = newTableEnumWP(GD->recorded_db.record_lists);
 	PL_LOCK(L_RECORD);
       } else if ( getKeyEx(key, &k) )
       { RecordList rl;
@@ -2288,10 +2294,10 @@ PRED_IMPL("recorded", va, recorded, PL_FA_NONDETERMINISTIC)
       }
 
       if ( state->e )
-      { void *sk, *sv;
+      { table_value_t sv;
 
-	while(advanceTableEnum(state->e, &sk, &sv))
-	{ RecordList rl = sv;
+	while(advanceTableEnum(state->e, NULL, &sv))
+	{ RecordList rl = val2ptr(sv);
 	  RecordRef r;
 
 	  if ( (r=firstRecordRecordList(rl)) )

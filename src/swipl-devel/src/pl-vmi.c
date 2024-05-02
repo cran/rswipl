@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2008-2022, University of Amsterdam
+    Copyright (c)  2008-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -136,10 +136,10 @@ Virtual machine instruction names.  Prefixes:
 		 *	 LOCAL ALLOCATION	*
 		 *******************************/
 
-/* Note that lTop can be >= lMax when calling ENSURE_LOCAL_SPACE() */
+/* Note that lTop can be > lMax when calling ENSURE_LOCAL_SPACE() */
 
 #define ENSURE_LOCAL_SPACE(bytes, ifnot) \
-	if ( unlikely(addPointer(lTop, (bytes)) > (void*)lMax) ) \
+	if ( unlikely(lTop > lMax || !hasLocalSpace(bytes)) ) \
 	{ int rc; \
 	  SAVE_REGISTERS(QID); \
 	  rc = growLocalSpace(bytes, ALLOW_SHIFT); \
@@ -291,7 +291,7 @@ VMI(D_BREAK, 0, 0, ())
     */
     Choice ch;
 
-    if ( addPointer(lTop, sizeof(struct choice)) > (void*)lMax )
+    if ( !hasLocalSpace(sizeof(struct choice)) )
     { int rc;
 
       SAVE_REGISTERS(QID);
@@ -463,8 +463,8 @@ VMI(H_ATOM, 0, 1, (CA1_DATA))
 { word c;
   IF_WRITE_MODE_GOTO(B_ATOM);
 
-  c = (word)*PC++;
-  pushVolatileAtom(c);
+  c = code2atom(*PC++);
+  pushVolatileAtom(word2atom(c));
   VMH_GOTO(h_const, c);
 }
 END_VMI
@@ -474,12 +474,29 @@ END_VMI
 H_SMALLINT is used for  small integer  in the head  of the clause.  ARGP
 points to the current argument to  be   matched.  ARGP is derefenced and
 unified with a constant argument.
+
+The argument is the raw value
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-VMI(H_SMALLINT, 0, 1, (CA1_DATA))
+VMI(H_SMALLINT, 0, 1, (CA1_INTEGER))
 { IF_WRITE_MODE_GOTO(B_SMALLINT);
 
-  VMH_GOTO(h_const, (word)*PC++);
+  scode i = (scode)*PC++;
+  VMH_GOTO(h_const, consInt(i));
+}
+END_VMI
+
+VMI(H_SMALLINTW, 0, CODES_PER_WORD, (CA1_WORD))
+{
+#if CODES_PER_WORD > 1
+  IF_WRITE_MODE_GOTO(B_SMALLINTW);
+  word w;
+  PC = code_get_word(PC,&w);
+  VMH_GOTO(h_const, consInt((sword)w));
+#else
+  assert(0);
+  NEXT_INSTRUCTION;
+#endif
 }
 END_VMI
 
@@ -545,103 +562,11 @@ END_VMI
 
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-H_INTEGER: Long integer in  the  head.   Note  that  small  integers are
-handled through H_SMALLINT. Copy to the  global stack if the argument is
-variable, compare the numbers otherwise.
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-
-VMI(H_INTEGER, 0, 1, (CA1_INTEGER))
-{ Word k;
-
-  IF_WRITE_MODE_GOTO(B_INTEGER);
-
-  deRef2(ARGP, k);
-  if ( canBind(*k) )
-  { Word p;
-    word c;
-    union
-    { int64_t val;
-      word w[WORDS_PER_INT64];
-    } cvt;
-    Word vp = cvt.w;
-
-    ENSURE_GLOBAL_SPACE(2+WORDS_PER_INT64, deRef2(ARGP, k));
-
-    p = gTop;
-    gTop += 2+WORDS_PER_INT64;
-    c = consPtr(p, TAG_INTEGER|STG_GLOBAL);
-
-    cvt.val = (int64_t)(intptr_t)*PC++;
-    *p++ = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-    cpInt64Data(p, vp);
-    *p = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-
-    bindConst(k, c);
-    ARGP++;
-    NEXT_INSTRUCTION;
-  } else if ( isBignum(*k) && valBignum(*k) == (intptr_t)*PC++ )
-  { ARGP++;
-    NEXT_INSTRUCTION;
-  }
-
-  CLAUSE_FAILED;
-}
-END_VMI
-
-
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-H_INT64: 64-bit integer in the head. Only applicable for 32-bit hardware
-as this is the same as H_INTEGER on 64-bit hardware.
-
-TBD: Compile conditionally
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-
-VMI(H_INT64, 0, WORDS_PER_INT64, (CA1_INT64))
-{ Word k;
-
-  IF_WRITE_MODE_GOTO(B_INT64);
-
-  deRef2(ARGP, k);
-  if ( canBind(*k) )
-  { Word p;
-    word c;
-
-    ENSURE_GLOBAL_SPACE(2+WORDS_PER_INT64, deRef2(ARGP, k));
-
-    p = gTop;
-    gTop += 2+WORDS_PER_INT64;
-    c = consPtr(p, TAG_INTEGER|STG_GLOBAL);
-
-    *p++ = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-    cpInt64Data(p, PC);
-    *p = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-
-    bindConst(k, c);
-    ARGP++;
-    NEXT_INSTRUCTION;
-  } else if ( isBignum(*k) )
-  { Word vk = valIndirectP(*k);
-    size_t i;
-
-    for(i=0; i<WORDS_PER_INT64; i++)
-    { if ( *vk++ != (word)*PC++ )
-	CLAUSE_FAILED;
-    }
-    ARGP++;
-    NEXT_INSTRUCTION;
-  }
-
-  CLAUSE_FAILED;
-}
-END_VMI
-
-
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 H_FLOAT: Float in the head. The  float   follows  the instruction and is
 represented as a native C-double.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-VMI(H_FLOAT, 0, WORDS_PER_DOUBLE, (CA1_FLOAT))
+VMI(H_FLOAT, 0, CODES_PER_DOUBLE, (CA1_FLOAT))
 { Word k;
 
   IF_WRITE_MODE_GOTO(B_FLOAT);
@@ -667,18 +592,10 @@ VMI(H_FLOAT, 0, WORDS_PER_DOUBLE, (CA1_FLOAT))
   } else if ( isFloat(*k) )
   { Word p = valIndirectP(*k);
 
-    switch(WORDS_PER_DOUBLE) /* depend on compiler to clean up */
-    { case 2:
-	if ( *p++ != *PC++ )
-	  CLAUSE_FAILED;
-      case 1:
-	if ( *p++ == *PC++ )
-	{ ARGP++;
-	  NEXT_INSTRUCTION;
-	}
-	CLAUSE_FAILED;
-      default:
-	assert(0);
+    if ( memcmp(p, PC, sizeof(double)) == 0 )
+    { PC += CODES_PER_DOUBLE;
+      ARGP++;
+      NEXT_INSTRUCTION;
     }
   }
 
@@ -753,7 +670,7 @@ END_VMI
 
 
 VMI(H_VOID_N, 0, 1, (CA1_INTEGER))
-{ ARGP += (int)*PC++;
+{ ARGP += *PC++;
   NEXT_INSTRUCTION;
 }
 END_VMI
@@ -1029,15 +946,29 @@ this is above the stack anyway.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(B_ATOM, VIF_LCO, 1, (CA1_DATA))
-{ word c = (word)*PC++;
-  pushVolatileAtom(c);
+{ word c = code2atom(*PC++);
+  pushVolatileAtom(word2atom(c));
   *ARGP++ = c;
   NEXT_INSTRUCTION;
 }
 END_VMI
 
-VMI(B_SMALLINT, VIF_LCO, 1, (CA1_DATA))
-{ *ARGP++ = (word)*PC++;
+VMI(B_SMALLINT, VIF_LCO, 1, (CA1_INTEGER))
+{ scode i = (scode)*PC++;
+  *ARGP++ = consInt(i);
+  NEXT_INSTRUCTION;
+}
+END_VMI
+
+VMI(B_SMALLINTW, VIF_LCO, CODES_PER_WORD, (CA1_WORD))
+{
+#if CODES_PER_WORD > 1
+  word w;
+  PC = code_get_word(PC,&w);
+  *ARGP++ = consInt((sword)w);
+#else
+  assert(0);
+#endif
   NEXT_INSTRUCTION;
 }
 END_VMI
@@ -1050,63 +981,11 @@ END_VMI
 
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-B_INTEGER: Long following PC for integers   that  cannot be expressed as
-tagged integer.
-
-TBD:	Merge the code writing longs to the stack
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-
-VMI(B_INTEGER, 0, 1, (CA1_INTEGER))
-{ Word p;
-  union
-  { int64_t val;
-    word w[WORDS_PER_INT64];
-  } cvt;
-  Word vp = cvt.w;
-
-  ENSURE_GLOBAL_SPACE(2+WORDS_PER_INT64, (void)0);
-  p = gTop;
-  gTop += 2+WORDS_PER_INT64;
-
-  cvt.val = (int64_t)(intptr_t)*PC++;
-  *ARGP++ = consPtr(p, TAG_INTEGER|STG_GLOBAL);
-  *p++ = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-  cpInt64Data(p, vp);
-  *p++ = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-  NEXT_INSTRUCTION;
-}
-END_VMI
-
-
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-B_INT64: 64-bit (int64_t) in the body.  See H_INT64
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-
-VMI(B_INT64, 0, WORDS_PER_INT64, (CA1_INT64))
-{ Word p;
-  size_t i;
-
-  ENSURE_GLOBAL_SPACE(2+WORDS_PER_INT64, (void)0);
-  p = gTop;
-  gTop += 2+WORDS_PER_INT64;
-
-  *ARGP++ = consPtr(p, TAG_INTEGER|STG_GLOBAL);
-  *p++ = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-  for(i=0; i<WORDS_PER_INT64; i++)
-    *p++ = (word)*PC++;
-  *p++ = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-
-  NEXT_INSTRUCTION;
-}
-END_VMI
-
-
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 B_FLOAT: Float in the  body.  PC  is   followed  by  a  double in native
 representation.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-VMI(B_FLOAT, 0, WORDS_PER_DOUBLE, (CA1_FLOAT))
+VMI(B_FLOAT, 0, CODES_PER_DOUBLE, (CA1_FLOAT))
 { Word p;
 
   ENSURE_GLOBAL_SPACE(2+WORDS_PER_DOUBLE, (void)0);
@@ -1437,7 +1316,7 @@ need for wakeup.
 
 VMI(B_UNIFY_FC, VIF_BREAK, 2, (CA1_FVAR, CA1_DATA))
 { Word f = varFrameP(FR, (int)*PC++);
-  word c = (word)*PC++;
+  word c = code2word(*PC++);
 
   if ( LD->slow_unify )
   { ENSURE_GLOBAL_SPACE(1, f = varFrameP(FR, PC[-2]));
@@ -1460,7 +1339,7 @@ B_UNIFY_VC: Unify a variable (not first) with a constant in the body.
 
 VMI(B_UNIFY_VC, VIF_BREAK, 2, (CA1_VAR, CA1_DATA))
 { Word k = varFrameP(FR, (int)*PC++);
-  word c = (word)*PC++;
+  word c = code2word(*PC++);
 
   if ( LD->slow_unify )
   { if ( isVar(*k) )
@@ -1538,7 +1417,7 @@ B_EQ_VC Var == constant
 
 VMI(B_EQ_VC, VIF_BREAK, 2, (CA1_VAR,CA1_DATA))
 { Word v1 = varFrameP(FR, (int)*PC++);
-  word c  = (word)*PC++;
+  word c  = code2word(*PC++);
 
 #ifdef O_DEBUGGER
   if ( unlikely(!truePrologFlag(PLFLAG_VMI_BUILTIN)) )
@@ -1614,7 +1493,7 @@ B_NEQ_VC Var == constant
 
 VMI(B_NEQ_VC, VIF_BREAK, 2, (CA1_VAR,CA1_DATA))
 { Word v1 = varFrameP(FR, (int)*PC++);
-  word c  = (word)*PC++;
+  word c  = code2word(*PC++);
 
 #ifdef O_DEBUGGER
   if ( unlikely(!truePrologFlag(PLFLAG_VMI_BUILTIN)) )
@@ -1644,21 +1523,21 @@ arg/3 special cases
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 
-VMI(B_ARG_CF, VIF_BREAK, 3, (CA1_DATA,CA1_VAR,CA1_FVAR))
+VMI(B_ARG_CF, VIF_BREAK, 3, (CA1_INTEGER,CA1_VAR,CA1_FVAR))
 { ENSURE_GLOBAL_SPACE(2, (void)0);
 
   PC += 3;
   VMH_GOTO(arg3_fast,
-	   (Word)PC-3,
-	   valInt((word)PC[-3]),
-	   varFrameP(FR, (int)PC[-2]),
-	   varFrameP(FR, (int)PC[-1]));
+	   NULL,
+	   (scode)PC[-3],
+	   varFrameP(FR, PC[-2]),
+	   varFrameP(FR, PC[-1]));
 }
 END_VMI
 
-VMH(arg3_fast, 4, (Word, intptr_t, Word, Word), (aidx, ai, aterm, aarg))
+VMH(arg3_fast, 4, (Word, scode, Word, Word), (aidx, ai, aterm, aarg))
 { if ( isVar(*aterm) )
-  { globaliseVar(aterm);
+  { globaliseVar(aterm);	/* instantiation error, go slow route */
   } else
   { deRef(aterm);
     if ( isTerm(*aterm) && likely(truePrologFlag(PLFLAG_VMI_BUILTIN)) )
@@ -1669,14 +1548,14 @@ VMH(arg3_fast, 4, (Word, intptr_t, Word, Word), (aidx, ai, aterm, aarg))
       }
     }
   }
-  VMH_GOTO(arg3_slow, aidx, aterm, aarg);
+  VMH_GOTO(arg3_slow, aidx, ai, aterm, aarg);
 }
 END_VMH
 
-VMH(arg3_slow, 3, (Word, Word, Word), (aidx, aterm, aarg))
+VMH(arg3_slow, 4, (Word, scode, Word, Word), (aidx, ai, aterm, aarg))
 { globaliseFirstVar(aarg);
   ARGP = argFrameP(lTop, 0);
-  *ARGP++ = *aidx;
+  *ARGP++ = aidx ? *aidx : consInt(ai);
   *ARGP++ = *aterm;
   *ARGP++ = *aarg;
 
@@ -1692,20 +1571,20 @@ VMI(B_ARG_VF, VIF_BREAK, 3, (CA1_VAR,CA1_VAR,CA1_FVAR))
 
   ENSURE_GLOBAL_SPACE(3, (void)0);
 
-  aidx0 = varFrameP(FR, (int)*PC++);
-  aterm = varFrameP(FR, (int)*PC++);
-  aarg  = varFrameP(FR, (int)*PC++);
+  aidx0 = varFrameP(FR, *PC++);
+  aterm = varFrameP(FR, *PC++);
+  aarg  = varFrameP(FR, *PC++);
 
   if ( isVar(*aidx0) ) globaliseVar(aidx0);
   if ( isVar(*aterm) ) globaliseVar(aterm);
 
   deRef2(aidx0, aidx);
   if ( isTaggedInt(*aidx) )
-  { VMH_GOTO(arg3_fast, aidx, valInt(*aidx), aterm, aarg);
+  { VMH_GOTO(arg3_fast, aidx, (scode)valInt(*aidx), aterm, aarg);
   }
 
   aidx = aidx0;
-  VMH_GOTO(arg3_slow, aidx, aterm, aarg);
+  VMH_GOTO(arg3_slow, aidx, 0, aterm, aarg);
 }
 END_VMI
 
@@ -1860,7 +1739,7 @@ VMI(I_CHP, 0, 0, ())
 END_VMI
 
 VMI(I_SSU_CHOICE, 0, 0, ())
-{ if ( tTop > BFR->mark.trailtop )
+{ if ( tTop > BFR->mark.trailtop.as_ptr )
     CLAUSE_FAILED;
 
   VMI_GOTO(I_ENTER);
@@ -1868,7 +1747,7 @@ VMI(I_SSU_CHOICE, 0, 0, ())
 END_VMI
 
 VMI(I_SSU_COMMIT, 0, 0, ())
-{ if ( tTop > BFR->mark.trailtop )
+{ if ( tTop > BFR->mark.trailtop.as_ptr )
     CLAUSE_FAILED;
 
   clear(FR, FR_SSU_DET);
@@ -1942,7 +1821,7 @@ instruction immediately follows the I_ENTER. The argument is the module.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(I_CONTEXT, 0, 1, (CA1_MODULE))
-{ Module m = (Module)*PC++;
+{ Module m = code2ptr(Module, *PC++);
 
   setContextModule(FR, m);
 
@@ -1965,7 +1844,7 @@ execution can continue at `next_instruction'
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(I_CALL, VIF_BREAK, 1, (CA1_PROC))
-{ Procedure proc = (Procedure) *PC++;
+{ Procedure proc = code2ptr(Procedure, *PC++);
 
   NFR = lTop;
   setNextFrameFlags(NFR, FR);
@@ -2004,7 +1883,7 @@ procedure and deallocate our temporary version if threading is not used.
   NFR->clause         = NULL;		/* for save atom-gc */
   environment_frame = FR = NFR;		/* open the frame */
 
-  if ( unlikely(addPointer(lTop, LOCAL_MARGIN) > (void*)lMax) )
+  if ( unlikely(!hasLocalSpace(LOCAL_MARGIN)) )
   { int rc;
 
     lTop = (LocalFrame) argFrameP(FR, DEF->functor->arity);
@@ -2169,7 +2048,7 @@ call.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(I_DEPART, VIF_BREAK, 1, (CA1_PROC))
-{ Procedure proc = (Procedure) *PC++;
+{ Procedure proc = code2ptr(Procedure, *PC++);
 
   if ( (void *)BFR <= (void *)FR &&
        truePrologFlag(PLFLAG_LASTCALL) &&
@@ -2231,7 +2110,7 @@ VMI(I_DEPARTM, VIF_BREAK, 2, (CA1_MODULE, CA1_PROC))
 { if ( (void *)BFR > (void *)FR || !truePrologFlag(PLFLAG_LASTCALL) )
   { VMI_GOTO(I_CALLM);
   } else
-  { Module m = (Module)*PC++;
+  { Module m = code2ptr(Module, *PC++);
 
     setContextModule(FR, m);
     VMI_GOTO(I_DEPART);
@@ -2510,13 +2389,14 @@ VMI(I_YIELD, VIF_BREAK, 0, ())
   deRef(p);
 
   if ( isTaggedInt(*p) )
-  {
+  { sword code = valInt(*p);
 #if !O_VMI_FUNCTIONS
     assert(LD->exception.throw_environment == &THROW_ENV);
     LD->exception.throw_environment = THROW_ENV.parent;
 #endif
 
-    SOLUTION_RETURN(valInt(*p));
+    assert(code >= INT_MIN && code <= INT_MAX);
+    SOLUTION_RETURN((int)code);
   } else
   { PL_error(NULL, 0, NULL, ERR_TYPE,
 	     ATOM_integer, pushWordAsTermRef(argFrameP(FR, 1)));
@@ -2588,8 +2468,8 @@ END_VMI
 
 VMI(L_ATOM, 0, 2, (CA1_FVAR,CA1_DATA))
 { Word v1 = varFrameP(FR, (int)*PC++);
-  word  c = (word)*PC++;
-  pushVolatileAtom(c);
+  word  c = code2atom(*PC++);
+  pushVolatileAtom(word2atom(c));
   *v1 = c;
   NEXT_INSTRUCTION;
 }
@@ -2603,10 +2483,24 @@ VMI(L_NIL, 0, 1, (CA1_FVAR))
 }
 END_VMI
 
-VMI(L_SMALLINT, 0, 2, (CA1_FVAR,CA1_DATA))
-{ Word v1 = varFrameP(FR, (int)*PC++);
-  word  c = (word)*PC++;
-  *v1 = c;
+VMI(L_SMALLINT, 0, 2, (CA1_FVAR,CA1_INTEGER))
+{ Word v1 = varFrameP(FR, (size_t)*PC++);
+  code  i = *PC++;
+  *v1 = consInt((scode)i);
+  NEXT_INSTRUCTION;
+}
+END_VMI
+
+VMI(L_SMALLINTW, 0, 1+CODES_PER_WORD, (CA1_FVAR,CA1_WORD))
+{
+#if CODES_PER_WORD > 1
+  Word v1 = varFrameP(FR, (size_t)*PC++);
+  word w;
+  PC = code_get_word(PC, &w);
+  *v1 = consInt((sword)w);
+#else
+  assert(0);
+#endif
   NEXT_INSTRUCTION;
 }
 END_VMI
@@ -2626,7 +2520,7 @@ problem.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(I_LCALL, 0, 1, (CA1_PROC))
-{ Procedure proc = (Procedure)*PC++;
+{ Procedure proc = code2ptr(Procedure, *PC++);
   Module ctx0 = contextModule(FR);
 
   leaveDefinition(DEF);
@@ -2795,7 +2689,7 @@ VMI(C_OR, 0, 1, (CA1_JUMP))
 { size_t skip = *PC++;
   Choice ch;
 
-  if ( addPointer(lTop, sizeof(struct choice)) > (void*)lMax )
+  if ( unlikely(!hasLocalSpace(sizeof(struct choice))) )
   { int rc;
 
     SAVE_REGISTERS(QID);
@@ -3027,8 +2921,8 @@ VMI(I_CUTCHP, 0, 0, ())
   Choice och;
 
   deRef(a);
-  if ( isInteger(*a) && storage(*a) == STG_INLINE )
-  { intptr_t i = valInt(*a);
+  if ( isTaggedInt(*a) )
+  { sword i = valInt(*a);
     och = ((Choice)((Word)lBase + i));
 
     if ( !existingChoice(och) )
@@ -3610,7 +3504,7 @@ worth the trouble.
 
 VMI(S_INCR_DYNAMIC, 0, 0, ())
 { enterDefinition(DEF);
-  atom_t current = *valTermRef(LD->tabling.idg_current);
+  atom_t current = word2atom(*valTermRef(LD->tabling.idg_current));
   trie *ctrie;
 
   if ( current &&
@@ -3724,7 +3618,7 @@ TBD: get rid of clause-references
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(S_TRUSTME, 0, 1, (CA1_CLAUSEREF))
-{ ClauseRef cref = (ClauseRef)*PC++;
+{ ClauseRef cref = code2ptr(ClauseRef, *PC++);
 
   ARGP = argFrameP(FR, 0);
   TRUST_CLAUSE(cref);
@@ -3748,7 +3642,7 @@ setStartOfVMI().
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(S_CALLWRAPPER, 0, 3, (CA1_CLAUSEREF,CA1_DATA,CA1_DATA))
-{ ClauseRef cref = (ClauseRef)*PC;
+{ ClauseRef cref = code2ptr(ClauseRef, *PC);
 
   PC += 3;
   ARGP = argFrameP(FR, 0);
@@ -3840,9 +3734,9 @@ VMI(S_LIST, 0, 2, (CA1_CLAUSEREF, CA1_CLAUSEREF))
   ARGP = argFrameP(FR, 0);
   deRef2(ARGP, k);
   if ( isList(*k) )
-    cref = (ClauseRef)PC[1];
+    cref = code2ptr(ClauseRef, PC[1]);
   else if ( isNil(*k) )
-    cref = (ClauseRef)PC[0];
+    cref = code2ptr(ClauseRef, PC[0]);
   else if ( canBind(*k) )
   { PC = SUPERVISOR(staticp) + 1;
     VMI_GOTO(S_STATIC);
@@ -3971,27 +3865,27 @@ A_INTEGER: Push long integer following PC
 VMI(A_INTEGER, 0, 1, (CA1_INTEGER))
 { Number n = allocArithStack();
 
-  n->value.i = (intptr_t) *PC++;
+  n->value.i = (scode) *PC++;
   n->type    = V_INTEGER;
   NEXT_INSTRUCTION;
 }
 END_VMI
 
+VMI(A_INTEGERW, 0, CODES_PER_WORD, (CA1_WORD))
+{
+#if CODES_PER_WORD > 1
+  Number n = allocArithStack();
 
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-A_INT64: Push int64_t following PC
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-
-VMI(A_INT64, 0, WORDS_PER_INT64, (CA1_INT64))
-{ Number n = allocArithStack();
-  Word p = &n->value.w[0];
-
-  cpInt64Data(p, PC);
+  word w;
+  PC = code_get_word(PC,&w);
+  n->value.i = (sword)w;
   n->type    = V_INTEGER;
+#else
+  assert(0);
+#endif
   NEXT_INSTRUCTION;
 }
 END_VMI
-
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 A_MPZ: Push mpz integer following PC
@@ -4001,27 +3895,9 @@ VMI(A_MPZ, 0, VM_DYNARGC, (CA1_MPZ))
 {
 #ifdef O_BIGNUM
   Number n = allocArithStack();
-  Word p = (Word)PC+1;				/* skip indirect header */
-  int len = mpz_stack_size(*p++);
-  size_t limpsize = sizeof(mp_limb_t) * abs(len);
 
   n->type = V_MPZ;
-#ifdef O_GMP
-  n->value.mpz->_mp_size  = len;
-  n->value.mpz->_mp_alloc = 0;	/* avoid de-allocating */
-  n->value.mpz->_mp_d = (void*)p;
-#elif O_BF
-  n->value.mpz->ctx  = NULL;
-  n->value.mpz->expn = (slimb_t)*p++;
-  n->value.mpz->sign = len < 0;
-  n->value.mpz->len  = abs(len);
-  n->value.mpz->tab  = (limb_t*)p;
-#else
-  #error "No bignum implementation"
-#endif
-
-  p += (limpsize+sizeof(word)-1)/sizeof(word);
-  PC = (Code)p;
+  PC = get_mpz_from_code(PC, n->value.mpz);
 #endif
   NEXT_INSTRUCTION;
 }
@@ -4035,51 +3911,9 @@ VMI(A_MPQ, 0, VM_DYNARGC, (CA1_MPQ))
 {
 #ifdef O_BIGNUM
   Number n = allocArithStack();
-  Word p = (Word)PC+1;				/* skip indirect header */
-  size_t limpsize;
 
   n->type = V_MPQ;
-#ifdef O_GMP
-  int num_size = mpq_stack_size(*p++);
-  int den_size = mpq_stack_size(*p++);
-  mpq_numref(n->value.mpq)->_mp_size  = num_size;
-  mpq_numref(n->value.mpq)->_mp_alloc = 0;	/* avoid de-allocating */
-  limpsize = sizeof(mp_limb_t) * abs(num_size);
-  mpq_numref(n->value.mpq)->_mp_d = (void*)p;
-  p += (limpsize+sizeof(word)-1)/sizeof(word);
-
-  mpq_denref(n->value.mpq)->_mp_size  = den_size;
-  mpq_denref(n->value.mpq)->_mp_alloc = 0;	/* avoid de-allocating */
-  limpsize = sizeof(mp_limb_t) * abs(den_size);
-  mpq_denref(n->value.mpq)->_mp_d = (void*)p;
-  p += (limpsize+sizeof(word)-1)/sizeof(word);
-#elif O_BF
-  MP_INT *num = mpq_numref(n->value.mpq);
-  MP_INT *den = mpq_denref(n->value.mpq);
-
-  int num_size = mpq_stack_size(*p++);
-  num->expn = (slimb_t)*p++;
-  int den_size = mpq_stack_size(*p++);
-  den->expn = (slimb_t)*p++;
-
-  num->ctx  = NULL;
-  num->sign = num_size < 0;
-  num->len  = abs(num_size);
-  num->tab  = (limb_t*)p;
-  limpsize = sizeof(mp_limb_t) * abs(num_size);
-  p += (limpsize+sizeof(word)-1)/sizeof(word);
-
-  den->ctx  = NULL;
-  den->sign = 0;		/* canonical */
-  den->len  = den_size;
-  den->tab  = (limb_t*)p;
-  limpsize = sizeof(mp_limb_t) * abs(den_size);
-  p += (limpsize+sizeof(word)-1)/sizeof(word);
-#else
-  #error "No bignum implementation"
-#endif
-
-  PC = (Code)p;
+  PC = get_mpq_from_code(PC, n->value.mpq);
 #endif
   NEXT_INSTRUCTION;
 }
@@ -4090,7 +3924,7 @@ END_VMI
 A_DOUBLE: Push double following PC
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-VMI(A_DOUBLE, 0, WORDS_PER_DOUBLE, (CA1_FLOAT))
+VMI(A_DOUBLE, 0, CODES_PER_DOUBLE, (CA1_FLOAT))
 { Number n = allocArithStack();
   Word p = &n->value.w[0];
 
@@ -4228,7 +4062,7 @@ VMI(A_ROUNDTOWARDS_A, 0, 1, (CA1_INTEGER))
 { int mode = (int)*PC++;
   Number n = allocArithStack();
 
-  __PL_ar_ctx.femode = n->value.i = fegetround();
+  n->value.i = __PL_ar_ctx.femode = fegetround();
   n->type = V_INTEGER;
   set_rounding(mode);
 
@@ -4242,10 +4076,10 @@ VMI(A_ROUNDTOWARDS_V, 0, 1, (CA1_VAR))
   int rm;
 
   deRef(p);
-  if ( isAtom(*p) && atom_to_rounding(*p, &rm) )
+  if ( isAtom(*p) && atom_to_rounding(word2atom(*p), &rm) )
   { Number n = allocArithStack();
 
-    __PL_ar_ctx.femode = n->value.i = fegetround();
+    n->value.i = __PL_ar_ctx.femode = fegetround();
     n->type = V_INTEGER;
     set_rounding(rm);
     NEXT_INSTRUCTION;
@@ -4341,8 +4175,8 @@ VMI(A_ADD_FC, VIF_BREAK, 3, (CA1_FVAR, CA1_VAR, CA1_INTEGER))
   }
 #endif
 
-  if ( tagex(*np) == (TAG_INTEGER|STG_INLINE) )
-  { intptr_t v = valInt(*np);
+  if ( isTaggedInt(*np) )
+  { sword v = valInt(*np);
     int64_t r = v+add;			/* tagged ints never overflow */
     word w = consInt(r);
 
@@ -4629,7 +4463,7 @@ conventions.
 
 VMI(I_FCALLDETVA, 0, 1, (CA1_FOREIGN))
 { typedef foreign_t (*va_func)(term_t av, int ac, control_t ctx);
-  va_func f = (va_func)*PC++;
+  va_func f = code2ptr(va_func, *PC++);
   term_t h0 = consTermRef(argFrameP(FR, 0));
 
   vmi_fopen(FR, DEF);		/* inline I_FOPEN */
@@ -4650,7 +4484,7 @@ a1, a2, ... calling conventions.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(I_FCALLDET0, 0, 1, (CA1_FOREIGN))
-{ Func0 f = (Func0)*PC++;
+{ Func0 f = code2ptr(Func0, *PC++);
 
   vmi_fopen(FR, DEF); /* inline I_FOPEN */
   SAVE_REGISTERS(QID);
@@ -4659,12 +4493,12 @@ VMI(I_FCALLDET0, 0, 1, (CA1_FOREIGN))
 }
 END_VMI
 
-#define FCALL_DETN(ac, ...) \
-  Func##ac f = (Func##ac)*PC++; \
-  term_t h0 = consTermRef(argFrameP(FR, 0)); \
-  vmi_fopen(FR, DEF); /* inline I_FOPEN */ \
-  PC++; \
-  SAVE_REGISTERS(QID); \
+#define FCALL_DETN(ac, ...)				\
+  Func##ac f = code2ptr(Func##ac, *PC++);		\
+  term_t h0 = consTermRef(argFrameP(FR, 0));		\
+  vmi_fopen(FR, DEF); /* inline I_FOPEN */		\
+  PC++;							\
+  SAVE_REGISTERS(QID);					\
   VMH_GOTO_AS_VMI(I_FEXITDET, (*f)(__VA_ARGS__));
 
 VMI(I_FCALLDET1, 0, 1, (CA1_FOREIGN))
@@ -4733,7 +4567,7 @@ VMI(I_FEXITDET, 0, 0, ())
 }
 END_VMI
 
-VMH(I_FEXITDET, 1, (word), (rc))
+VMH(I_FEXITDET, 1, (foreign_t), (rc))
 { LOAD_REGISTERS(QID);
 
   while ( (void*)fli_context > (void*)FR )
@@ -4804,7 +4638,7 @@ END_VMH
 
 VMI(I_FCALLNDETVA, 0, 1, (CA1_FOREIGN))
 { typedef foreign_t (*ndet_func)(term_t h0, size_t arity, struct foreign_context*);
-  ndet_func f = (ndet_func)*PC++;
+  ndet_func f = code2ptr(ndet_func, *PC++);
   term_t h0 = argFrameP(FR, 0) - (Word)lBase;
 
   VMH_GOTO_AS_VMI(I_FEXITNDET, (*f)(h0, DEF->functor->arity, &FNDET_CONTEXT));
@@ -4813,15 +4647,15 @@ END_VMI
 
 
 VMI(I_FCALLNDET0, 0, 1, (CA1_FOREIGN))
-{ NdetFunc0 f = (NdetFunc0)*PC++;
+{ NdetFunc0 f = code2ptr(NdetFunc0, *PC++);
 
   VMH_GOTO_AS_VMI(I_FEXITNDET, (*f)(&FNDET_CONTEXT));
 }
 END_VMI
 
-#define FCALL_NDETN(ac, ...) \
-  NdetFunc##ac f = (NdetFunc##ac)*PC++; \
-  term_t h0 = argFrameP(FR, 0) - (Word)lBase;\
+#define FCALL_NDETN(ac, ...)						\
+  NdetFunc##ac f = code2ptr(NdetFunc##ac, *PC++);			\
+  term_t h0 = argFrameP(FR, 0) - (Word)lBase;				\
   VMH_GOTO_AS_VMI(I_FEXITNDET, (*f)(__VA_ARGS__, &FNDET_CONTEXT));
 
 
@@ -4930,7 +4764,7 @@ VMH(I_FEXITNDET, 1, (foreign_t), (rc))
       if ( exception_term )		/* false alarm */
 	PL_clear_foreign_exception(FR);
 
-      CL = (ClauseRef)rc;
+      CL = word2ptr(ClauseRef, rc);
 
       if ( (rc&YIELD_PTR) )
       { fid_t fid;
@@ -4981,18 +4815,19 @@ VMI(I_FREDO, 0, 0, ())
     }
   }
 
-  switch((word)FR->clause & FRG_REDO_MASK)
+  uintptr_t wcl = (uintptr_t)FR->clause;
+  switch(wcl & FRG_REDO_MASK)
   { case REDO_INT:
       FNDET_CONTEXT.control = FRG_REDO;
-      FNDET_CONTEXT.context = (word)(((intptr_t)FR->clause) >> FRG_REDO_BITS);
+      FNDET_CONTEXT.context = (uintptr_t)((intptr_t)(wcl) >> FRG_REDO_BITS);
       break;
     case REDO_PTR:
       FNDET_CONTEXT.control = FRG_REDO;
-      FNDET_CONTEXT.context = (word)FR->clause;
+      FNDET_CONTEXT.context = wcl;
       break;
     case YIELD_PTR:
       FNDET_CONTEXT.control = FRG_RESUME;
-      FNDET_CONTEXT.context = (word)FR->clause & ~FRG_REDO_MASK;
+      FNDET_CONTEXT.context = wcl & ~FRG_REDO_MASK;
       break;
     default:
       assert(0);
@@ -5383,8 +5218,9 @@ again:
 	fli_context = fli_context->parent;
 
       DEBUG(CHK_SECURE,
-	    { SAVE_REGISTERS(QID);
-	      memset(lTop, 0xfb, lMax-lTop);
+	    { size_t clean = (char*)lMax - (char*)lTop;
+	      SAVE_REGISTERS(QID);
+	      memset(lTop, 0xfb, clean);
 	      checkStacks(NULL);
 	      LOAD_REGISTERS(QID)
 	    });
@@ -5495,13 +5331,13 @@ again:
     }
 
     PC = findCatchExit();
-    { word lSafe = consTermRef(lTop);
-      lTop = (LocalFrame)argFrameP(lTop, 1);
-      ARGP = (Word)lTop;
+    { LD->query->next_environment = lTop;
+      ARGP = argFrameP(lTop, 1);
       SAVE_REGISTERS(QID);
       resumeAfterException(TRUE, outofstack);
       LOAD_REGISTERS(QID);
-      lTop = (LocalFrame)valTermRef(lSafe);
+      LD->query->next_environment = NULL;
+      DEBUG(CHK_SECURE, checkData(argFrameP(lTop, 0)));
     }
 
     VMI_GOTO(I_USERCALL0);
@@ -5573,7 +5409,7 @@ VMI(I_DEPARTATMV, VIF_BREAK, 3, (CA1_MODULE, CA1_VAR, CA1_PROC))
     ap = varFrameP(FR, iv);
     deRef(ap);
     if ( isTextAtom(*ap) )
-    { Module m = lookupModule(*ap);
+    { Module m = lookupModule(word2atom(*ap));
 
       setContextModule(FR, m);
       VMI_GOTO(I_DEPART);
@@ -5600,12 +5436,12 @@ VMI(I_CALLATMV, VIF_BREAK, 3, (CA1_MODULE, CA1_VAR, CA1_PROC))
 
   PC++;
   iv = (int)*PC++;
-  proc = (Procedure)*PC++;
+  proc = code2ptr(Procedure, *PC++);
 
   ap = varFrameP(FR, iv);
   deRef(ap);
   if ( isTextAtom(*ap) )
-  { Module module = lookupModule(*ap);
+  { Module module = lookupModule(word2atom(*ap));
     DEF = proc->definition;
     NFR = lTop;
 
@@ -5628,8 +5464,8 @@ same as the end of I_USERCALL
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 VMI(I_CALLM, VIF_BREAK, 2, (CA1_MODULE, CA1_PROC))
-{ Module module = (Module)*PC++;
-  DEF    = ((Procedure)*PC++)->definition;
+{ Module module = code2ptr(Module, *PC++);
+  DEF    = code2ptr(Procedure, *PC++)->definition;
   NFR = lTop;
 
   VMH_GOTO(mcall_cont, module);
@@ -5709,7 +5545,7 @@ VMH(i_usercall_common, 3, (Word, int, bool), (a, callargs, is_call0))
   { Atom ap = atomValue(goal);
 
     if ( true(ap->type, PL_BLOB_TEXT) || goal == ATOM_nil )
-    { functor = lookupFunctorDef(goal, callargs);
+    { functor = lookupFunctorDef(word2atom(goal), callargs);
       arity   = 0;
       args    = NULL;
     } else if ( ap->type == &_PL_closure_blob )
@@ -5721,7 +5557,7 @@ VMH(i_usercall_common, 3, (Word, int, bool), (a, callargs, is_call0))
   { FunctorDef fd;
     Functor gt = valueTerm(goal);
 
-    functor = gt->definition;
+    functor = word2functor(gt->definition);
     if ( is_call0 && functor == FUNCTOR_colon2 )
       VMH_GOTO(call_type_error);
 
@@ -5773,20 +5609,22 @@ VMH(i_usercall_common, 3, (Word, int, bool), (a, callargs, is_call0))
 	  case CHECK_INTERRUPT:
 	  { term_t lTopH = consTermRef(lTop);
 
+	    LD->query->next_environment = NFR;
 	    lTop = (LocalFrame)argFrameP(NFR, 1);
+	    ARGP = (Word)lTop;
 	    SAVE_REGISTERS(QID);
 	    if ( rc == LOCAL_OVERFLOW )
 	    { size_t room = roomStack(local);
 	      rc = growLocalSpace(room*2, ALLOW_SHIFT);
 	    } else
-	    { if ( PL_handle_signals() < 0 )
-		THROW_EXCEPTION;
-	      rc = TRUE;
+	    { rc = (PL_handle_signals() >= 0); /* rc = FALSE: exception */
 	    }
 	    LOAD_REGISTERS(QID);
+	    LD->query->next_environment = NULL;
 	    lTop = (LocalFrame)valTermRef(lTopH);
 	    if ( rc != TRUE )
-	    { raiseStackOverflow(rc);
+	    { if ( rc )		/* rc < 0 (*_OVERFLOW): raise overflow exception */
+		raiseStackOverflow(rc);
 	      THROW_EXCEPTION;
 	    }
 	    VMI_GOTO(I_USERCALL0);
@@ -6095,7 +5933,7 @@ VMI(S_TRIE_GEN, 0, 0, ())
   ClauseRef cref;
 
   deRef(tp);
-  dbref = *tp;
+  dbref = word2atom(*tp);
   if ( !isAtom(dbref) )
   {
   trie_gen_type_error:
@@ -6294,7 +6132,7 @@ VMI(T_VALUE, 0, 0, ())
 END_VMI
 
 VMI(T_DELAY, 0, 1, (CA1_TRIE_NODE))
-{ trie_node *answer = (trie_node*)*PC++;
+{ trie_node *answer = code2ptr(trie_node*, *PC++);
   atom_t atrie;
 
   ENSURE_STACK_SPACE(16, 12, (void)0);
@@ -6455,93 +6293,12 @@ VMI(T_VAR, 0, 1, (CA1_INTEGER))
 END_VMI
 
 
-VMI(T_TRY_INTEGER, 0, 2, (CA1_JUMP,CA1_INTEGER))
-{ TRIE_TRY;
-  VMI_GOTO(T_INTEGER);
-}
-END_VMI
-VMI(T_INTEGER, 0, 1, (CA1_INTEGER))
-{ Word k;
-
-  deRef2(TrieCurrentP, k);
-  if ( canBind(*k) )
-  { Word p;
-    word c;
-    union
-    { int64_t val;
-      word w[WORDS_PER_INT64];
-    } cvt;
-    Word vp = cvt.w;
-
-    ENSURE_GLOBAL_SPACE(2+WORDS_PER_INT64, deRef2(TrieCurrentP, k));
-    p = gTop;
-    gTop += 2+WORDS_PER_INT64;
-    c = consPtr(p, TAG_INTEGER|STG_GLOBAL);
-
-    cvt.val = (int64_t)(intptr_t)*PC++;
-    *p++ = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-    cpInt64Data(p, vp);
-    *p = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-
-    bindConst(k, c);
-    TrieNextArg();
-    NEXT_INSTRUCTION;
-  } else if ( isBignum(*k) && valBignum(*k) == (intptr_t)*PC++ )
-  { TrieNextArg();
-    NEXT_INSTRUCTION;
-  }
-
-  CLAUSE_FAILED;
-}
-END_VMI
-
-VMI(T_TRY_INT64, 0, 1+WORDS_PER_INT64, (CA1_JUMP,CA1_INT64))
-{ TRIE_TRY;
-  VMI_GOTO(T_INT64);
-}
-END_VMI
-VMI(T_INT64, 0, WORDS_PER_INT64, (CA1_INT64))
-{ Word k;
-
-  deRef2(TrieCurrentP, k);
-  if ( canBind(*k) )
-  { Word p;
-    word c;
-
-    ENSURE_GLOBAL_SPACE(2+WORDS_PER_INT64, deRef2(TrieCurrentP, k));
-    p = gTop;
-    gTop += 2+WORDS_PER_INT64;
-    c = consPtr(p, TAG_INTEGER|STG_GLOBAL);
-
-    *p++ = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-    cpInt64Data(p, PC);
-    *p = mkIndHdr(WORDS_PER_INT64, TAG_INTEGER);
-
-    bindConst(k, c);
-    TrieNextArg();
-    NEXT_INSTRUCTION;
-  } else if ( isBignum(*k) )
-  { Word vk = valIndirectP(*k);
-    size_t i;
-
-    for(i=0; i<WORDS_PER_INT64; i++)
-    { if ( *vk++ != (word)*PC++ )
-	CLAUSE_FAILED;
-    }
-    TrieNextArg();
-    NEXT_INSTRUCTION;
-  }
-
-  CLAUSE_FAILED;
-}
-END_VMI
-
-VMI(T_TRY_FLOAT, 0, 1+WORDS_PER_DOUBLE, (CA1_JUMP,CA1_FLOAT))
+VMI(T_TRY_FLOAT, 0, 1+CODES_PER_DOUBLE, (CA1_JUMP,CA1_FLOAT))
 { TRIE_TRY;
   VMI_GOTO(T_FLOAT);
 }
 END_VMI
-VMI(T_FLOAT, 0, WORDS_PER_DOUBLE, (CA1_FLOAT))
+VMI(T_FLOAT, 0, CODES_PER_DOUBLE, (CA1_FLOAT))
 { Word k;
 
   deRef2(TrieCurrentP, k);
@@ -6634,23 +6391,38 @@ VMI(T_TRY_ATOM, 0, 2, (CA1_JUMP,CA1_DATA))
 END_VMI
 
 VMI(T_ATOM, 0, 1, (CA1_DATA))
-{ word c = (word)*PC++;
+{ atom_t c = code2atom(*PC++);
   DEBUG(MSG_TRIE_VM, Sdprintf("T_ATOM %s\n", PL_atom_chars(c)));
   pushVolatileAtom(c);
   VMH_GOTO(t_const, c);
 }
 END_VMI
 
-VMI(T_TRY_SMALLINT, 0, 2, (CA1_JUMP,CA1_DATA))
+VMI(T_TRY_SMALLINT, 0, 2, (CA1_JUMP,CA1_INTEGER))
 { TRIE_TRY;
   VMI_GOTO(T_SMALLINT);
 }
 END_VMI
 
-VMI(T_SMALLINT, 0, 1, (CA1_DATA))
-{ word c = (word)*PC++;
-  DEBUG(MSG_TRIE_VM, Sdprintf("T_SMALLINT %lld\n", valInt(c)));
-  VMH_GOTO(t_const, c);
+VMI(T_SMALLINT, 0, 1, (CA1_INTEGER))
+{ scode i = (scode)*PC++;
+  DEBUG(MSG_TRIE_VM, Sdprintf("T_SMALLINT %lld\n", (long long)i));
+  VMH_GOTO(t_const, consInt(i));
+}
+END_VMI
+
+VMI(T_TRY_SMALLINTW, 0, 1+CODES_PER_WORD, (CA1_JUMP,CA1_WORD))
+{ TRIE_TRY;
+  VMI_GOTO(T_SMALLINT);
+}
+END_VMI
+
+VMI(T_SMALLINTW, 0, CODES_PER_WORD, (CA1_WORD))
+{ word w;
+
+  PC = code_get_word(PC, &w);
+  DEBUG(MSG_TRIE_VM, Sdprintf("T_SMALLINT %lld\n", (long long)w));
+  VMH_GOTO(t_const, consInt((sword)w));
 }
 END_VMI
 

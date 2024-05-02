@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2021, University of Amsterdam
+    Copyright (c)  1985-2024, University of Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -79,7 +79,7 @@ typedef struct _operator		/* storage in tables */
 
 typedef struct _opdef			/* predefined and enumerated */
 { atom_t name;
-  short  type;
+  unsigned char type;
   short  priority;
 } opdef;
 
@@ -90,27 +90,28 @@ typedef struct _opdef			/* predefined and enumerated */
 		 *******************************/
 
 static void
-copyOperatorSymbol(void *name, void **value)
-{ operator *op = *value;
+copyOperatorSymbol(table_key_t name, table_value_t *value)
+{ operator *op = val2ptr(*value);
   operator *o2 = allocHeapOrHalt(sizeof(*o2));
 
+  PL_register_atom((atom_t) name);
   *o2 = *op;
-  *value = o2;
+  *value = ptr2val(o2);
 }
 
 
 static void
-freeOperatorSymbol(void *name, void *value)
-{ operator *op = value;
+freeOperatorSymbol(table_key_t name, table_value_t value)
+{ operator *op = val2ptr(value);
 
   PL_unregister_atom((atom_t) name);
   freeHeap(op, sizeof(*op));
 }
 
 
-static Table
+static TableWP
 newOperatorTable(int size)
-{ Table t = newHTable(size);
+{ TableWP t = newHTableWP(size);
 
   t->copy_symbol = copyOperatorSymbol;
   t->free_symbol = freeOperatorSymbol;
@@ -129,7 +130,7 @@ tables.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static int
-defOperator(Module m, atom_t name, int type, int priority, int force)
+defOperator(Module m, atom_t name, unsigned char type, short priority, int force)
 { GET_LD
   operator *op;
   int t = (type & OP_MASK);		/* OP_PREFIX, ... */
@@ -162,7 +163,7 @@ defOperator(Module m, atom_t name, int type, int priority, int force)
   if ( !m->operators )
     m->operators = newOperatorTable(8);
 
-  if ( (op = lookupHTable(m->operators, (void *)name)) )
+  if ( (op = lookupHTableWP(m->operators, name)) )
   { ;
   } else if ( priority < 0 )
   { PL_UNLOCK(L_OP);				/* already inherited: do not change */
@@ -184,7 +185,7 @@ defOperator(Module m, atom_t name, int type, int priority, int force)
   op->type[t]     = (priority >= 0 ? type : OP_INHERIT);
   if ( must_reg )
   { PL_register_atom(name);
-    addNewHTable(m->operators, (void *)name, op);
+    addNewHTableWP(m->operators, name, op);
   }
   PL_UNLOCK(L_OP);
 
@@ -208,7 +209,7 @@ visibleOperator(Module m, atom_t name, int kind)
   ListCell c;
 
   if ( m->operators &&
-       (op = lookupHTable(m->operators, (void *)name)) )
+       (op = lookupHTableWP(m->operators, name)) )
   { if ( op->type[kind] != OP_INHERIT )
       return op;
   }
@@ -222,7 +223,7 @@ visibleOperator(Module m, atom_t name, int kind)
 
 
 int
-currentOperator(Module m, atom_t name, int kind, int *type, int *priority)
+currentOperator(Module m, atom_t name, int kind, unsigned char *type, short *priority)
 { operator *op;
 
   assert(kind >= OP_PREFIX && kind <= OP_POSTFIX);
@@ -278,7 +279,8 @@ scanPriorityOperator(Module m, atom_t name, int *done, int sofar)
   if ( *done != 0x7 )
   { operator *op;
 
-    if ( m->operators && (op = lookupHTable(m->operators, (void *)name)) )
+    if ( m->operators &&
+	 (op = lookupHTableWP(m->operators, name)) )
       sofar = maxOp(op, done, sofar);
 
     if ( *done != 0x7 )
@@ -310,7 +312,7 @@ priorityOperator(Module m, atom_t name)
 		 *	  PROLOG BINDING	*
 		 *******************************/
 
-static int
+static unsigned char
 atomToOperatorType(atom_t atom)
 { if (atom == ATOM_fx)			return OP_FX;
   else if (atom == ATOM_fy)		return OP_FY;
@@ -346,7 +348,7 @@ PRED_IMPL("op", 3, op, PL_FA_TRANSPARENT|PL_FA_ISO)
 { PRED_LD
   atom_t nm;
   atom_t tp;
-  int t;
+  unsigned char t;
   int p;
   Module m = MODULE_parse;
 
@@ -377,7 +379,7 @@ PRED_IMPL("op", 3, op, PL_FA_TRANSPARENT|PL_FA_ISO)
     return PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_operator_specifier, type);
 
   if ( PL_get_atom(name, &nm) )
-  { return defOperator(m, nm, t, p, FALSE);
+  { return defOperator(m, nm, t, (short)p, FALSE);
   } else
   { term_t l = PL_copy_term_ref(name);
     term_t e = PL_new_term_ref();
@@ -385,7 +387,7 @@ PRED_IMPL("op", 3, op, PL_FA_TRANSPARENT|PL_FA_ISO)
     while( PL_get_list_ex(l, e, l) )
     { if ( !PL_get_atom(e, &nm) )
 	return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_atom, e);
-      if ( !defOperator(m, nm, t, p, FALSE) )
+      if ( !defOperator(m, nm, t, (short)p, FALSE) )
 	return FALSE;
     }
     if ( !PL_get_nil_ex(l) )
@@ -402,7 +404,7 @@ of matching operators and (on backtracking) return the matching ones.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static void
-addOpToBuffer(Buffer b, atom_t name, int type, int priority)
+addOpToBuffer(Buffer b, atom_t name, unsigned char type, short priority)
 { opdef *op = baseBuffer(b, opdef);
   int mx    = (int)entriesBuffer(b, opdef);
   int i;
@@ -421,13 +423,16 @@ addOpToBuffer(Buffer b, atom_t name, int type, int priority)
 
 
 static void
-addOpsFromTable(Table t, atom_t name, int priority, int type, Buffer b)
-{ TableEnum e = newTableEnum(t);
-  atom_t nm;
-  operator *op;
+addOpsFromTable(TableWP t, atom_t name, int priority, int type, Buffer b)
+{ TableEnum e = newTableEnumWP(t);
+  table_key_t tk;
+  table_value_t tv;
 
-  while( advanceTableEnum(e, (void**)&nm, (void**)&op) )
-  { if ( nm == name || name == NULL_ATOM )
+  while( advanceTableEnum(e, &tk, &tv) )
+  { atom_t nm = (atom_t)tk;
+    operator *op = val2ptr(tv);
+
+    if ( nm == name || name == NULL_ATOM )
     { if ( type )
       { int kind = type&OP_MASK;
 
@@ -483,7 +488,7 @@ typedef struct
 
 
 #define current_op(m, inherit, prec, type, name, h) LDFUNC(current_op, m, inherit, prec, type, name, h)
-static word
+static foreign_t
 current_op(DECL_LD Module m, int inherit,
 	   term_t prec, term_t type, term_t name,
 	   control_t h)
@@ -613,7 +618,7 @@ PRED_IMPL("current_op", 3, current_op,
   Module mp = MODULE_parse;
   Module m  = mp;
   term_t name = A3;
-  word rc;
+  foreign_t rc;
 
   if ( CTX_CNTRL != FRG_CUTTED )
   { if ( !(name = PL_new_term_ref()) ||

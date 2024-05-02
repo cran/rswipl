@@ -192,10 +192,10 @@ the debugger.  Restores I/O and debugger on exit.  The Prolog  predicate
 `$break' is called to actually built the break environment.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-static int
+static foreign_t
 pl_break1(atom_t goal)
 { GET_LD
-  int rc = TRUE;
+  foreign_t rc = TRUE;
   int old_level = LD->break_level;
 
   IOSTREAM *inSave       = Scurin;
@@ -250,13 +250,13 @@ Run a nested toplevel. Do not  use   PRED_IMPL()  for this because it is
 very handy to use from e.g., the gdb debugger.
 */
 
-word
+foreign_t
 pl_break(void)
 { GET_LD
   wakeup_state wstate;
 
   if ( saveWakeup(&wstate, TRUE) )
-  { word rc;
+  { foreign_t rc;
 
     rc = pl_break1(ATOM_dquery_loop);
     restoreWakeup(&wstate);
@@ -285,14 +285,23 @@ static
 PRED_IMPL("$notrace", 2, notrace, PL_FA_NOTRACE)
 { PRED_LD
   int flags = 0;
+  int64_t sl;
 
   if ( debugstatus.tracing   )              flags |= NOTRACE_TRACE;
   if ( debugstatus.debugging )              flags |= NOTRACE_DEBUG;
   if ( truePrologFlag(PLFLAG_LASTCALL) )    flags |= NOTRACE_LCO;
   if ( truePrologFlag(PLFLAG_VMI_BUILTIN) ) flags |= NOTRACE_VMI;
 
-  if ( PL_unify_integer(A1, flags) &&
-       PL_unify_int64(A2, debugstatus.skiplevel) )
+  if ( debugstatus.skiplevel == SKIP_VERY_DEEP )
+    sl = -1;
+  else if ( debugstatus.skiplevel == SKIP_REDO_IN_SKIP )
+    sl = -2;
+  else
+  { sl = debugstatus.skiplevel;
+    assert(sl >= 0 && sl <= SIZE_MAX);
+  }
+
+  if ( PL_unify_integer(A1, flags) && PL_unify_int64(A2, sl) )
   { debugstatus.tracing   = FALSE;
     debugstatus.debugging = FALSE;
     debugstatus.skiplevel = SKIP_VERY_DEEP;
@@ -309,11 +318,22 @@ static
 PRED_IMPL("$restore_trace", 2, restoretrace, PL_FA_NOTRACE)
 { PRED_LD
   int flags;
-  int64_t depth;
+  int64_t depthi;
 
   if ( PL_get_integer_ex(A1, &flags) &&
-       PL_get_int64_ex(A2, &depth) )
-  { debugstatus.tracing   = !!(flags&NOTRACE_TRACE);
+       PL_get_int64_ex(A2, &depthi) )
+  { size_t depth;
+
+    if ( depthi == -1 )
+      depth = SKIP_VERY_DEEP;
+    else if ( depthi == -2 )
+      depth = SKIP_REDO_IN_SKIP;
+    else if ( depthi < 0 || depthi > SIZE_MAX )
+      return PL_representation_error("size_t");
+    else
+      depth = (size_t)depthi;
+
+    debugstatus.tracing   = !!(flags&NOTRACE_TRACE);
     debugstatus.debugging = !!(flags&NOTRACE_DEBUG);
     debugstatus.skiplevel = depth;
 
@@ -592,7 +612,7 @@ setAccessLevel(access_level_t accept)
 Cut (!) as called via the  meta-call  mechanism has no effect.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-word
+foreign_t
 pl_metacut(void)
 { succeed;
 }
@@ -703,7 +723,18 @@ last_arg:
 
   while(isRef(*p))
   { assert(!is_marked(p));
-    p2 = unRef(*p);
+    if ( storage(*p) == STG_LOCAL ) /* PushPtr()/PopPtr() reference? */
+    { for(int i=0; i<LD->tmp.top; i++)
+      { if ( valTermRef(LD->tmp.h[i]) == p )
+	{ p2 = unRef(*p);
+	  goto deref_ok;
+	}
+      }
+      printk(context, "Reference to local stack");
+    } else
+    { p2 = unRef(*p);
+    }
+  deref_ok:
     DEBUG(CHK_HIGHER_ADDRESS,
 	  { if ( p2 > p )
 	    { if ( !isAttVar(*p2) &&
@@ -762,8 +793,6 @@ last_arg:
       printk(context, "Indirect at %p not on global stack", a);
     if ( storage(*p) != STG_GLOBAL )
       printk(context, "Indirect data not on global");
-    if ( isBignum(*p) )
-      return key+(word) valBignum(*p);
     if ( isFloat(*p) )
       return key+(word) valFloat(*p);
     if ( isString(*p) )

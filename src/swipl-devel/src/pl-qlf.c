@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2023, University of Amsterdam
+    Copyright (c)  1985-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -263,7 +263,7 @@ typedef struct wic_state
   SourceFile currentSource;		/* current source file */
 
   Table idMap;				/* mapped identifiers */
-  Table	savedXRTable;			/* saved XR entries */
+  TableWW savedXRTable;			/* saved XR entries */
   intptr_t savedXRTableId;		/* next id to hand out */
 
   SourceMark source_mark_head;		/* Locations of sources */
@@ -364,7 +364,7 @@ popXrIdTable(wic_state *state)
   { word w = t->preallocated[id];
 
     if ( isAtom(w) )
-      PL_unregister_atom(w);
+      PL_unregister_atom(word2atom(w));
   }
   for(idx = 3; idx < XR_BLOCKS && t->blocks[idx]; idx++)
   { size_t bs = (size_t)1<<idx;
@@ -375,7 +375,7 @@ popXrIdTable(wic_state *state)
     { word w = p[i];
 
       if ( isAtom(w) )
-	PL_unregister_atom(w);
+	PL_unregister_atom(word2atom(w));
     }
 
     freeHeap(p, bs*sizeof(word));
@@ -471,7 +471,7 @@ qlfGetString(IOSTREAM *fd, size_t *length)
       fatalError("Unexpected EOF on QLF file at offset %d",
 		 Stell(fd));
 
-    *s++ = c;
+    *s++ = (char)c;
   }
   *s = EOS;
 
@@ -522,7 +522,7 @@ getAtom(IOSTREAM *fd, PL_blob_t *type)
 { GET_LD
   char buf[1024];
   char *tmp, *s;
-  size_t len = qlfGetInt64(fd);
+  size_t len = (size_t)qlfGetInt64(fd);
   size_t i;
   atom_t a;
 
@@ -537,7 +537,7 @@ getAtom(IOSTREAM *fd, PL_blob_t *type)
     if ( c == EOF )
       fatalError("Unexpected EOF on intermediate code file at offset %d",
 		 Stell(fd));
-    *s++ = c;
+    *s++ = (char)c;
   }
   if ( type )
   { int new;
@@ -570,7 +570,7 @@ getMagicString(IOSTREAM *fd, char *buf, int maxlen)
 { char *s;
   int c;
 
-  for( s = buf; --maxlen >= 0 && (*s = (c = Sgetc(fd))); s++ )
+  for( s = buf; --maxlen >= 0 && (*s = (char)(c = Sgetc(fd))); s++ )
   { if ( c == EOF )
       return NULL;
   }
@@ -679,7 +679,7 @@ qlfGetDouble(IOSTREAM *fd)
 
     if ( c == -1 )
       fatalError("Unexpected end-of-file in QLT file");
-    cl[double_byte_order[i]] = c;
+    cl[double_byte_order[i]] = (unsigned char)(c&0xff);
   }
 
   DEBUG(MSG_QLF_FLOAT, Sdprintf("qlfGetDouble() --> %f\n", f));
@@ -746,9 +746,9 @@ loadXRc(DECL_LD wic_state *state, int c)
     }
     case XR_BLOB_TYPE:
     { id = ++state->XR->id;
-      xr = (word)getBlobType(fd);
+      xr = ptr2word(getBlobType(fd));
       DEBUG(MSG_QLF_XR,
-	    Sdprintf("XR(%d) = <blob-type>%s", id, ((PL_blob_t*)xr)->name));
+	    Sdprintf("XR(%d) = <blob-type>%s", id, word2ptr(PL_blob_t*, xr)->name));
       break;
     }
     case XR_FUNCTOR:
@@ -756,7 +756,7 @@ loadXRc(DECL_LD wic_state *state, int c)
       size_t arity;
 
       id = ++state->XR->id;
-      name = loadXR(state);
+      name = word2atom(loadXR(state));
       arity = (size_t)qlfGetInt64(fd);
       xr = (word) lookupFunctorDef(name, arity);
       DEBUG(MSG_QLF_XR,
@@ -768,19 +768,19 @@ loadXRc(DECL_LD wic_state *state, int c)
       Module m;
 
       id = ++state->XR->id;
-      f = (functor_t) loadXR(state);
-      m = (Module) loadXR(state);
-      xr = (word) lookupProcedure(f, m);
+      f = word2functor(loadXR(state));
+      m = word2ptr(Module, loadXR(state));
+      xr = ptr2word(lookupProcedure(f, m));
       DEBUG(MSG_QLF_XR,
-	    Sdprintf("XR(%d) = proc %s\n", id, procedureName((Procedure)xr)));
+	    Sdprintf("XR(%d) = proc %s\n", id, procedureName(word2ptr(Procedure, xr))));
       break;
     }
     case XR_MODULE:
     { GET_LD
       atom_t name;
       id = ++state->XR->id;
-      name = loadXR(state);
-      xr = (word) lookupModule(name);
+      name = word2atom(loadXR(state));
+      xr = ptr2word(lookupModule(name));
       DEBUG(MSG_QLF_XR, Sdprintf("XR(%d) = module %s\n", id, stringAtom(name)));
       break;
     }
@@ -841,7 +841,7 @@ loadXRc(DECL_LD wic_state *state, int c)
       switch( (c=Qgetc(fd)) )
       { case 'u':
 	case 's':
-	{ atom_t name   = loadXR(state);
+	{ atom_t name   = word2atom(loadXR(state));
 	  double time   = qlfGetDouble(fd);
 	  PL_chars_t text;
 	  SourceFile sf;
@@ -857,7 +857,7 @@ loadXRc(DECL_LD wic_state *state, int c)
 	    sf->system = (c == 's' ? TRUE : FALSE);
 	  }
 	  sf->count++;
-	  xr = (word)sf;
+	  xr = ptr2word(sf);
 	  /* do not release sf; part of state */
 	  break;
 	}
@@ -887,7 +887,7 @@ loadXRc(DECL_LD wic_state *state, int c)
 
 static atom_t
 getBlob(DECL_LD wic_state *state)
-{ PL_blob_t *type = (PL_blob_t*)loadXR(state);
+{ PL_blob_t *type = word2ptr(PL_blob_t*, loadXR(state));
 
   if ( type->load )
   { atom_t a;
@@ -950,7 +950,7 @@ do_load_qlf_term(DECL_LD wic_state *state, term_t vars[], term_t term)
   { word w;
 
     if ( (w=loadXRc(state, c)) )
-      return _PL_unify_atomic(term, w);
+      return PL_unify_atomic(term, w);
 
     return FALSE;
   }
@@ -962,18 +962,14 @@ static int
 loadQlfTerm(DECL_LD wic_state *state, term_t term)
 { IOSTREAM *fd = state->wicFd;
   int nvars;
-  Word vars;
+  term_t *vars;
   int rc;
 
   DEBUG(MSG_QLF_TERM, Sdprintf("Loading from %ld ...", (long)Stell(fd)));
 
   if ( (nvars = qlfGetInt32(fd)) )
-  { term_t *v;
-    int n;
-
-    vars = alloca(nvars * sizeof(term_t));
-    for(n=nvars, v=vars; n>0; n--, v++)
-      *v = 0L;
+  { vars = alloca(nvars * sizeof(*vars));
+    memset(vars, 0, nvars * sizeof(*vars));
   } else
     vars = NULL;
 
@@ -1077,7 +1073,7 @@ loadStatement(DECL_LD wic_state *state, int c, int skip)
       return loadPredicate(state, skip);
 
     case 'O':
-    { word mname = loadXR(state);
+    { atom_t mname = word2atom(loadXR(state));
       Module om = LD->modules.source;
       bool rval;
 
@@ -1196,7 +1192,7 @@ mp_cpsign(ssize_t hdrsize, int mpsize)
 
 static void
 qlf_mpz_load(IOSTREAM *fd, Buffer buf)
-{ ssize_t hdrsize = qlfGetInt64(fd);
+{ ssize_t hdrsize = (size_t)qlfGetInt64(fd);
   size_t wsize;			/* limb size in words */
   word m;
   Word p;
@@ -1211,7 +1207,7 @@ qlf_mpz_load(IOSTREAM *fd, Buffer buf)
     cbuf = PL_malloc(bytes);
 
   for(i=0; i<bytes; i++)
-    cbuf[i] = Qgetc(fd);
+    cbuf[i] = (char)Qgetc(fd);
 
 #if O_BF
   bf_t bf;
@@ -1245,8 +1241,8 @@ qlf_mpz_load(IOSTREAM *fd, Buffer buf)
 
 static void
 qlf_mpq_load(IOSTREAM *fd, Buffer buf)
-{ ssize_t num_hdrsize = qlfGetInt64(fd);
-  ssize_t den_hdrsize = qlfGetInt64(fd);
+{ ssize_t num_hdrsize = (ssize_t)qlfGetInt64(fd);
+  ssize_t den_hdrsize = (ssize_t)qlfGetInt64(fd);
   size_t num_bytes = ABS(num_hdrsize);
   size_t den_bytes = ABS(den_hdrsize);
   char fast[1024];
@@ -1262,7 +1258,7 @@ qlf_mpq_load(IOSTREAM *fd, Buffer buf)
   dbuf = nbuf+num_bytes;
 
   for(size_t i=0; i<num_bytes+den_bytes; i++)
-    nbuf[i] = Qgetc(fd);
+    nbuf[i] = (char)Qgetc(fd);
 
 #if O_BF
   bf_t nbf, dbf;
@@ -1466,8 +1462,8 @@ loadPredicate(DECL_LD wic_state *state, int skip)
 	clause->tr_erased_no = 0;
 	clause->line_no	     = qlfGetUInt32(fd);
 
-	{ SourceFile of = (void *) loadXR(state);
-	  SourceFile sf = (void *) loadXR(state);
+	{ SourceFile of = word2ptr(SourceFile, loadXR(state));
+	  SourceFile sf = word2ptr(SourceFile, loadXR(state));
 	  unsigned int ono = (of ? of->index : 0);
 	  unsigned int sno = (sf ? sf->index : 0);
 	  if ( sf )
@@ -1488,7 +1484,8 @@ loadPredicate(DECL_LD wic_state *state, int skip)
 	loadClauseFlags(state, clause, skip);
 	clause->predicate = def;
 
-#define addCode(c) addBuffer(&buf, (c), code)
+#define addCode(c) addBuffer(&buf, (code)(c), code)
+#define addWord(c) addBuffer(&buf, (word)(c), word)
 
 	for(;;)
 	{ code op = qlfGetUInt32(fd);
@@ -1505,42 +1502,19 @@ loadPredicate(DECL_LD wic_state *state, int skip)
 	    }
 	    case V_H_INTEGER:
 	    case V_B_INTEGER:
-	    { int64_t val = qlfGetInt64(fd);
-	      word w = consInt(val);
-
-	      if ( valInt(w) == val )
-	      { addCode(encode(op==V_H_INTEGER ? H_SMALLINT : B_SMALLINT));
-		addCode(w);
-#if SIZEOF_VOIDP == 8
-	      } else
-	      { addCode(encode(op==V_H_INTEGER ? H_INTEGER : B_INTEGER));
-		addCode((intptr_t)val);
-	      }
-#else
-	      } else if ( val >= INTPTR_MIN && val <= INTPTR_MAX )
-	      { addCode(encode(op==V_H_INTEGER ? H_INTEGER : B_INTEGER));
-		addCode((intptr_t)val);
-	      } else
-	      { addCode(encode(op==V_H_INTEGER ? H_INT64 : B_INT64));
-		addMultipleBuffer(&buf, (char*)&val, sizeof(int64_t), char);
-	      }
-#endif
-
-	      continue;
-	    }
 	    case V_A_INTEGER:
 	    { int64_t val = qlfGetInt64(fd);
 
-#if SIZEOF_VOIDP == 8
-	      addCode(encode(A_INTEGER));
-	      addCode((intptr_t)val);
+#if CODES_PER_WORD == 1
+	      addCode(encode(op==V_H_INTEGER ? H_SMALLINT : op==V_B_INTEGER ? B_SMALLINT : A_INTEGER));
+	      addCode((scode)val);
 #else
-	      if ( val >= INTPTR_MIN && val <= INTPTR_MAX )
-	      { addCode(encode(A_INTEGER));
-		addCode((intptr_t)val);
+	      if ( (scode)val== val )
+	      { addCode(encode(op==V_H_INTEGER ? H_SMALLINT : op==V_B_INTEGER ? B_SMALLINT : A_INTEGER));
+		addCode((scode)val);
 	      } else
-	      { addCode(encode(A_INT64));
-		addMultipleBuffer(&buf, (char*)&val, sizeof(int64_t), char);
+	      { addCode(encode(op==V_H_INTEGER ? H_SMALLINTW : op==V_B_INTEGER ? B_SMALLINTW : A_INTEGERW));
+		addMultipleBuffer(&buf, &val, CODES_PER_WORD, code);
 	      }
 #endif
 	      continue;
@@ -1561,13 +1535,13 @@ loadPredicate(DECL_LD wic_state *state, int skip)
 	  addCode(encode(op));
 	  DEBUG(0,
 		{ const char ca1_float[2] = {CA1_FLOAT};
-		  const char ca1_int64[2] = {CA1_INT64};
+		  const char ca1_word[2] = {CA1_WORD};
 		  assert(codeTable[op].arguments == VM_DYNARGC ||
 			 (size_t)codeTable[op].arguments == strlen(ats) ||
 			 (streq(ats, ca1_float) &&
-			  codeTable[op].arguments == WORDS_PER_DOUBLE) ||
-			 (streq(ats, ca1_int64) &&
-			  codeTable[op].arguments == WORDS_PER_INT64));
+			  codeTable[op].arguments == CODES_PER_DOUBLE) ||
+			 (streq(ats, ca1_word) &&
+			  codeTable[op].arguments == CODES_PER_WORD));
 		});
 
 	  for(n=0; ats[n]; n++)
@@ -1588,12 +1562,12 @@ loadPredicate(DECL_LD wic_state *state, int skip)
 	      case CA1_DATA:
 	      { word w = loadXR(state);
 		if ( isAtom(w) )
-		  PL_register_atom(w);
+		  PL_register_atom(word2atom(w));
 		addCode(w);
 		break;
 	      }
 	      case CA1_AFUNC:
-	      { word f = loadXR(state);
+	      { functor_t f = word2functor(loadXR(state));
 		int  i = indexArithFunction(f);
 		assert(i>0);
 		addCode(i);
@@ -1617,10 +1591,10 @@ loadPredicate(DECL_LD wic_state *state, int skip)
 	      case CA1_CHP:
 		addCode((code)OFFSET_VAR(qlfGetInt64(fd)));
 		break;
-	      case CA1_INT64:
-	      { int64_t val = qlfGetInt64(fd);
+	      case CA1_WORD:
+	      { sword val = qlfGetInt64(fd);
 
-		addMultipleBuffer(&buf, (char*)&val, sizeof(int64_t), char);
+		addMultipleBuffer(&buf, &val, CODES_PER_WORD, code);
 		break;
 	      }
 	      case CA1_FLOAT:
@@ -1636,25 +1610,25 @@ loadPredicate(DECL_LD wic_state *state, int skip)
 		if ( c0 == 'B' )
 		{ int lw = (l+sizeof(word))/sizeof(word);
 		  int pad = (lw*sizeof(word) - l);
-		  Code bp;
+		  Word bp;
 		  char *s;
 
 		  DEBUG(MSG_QLF_VMI, Sdprintf("String of %ld bytes\n", l));
 		  bp = allocFromBuffer(&buf, sizeof(word)*(lw+1));
 		  s = (char *)&bp[1];
-		  *bp = mkStrHdr(lw, pad);
+		  *bp = mkBlobHdr(lw, pad, TAG_STRING);
 		  bp += lw;
 		  *bp++ = 0L;
 		  *s++ = 'B';
 		  l--;
 		  while(l-- > 0)
-		    *s++ = Qgetc(fd);
+		    *s++ = (char)Qgetc(fd);
 		} else
 		{ size_t i;
 		  size_t  bs = (l+1)*sizeof(pl_wchar_t);
 		  size_t  lw = (bs+sizeof(word))/sizeof(word);
 		  int    pad = (lw*sizeof(word) - bs);
-		  word	   m = mkStrHdr(lw, pad);
+		  word	   m = mkBlobHdr(lw, pad, TAG_STRING);
 		  IOENC oenc = fd->encoding;
 
 		  DEBUG(MSG_QLF_VMI,
@@ -1663,7 +1637,7 @@ loadPredicate(DECL_LD wic_state *state, int skip)
 
 		  assert(c0 == 'W');
 
-		  addCode(m);		/* The header */
+		  addWord(m);		/* The header */
 		  addBuffer(&buf, 'W', char);
 		  for(i=1; i<sizeof(pl_wchar_t); i++)
 		    addBuffer(&buf, 0, char);
@@ -1770,7 +1744,7 @@ runInitialization(SourceFile sf)
 
 static bool
 loadImport(DECL_LD wic_state *state, int skip)
-{ Procedure proc = (Procedure) loadXR(state);
+{ Procedure proc = word2ptr(Procedure, loadXR(state));
   int flags = qlfGetInt32(state->wicFd);
 
   if ( !skip )
@@ -1840,7 +1814,7 @@ qlfLoadSource(wic_state *state)
 { IOSTREAM *fd = state->wicFd;
   char *str = qlfGetString(fd, NULL);
   double time = qlfGetDouble(fd);
-  int issys = (Qgetc(fd) == 's') ? TRUE : FALSE;
+  unsigned int issys = (Qgetc(fd) == 's') ? TRUE : FALSE;
   atom_t fname;
 
   if ( !str )
@@ -1856,7 +1830,7 @@ qlfLoadSource(wic_state *state)
   state->currentSource = lookupSourceFile(fname, TRUE);
   PL_unregister_atom(fname);		/* locked with sourceFile */
   state->currentSource->mtime = time;
-  state->currentSource->system = issys;
+  state->currentSource->system = issys&0x1;
   if ( GD->bootsession )		/* (**) */
     state->currentSource->count++;
   else
@@ -1877,7 +1851,7 @@ loadModuleProperties(DECL_LD wic_state *state, Module m, int skip)
   for(;;)
   { switch(Qgetc(fd))
     { case 'C':
-      { atom_t cname = loadXR(state);
+      { atom_t cname = word2atom(loadXR(state));
 
 	if ( !skip )
 	  m->class = cname;
@@ -1885,7 +1859,7 @@ loadModuleProperties(DECL_LD wic_state *state, Module m, int skip)
 	continue;
       }
       case 'S':
-      { atom_t sname = loadXR(state);
+      { atom_t sname = word2atom(loadXR(state));
 	Module s = lookupModule(sname);
 
 	if ( !skip )
@@ -1899,11 +1873,11 @@ loadModuleProperties(DECL_LD wic_state *state, Module m, int skip)
 	if ( !skip )
 	{ Procedure proc = lookupProcedure(f, LD->modules.source);
 
-	  addNewHTable(LD->modules.source->public, (void *)f, proc);
+	  addNewHTableWP(LD->modules.source->public, f, proc);
 	  if ( state->currentSource )
 	    exportProcedureSource(state->currentSource, m, proc);
 	} else
-	{ if ( !lookupHTable(m->public, (void *)f) )
+	{ if ( !lookupHTableWP(m->public, f) )
 	  { FunctorDef fd = valueFunctor(f);
 
 	    warning("%s: skipped module \"%s\" lacks %s/%d",
@@ -1938,7 +1912,7 @@ loadPart(DECL_LD wic_state *state, Module *module, int skip)
 
   switch(Qgetc(fd))
   { case 'M':
-    { atom_t mname = loadXR(state);
+    { atom_t mname = word2atom(loadXR(state));
       int c = Qgetc(fd);
 
       DEBUG(MSG_QLF_SECTION,
@@ -2027,7 +2001,7 @@ loadPart(DECL_LD wic_state *state, Module *module, int skip)
 static bool
 loadInModule(DECL_LD wic_state *state, int skip)
 { IOSTREAM *fd = state->wicFd;
-  word mname = loadXR(state);
+  atom_t mname = word2atom(loadXR(state));
   Module om = LD->modules.source;
 
   LD->modules.source = lookupModule(mname);
@@ -2060,10 +2034,10 @@ loadInclude(DECL_LD wic_state *state, int skip)
   DEBUG(MSG_QLF_INCLUDE, Sdprintf("Loading include from %ld ",
 				  Stell(state->wicFd)));
 
-  owner = loadXR(state);
-  pn    = loadXR(state);
+  owner = word2atom(loadXR(state));
+  pn    = word2atom(loadXR(state));
   line  = qlfGetInt32(fd);
-  fn    = loadXR(state);
+  fn    = word2atom(loadXR(state));
   time  = qlfGetDouble(fd);
 
   DEBUG(MSG_QLF_INCLUDE, Sdprintf("(%s)\n ", PL_atom_chars(fn)));
@@ -2181,7 +2155,7 @@ putAtom(wic_state *state, atom_t w)
   static PL_blob_t *text_blob;
 
   if ( state->idMap &&
-       (mapped = (atom_t)lookupHTable(state->idMap, (void*)w)) )
+       (mapped = (atom_t)lookupHTable(state->idMap, (table_key_t)w)) )
   { assert(isAtom(mapped));
     w = mapped;
   }
@@ -2268,13 +2242,14 @@ qlfPutInt32(int32_t v, IOSTREAM *fd)
 }
 
 static void
-freeXRSymbol(void *name, void *value)
+freeXRSymbol(table_key_t name, table_value_t value)
 { word w = (word)name;
+  (void)value;
 
   if ( w&0x1 )
   { w &= ~0x1;
     if ( isAtom(w) )
-    { PL_unregister_atom(w);
+    { PL_unregister_atom(word2atom(w));
       DEBUG(5, Sdprintf("UNREG: %s\n", stringAtom(w)));
     }
   }
@@ -2314,50 +2289,69 @@ savedXRPointer  must  be  used  for   the    pointers.   The  value  for
 savedXRConstant() is or-ed with 0x1 to avoid conflict with pointers.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-static int
-savedXR(wic_state *state, void *xr)
-{ GET_LD
-  IOSTREAM *fd = state->wicFd;
-  unsigned int id;
 
-  if ( (id = (intptr_t)lookupHTable(state->savedXRTable, xr)) )
-  { Sputc(XR_REF, fd);
+#define savedXR(state, xr) LDFUNC(savedXR, state, xr)
+
+static int
+savedXR(DECL_LD wic_state *state, void *xr)
+{ unsigned int id;
+
+  if ( (id = (unsigned int)lookupHTable(state->savedXRTable, ptr2key(xr))) )
+  { IOSTREAM *fd = state->wicFd;
+
+    Sputc(XR_REF, fd);
     qlfPutUInt32(id, fd);
 
     succeed;
   } else
   { id = ++state->savedXRTableId;
-    addNewHTable(state->savedXRTable, xr, (void *)(intptr_t)id);
+    addNewHTable(state->savedXRTable, ptr2key(xr), id);
   }
 
   fail;
 }
 
 
-static inline int
-savedXRConstant(wic_state *state, word w)
-{ int rc;
+#define savedXRConstant(state, w) LDFUNC(savedXRConstant, state, w)
+
+static int
+savedXRConstant(DECL_LD wic_state *state, word w)
+{ word key = w;
+  unsigned int id;
 
   assert(tag(w) == TAG_ATOM);		/* Only functor_t and atom_t */
+  assert((w&0x3));			/* Cannot conflict with pointers */
 
-  if ( !(rc=savedXR(state, (void *)(w|0x1))) && isAtom(w) )
-  { DEBUG(MSG_QLF_XR, Sdprintf("REG: %s\n", stringAtom(w)));
-    PL_register_atom(w);
+  if ( (id = (unsigned int)lookupHTable(state->savedXRTable, key)) )
+  { IOSTREAM *fd = state->wicFd;
+
+    Sputc(XR_REF, fd);
+    qlfPutUInt32(id, fd);
+
+    succeed;
+  } else
+  { id = ++state->savedXRTableId;
+    addNewHTable(state->savedXRTable, key, id);
+    if ( isAtom(w) )
+    { DEBUG(MSG_QLF_XR, Sdprintf("REG: %s\n", stringAtom(w)));
+      PL_register_atom(word2atom(w));
+    }
   }
 
-  return rc;
+  fail;
 }
 
 
 static int XRNullPointer = 0;
 
+#define savedXRPointer(state, p) LDFUNC(savedXRPointer, state, p)
+
 static inline int
-savedXRPointer(wic_state *state, void *p)
-{ assert(((word)p & 0x1) == 0);
+savedXRPointer(DECL_LD wic_state *state, void *p)
+{ assert((ptr2word(p)&0x1) == 0);
 
   if ( !p )
-  { return savedXR(state, &XRNullPointer);
-  }
+    return savedXR(state, &XRNullPointer);
 
   return savedXR(state, p);
 }
@@ -2371,10 +2365,6 @@ saveXR(DECL_LD wic_state *state, word xr)
   if ( isTaggedInt(xr) )		/* TBD: switch */
   { Sputc(XR_INT, fd);
     qlfPutInt64(valInt(xr), fd);
-    return;
-  } else if ( isBignum(xr) )
-  { Sputc(XR_INT, fd);
-    qlfPutInt64(valBignum(xr), fd);
     return;
   } else if ( isFloat(xr) )
   { Sputc(XR_FLOAT, fd);
@@ -2413,7 +2403,7 @@ saveXR(DECL_LD wic_state *state, word xr)
   if ( isAtom(xr) )
   { DEBUG(MSG_QLF_XR,
 	  Sdprintf("XR(%d) = '%s'\n", state->savedXRTableId, stringAtom(xr)));
-    putAtom(state, xr);
+    putAtom(state, word2atom(xr));
     return;
   }
 
@@ -2423,7 +2413,8 @@ saveXR(DECL_LD wic_state *state, word xr)
 
 static void
 saveXRBlobType(wic_state *state, PL_blob_t *type)
-{ IOSTREAM *fd = state->wicFd;
+{ GET_LD
+  IOSTREAM *fd = state->wicFd;
 
   if ( savedXRPointer(state, type) )
     return;
@@ -2465,7 +2456,7 @@ saveXRFunctor(DECL_LD wic_state *state, functor_t f)
     return;
 
   if ( state->idMap &&
-       (mapped = (functor_t)lookupHTable(state->idMap, (void*)f)) )
+       (mapped = (functor_t)lookupHTable(state->idMap, (table_key_t)f)) )
     f = mapped;
 
   fdef = valueFunctor(f);
@@ -2758,6 +2749,10 @@ saveWicClause(wic_state *state, Clause clause)
   ep = bp + clause->code_size;
   init_wlabels(&lstate);
 
+  DEBUG(MSG_QLF_PREDICATE,
+	Sdprintf("Saving %d-th clause of %s\n",
+		 clauseNo(clause, 0), predicateName(clause->predicate)));
+
   while( bp < ep )
   { Code si = bp;				/* start instruction */
     unsigned int op = decode(*bp++);
@@ -2767,62 +2762,39 @@ saveWicClause(wic_state *state, Clause clause)
     emit_wlabels(&lstate, si, fd);
 
     switch(op)
-    { { int64_t v;
+    { int64_t v;
+      int vop;
 
-	case H_SMALLINT:
-	  v = valInt(*bp++);
-	  goto vh_int;
-#if SIZEOF_VOIDP == 4
-	case H_INT64:
-	{ Word p = (Word)&v;
-	  cpInt64Data(p, bp);
-	  goto vh_int;
+      case H_SMALLINT:
+	vop = V_H_INTEGER;
+	goto common_smallint;
+      case B_SMALLINT:
+	vop = V_B_INTEGER;
+	goto common_smallint;
+      case A_INTEGER:
+	vop = V_A_INTEGER;
+      common_smallint:
+	v = (scode)*bp++;
+#if CODES_PER_WORD > 1
+	goto vh_int;
+      case H_SMALLINTW:
+	vop = V_H_INTEGER;
+	goto common_smallintw;
+      case B_SMALLINTW:
+	vop = V_B_INTEGER;
+	goto common_smallintw;
+      case A_INTEGERW:
+	vop = V_A_INTEGER;
+      common_smallintw:
+	{ word w;
+	  bp = code_get_word(bp, &w);
+	  v = (sword)w;
 	}
+      vh_int:
 #endif
-	case H_INTEGER:
-	  v = (intptr_t)*bp++;
-	vh_int:
-	  qlfPutUInt32(V_H_INTEGER, fd);
-	  qlfPutInt64(v, fd);
-	  continue;
-      }
-      { int64_t v;
-
-	case B_SMALLINT:
-	  v = valInt(*bp++);
-	  goto vb_int;
-#if SIZEOF_VOIDP == 4
-	case B_INT64:
-	{ Word p = (Word)&v;
-	  cpInt64Data(p, bp);
-	  goto vb_int;
-	}
-#endif
-	case B_INTEGER:
-	  v = (intptr_t)*bp++;
-	vb_int:
-	  qlfPutUInt32(V_B_INTEGER, fd);
-	  qlfPutInt64(v, fd);
-	  continue;
-      }
-      { int64_t v;
-
-#if SIZEOF_VOIDP == 4
-	case A_INT64:
-	{ Word p = (Word)&v;
-	  cpInt64Data(p, bp);
-	  goto va_int;
-	}
-#endif
-	case A_INTEGER:
-	  v = (intptr_t)*bp++;
-#if SIZEOF_VOIDP == 4
-	va_int:
-#endif
-	  qlfPutUInt32(V_A_INTEGER, fd);
-	  qlfPutInt64(v, fd);
-	  continue;
-      }
+	qlfPutUInt32(vop, fd);
+	qlfPutInt64(v, fd);
+	continue;
     }
 
     qlfPutUInt32(op, fd);
@@ -2831,12 +2803,12 @@ saveWicClause(wic_state *state, Clause clause)
     for(n=0; ats[n]; n++)
     { switch(ats[n])
       { case CA1_PROC:
-	{ Procedure p = (Procedure) *bp++;
+	{ Procedure p = code2ptr(Procedure, *bp++);
 	  saveXRProc(state, p);
 	  break;
 	}
 	case CA1_MODULE:
-	{ Module m = (Module) *bp++;	/* can be NULL, see I_CALLATMV */
+	{ Module m = code2ptr(Module, *bp++);	/* can be NULL, see I_CALLATMV */
 	  saveXRModule(state, m);
 	  break;
 	}
@@ -2851,7 +2823,7 @@ saveWicClause(wic_state *state, Clause clause)
 	  break;
 	}
 	case CA1_DATA:
-	{ word xr = (word) *bp++;
+	{ word xr = code2word(*bp++);
 	  saveXR(state, xr);
 	  break;
 	}
@@ -2862,7 +2834,7 @@ saveWicClause(wic_state *state, Clause clause)
 	  break;
 	}
 	case CA1_INTEGER:
-	{ qlfPutInt64(*bp++, fd);
+	{ qlfPutInt64((scode)*bp++, fd);
 	  break;
 	}
 	case CA1_VAR:
@@ -2872,48 +2844,50 @@ saveWicClause(wic_state *state, Clause clause)
 	  qlfPutInt64(VAR_OFFSET(var), fd);
 	  break;
 	}
-	case CA1_INT64:
-	{ int64_t val;
-	  Word p = (Word)&val;
-
-	  cpInt64Data(p, bp);
-	  qlfPutInt64(val, fd);
+	case CA1_WORD:
+	{ word w;
+	  bp = code_get_word(bp, &w);
+	  qlfPutInt64((sword)w, fd);
 	  break;
 	}
 	case CA1_FLOAT:
-	{ union
-	  { word w[WORDS_PER_DOUBLE];
-	    double f;
-	  } v;
-	  Word p = v.w;
-	  cpDoubleData(p, bp);
-	  qlfPutDouble(v.f, fd);
+	{ double val;
+	  static_assertion(sizeof(double)%sizeof(code) == 0);
+	  memcpy(&val, bp, sizeof(double));
+	  bp = addPointer(bp, sizeof(double));
+	  qlfPutDouble(val, fd);
 	  break;
 	}
 	case CA1_STRING:
-	{ word m = *bp;
-	  char *s = (char *)++bp;
+	{ word m;
+	  Word data;
+
+	  bp = code_get_indirect(bp, &m, &data);
+
+	  char *s = (char *)data;
 	  size_t wn = wsizeofInd(m);
 	  size_t l = wn*sizeof(word) - padHdr(m);
-	  bp += wn;
 
 	  if ( *s == 'B' )
 	  { qlfPutInt64(l, fd);
 	    while( l-- > 0 )
 	      Sputc(*s++&0xff, fd);
 	  } else
-	  { pl_wchar_t *w = (pl_wchar_t*)s + 1;
+	  { const pl_wchar_t *w = (const pl_wchar_t*)s + 1;
+	    l = l/sizeof(*w) - 1;
+	    const pl_wchar_t *e = w+l;
 	    IOENC oenc = fd->encoding;
 
 	    assert(*s == 'W');
-	    l /= sizeof(pl_wchar_t);
-	    l--;
 
 	    qlfPutInt64(l, fd);
 	    Sputc('W', fd);
 	    fd->encoding = ENC_UTF8;
-	    for( ; l-- > 0; w++)
-	    { Sputcode(*w, fd);
+	    while(w < e)
+	    { int chr;
+
+	      w = get_wchar(w, &chr);
+	      Sputcode(chr, fd);
 	    }
 	    fd->encoding = oenc;
 	  }
@@ -3267,7 +3241,7 @@ open_qlf_file(const char *file, IOSTREAM **sp)
 #define qlfInfo(file, cversion, minload, fversion, csig, fsig, files0, flags) \
 	LDFUNC(qlfInfo, file, cversion, minload, fversion, csig, fsig, files0, flags)
 
-static word
+static foreign_t
 qlfInfo(DECL_LD const char *file,
 	term_t cversion, term_t minload, term_t fversion,
 	term_t csig, term_t fsig,
@@ -3276,7 +3250,7 @@ qlfInfo(DECL_LD const char *file,
   int lversion;
   int nqlf, i;
   size_t *qlfstart = NULL;
-  word rval = FALSE;
+  foreign_t rval = FALSE;
   wic_state state;
 
   memset(&state, 0, sizeof(state));
@@ -3728,16 +3702,16 @@ qlfStartModule(DECL_LD wic_state *state, Module m)
   }
 
   DEBUG(MSG_QLF_SECTION, Sdprintf("MODULE %s\n", stringAtom(m->name)));
-  for_table(m->public, name, value,
-	    { functor_t f = (functor_t)name;
+  FOR_TABLE(m->public, name, value)
+  { functor_t f = (functor_t)name;
 
-	      DEBUG(MSG_QLF_EXPORT,
-		    Sdprintf("Exported %s/%d\n",
-			     stringAtom(nameFunctor(f)),
-			     arityFunctor(f)));
-	      Sputc('E', fd);
-	      saveXRFunctor(state, f);
-	    })
+    DEBUG(MSG_QLF_EXPORT,
+	  Sdprintf("Exported %s/%d\n",
+		   stringAtom(nameFunctor(f)),
+		   arityFunctor(f)));
+    Sputc('E', fd);
+    saveXRFunctor(state, f);
+  }
 
   Sputc('X', fd);
 
@@ -4044,34 +4018,37 @@ PRED_IMPL("$close_wic", 0, close_wic, 0)
   fail;
 }
 
+/* TBD: The mapping table maps atom->atom or functor->functor and can
+ * thus be uintptr_t */
+
 static void
-freeMapping(void *name, void *value)
+freeMapping(table_key_t name, table_value_t value)
 { word id_from = (word)name;
   word id_to   = (word)value;
 
-  if ( isAtom(id_from) ) PL_unregister_atom(id_from);
-  if ( isAtom(id_to) )   PL_unregister_atom(id_to);
+  if ( isAtom(id_from) ) PL_unregister_atom(word2atom(id_from));
+  if ( isAtom(id_to) )   PL_unregister_atom(word2atom(id_to));
 }
 
 static int
-get_id(term_t t, void **id)
+get_id(term_t t, Word id)
 { GET_LD
   atom_t a;
   functor_t f;
 
   if ( PL_get_atom(t, &a) )
-  { *id = (void *)a;
+  { *id = a;
   } else if ( PL_get_functor(t, &f) )
   { if ( f == FUNCTOR_colon2 )
     { Procedure proc;
 
       if ( get_procedure(t, &proc, 0, GP_FINDHERE|GP_EXISTENCE_ERROR) )
-      { *id = (void *)proc->definition;
+      { *id = (word)(uintptr_t)proc->definition;
       } else
       { return FALSE;
       }
     }
-    *id = (void *)f;
+    *id = f;
   } else
   { return PL_type_error("identifier", t);
   }
@@ -4092,14 +4069,14 @@ PRED_IMPL("$map_id", 2, map_id, 0)
   wic_state *state;
 
   if ( (state=LD->qlf.write_state) )
-  { void *id_from, *id_to, *old;
+  { word id_from, id_to, old;
 
     if ( !get_id(A1, &id_from) ||
 	 !get_id(A2, &id_to) )
       return FALSE;
 
-    if ( (isAtom((word)id_from)    && !isAtom((word)id_to)) ||
-	 (isFunctor((word)id_from) && !isFunctor((word)id_to)) )
+    if ( (isAtom(id_from)    && !isAtom(id_to)) ||
+	 (isFunctor(id_from) && !isFunctor(id_to)) )
       return PL_permission_error("map", "identifier", A1);
 
     if ( !state->idMap )
@@ -4107,16 +4084,16 @@ PRED_IMPL("$map_id", 2, map_id, 0)
       state->idMap->free_symbol = freeMapping;
     }
 
-    if ( (old=lookupHTable(state->idMap, id_from)) )
+    if ( (old=(word)lookupHTable(state->idMap, (table_key_t)id_from)) )
     { if ( old == id_to )
 	return TRUE;
       else
 	return PL_permission_error("map", "identifier", A1);
     } else
-    { addNewHTable(state->idMap, id_from, id_to);
-      if ( isAtom((word)id_from) )
-      { PL_register_atom((atom_t)id_from);
-	PL_register_atom((atom_t)id_to);
+    { addNewHTable(state->idMap, (table_key_t)id_from, (table_value_t)id_to);
+      if ( isAtom(id_from) )
+      { PL_register_atom(word2atom(id_from));
+	PL_register_atom(word2atom(id_to));
       }
       return TRUE;
     }
@@ -4131,13 +4108,13 @@ PRED_IMPL("$unmap_id", 1, unmap_id, 0)
   wic_state *state;
 
   if ( (state=LD->qlf.write_state) )
-  { void *id_from;
+  { word id_from;
 
     if ( !get_id(A1, &id_from) )
       return FALSE;
 
     if ( state->idMap )
-      deleteHTable(state->idMap, id_from);
+      deleteHTable(state->idMap, (table_key_t)id_from);
   }
 
   return TRUE;
@@ -4583,7 +4560,7 @@ PL_qlf_get_atom(IOSTREAM *s, atom_t *a)
     return FALSE;
   }
 
-  *a = w;
+  *a = word2atom(w);
   return TRUE;
 }
 

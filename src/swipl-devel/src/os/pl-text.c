@@ -186,7 +186,7 @@ ui64toa(uint64_t val, char *out, int base)
   static const char digits[] = "0123456789abcdef";
 
   do
-  { int rem = val % base;
+  { int rem = (int)(val % base);
 
     *--ptr = digits[rem];
     val /= base;
@@ -219,7 +219,7 @@ PL_get_text(DECL_LD term_t l, PL_chars_t *text, int flags)
   if ( (flags & CVT_ATOM) && isAtom(w) )
   { if ( isNil(w) && (flags&CVT_LIST) )
       goto case_list;
-    if ( !get_atom_text(w, text) )
+    if ( !get_atom_text(word2atom(w), text) )
       goto maybe_write;
   } else if ( (flags & CVT_STRING) && isString(w) )
   { if ( !get_string_text(w, text) )
@@ -243,7 +243,7 @@ PL_get_text(DECL_LD term_t l, PL_chars_t *text, int flags)
       }
 #ifdef O_BIGNUM
       case V_MPZ:
-      { size_t sz = (double)mpz_sizeinbase(n.value.mpz, 2)*log(10)/log(2)*1.2 + 2;
+      { size_t sz = (size_t)((double)mpz_sizeinbase(n.value.mpz, 2)*log(10)/log(2)*1.2 + 2);
 	Buffer b  = findBuffer(BUF_STACK);
 
 	if ( !growBuffer(b, sz) )
@@ -257,8 +257,9 @@ PL_get_text(DECL_LD term_t l, PL_chars_t *text, int flags)
 	break;
       }
       case V_MPQ:
-      { size_t sz = (double)( mpz_sizeinbase(mpq_numref(n.value.mpq), 2) +
-			      mpz_sizeinbase(mpq_denref(n.value.mpq), 2) + 4 ) * log(10)/log(2) * 1.2;
+      { size_t sz = (size_t)((double)( mpz_sizeinbase(mpq_numref(n.value.mpq), 2) +
+				       mpz_sizeinbase(mpq_denref(n.value.mpq), 2) + 4 ) *
+			     log(10)/log(2) * 1.2);
 	Buffer b  = findBuffer(BUF_STACK);
 
 	if ( !growBuffer(b, sz) )
@@ -458,9 +459,8 @@ error:
 
 
 atom_t
-textToAtom(PL_chars_t *text)
-{ GET_LD
-  atom_t a;
+textToAtom(DECL_LD PL_chars_t *text)
+{ atom_t a;
   int rc;
 
   PL_STRINGS_MARK();
@@ -480,24 +480,23 @@ textToAtom(PL_chars_t *text)
 
 
 word
-textToString(PL_chars_t *text)
-{ GET_LD
-  atom_t a;
+textToString(DECL_LD PL_chars_t *text)
+{ word w;
   int rc;
 
   PL_STRINGS_MARK();
   if ( (rc=PL_canonicalise_text(text)) == TRUE )
   { if ( text->encoding == ENC_ISO_LATIN_1 )
-      a = globalString(text->length, text->text.t);
+      w = globalString(text->length, text->text.t);
     else
-      a = globalWString(text->length, text->text.w);
+      w = globalWString(text->length, text->text.w);
   } else
   { text_error(text, rc);
-    a = 0;
+    w = 0;
   }
   PL_STRINGS_RELEASE();
 
-  return a;
+  return w;
 }
 
 
@@ -526,7 +525,7 @@ unify_text(DECL_LD term_t term, term_t tail, PL_chars_t *text, int type)
     { atom_t a = textToAtom(text);
 
       if ( a )
-      { int rval = _PL_unify_atomic(term, a);
+      { int rval = PL_unify_atomic(term, a);
 
 	PL_unregister_atom(a);
 	return rval;
@@ -541,7 +540,7 @@ unify_text(DECL_LD term_t term, term_t tail, PL_chars_t *text, int type)
       { if ( hasGlobalSpace(globalSpaceRequirement(text)) ||
 	     PL_from_stack_text(text, 0) )
 	{ if ( (w = textToString(text)) )
-	    return _PL_unify_atomic(term, w);
+	    return PL_unify_atomic(term, w);
 	}
 
 	return FALSE;
@@ -897,7 +896,7 @@ PL_demote_text(PL_chars_t *text, int flags)
 	    return text_representation_error(text, ENC_ISO_LATIN_1);
 	  return FALSE;
 	}
-	*t++ = *s++ & 0xff;
+	*t++ = (char)(*s++ & 0xff);
       }
       *t = EOS;
 
@@ -915,7 +914,7 @@ PL_demote_text(PL_chars_t *text, int flags)
       while(f<e)
       { if ( *f > 0xff )
 	  goto reperr;
-	*t++ = *f++ & 0xff;
+	*t++ = (char)(*f++ & 0xff);
       }
       *t = EOS;
       text->encoding = ENC_ISO_LATIN_1;
@@ -929,7 +928,7 @@ PL_demote_text(PL_chars_t *text, int flags)
 	{ unfindBuffer(b, BUF_STACK);
 	  goto reperr;
 	}
-	addBuffer(b, *s&0xff, char);
+	addBuffer(b, (char)(*s&0xff), char);
       }
       addBuffer(b, EOS, char);
 
@@ -1303,7 +1302,7 @@ PL_canonicalise_text(PL_chars_t *text)
 
 	    for(t=to; s<e;)
 	    { PL_utf8_code_point(&s, e, &chr);
-	      *t++ = chr;
+	      *t++ = (char)chr;
 	    }
 	    *t = EOS;
 
@@ -1480,14 +1479,14 @@ to UTF-8 for ENC_ASCII, ENC_ISO_LATIN_1, ENC_WCHAR and ENC_ANSI.
 static void
 addUTF16Buffer_unit(Buffer b, int c, IOENC enc)
 { if ( native_byte_order(enc) )
-  { addBuffer(b, c, unsigned short);
+  { addBuffer(b, (unsigned short)c, unsigned short);
   } else
   { union
     { unsigned short s;
       char  c[2];
     } swap;
 
-    swap.s = c;
+    swap.s = (unsigned short)c;
     char t = swap.c[0];
     swap.c[0] = swap.c[1];
     swap.c[1] = t;

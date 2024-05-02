@@ -232,11 +232,11 @@ static int
 compare_dict_entry(const void *a, const void *b, void *arg)
 { Word p = (Word)a+1;
   Word q = (Word)b+1;
-  WITH_LD(arg)
-  { deRef(p);
-    deRef(q);
-  }
-  return (*p<*q ? -1 : *p>*q ? 1 : 0);
+
+  deRef(p);
+  deRef(q);
+
+  return SCALAR_TO_CMP(*p, *q);
 }
 
 
@@ -759,7 +759,7 @@ PL_get_dict_ex(term_t data, term_t tag, term_t dict, int flags)
       assert(rc == -2);
       Undo(m);
       return ( (ex = PL_new_term_ref()) &&
-	       _PL_unify_atomic(ex, dupl) &&
+	       PL_unify_atomic(ex, dupl) &&
 	       PL_error(NULL, 0, NULL, ERR_DUPLICATE_KEY, ex) );
     }
   }					/* TBD: {name:value, ...} */
@@ -803,7 +803,7 @@ cmp_dict_index(DECL_LD const int *ip1, const int *ip2, cmp_dict_index_data *ctx)
   } else
   { if ( isAtom(*p) )
     { if ( isAtom(*q) )
-	rc = compareAtoms(*p, *q);
+	rc = compareAtoms(word2atom(*p), word2atom(*q));
       else
 	rc = CMP_GREATER;
     } else
@@ -1262,7 +1262,7 @@ pl_get_dict(term_t PL__t0, int PL__ac, int ex, control_t PL__ctx)
 	  deRef2(&f->arguments[i+1], np);	/* TBD: check type */
 	  if ( unify_ptrs(&f->arguments[i], valTermRef(A3),
 			  ALLOW_GC|ALLOW_SHIFT) &&
-	       _PL_unify_atomic(A1, *np) )
+	       PL_unify_atomic(A1, *np) )
 	  { PL_close_foreign_frame(fid);
 
 	    if ( i+2 < arity )

@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2022, University of Amsterdam
+    Copyright (c)  2011-2024, University of Amsterdam
                               VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -117,29 +117,35 @@ isquote(int chr)
 { return chr && strchr("'`\"", chr) != NULL;
 }
 
-static int
-fupper(int chr)
-{
-#if SIZEOF_WINT_T == 2
-  if ( chr > 0xffff ) return -1;
-#endif
-  return iswlower(chr) ? (int)towupper(chr) : -1;
-}
 
-static int
-flower(int chr)
-{
-#if SIZEOF_WINT_T == 2
-  if ( chr > 0xffff ) return -1;
-#endif
-  return iswupper(chr) ? (int)towlower(chr) : -1;
-}
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Character  based  case conversion.   This  is  not well  supported  on
+Windows as  `wint_t` is only  16 bits.   We use the  string conversion
+functions instead.   Now, in theory,  the case converted version  of a
+Unicode character can  have multiple characters.  For now,  we print a
+warning.  This does not seem to happen on Windows.  To test, use
+
+    ?- forall(between(0, 0x10ffff, X), code_type(X, to_lower(U))).
+    ?- forall(between(0, 0x10ffff, X), code_type(X, to_upper(L))).
+
+The fupper() and flower() function only return a value if the input is
+lower/upper.   We have  the same  `wint_t` problem  here and  assume a
+character is  not lower if `ftoupper(c)  != c`.  This too  is somewhat
+dubious.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static int
 ftoupper(int chr)
 {
 #if SIZEOF_WINT_T == 2
-  if ( chr > 0xffff ) return chr;
+  wchar_t tmp[4];
+  int upr;
+
+  *put_wchar(tmp, chr) = 0;
+  _wcsupr_s(tmp, sizeof(tmp)/sizeof(wchar_t));
+  if ( *get_wchar(tmp, &upr) )
+    Sdprintf("Oops, upper for u%x has multiple characters\n");
+  return upr;
 #endif
   return towupper(chr);
 }
@@ -148,9 +154,36 @@ static int
 ftolower(int chr)
 {
 #if SIZEOF_WINT_T == 2
-  if ( chr > 0xffff ) return chr;
+  wchar_t tmp[4];
+  int lwr;
+
+  *put_wchar(tmp, chr) = 0;
+  _wcslwr_s(tmp, sizeof(tmp)/sizeof(wchar_t));
+  if ( *get_wchar(tmp, &lwr) )
+    Sdprintf("Oops, lower for u%x has multiple characters\n");
+  return lwr;
 #endif
   return towlower(chr);
+}
+
+static int
+fupper(int chr)
+{
+#if SIZEOF_WINT_T == 2
+  int upr = ftoupper(chr);
+  return upr == chr ? -1 : upr;
+#endif
+  return iswlower(chr) ? (int)towupper(chr) : -1;
+}
+
+static int
+flower(int chr)
+{
+#if SIZEOF_WINT_T == 2
+  int lwr = ftoupper(chr);
+  return lwr == chr ? -1 : lwr;
+#endif
+  return iswupper(chr) ? (int)towlower(chr) : -1;
 }
 
 static int
@@ -547,6 +580,34 @@ get_chr_from_text(const PL_chars_t *t, size_t *index)
 #define modify_case_atom(in, out, down, text_type) \
 	LDFUNC(modify_case_atom, in, out, down, text_type)
 
+static void
+modify_case_latin_1_to_wide(PL_chars_t *tin, PL_chars_t *tout, Buffer b, int down)
+{ const unsigned char *in = (const unsigned char*)tin->text.t;
+  PL_free_text(tout);
+  initBuffer(b);
+
+  if ( down )
+  { for(size_t i=0; i<tin->length; i++)
+    { wint_t c = ftolower(in[i]);
+
+      addWcharBuffer(b, c);
+    }
+  } else				/* upcase */
+  { for(size_t i=0; i<tin->length; i++)
+    { wint_t c = ftoupper(in[i]);
+
+      addWcharBuffer(b, c);
+    }
+  }
+
+  tout->storage   = PL_CHARS_HEAP;
+  tout->text.w    = baseBuffer(b, wchar_t);
+  tout->length    = entriesBuffer(b, wchar_t);
+  tout->encoding  = ENC_WCHAR;
+  tout->canonical = FALSE;
+}
+
+
 static foreign_t
 modify_case_atom(DECL_LD term_t in, term_t out, int down, int text_type)
 { PL_chars_t tin, tout;
@@ -595,16 +656,22 @@ modify_case_atom(DECL_LD term_t in, term_t out, int down, int text_type)
 
       if ( down )
       { for(i=0; i<tin.length; i++)
-	{ wint_t c = towlower(in[i]);
+	{ wint_t c = ftolower(in[i]);
 
-	  assert(c <= 0xff);
+	  if ( c > 0xff )
+	  { modify_case_latin_1_to_wide(&tin, &tout, (Buffer)&b, down);
+	    break;
+	  }
 	  tout.text.t[i] = (char)c;
 	}
       } else				/* upcase */
       { for(i=0; i<tin.length; i++)
-	{ wint_t c = towupper(in[i]);
+	{ wint_t c = ftoupper(in[i]);
 
-	  assert(c <= 0xff);
+	  if ( c > 0xff )
+	  { modify_case_latin_1_to_wide(&tin, &tout, (Buffer)&b, down);
+	    break;
+	  }
 	  tout.text.t[i] = (char)c;
 	}
       }
@@ -639,7 +706,7 @@ modify_case_atom(DECL_LD term_t in, term_t out, int down, int text_type)
     rc = PL_unify_text(out, 0, &tout, text_type);
     PL_free_text(&tin);
     PL_free_text(&tout);
-    if ( tin.encoding != ENC_ISO_LATIN_1 )
+    if ( tout.encoding != ENC_ISO_LATIN_1 )
       discardBuffer(&b);
 
     return rc;
@@ -746,7 +813,7 @@ write_normalize_space(IOSTREAM *out, term_t in)
 static
 PRED_IMPL("normalize_space", 2, normalize_space, 0)
 { redir_context ctx;
-  word rc;
+  foreign_t rc;
 
   if ( (rc = setupOutputRedirect(A1, &ctx, FALSE)) )
   { if ( (rc = write_normalize_space(ctx.stream, A2)) )

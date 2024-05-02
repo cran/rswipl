@@ -46,6 +46,7 @@
 #include "pl-gc.h"
 #include "pl-attvar.h"
 #include "pl-inline.h"
+#include "pl-comp.h"
 #undef LD
 #define LD LOCAL_LD
 
@@ -61,7 +62,7 @@ static mpz_t MPZ_MAX_TAGGED;
 static mpz_t MPZ_MIN_PLINT;		/* Prolog int64_t integers */
 static mpz_t MPZ_MAX_PLINT;
 static mpz_t MPZ_MAX_UINT64;
-#if SIZEOF_LONG	< SIZEOF_VOIDP
+#if SIZEOF_LONG	< SIZEOF_WORD
 static mpz_t MPZ_MIN_LONG;		/* Prolog int64_t integers */
 static mpz_t MPZ_MAX_LONG;
 #endif
@@ -589,157 +590,126 @@ the global stack.
 Normally called through the inline get_integer() function.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+static void
+get_mpz_from_stack(Word p, mpz_t mpz)
+{
+#if O_GMP
+  mpz->_mp_size  = mpz_stack_size(*p++);
+  mpz->_mp_alloc = 0;
+  mpz->_mp_d     = (mp_limb_t*) p;
+#elif O_BF
+  slimb_t len = mpz_stack_size(*p++);
+  mpz->ctx	 = NULL;
+  mpz->expn = (slimb_t)*p++;
+  mpz->sign = len < 0;
+  mpz->len  = abs(len);
+  mpz->tab  = (limb_t*)p;
+#endif
+}
+
+static void
+get_mpq_from_stack(Word p, mpq_t mpq)
+{ mpz_t num, den;
+  size_t num_size;
+
+#if O_GMP
+  num->_mp_size  = mpz_stack_size(*p++);
+  num->_mp_alloc = 0;
+  num->_mp_d     = (mp_limb_t*) (p+1);
+  num_size       = mpz_wsize(num, NULL);
+  den->_mp_size  = mpz_stack_size(*p++);
+  den->_mp_alloc = 0;
+  den->_mp_d     = (mp_limb_t*) (p+num_size);
+#elif O_BF
+  slimb_t len = mpz_stack_size(*p++);
+  num->ctx    = NULL;
+  num->alloc  = 0;
+  num->expn   = (slimb_t)*p++;
+  num->sign   = len < 0;
+  num->len    = abs(len);
+  num->tab    = (limb_t*)(p+2);
+  num_size    = mpz_wsize(num, NULL);
+  den->ctx    = NULL;
+  den->alloc  = 0;
+  den->sign   = 0;			/* canonical MPQ */
+  den->len    = mpz_stack_size(*p++);
+  den->expn   = (slimb_t)*p++;
+  den->tab    = (limb_t*) (p+num_size);
+#endif
+  *mpq_numref(mpq) = num[0];
+  *mpq_denref(mpq) = den[0];
+}
+
 void
 get_bigint(word w, Number n)
-{ GET_LD
-  Word p = addressIndirect(w);
-  size_t wsize = wsizeofInd(*p);
+{ Word p = addressIndirect(w);
 
   DEBUG(0, assert(storage(w) != STG_INLINE));
 
-  p++;
-  if ( wsize == WORDS_PER_INT64 )
-  { n->type = V_INTEGER;
-    memcpy(&n->value.i, p, sizeof(int64_t));
-  } else
-  { n->type = V_MPZ;
-
-#if O_GMP
-    n->value.mpz->_mp_size  = mpz_stack_size(*p++);
-    n->value.mpz->_mp_alloc = 0;
-    n->value.mpz->_mp_d     = (mp_limb_t*) p;
-#elif O_BF
-    slimb_t len = mpz_stack_size(*p++);
-    n->value.mpz->ctx	 = NULL;
-    n->value.mpz->expn = (slimb_t)*p++;
-    n->value.mpz->sign = len < 0;
-    n->value.mpz->len  = abs(len);
-    n->value.mpz->tab  = (limb_t*)p;
-#endif
-  }
+  p++;				/* bits of indirect */
+  n->type = V_MPZ;
+  get_mpz_from_stack(p, n->value.mpz);
 }
 
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Get a rational (int or non-int-rational) from a Prolog word, knowing the
+word is not an inlined (tagged) integer.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 void
 get_rational_no_int(DECL_LD word w, Number n)
 { Word p = addressIndirect(w);
-  size_t wsize = wsizeofInd(*p);
 
   p++;
-  if ( wsize == WORDS_PER_INT64 )
-  { n->type = V_INTEGER;
-    memcpy(&n->value.i, p, sizeof(int64_t));
-  } else if ( (*p&MP_RAT_MASK) )
-  { mpz_t num, den;
-    size_t num_size;
-
-    n->type = V_MPQ;
-#if O_GMP
-    num->_mp_size  = mpz_stack_size(*p++);
-    num->_mp_alloc = 0;
-    num->_mp_d     = (mp_limb_t*) (p+1);
-    num_size       = mpz_wsize(num, NULL);
-    den->_mp_size  = mpz_stack_size(*p++);
-    den->_mp_alloc = 0;
-    den->_mp_d     = (mp_limb_t*) (p+num_size);
-#elif O_BF
-    slimb_t len = mpz_stack_size(*p++);
-    num->ctx	 = NULL;
-    num->alloc = 0;
-    num->expn  = (slimb_t)*p++;
-    num->sign  = len < 0;
-    num->len   = abs(len);
-    num->tab   = (limb_t*)(p+2);
-    num_size   = mpz_wsize(num, NULL);
-    den->ctx   = NULL;
-    den->alloc = 0;
-    den->sign  = 0;			/* canonical MPQ */
-    den->len   = mpz_stack_size(*p++);
-    den->expn  = (slimb_t)*p++;
-    den->tab   = (limb_t*) (p+num_size);
-#endif
-    *mpq_numref(n->value.mpq) = num[0];
-    *mpq_denref(n->value.mpq) = den[0];
+  if ( (*p&MP_RAT_MASK) )
+  { n->type = V_MPQ;
+    get_mpq_from_stack(p, n->value.mpq);
   } else
   { n->type = V_MPZ;
-
-#if O_GMP
-    n->value.mpz->_mp_size  = mpz_stack_size(*p++);
-    n->value.mpz->_mp_alloc = 0;
-    n->value.mpz->_mp_d     = (mp_limb_t*) p;
-#elif O_BF
-    slimb_t len = mpz_stack_size(*p++);
-    n->value.mpz->ctx	 = NULL;
-    n->value.mpz->expn = (slimb_t)*p++;
-    n->value.mpz->sign = len < 0;
-    n->value.mpz->len  = abs(len);
-    n->value.mpz->tab  = (limb_t*)p;
-#endif
+    get_mpz_from_stack(p, n->value.mpz);
   }
 }
 
 
 Code
 get_mpz_from_code(Code pc, mpz_t mpz)
-{ size_t wsize = wsizeofInd(*pc);
+{ word m;
+  Word data;
+  pc = code_get_indirect(pc, &m, &data);
 
-  pc++;
-#if O_GMP
-  mpz->_mp_size  = mpz_stack_size(*pc);
-  mpz->_mp_alloc = 0;
-  mpz->_mp_d     = (mp_limb_t*)(pc+1);
-#elif O_BF
-  slimb_t len = mpz_stack_size(*pc);
-  mpz->ctx   = NULL;
-  mpz->alloc = 0;
-  mpz->expn  = (slimb_t)pc[1];
-  mpz->sign  = len < 0;
-  mpz->len   = abs(len);
-  mpz->tab   = (limb_t*)pc+2;
-#endif
+  get_mpz_from_stack(data, mpz);
 
-  return pc+wsize;
+  return pc;
 }
+
 
 Code
 get_mpq_from_code(Code pc, mpq_t mpq)
-{ Word p = pc;
-  size_t wsize = wsizeofInd(*p);
-  p++;
-  mpz_t num, den;
+{ word m;
+  Word data;
+  pc = code_get_indirect(pc, &m, &data);
 
-#if O_GMP
-  int num_size = mpz_stack_size(*p++);
-  int den_size = mpz_stack_size(*p++);
-  size_t limpsize = sizeof(mp_limb_t) * abs(num_size);
-  num->_mp_size   = num_size;
-  den->_mp_size   = den_size;
-  num->_mp_alloc  = 0;
-  den->_mp_alloc  = 0;
-  num->_mp_d = (mp_limb_t*)p;
-  p += (limpsize+sizeof(word)-1)/sizeof(word);
-  den->_mp_d = (mp_limb_t*)p;
-#elif O_BF
-  int num_size = mpz_stack_size(*p++);
-  num->ctx = NULL;
-  num->expn = *p++;
-  num->sign = num_size < 0;
-  num->len  = abs(num_size);
-  int den_size = mpz_stack_size(*p++);
-  size_t limpsize = sizeof(mp_limb_t) * abs(num_size);
-  den->ctx = NULL;
-  den->expn = *p++;
-  den->sign = den_size < 0;
-  den->len  = abs(den_size);
-  num->tab = (mp_limb_t*)p;
-  p += (limpsize+sizeof(word)-1)/sizeof(word);
-  den->tab = (mp_limb_t*)p;
-#endif
-  *mpq_numref(mpq) = num[0];
-  *mpq_denref(mpq) = den[0];
+  get_mpq_from_stack(data, mpq);
 
-  return pc+wsize+1;
+  return pc;
 }
+
+
+int
+get_int64(DECL_LD word w, int64_t *ip)
+{ if ( tagex(w) == (TAG_INTEGER|STG_INLINE) )
+  { *ip = valInt(w);
+    return TRUE;
+  } else if ( tagex(w) == (TAG_INTEGER|STG_GLOBAL) )
+  { number n;
+
+    get_bigint(w, &n);
+    return mpz_to_int64(n.value.mpz, ip);
+  } else
+    return FALSE;
+}
+
 
 
 		 /*******************************
@@ -881,8 +851,7 @@ by N bytes in big endian notation.
 
 char *
 loadMPZFromCharp(const char *data, Word r, Word *store)
-{ GET_LD
-  int size = 0;
+{ int size = 0;
   size_t limbsize;
   size_t wsize;
   int neg;
@@ -916,8 +885,7 @@ loadMPZFromCharp(const char *data, Word r, Word *store)
 
 char *
 loadMPQFromCharp(const char *data, Word r, Word *store)
-{ GET_LD
-  int num_size;
+{ int num_size;
   int den_size;
   size_t num_limbsize, num_wsize;
   size_t den_limbsize, den_wsize;
@@ -1209,7 +1177,7 @@ initGMP(void)
     mpz_init_set_si64(MPZ_MIN_PLINT, PLMININT);
     mpz_init_set_si64(MPZ_MAX_PLINT, PLMAXINT);
     mpz_init_max_uint(MPZ_MAX_UINT64, 64);
-#if SIZEOF_LONG < SIZEOF_VOIDP
+#if SIZEOF_LONG < SIZEOF_WORD
     mpz_init_set_si64(MPZ_MIN_LONG, LONG_MIN);
     mpz_init_set_si64(MPZ_MAX_LONG, LONG_MAX);
 #endif
@@ -1261,6 +1229,8 @@ cleanupGMP(void)
    as used  for clause indexing.   If the integer  is huge, we  do not
    want to use the whole thing.   Instead, we pick the dimensions, the
    first two and last limb of the content.
+
+   Note: p might be aligned at Code rather than Word.
  */
 
 word
@@ -1392,15 +1362,13 @@ without any knowledge of the represented data.
 #define put_mpz(at, mpz, flags) LDFUNC(put_mpz, at, mpz, flags)
 static int
 put_mpz(DECL_LD Word at, mpz_t mpz, int flags)
-{ int64_t v;
-
-  DEBUG(2,
+{ DEBUG(2,
 	{ char buf[256];
 	  Sdprintf("put_mpz(%s)\n",
 		   mpz_get_str(buf, 10, mpz));
 	});
 
-#if SIZEOF_LONG < SIZEOF_VOIDP
+#if SIZEOF_LONG < SIZEOF_WORD
   if ( mpz_cmp(mpz, MPZ_MIN_LONG) >= 0 &&
        mpz_cmp(mpz, MPZ_MAX_LONG) <= 0 )
 #else
@@ -1417,9 +1385,8 @@ put_mpz(DECL_LD Word at, mpz_t mpz, int flags)
     }
 
     *at = consInt(v);
+    assert(valInt(*at) == v);
     return TRUE;
-  } else if ( mpz_to_int64(mpz, &v) )
-  { return put_int64(at, v, flags);
   } else
   { return globalMPZ(at, mpz, flags);
   }
@@ -1436,6 +1403,28 @@ put_mpz(DECL_LD Word at, mpz_t mpz, int flags)
 */
 
 int
+put_int64(DECL_LD Word at, int64_t l, int flags)
+{ word r;
+
+  r = consInt(l);
+  if ( valInt(r) == l )
+  { *at = r;
+    return TRUE;
+  } else
+  {
+#ifdef O_BIGNUM
+    mpz_t mpz;
+
+    mpz_init_set_si64(mpz, l);
+    return globalMPZ(at, mpz, flags);
+#else
+    return LOCAL_OVERFLOW;
+#endif
+  }
+}
+
+
+int
 put_uint64(DECL_LD Word at, uint64_t l, int flags)
 { if ( (int64_t)l >= 0 )
   { return put_int64(at, l, flags);
@@ -1445,7 +1434,7 @@ put_uint64(DECL_LD Word at, uint64_t l, int flags)
     mpz_t mpz;
 
     mpz_init_set_uint64(mpz, l);
-    return put_mpz(at, mpz, flags);
+    return globalMPZ(at, mpz, flags);
 #else
     return LOCAL_OVERFLOW;
 #endif
@@ -1864,14 +1853,46 @@ cmp_q_q(mpq_t q1, mpq_t q2)
 
 static int
 cmp_z_i(mpz_t z1, int64_t i2)
-{ int t = mpz_cmp_si(z1,i2);
+{
+#if SIZEOF_LONG == 8
+  int t = mpz_cmp_si(z1,i2);
   return (t < 0) ? CMP_LESS : (t > 0);
+#else
+  if ( i2 >= LONG_MIN && i2 <= LONG_MAX )
+  { int t = mpz_cmp_si(z1,(long)i2);
+    return (t < 0) ? CMP_LESS : (t > 0);
+  } else
+  { mpz_t a;
+    mpz_init_set_si64(a, i2);
+    int t = cmp_z_z(z1, a);
+    mpz_clear(a);
+    return t;
+  }
+#endif
 }
 
 static int
 cmp_q_i(mpq_t q1, int64_t i2)
-{ int t = mpq_cmp_si(q1,i2,1);
+{
+#if SIZEOF_LONG == 8
+  int t = mpq_cmp_si(q1,i2,1);
   return (t < 0) ? CMP_LESS : (t > 0);
+#else
+  if ( i2 >= LONG_MIN && i2 <= LONG_MAX )
+  { int t = mpq_cmp_si(q1,(long)i2,1);
+    return (t < 0) ? CMP_LESS : (t > 0);
+  } else
+  { mpq_t qa;
+    mpz_t za;
+    mpq_init(qa);
+    mpz_init_set_si64(za, i2);
+    mpq_set_z(qa, za);
+    int t = cmp_q_q(q1, qa);
+    mpz_clear(za);
+    mpq_clear(qa);
+    return t;
+  }
+#endif
 }
 
 static int

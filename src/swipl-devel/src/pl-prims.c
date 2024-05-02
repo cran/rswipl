@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2023, University of Amsterdam
+    Copyright (c)  1985-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -697,7 +697,7 @@ unify_with_occurs_check(DECL_LD Word t1, Word t2, occurs_check_t mode)
 
   if ( rc == TRUE )
   { TrailEntry tt = tTop;
-    TrailEntry mt = m.trailtop;
+    TrailEntry mt = m.trailtop.as_ptr;
 
     while(--tt >= mt)
     { Word p = tt->address;
@@ -1842,7 +1842,7 @@ compare_primitives(DECL_LD Word p1, Word p2, int eq)
 	return compare_neq_floats(valFloat(w1), valFloat(w2));
     }
     case TAG_ATOM:
-      return eq ? CMP_NOTEQ : compareAtoms(w1, w2);
+      return eq ? CMP_NOTEQ : compareAtoms(word2atom(w1), word2atom(w2));
     case TAG_STRING:
       return compareStrings(w1, w2);
     case TAG_COMPOUND:
@@ -1966,7 +1966,7 @@ PRED_IMPL("compare", 3, compare, PL_FA_ISO)
   { a = 0;
   } else
   { if ( isAtom(*d) )
-    { a = *d;
+    { a = word2atom(*d);
 
       if ( a == ATOM_equals )
 	return compareStandard(p1, p2, TRUE) == CMP_EQUAL ? TRUE : FALSE;
@@ -2099,7 +2099,7 @@ PRED_IMPL("?=", 2, can_compare, 0)
   { FliFrame fr = (FliFrame) valTermRef(fid);
 
     FLI_ASSERT_VALID(fr);
-    if ( fr->mark.trailtop != tTop )
+    if ( fr->mark.trailtop.as_ptr != tTop )
       rc = FALSE;
   } else if ( exception_term )
   { PL_close_foreign_frame(fid);	/* keep exception */
@@ -2181,18 +2181,12 @@ PRED_IMPL("functor", 3, functor, 0)
     if ( fd->arity == 0 )
       return PL_domain_error("compound_non_zero_arity", A1);
 
-    if ( !PL_unify_atom(A2, fd->name) ||
-	 !PL_unify_integer(A3, fd->arity) )
-      fail;
-
-    succeed;
+    return ( PL_unify_atom(A2, fd->name) &&
+	     PL_unify_integer(A3, fd->arity) );
   }
   if ( isAtomic(*p) )
-  { if ( !PL_unify(A2, A1) ||
-	 !PL_unify_integer(A3, 0) )
-      fail;
-
-    succeed;
+  { return ( PL_unify(A2, A1) &&
+	     PL_unify_integer(A3, 0) );
   }
   if ( !PL_is_atomic(A2) )
     return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_atomic, A2);
@@ -2281,7 +2275,7 @@ PRED_IMPL("functor", 4, functor, 0)
 	     PL_unify_integer(A3, fd->arity) &&
 	     match_functor_type(A4, type, ATOM_compound) );
   } else if ( isAtom(*p) )
-  { return ( PL_unify_atom(A2, *p) &&
+  { return ( PL_unify_atom(A2, word2atom(*p)) &&
 	     PL_unify_integer(A3, 0) &&
 	     match_functor_type(A4, type, ATOM_atom) );
   } else if ( !canBind(*p) )
@@ -2374,10 +2368,15 @@ get_arg_integer_ex(DECL_LD term_t t, size_t *n)
 
   deRef(p);
   if ( isTaggedInt(*p) )
-  { intptr_t v = valInt(*p);
+  { sword v = valInt(*p);
 
     if ( v > 0 )
-    { *n = v;
+    {
+#if SIZEOF_VOIDP < SIZEOF_WORD
+      if ( v > INT_MAX )
+	return FALSE;
+#endif
+      *n = (size_t)v;
       return TRUE;
     }
     if ( v == 0 )
@@ -2514,7 +2513,7 @@ unify_vp(DECL_LD Word vp, Word val)
 
 
 #define setarg(n, term, value, flags) LDFUNC(setarg, n, term, value, flags)
-static word
+static foreign_t
 setarg(DECL_LD term_t n, term_t term, term_t value, int flags)
 { size_t arity, argn;
   atom_t name;
@@ -2706,7 +2705,7 @@ PRED_IMPL("$seek_list", 4, seek_list, 0)
   }
 
   return ( unify_ptrs(valTermRef(A4), tail, ALLOW_GC|ALLOW_SHIFT) &&
-	   PL_unify_integer(A3, size)
+	   PL_unify_int64(A3, size)
 	 );
 }
 
@@ -2976,7 +2975,7 @@ do_number_vars(DECL_LD Word p, nv_options *options, intptr_t n, mark *m)
       }
 
       if ( f->definition == options->functor )
-      { if ( (Word)f >= m->globaltop )	/* new one we created ourselves */
+      { if ( (Word)f >= m->globaltop.as_ptr )	/* new one we created ourselves */
 	{ if ( options->singletons )
 	  { Word p = &f->arguments[0];
 
@@ -3005,7 +3004,7 @@ do_number_vars(DECL_LD Word p, nv_options *options, intptr_t n, mark *m)
 
 	  deRef(p);
 	  if ( options->numbered_check && isInteger(*p) )
-	  { intptr_t i = (intptr_t)valInteger(*p); /* cannot be bigger */
+	  { intptr_t i = (intptr_t)valInt(*p); /* cannot be bigger */
 
 	    if ( i >= (intptr_t)start )
 	    { n = ALREADY_NUMBERED;
@@ -3189,7 +3188,7 @@ PRED_IMPL("var_number", 2, var_number, 0)
 
       deRef(a);
       if ( isAtom(*a) || isInteger(*a) )
-	return _PL_unify_atomic(A2, *a);
+	return PL_unify_atomic(A2, *a);
     }
   }
 
@@ -3287,7 +3286,7 @@ term_variables_loop(DECL_LD term_agenda *agenda, size_t maxcount, int flags)
       if ( !(v = PL_new_term_ref_noshift()) )
 	return TV_NOSPACE;
       *valTermRef(v) = makeRefG(p);
-      if ( (flags&TV_ATTS) )
+      if ( (flags&TV_ATTS) && isAttVar(w) )
       { Word p2 = valPAttVar(w);
 	deRef2(p2, p);
 	goto again;
@@ -3689,7 +3688,7 @@ free_variables_loop(DECL_LD Word t, atom_t *mname, term_t goal)
 
     if ( isTerm(*t) )
     { Functor f = valueTerm(*t);
-      functor_t fd = f->definition;	/* modified by visited */
+      functor_t fd = word2functor(f->definition); /* modified by visited */
 
       if ( visited(f) )
       { if ( !in_goal && !existential )
@@ -3713,7 +3712,7 @@ free_variables_loop(DECL_LD Word t, atom_t *mname, term_t goal)
 
 	  deRef2(&f->arguments[0], a1);
 	  if ( isAtom(*a1) )
-	    *mname = *a1;
+	    *mname = word2atom(*a1);
 	  t = &f->arguments[1];
 	  goto again;
 	} else if ( !existential )
@@ -3843,13 +3842,13 @@ also needs support in garbageCollect() and growStacks().
 
 #define unify_all_trail_ptrs(t1, t2, m) LDFUNC(unify_all_trail_ptrs, t1, t2, m)
 static bool
-unify_all_trail_ptrs(DECL_LD Word t1, Word t2, mark *m)
+unify_all_trail_ptrs(DECL_LD term_t t1, term_t t2, mark *m)
 { for(;;)
   { int rc;
 
     Mark(*m);
     LD->mark_bar = NO_MARK_BAR;
-    rc = raw_unify_ptrs(t1, t2);
+    rc = raw_unify_ptrs(valTermRef(t1), valTermRef(t2));
     if ( rc == TRUE )			/* Terms unified */
     { return rc;
     } else if ( rc == FALSE )		/* Terms did not unify */
@@ -3862,9 +3861,7 @@ unify_all_trail_ptrs(DECL_LD Word t1, Word t2, mark *m)
 
       Undo(*m);
       DiscardMark(*m);
-      PushPtr(t1); PushPtr(t2);
       rc2 = makeMoreStackSpace(rc, ALLOW_GC|ALLOW_SHIFT);
-      PopPtr(t2); PopPtr(t1);
       if ( !rc2 )
 	return FALSE;
     }
@@ -3906,10 +3903,9 @@ unifiable(DECL_LD term_t t1, term_t t2, term_t subst)
   }
 
 retry:
-  if ( unify_all_trail_ptrs(valTermRef(t1),	/* can do shift/gc */
-			    valTermRef(t2), &m) )
+  if ( unify_all_trail_ptrs(t1, t2, &m) )
   { TrailEntry tt = tTop;
-    TrailEntry mt = m.trailtop;
+    TrailEntry mt = m.trailtop.as_ptr;
 
     if ( tt > mt )
     { ssize_t needed = (tt-mt)*6+1;
@@ -3980,7 +3976,7 @@ retry:
 	}
       }
       gTop = gp;			/* may not have used all space */
-      tTop = m.trailtop;
+      tTop = m.trailtop.as_ptr;
 
       rc = PL_unify(pushWordAsTermRef(list), subst);
       popTermRef();
@@ -4266,7 +4262,7 @@ PRED_IMPL("char_code", 2, char_code, PL_FA_ISO)
 static int
 is_code(word w)
 { if ( isTaggedInt(w) )
-  { intptr_t code = valInt(w);
+  { sword code = valInt(w);
 
     return VALID_CODE_POINT(code);
   }
@@ -4279,7 +4275,7 @@ is_char(word w)
 { PL_chars_t text;
 
   return ( isAtom(w) &&
-	   get_atom_text(w, &text) &&
+	   get_atom_text(word2atom(w), &text) &&
 	   PL_text_length(&text) == 1
 	 );
 }
@@ -4431,7 +4427,7 @@ PRED_IMPL("collation_key", 2, collation_key, 0)
 #define concat(a1, a2, a3, bidirectional, ctx, accept, otype) \
 	LDFUNC(concat, a1, a2, a3, bidirectional, ctx, accept, otype)
 
-static word
+static foreign_t
 concat(DECL_LD term_t a1, term_t a2, term_t a3,
        int bidirectional,		/* FALSE: only mode +,+,- */
        control_t ctx,
@@ -5190,7 +5186,7 @@ PRED_IMPL("sub_string", 5, sub_string, PL_FA_NONDETERMINISTIC)
 		*            CONTROL            *
 		*********************************/
 
-word
+foreign_t
 pl_repeat(control_t h)
 { switch( ForeignControl(h) )
   { case FRG_FIRST_CALL:
@@ -5202,17 +5198,17 @@ pl_repeat(control_t h)
   }
 }
 
-word
+foreign_t
 pl_fail()		/* just to define it */
 { fail;
 }
 
-word
+foreign_t
 pl_true()		/* just to define it */
 { succeed;
 }
 
-word
+foreign_t
 pl_halt(term_t code)
 { GET_LD
   int status;

@@ -130,7 +130,8 @@ loffset(DECL_LD void *p)
 { if ( p == NULL )
     return 0;
 
-  assert((intptr_t)p % sizeof(word) == 0);
+  IS_WORD_ALIGNED(p);
+
   return (Word)p-(Word)lBase;
 }
 #endif
@@ -145,7 +146,7 @@ DbgPrintInstruction(LocalFrame FR, Code PC)
   { GET_LD
 
     if ( ofr != FR )
-    { Sfprintf(Serror, "#%zd at [%ud] predicate %s\n",
+    { Sdprintf("#%zd at [%ud] predicate %s\n",
 	       loffset(FR),
 	       levelFrame(FR),
 	       predicateName(FR->predicate));
@@ -371,7 +372,7 @@ PL_open_signal_foreign_frame(int sync)
   size_t minspace = sizeof(struct localFrame) + MINFOREIGNSIZE*sizeof(word);
   size_t margin   = sync ? 0 : MAXARITY*sizeof(word);
 
-  if ( (char*)lTop + minspace + margin  > (char*)lMax )
+  if ( !hasLocalSpace(minspace + margin) )
   { if ( sync )
     { int rc;
 
@@ -635,15 +636,16 @@ discardForeignFrame(DECL_LD LocalFrame fr)
   DEBUG(5, Sdprintf("\tCut %s, context = %p\n",
 		    predicateName(def), fr->clause));
 
-  switch((word)fr->clause & FRG_REDO_MASK)
+  word wcl = ptr2word(fr->clause);
+  switch(wcl & FRG_REDO_MASK)
   { case REDO_INT:
-      context.context = (word)fr->clause >> FRG_REDO_BITS;
+      context.context = (uintptr_t)(wcl >> FRG_REDO_BITS);
       break;
     case REDO_PTR:
-      context.context = (word)fr->clause;
+      context.context = (uintptr_t)wcl;
       break;
     case YIELD_PTR:
-      context.context = (word)fr->clause & ~FRG_REDO_MASK;
+      context.context = (uintptr_t)(wcl & ~FRG_REDO_MASK);
       break;
   }
   context.control = FRG_CUTTED;
@@ -756,7 +758,7 @@ call_term(DECL_LD Module mdef, term_t goal)
 
     if ( isAtom(*p) )
     { if ( isTextAtom(*p) )
-      { functor = lookupFunctorDef(*p, 0);
+      { functor = lookupFunctorDef(word2atom(*p), 0);
 	av = 0;
       } else
 	return call1(mdef, goal);
@@ -777,7 +779,7 @@ call_term(DECL_LD Module mdef, term_t goal)
 
 	for(i=0; i<arity; i++, ap++)
 	  *ap = linkValG(&args[i]);
-	functor = f->definition;
+	functor = word2functor(f->definition);
       } else
 	return call1(mdef, goal);
     } else
@@ -1027,29 +1029,29 @@ put_vm_call(DECL_LD term_t t, term_t frref, Code PC, code op, int has_firstvar,
   switch(op)
   { case I_CALL:			/* procedure */
     case I_DEPART:
-    { return ( put_call_goal(t, (Procedure) PC[1]) &&
+    { return ( put_call_goal(t, code2ptr(Procedure, PC[1])) &&
 	       PL_cons_functor_v(t, FUNCTOR_call1, t) );
     }
     case I_CALLM:			/* module, procedure */
     case I_DEPARTM:
-    { Module m = (Module)PC[1];
+    { Module m = code2ptr(Module, PC[1]);
       term_t av;
 
       return ( (av = PL_new_term_refs(2)) &&
 	       PL_put_atom(av+0, m->name) &&
-	       put_call_goal(av+1, (Procedure) PC[2]) &&
+	       put_call_goal(av+1, code2ptr(Procedure, PC[2])) &&
 	       PL_cons_functor_v(t, FUNCTOR_colon2, av) &&
 	       PL_cons_functor_v(t, FUNCTOR_call1, t) );
     }
     case I_CALLATM:			/* procm, contextm, proc */
     case I_DEPARTATM:			/* call(@(procm:g, contextm)) */
-    { Module procm    = (Module)PC[1];
-      Module contextm = (Module)PC[2];
+    { Module procm    = code2ptr(Module, PC[1]);
+      Module contextm = code2ptr(Module, PC[2]);
       term_t av;
 
       return ( (av = PL_new_term_refs(2)) &&
 	       PL_put_atom(av+0, procm->name) &&
-	       put_call_goal(av+1, (Procedure) PC[3]) &&
+	       put_call_goal(av+1, code2ptr(Procedure, PC[3])) &&
 	       PL_cons_functor_v(av+0, FUNCTOR_colon2, av) &&
 	       PL_put_atom(av+1, contextm->name) &&
 	       PL_cons_functor_v(t, FUNCTOR_xpceref2, av) &&
@@ -1057,14 +1059,14 @@ put_vm_call(DECL_LD term_t t, term_t frref, Code PC, code op, int has_firstvar,
     }
     case I_CALLATMV:			/* procm, contextm, proc */
     case I_DEPARTATMV:			/* call(@(procm:g, contextm)) */
-    { Module procm    = (Module)PC[1];
+    { Module procm    = code2ptr(Module, PC[1]);
       LocalFrame   fr = (LocalFrame)valTermRef(frref);
       term_t      cmv = consTermRef(varFrameP(fr, (int)PC[2]));
       term_t av;
 
       return ( (av = PL_new_term_refs(2)) &&
 	       PL_put_atom(av+0, procm->name) &&
-	       put_call_goal(av+1, (Procedure) PC[3]) &&
+	       put_call_goal(av+1, code2ptr(Procedure, PC[3])) &&
 	       PL_cons_functor_v(av+0, FUNCTOR_colon2, av) &&
 	       PL_put_term(av+1, cmv) &&
 	       PL_cons_functor_v(t, FUNCTOR_xpceref2, av) &&
@@ -1476,7 +1478,7 @@ reclaim_attvars(DECL_LD Word after)
 static inline void
 __do_undo(DECL_LD mark *m)
 { TrailEntry tt = tTop;
-  TrailEntry mt = m->trailtop;
+  TrailEntry mt = m->trailtop.as_ptr;
 
   while(--tt >= mt)
   { Word p = tt->address;
@@ -1503,7 +1505,7 @@ __do_undo(DECL_LD mark *m)
 
   tTop = mt;
 
-  Word ngtop = max(LD->frozen_bar, m->globaltop);
+  Word ngtop = max(LD->frozen_bar, m->globaltop.as_ptr);
   reclaim_attvars(ngtop);
 
   DEBUG(CHK_SECURE,
@@ -2196,7 +2198,7 @@ exception_hook(DECL_LD qid_t pqid, term_t fr, term_t catchfr_ref)
 	PL_cut_query(qid);
       }
 
-      if ( ex && !PL_same_term(ex, exception_term) )
+      if ( ex && (!exception_term || !PL_same_term(ex, exception_term)) )
       {	PL_raise_exception(ex);	/* copy term again */
 	wstate.flags |= WAKEUP_STATE_SKIP_EXCEPTION;
 	rc = TRUE;			/* handled */
@@ -2554,6 +2556,7 @@ static Choice
 newChoice(DECL_LD choice_type type, LocalFrame fr)
 { Choice ch = (Choice)lTop;
 
+  IS_WORD_ALIGNED(ch);
   DEBUG(0, assert(ch+1 <= (Choice)lMax));
   DEBUG(0, assert(BFR < ch));
   lTop = (LocalFrame)(ch+1);
@@ -2643,10 +2646,11 @@ PL_open_query(Module ctx, int flags, Procedure proc, term_t args)
   while ( (uintptr_t)qf % JMPBUF_ALIGNMENT )
     qf = addPointer(qf, sizeof(word));
 #endif
+  IS_WORD_ALIGNED(qf);
   qf->saved_ltop = lTop;
-
 					/* fill top-frame */
   top		     = &qf->top_frame;
+  IS_WORD_ALIGNED(top);
   top->parent        = NULL;
   top->predicate     = PROCEDURE_dc_call_prolog->definition;
   top->programPointer= NULL;
@@ -2665,6 +2669,7 @@ PL_open_query(Module ctx, int flags, Procedure proc, term_t args)
     top->level	     = 0;
   }
   fr                 = &qf->frame;
+  IS_WORD_ALIGNED(fr);
   fr->parent         = top;
   setNextFrameFlags(fr, top);
   set(top, FR_HIDE_CHILDS);
@@ -2694,6 +2699,7 @@ PL_open_query(Module ctx, int flags, Procedure proc, term_t args)
   qf->next_environment  = NULL;		/* see D_BREAK */
 					/* fill frame arguments */
   ap = argFrameP(fr, 0);
+  IS_WORD_ALIGNED(ap);
   { size_t n;
     Word p = valTermRef(args);
 
@@ -2741,6 +2747,7 @@ PL_open_query(Module ctx, int flags, Procedure proc, term_t args)
 
 					/* publish environment */
   LD->choicepoints  = &qf->choice;
+  IS_WORD_ALIGNED(LD->choicepoints);
   environment_frame = fr;
   qf->parent = LD->query;
   LD->query = qf;
@@ -3193,7 +3200,7 @@ static vmi_instr jmp_table[] =
 #define _VMI_DECLARATION(Name,f,na,a)	Name ## _LBL:
 #define _NEXT_INSTRUCTION		DbgPrintInstruction(FR, PC); _VMI_GOTO_CODE(*PC++)
 #define _VMI_GOTO(n)			goto n ## _LBL
-#define _VMI_GOTO_CODE(c)		goto *(void *)(c)
+#define _VMI_GOTO_CODE(c)		goto *code2ptr(void *, c)
 #undef SEPARATE_VMI1
 #undef SEPARATE_VMI2
 /* This macro must ensure that two identical VMI instructions do not get
@@ -3239,7 +3246,7 @@ PL_next_solution(DECL_LD qid_t qid)
 #endif
 
   Code PC;				/* program counter */
-  exception_frame THROW_ENV;		/* PL_thow() environment */
+  exception_frame THROW_ENV;		/* PL_throw() environment */
 
 #if O_VMI_FUNCTIONS
   register_file *registers = &REGISTERS;

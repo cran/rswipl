@@ -39,17 +39,17 @@
 
 
 		/********************************
-		*	     VARIANT	        *
+		*	     VARIANT		*
 		*********************************/
 
-#define consVar(w) (((intptr_t)(w)<<LMASK_BITS) | TAG_VAR | FIRST_MASK)
-#define valVar(w)  ((intptr_t)(w) >> LMASK_BITS)
+#define consVar(w) (((word)(w)<<LMASK_BITS) | TAG_VAR | FIRST_MASK)
+#define valVar(w)  ((size_t)((word)(w) >> LMASK_BITS))
 
 #define TAG_COMPOUND_x    (STG_STATIC|TAG_COMPOUND)
 #define isCompound_x(w) \
-  (( (intptr_t)(w) & (STG_MASK|TAG_MASK) ) == TAG_COMPOUND_x )
-#define valCompound_x(w)  ((intptr_t)(w) >> LMASK_BITS)
-#define consCompound_x(i)  (((i)<<LMASK_BITS) | TAG_COMPOUND_x)
+	(( (word)(w) & (STG_MASK|TAG_MASK) ) == TAG_COMPOUND_x )
+#define valCompound_x(w)  ((size_t)((word)(w) >> LMASK_BITS))
+#define consCompound_x(i) (((word)(i)<<LMASK_BITS) | TAG_COMPOUND_x)
 
 #define node_bp(p)	((p)->bp)
 #define node_orig(p)	((p)->orig)
@@ -57,10 +57,10 @@
 #define node_isom(p)	((p)->b)
 
 typedef struct aWork
-{ word *	left;			/* left term arguments */
-  word *	right;			/* right term arguments */
-  int		arg;
-  int		arity;
+{ Word		left;			/* left term arguments */
+  Word		right;			/* right term arguments */
+  size_t	arg;
+  size_t	arity;
 } aWork;
 
 
@@ -87,7 +87,7 @@ init_agenda(argPairs *a)
 
 
 static inline bool
-push_start_args(argPairs *a, Word left, Word right, int arity)  /* plural */
+push_start_args(argPairs *a, Word left, Word right, size_t arity)  /* plural */
 { a->work.left  = left;
   a->work.right = right;
   a->work.arg   = 0;
@@ -97,7 +97,7 @@ push_start_args(argPairs *a, Word left, Word right, int arity)  /* plural */
 }
 
 static inline bool
-push_args(argPairs *a, Word left, Word right, int arity)  /* plural */
+push_args(argPairs *a, Word left, Word right, size_t arity)  /* plural */
 { if ( !pushSegStack(&a->stack, a->work, aWork) )
     return FALSE;
 
@@ -122,7 +122,7 @@ next_arg(argPairs *a, Word *lp, Word *rp)   /* singular (not plural !) */
 }
 
 static inline node *
-Node(int i, Buffer buf)
+Node(size_t i, Buffer buf)
 { return  &fetchBuffer(buf, i, node);
 }
 
@@ -139,38 +139,38 @@ add_node_buffer(Buffer b, node *obj)
   return TRUE;
 }
 
-static inline int
+static size_t
 var_id(Word p, Buffer buf)
 { word w = *p;
 
   if ( w )
-  { return (int)valVar(w);		/* node id truncated to int: */
+  { return valVar(w);		/* node id truncated to int: */
   } else				/* < 2^31 nodes */
-  { int n = (int)entriesBuffer(buf, node);
+  { size_t n = entriesBuffer(buf, node);
     node new = {p, w, 0, 0};
 
     if ( !add_node_buffer((Buffer)buf, &new) )
       return MEMORY_OVERFLOW;
 
-    *p = (word)consVar(n);
+    *p = consVar(n);
     return n;
   }
 }
 
-static inline int
+static size_t
 term_id(Word p, Buffer buf)
 { word w = *p;
 
   if ( isCompound_x(w) )
-  { return (int)valCompound_x(w);
+  { return valCompound_x(w);
   } else
-  { int n = (int)entriesBuffer(buf, node);
+  { size_t n = entriesBuffer(buf, node);
     node new = {p, w, 0, 0};
 
     if ( !add_node_buffer((Buffer)buf, &new) )
       return MEMORY_OVERFLOW;
 
-    *p = (word)consCompound_x(n);
+    *p = consCompound_x(n);
     return n;
   }
 }
@@ -205,8 +205,9 @@ univ(DECL_LD word t, Word d, Word *a)
 }
 
 static inline void
-reset_terms(node * r)
-{ *(r->bp)  =  r->orig;
+reset_terms(node *r)
+{ IS_WORD_ALIGNED(r->bp);
+  *r->bp = r->orig;
 }
 
 /* isomorphic (==) */
@@ -230,7 +231,7 @@ isomorphic(DECL_LD argPairs *a, int i, int j, Buffer buf)
   if ( dm != dn )
     return FALSE;
 
-  if ( !push_args(a,  lm, ln, arityFunctor(dm)) )
+  if ( !push_args(a, lm, ln, arityFunctor(dm)) )
     return MEMORY_OVERFLOW;
 
   while( next_arg(a, &l, &r) )
@@ -278,7 +279,7 @@ isomorphic(DECL_LD argPairs *a, int i, int j, Buffer buf)
       case TAG_COMPOUND:
       { Word lm, ln;
 	word dm, dn;
-	int i, j;
+	size_t i, j;
 	node  *m,  *n;
 
 	if ( (i = term_id(l, buf)) < 0 )
@@ -317,6 +318,8 @@ isomorphic(DECL_LD argPairs *a, int i, int j, Buffer buf)
 }
 
 /* t =@= u */
+/* returns TRUE, FALSE or MEMORY_OVERFLOW */
+
 #define variant(agenda, buf) LDFUNC(variant, agenda, buf)
 static int
 variant(DECL_LD argPairs *agenda, Buffer buf)
@@ -326,17 +329,20 @@ variant(DECL_LD argPairs *agenda, Buffer buf)
   { word wl, wr;
 
  attvar:
-   deRef(l);
-   deRef(r);
+    IS_WORD_ALIGNED(l);
+    IS_WORD_ALIGNED(r);
+    deRef(l);
+    deRef(r);
 
-   wl = *l;
-   wr = *r;
+    wl = *l;
+    wr = *r;
 
-   if ( tag(wl) != tag(wr) )
-     return FALSE;
+    if ( tag(wl) != tag(wr) )
+      return FALSE;
 
    if ( tag(wl) == TAG_VAR )
-   { int i, j, m, n;
+   { size_t i, j;
+     int m, n;
      node *vl, *vr;
 
      if ((i = var_id(l, buf)) < 0)
@@ -384,7 +390,8 @@ variant(DECL_LD argPairs *agenda, Buffer buf)
 	  continue;
         return FALSE;
       case TAG_COMPOUND:
-	{ int i, j, k, h;
+      {   size_t i, j;
+	  int k, h;
 	  node *m;
 
 	  word dm, dn;			/* definition (= functor/arity) */
@@ -424,6 +431,7 @@ variant(DECL_LD argPairs *agenda, Buffer buf)
 }
 
 
+/* returns TRUE, FALSE or FALSE+exception */
 int
 is_variant_ptr(DECL_LD Word p1, Word p2)
 { argPairs agenda;

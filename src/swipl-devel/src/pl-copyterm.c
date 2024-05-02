@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2020, University of Amsterdam
+    Copyright (c)  2011-2024, University of Amsterdam
 			      CWI, Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -305,20 +306,24 @@ update_ground(DECL_LD Word p, int flags)
 #define MC_WALK_REF  0x1
 #define MC_WALK_COPY 0x2
 
+#define MC_TAG(p,t)  ((Word)((uintptr_t)(p)|t))
+#define MC_UNTAG(p)  ((Word)((uintptr_t)(p) & ~(uintptr_t)MC_MASK))
+#define MC_TAGVAL(p) ((int)((uintptr_t)(p) & (uintptr_t)MC_MASK))
+
 static int
 pushForMark(segstack *stack, Word p, int wr)
-{ word w = ((word)p)|wr;
+{ Word w = MC_TAG(p, wr);
 
-  return pushSegStack(stack, w, word);
+  return pushSegStack(stack, w, Word);
 }
 
 static void
 popForMark(segstack *stack, Word *pp, int *wr)
-{ word w = 0;
+{ Word w = 0;
 
-  popSegStack(stack, &w, word);
-  *wr = w & (word)MC_MASK;
-  *pp = (Word)(w & ~(word)MC_MASK);
+  popSegStack(stack, &w, Word);
+  *wr = MC_TAGVAL(w);
+  *pp = MC_UNTAG(w);
 }
 
 
@@ -406,7 +411,7 @@ mark_for_copy(DECL_LD Word p, int flags)
 	if ( virgin(t->definition) )
 	{ DEBUG(MSG_COPYTERM,
 		Sdprintf("Visit %s at %s\n",
-			 functorName(t->definition),
+			 functorName(word2functor(t->definition)),
 			 print_addr(&t->definition, NULL)));
 	  set_visited(t->definition);
 	} else
@@ -451,7 +456,7 @@ mark_for_copy(DECL_LD Word p, int flags)
 
       DEBUG(MSG_COPYTERM,
 	    Sdprintf("Functor %s; mode=0x%x\n",
-		     functorName(*p & ~BOTH_MASK), mode));
+		     functorName(word2functor(*p & ~BOTH_MASK)), mode));
 
       if ( mode&MC_WALK_COPY )
 	f |= COPYING_ATTVAR;
@@ -498,7 +503,7 @@ cp_unmark(DECL_LD Word p, int flags)
 
 	  DEBUG(MSG_COPYTERM,
 		Sdprintf("Unmarking %s at %s\n",
-			 functorName(f->definition),
+			 functorName(word2functor(f->definition)),
 			 print_addr(&f->definition, NULL)));
 
 	  if ( !pushWorkAgenda(&agenda,
@@ -701,7 +706,7 @@ copy_term(DECL_LD Word from, Word to, size_t abstract, int flags)
 	}
       }
       case TAG_ATOM:
-	pushVolatileAtom(*from);
+	pushVolatileAtom(word2atom(*from));
         /*FALLTHROUGH*/
       default:
 	*to = *from;
@@ -738,7 +743,7 @@ again:
     case TAG_COMPOUND:
       break;
     case TAG_ATOM:
-      pushVolatileAtom(*from);
+      pushVolatileAtom(word2atom(*from));
       /*FALLTHROUGH*/
     default:
       *to = *from;
@@ -858,16 +863,12 @@ needs_relocation(word w)
 { return ( isTerm(w) || isRef(w) || isIndirect(w) || isAtom(w) );
 }
 
-#if SIZEOF_VOIDP == 8
-#define PTR_SHIFT (LMASK_BITS+1)
-#else
 #define PTR_SHIFT LMASK_BITS
-#endif
 
 static word
 relocate_down(word w, size_t offset)
 { if ( isAtom(w) )
-  { PL_register_atom(w);
+  { PL_register_atom(word2atom(w));
     return w;
   } else
   { return (((w>>PTR_SHIFT)-offset)<<PTR_SHIFT) | tagex(w);
@@ -878,7 +879,7 @@ relocate_down(word w, size_t offset)
 static word
 relocate_up(DECL_LD word w, size_t offset)
 { if ( isAtom(w) )
-  { pushVolatileAtom(w);
+  { pushVolatileAtom(word2atom(w));
     return w;
   } else
   { return (((w>>PTR_SHIFT)+offset)<<PTR_SHIFT) | tagex(w);
@@ -927,7 +928,7 @@ term_to_fastheap(DECL_LD term_t t)
   fht->relocations = addPointer(fht->data, fht->data_len*sizeof(word));
   indirects        = fht->data + (gtop-gcopy);
 
-  offset = gcopy-gBase;
+  offset = (size_t)gcopy;
   for(p=gcopy, o=fht->data, r=fht->relocations; p<gtop; p++)
   { if ( needs_relocation(*p) )
     { size_t this_rel = p-gcopy;
@@ -935,7 +936,7 @@ term_to_fastheap(DECL_LD term_t t)
       if ( isIndirect(*p) )
       { Word ip = addressIndirect(*p);
 	size_t sz = wsizeofInd(*ip)+2;
-	size_t go = gBase - (Word)base_addresses[STG_GLOBAL];
+	size_t go = 1;		/* global has one dummy cell */
 
 	memcpy(indirects, ip, sz*sizeof(word));
 	*o++ = ((go+indirects-fht->data)<<PTR_SHIFT) | tagex(*p);
@@ -963,7 +964,7 @@ free_fastheap(fastheap_term *fht)
   for(r = fht->relocations; *r != REL_END; r++)
   { p += *r;
     if ( isAtom(*p) )
-      PL_unregister_atom(*p);
+      PL_unregister_atom(word2atom(*p));
   }
 
   free(fht);
@@ -986,7 +987,7 @@ put_fastheap(DECL_LD fastheap_term *fht, term_t t)
   o = gTop;
   memcpy(o, fht->data, fht->data_len*sizeof(word));
 
-  offset = o-gBase;
+  offset = (size_t)o;
   for(r = fht->relocations, p=o; *r != REL_END; r++)
   { p += *r;
     *p = relocate_up(*p, offset);
@@ -994,6 +995,7 @@ put_fastheap(DECL_LD fastheap_term *fht, term_t t)
 
   gTop += fht->data_len;
   *valTermRef(t) = makeRefG(o);
+  DEBUG(CHK_SECURE, PL_check_data(t));
 
   return TRUE;
 }

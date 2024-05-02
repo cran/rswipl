@@ -515,9 +515,9 @@ TLD_KEY PL_ldata;			/* key for thread PL_local_data */
 		 *	    GLOBAL DATA		*
 		 *******************************/
 
-static Table threadTable;		/* name --> reference symbol */
+static TableWW threadTable;		/* name --> reference symbol */
 static int threads_ready = FALSE;	/* Prolog threads available */
-static Table queueTable;		/* name --> queue */
+static TableWP queueTable;		/* name --> queue */
 static int will_exec;			/* process will exec soon */
 
 
@@ -801,6 +801,10 @@ freePrologThread(PL_local_data_t *ld, int after_fork)
       PL_UNLOCK(L_THREAD);
 
 #ifdef O_PLMT
+#ifdef O_DEBUG
+    int debug = DEBUGGING(MSG_CLEANUP_THREAD);
+#endif
+
     if ( acknowledge )			/* == canceled */
     { DEBUG(MSG_CLEANUP_THREAD,
 	    Sdprintf("Acknowledge dead of %d\n", info->pl_tid));
@@ -822,7 +826,13 @@ freePrologThread(PL_local_data_t *ld, int after_fork)
 
 #ifdef O_PLMT
     if ( acknowledge )
+    {
+#ifdef O_DEBUG
+      if ( debug )
+	Sfprintf(Serror, "sem_post(sem_canceled_ptr)\n");
+#endif
       sem_post(sem_canceled_ptr);
+    }
 #endif
   }
 
@@ -1024,13 +1034,13 @@ cleanupThreads(void)
   /*TLD_free(PL_ldata);*/		/* this causes crashes */
 
   if ( queueTable )
-  { destroyHTable(queueTable);		/* removes shared queues */
+  { destroyHTableWP(queueTable);	/* removes shared queues */
     queueTable = NULL;
     simpleMutexDelete(&queueTable_mutex);
   }
 #ifdef O_PLMT
   if ( GD->thread.mutexTable )
-  { destroyHTable(GD->thread.mutexTable);
+  { destroyHTableWP(GD->thread.mutexTable);
     GD->thread.mutexTable = NULL;
   }
 #endif
@@ -1133,7 +1143,10 @@ exitPrologThreads(void)
 	      { case PL_THREAD_CANCEL_FAILED:
 		  break;
 		case PL_THREAD_CANCEL_MUST_JOIN:
+		{ DEBUG(MSG_CLEANUP_THREAD,
+			Sdprintf("Used ->cancel(%d)\n", i));
 		  canceled++;
+		}
 		  /*FALLTHROUGH*/
 		case PL_THREAD_CANCEL_JOINED:
 		  continue;
@@ -1141,7 +1154,10 @@ exitPrologThreads(void)
 	    }
 
 	    if ( PL_thread_raise(i, SIG_PLABORT) )
+	    { DEBUG(MSG_CLEANUP_THREAD,
+		    Sdprintf("Sent abort to %d%d\n", i));
 	      canceled++;
+	    }
 	  }
 
 	  break;
@@ -1153,9 +1169,9 @@ exitPrologThreads(void)
   }
 
   if ( canceled > 0 )		    /* see (*) above */
-  { DEBUG(MSG_CLEANUP_THREAD, Sdprintf("Waiting for %d threads ", canceled));
-
+  {
 #ifdef USE_TIMER_WAIT
+    DEBUG(MSG_CLEANUP_THREAD, Sdprintf("Waiting for %d threads (alarm timer)\n", canceled));
     struct itimerval timeout = {0};
     struct sigaction act = {0};
 
@@ -1177,6 +1193,7 @@ exitPrologThreads(void)
     }
 
 #elif defined(HAVE_SEM_TIMEDWAIT)
+    DEBUG(MSG_CLEANUP_THREAD, Sdprintf("Waiting for %d threads (sem_timedwait)\n", canceled));
     struct timespec deadline;
 
     get_current_timespec(&deadline);
@@ -1186,14 +1203,16 @@ exitPrologThreads(void)
     while(canceled > 0)
     { if ( sem_timedwait(sem_canceled_ptr, &deadline) == 0 )
       { canceled--;
-	DEBUG(MSG_CLEANUP_THREAD, Sdprintf("Left %d", canceled));
+	DEBUG(MSG_CLEANUP_THREAD, Sdprintf("sem_timedwait(): ok. left %d\n", canceled));
       } else
-      { if ( errno != EINTR )
+      { DEBUG(MSG_CLEANUP_THREAD, Sdprintf("sem_timedwait(): %s\n", strerror(errno)));
+	if ( errno != EINTR )
 	  break;
       }
     }
 
 #else
+    DEBUG(MSG_CLEANUP_THREAD, Sdprintf("Waiting for %d threads (sem_trywait)\n", canceled));
     int maxwait = 10;
 
     for(maxwait = 10; maxwait > 0 && canceled > 0; maxwait--)
@@ -1208,7 +1227,7 @@ exitPrologThreads(void)
     }
 
 #endif
-    DEBUG(MSG_CLEANUP_THREAD, Sdprintf("\nLeft: %d threads\n", canceled));
+    DEBUG(MSG_CLEANUP_THREAD, Sdprintf("Left: %d threads\n", canceled));
   }
 
   if ( canceled )
@@ -1219,6 +1238,7 @@ exitPrologThreads(void)
     { term_t head    = PL_new_term_ref();
       term_t running = PL_new_term_ref();
       term_t tail    = PL_copy_term_ref(running);
+      int found = 0;
 
       rc = TRUE;
       for(i = 1; i <= GD->thread.highest_id; i++)
@@ -1226,7 +1246,8 @@ exitPrologThreads(void)
 
 	if ( info && info->thread_data && i != me )
 	{ if ( info->status == PL_THREAD_RUNNING )
-	  { if ( !PL_unify_list(tail, head, tail) ||
+	  { found++;
+	    if ( !PL_unify_list(tail, head, tail) ||
 		 !unify_thread_id(head, info) )
 	    { rc = FALSE;
 	      break;
@@ -1236,11 +1257,13 @@ exitPrologThreads(void)
       }
 
       if ( rc )
-      { rc = ( PL_unify_nil(tail) &&
-	       printMessage(ATOM_informational,
-			    PL_FUNCTOR_CHARS, "threads_not_died", 1,
-			      PL_TERM, running)
-	     );
+      { if ( found )
+	{ rc = ( PL_unify_nil(tail) &&
+		 printMessage(ATOM_informational,
+			      PL_FUNCTOR_CHARS, "threads_not_died", 1,
+				PL_TERM, running));
+	} else
+	  canceled = 0;
       }
     } else
     { rc = FALSE;
@@ -1248,7 +1271,7 @@ exitPrologThreads(void)
 
     if ( !rc )
       Sdprintf("%d threads wouldn't die\n", canceled);
-    rc = FALSE;
+    rc = !canceled;
   } else
   { DEBUG(MSG_THREAD, Sdprintf("done\n"));
 #ifndef WIN64			/* FIXME: Hangs if nothing is printed */
@@ -1278,8 +1301,8 @@ aliasThread(int tid, atom_t type, atom_t name)
   if ( !threadTable )
     threadTable = newHTable(16);
 
-  if ( (threadTable && lookupHTable(threadTable, (void *)name)) ||
-       (queueTable  && lookupHTable(queueTable,  (void *)name)) )
+  if ( (threadTable && lookupHTable(threadTable, name)) ||
+       (queueTable  && lookupHTableWP(queueTable,  name)) )
   { term_t obj = PL_new_term_ref();
 
     PL_UNLOCK(L_THREAD);
@@ -1293,7 +1316,7 @@ aliasThread(int tid, atom_t type, atom_t name)
   { th->alias = name;
     PL_register_atom(name);
     PL_register_atom(info->symbol);
-    addNewHTable(threadTable, (void *)name, (void *)info->symbol);
+    addNewHTable(threadTable, name, info->symbol);
   } else
   { rc = PL_no_memory();
   }
@@ -2145,7 +2168,7 @@ copy_local_data(PL_local_data_t *ldnew, PL_local_data_t *ldold,
   ldnew->arith.f                  = ldold->arith.f;
   if ( ldold->prolog_flag.table )
   { PL_LOCK(L_PLFLAG);
-    ldnew->prolog_flag.table	  = copyHTable(ldold->prolog_flag.table);
+    ldnew->prolog_flag.table	  = copyHTableWP(ldold->prolog_flag.table);
     PL_UNLOCK(L_PLFLAG);
   }
   ldnew->tabling.restraint        = ldold->tabling.restraint;
@@ -2227,7 +2250,7 @@ set_affinity(term_t affinity, pthread_attr_t *attr)
 }
 
 
-word
+foreign_t
 pl_thread_create(term_t goal, term_t id, term_t options)
 { GET_LD
   PL_thread_info_t *info;
@@ -2239,8 +2262,8 @@ pl_thread_create(term_t goal, term_t id, term_t options)
   term_t inherit_from = 0;
   term_t at_exit = 0;
   term_t affinity = 0;
-  int debug = -1;
-  int detached = FALSE;
+  unsigned debug = 2;
+  unsigned int detached = FALSE;
   PL_thread_attr_t attr = {0};
 
   if ( !PL_is_callable(goal) )
@@ -2270,7 +2293,7 @@ pl_thread_create(term_t goal, term_t id, term_t options)
   { free_thread_info(info);
     fail;
   }
-  info->detached = detached;
+  info->detached = detached&0x1;
   if ( at_exit && !PL_is_callable(at_exit) )
   { free_thread_info(info);
     return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_callable, at_exit);
@@ -2287,8 +2310,8 @@ pl_thread_create(term_t goal, term_t id, term_t options)
   } else
   { attr.flags |= PL_THREAD_CUR_STREAMS;
   }
-  if ( debug >= 0 )
-    info->debug = debug;
+  if ( debug < 2 )
+    info->debug = debug&0x1;
   else
     info->debug = ldold->thread.info->debug;
 
@@ -2346,7 +2369,7 @@ pl_thread_create(term_t goal, term_t id, term_t options)
     struct rlimit rlim;
     if ( !c_stack && getrlimit(RLIMIT_STACK, &rlim) == 0 )
     { if ( rlim.rlim_cur != RLIM_INFINITY )
-	c_stack = rlim.rlim_cur;
+	c_stack = (size_t)rlim.rlim_cur;
 					/* What is an infinite stack!? */
     }
 #endif
@@ -2427,8 +2450,8 @@ get_thread(term_t t, PL_thread_info_t **info, int warn)
     } else if ( isTextAtom(symbol) )	/* alias name? */
     { word w;
 
-      if ( (w = (word)lookupHTable(threadTable, (void *)symbol)) )
-      { symbol = w;
+      if ( (w = (word)lookupHTable(threadTable, symbol)) )
+      { symbol = word2atom(w);
 	goto from_symbol;
       } else
 	goto no_thread;
@@ -2591,7 +2614,7 @@ unify_thread_status(term_t status, PL_thread_info_t *info,
 }
 
 
-word
+foreign_t
 pl_thread_self(term_t self)
 { GET_LD
 
@@ -2606,7 +2629,7 @@ unalias_thread(thread_handle *th)
   { GET_LD
     atom_t symbol;
 
-    if ( (symbol=(word)deleteHTable(threadTable, (void *)th->alias)) )
+    if ( (symbol=(atom_t)deleteHTable(threadTable, th->alias)) )
     { th->alias = NULL_ATOM;
       PL_unregister_atom(name);
       PL_unregister_atom(symbol);
@@ -2701,7 +2724,7 @@ PRED_IMPL("thread_join", 2, thread_join, 0)
 { PRED_LD
   PL_thread_info_t *info;
   void *r;
-  word rval;
+  foreign_t rval;
   int rc;
   thread_status status;
 
@@ -2772,7 +2795,7 @@ PRED_IMPL("thread_join", 2, thread_join, 0)
 
 
 #if HAVE_PTHREAD_EXIT
-word
+foreign_t
 pl_thread_exit(term_t retcode)
 { GET_LD
   PL_thread_info_t *info = LD->thread.info;
@@ -3683,8 +3706,8 @@ get_interactor(DECL_LD term_t t, thread_handle **thp, int warn)
     } else if ( isTextAtom(symbol) )
     { word w;
 
-      if ( (w = (word)lookupHTable(threadTable, (void *)symbol)) )
-      { symbol = w;
+      if ( (w = lookupHTable(threadTable, symbol)) )
+      { symbol = word2atom(w);
 	goto from_symbol;
       }
       if ( warn )
@@ -5078,7 +5101,7 @@ release_message_queue_ref(atom_t aref)
   { destroy_message_queue(q);			/* can be called twice */
     if ( !q->destroyed )
     { GET_LD
-      deleteHTable(queueTable, (void *)q->id);
+      deleteHTableWP(queueTable, q->id);
     }
     simpleMutexDelete(&q->mutex);
     PL_free(q);
@@ -5133,8 +5156,9 @@ unify_queue(term_t t, message_queue *q)
 
 
 static void
-free_queue_symbol(void *name, void *value)
-{ message_queue *q = value;
+free_queue_symbol(table_key_t name, table_value_t value)
+{ message_queue *q = val2ptr(value);
+  (void)name;
 
   destroy_message_queue(q);			/* must this be synced? */
   PL_free(q);
@@ -5146,17 +5170,17 @@ unlocked_message_queue_create(term_t queue, long max_size)
 { GET_LD
   atom_t name = NULL_ATOM;
   message_queue *q;
-  word id;
+  atom_t id;
 
   if ( !queueTable )
   { simpleMutexInit(&queueTable_mutex);
-    queueTable = newHTable(16);
+    queueTable = newHTableWP(16);
     queueTable->free_symbol = free_queue_symbol;
   }
 
   if ( PL_get_atom(queue, &name) )
-  { if ( lookupHTable(queueTable, (void *)name) ||
-	 lookupHTable(threadTable, (void *)name) )
+  { if ( lookupHTableWP(queueTable, name) ||
+	 lookupHTable(threadTable, name) )
     { PL_error("message_queue_create", 1, NULL, ERR_PERMISSION,
 	       ATOM_create, ATOM_message_queue, queue);
       return NULL;
@@ -5183,7 +5207,7 @@ unlocked_message_queue_create(term_t queue, long max_size)
   } else
   { q->id = id;
   }
-  addNewHTable(queueTable, (void *)q->id, q);
+  addNewHTableWP(queueTable, q->id, q);
 
   if ( unify_queue(queue, q) )
   { if ( q->anonymous )
@@ -5245,7 +5269,7 @@ get_message_queue_unlocked(DECL_LD term_t t, message_queue **queue)
 
   if ( queueTable )
   { message_queue *q;
-    if ( (q = lookupHTable(queueTable, (void *)id)) )
+    if ( (q = lookupHTableWP(queueTable, id)) )
     { *queue = q;
       return TRUE;
     }
@@ -5253,10 +5277,10 @@ get_message_queue_unlocked(DECL_LD term_t t, message_queue **queue)
   if ( threadTable )
   { word w;
 
-    if ( (w = (word)lookupHTable(threadTable, (void *)id)) )
+    if ( (w = lookupHTable(threadTable, id)) )
     { thread_handle *th;
 
-      if ( (th=symbol_thread_handle(w)) )
+      if ( (th=symbol_thread_handle(word2atom(w))) )
       { tid = th->engine_id;
 	goto have_tid;
       }
@@ -5386,7 +5410,7 @@ PRED_IMPL("message_queue_destroy", 1, message_queue_destroy, 0)
   }
 
   simpleMutexLock(&queueTable_mutex);	/* see markAtomsMessageQueues() */
-  deleteHTable(queueTable, (void*)q->id);
+  deleteHTableWP(queueTable, (table_key_t)q->id);
   simpleMutexUnlock(&queueTable_mutex);
 
   if ( !q->anonymous )
@@ -5485,10 +5509,11 @@ advance_qstate(qprop_enum *state)
     state->p = qprop_list;
   }
   if ( state->e )
-  { message_queue *q;
+  { table_value_t tv;
 
-    if ( advanceTableEnum(state->e, NULL, (void**)&q) )
-    { state->q = q;
+    if ( advanceTableEnum(state->e, NULL, &tv) )
+    { message_queue *q = val2ptr(tv);
+      state->q = q;
 
       succeed;
     }
@@ -5527,10 +5552,10 @@ PRED_IMPL("message_queue_property", 2, message_property, PL_FA_NONDETERMINISTIC)
 	switch( get_prop_def(property, ATOM_message_queue_property,
 			     qprop_list, &state->p) )
 	{ case 1:
-	    state->e = newTableEnum(queueTable);
+	    state->e = newTableEnumWP(queueTable);
 	    goto enumerate;
 	  case 0:
-	    state->e = newTableEnum(queueTable);
+	    state->e = newTableEnumWP(queueTable);
 	    state->p = qprop_list;
 	    state->enum_properties = TRUE;
 	    goto enumerate;
@@ -5569,11 +5594,12 @@ PRED_IMPL("message_queue_property", 2, message_property, PL_FA_NONDETERMINISTIC)
 
 enumerate:
   if ( !state->q )			/* first time, enumerating queues */
-  { message_queue *q;
+  { table_value_t tv;
 
     assert(state->e);
-    if ( advanceTableEnum(state->e, NULL, (void**)&q) )
-    { state->q = q;
+    if ( advanceTableEnum(state->e, NULL, &tv) )
+    { message_queue *q = val2ptr(tv);
+      state->q = q;
     } else
     { freeTableEnum(state->e);
       assert(state == &statebuf);
@@ -7464,15 +7490,17 @@ markAtomsThreadMessageQueue(PL_local_data_t *ld)
 void
 markAtomsMessageQueues(void)
 { if ( queueTable )
-  { message_queue *q;
-    TableEnum e = newTableEnum(queueTable);
+  { TableEnum e = newTableEnumWP(queueTable);
 
-    while ( TRUE )
-    { simpleMutexLock(&queueTable_mutex);
-      if ( !advanceTableEnum(e, NULL, (void**)&q) )
+    for(;;)
+    { table_value_t tv;
+
+      simpleMutexLock(&queueTable_mutex);
+      if ( !advanceTableEnum(e, NULL, &tv) )
       { simpleMutexUnlock(&queueTable_mutex);
 	break;
       }
+      message_queue *q = val2ptr(tv);
       simpleMutexLock(&q->gc_mutex);
       simpleMutexUnlock(&queueTable_mutex);
       markAtomsMessageQueue(q);
@@ -8101,7 +8129,7 @@ static void
 cgcActivatePredicate(DECL_LD Definition def, gen_t gen)
 { DirtyDefInfo ddi;
 
-  if ( (ddi=lookupHTable(GD->procedures.dirty, def)) )
+  if ( (ddi=lookupHTablePP(GD->procedures.dirty, def)) )
     ddi_add_access_gen(ddi, gen);
 }
 
@@ -8253,7 +8281,7 @@ markAccessedPredicates(PL_local_data_t *ld)
 }
 
 
-#if O_PLMT
+#if O_PLMT && !defined(__SANITIZE_ADDRESS__)
 #define stack_avail(_) LDFUNC(stack_avail, _)
 
 static size_t
@@ -8276,7 +8304,7 @@ stack_avail(DECL_LD)
 int
 require_c_stack(DECL_LD size_t needed)
 {
-#if O_PLMT
+#if O_PLMT && !defined(__SANITIZE_ADDRESS__)
   PL_thread_info_t *info = LD->thread.info;
 
   if ( !info->c_stack_low && needed > stack_avail() )
@@ -8293,7 +8321,7 @@ require_c_stack(DECL_LD size_t needed)
 void
 clear_low_c_stack(DECL_LD)
 {
-#if O_PLMT
+#if O_PLMT && !defined(__SANITIZE_ADDRESS__)
   PL_thread_info_t *info = LD->thread.info;
 
   if ( info->c_stack_low && stack_avail() > C_STACK_MIN )

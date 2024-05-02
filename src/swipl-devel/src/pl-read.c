@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2022, University of Amsterdam
+    Copyright (c)  1985-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -339,8 +339,8 @@ typedef struct variable
 
 typedef struct token
 { int type;			/* type of token */
-  intptr_t start;		/* start-position */
-  intptr_t end;			/* end-position */
+  int64_t start;		/* start-position */
+  int64_t end;			/* end-position */
   union
   { number	number;		/* int or float */
     atom_t	atom;		/* atom value */
@@ -680,14 +680,14 @@ unify_location(term_t loc, const source_location *pos, ReadData _PL_rd)
 			 PL_INT,   pos->position.linepos,
 			 PL_INT64, pos->position.charno);
   } else if ( isStringStream(rb.stream) )
-  { intptr_t charno;
+  { int64_t charno;
 
     charno = pos->position.charno - _PL_rd->start_of_term.position.charno;
 
     rc = PL_unify_term(loc,
 		       PL_FUNCTOR, FUNCTOR_string2,
 			 PL_UTF8_STRING, rdbase,
-			 PL_INTPTR,      charno);
+			 PL_INT64,       charno);
   } else				/* any stream */
   { term_t stream;
 
@@ -919,7 +919,7 @@ growToBuffer(int c, ReadData _PL_rd)
   rb.end  = rb.base + rb.size;
   _PL_rd->posi = 0;
 
-  *rb.here++ = c;
+  *rb.here++ = (char)c;
 }
 
 
@@ -930,7 +930,7 @@ addByteToBuffer(int c, ReadData _PL_rd)
   if ( rb.here >= rb.end )
     growToBuffer(c, _PL_rd);
   else
-    *rb.here++ = c;
+    *rb.here++ = (char)c;
 }
 
 
@@ -1108,7 +1108,7 @@ out:
     if ( Sferror(rb.stream) )
       return FALSE;
     setErrorLocation(pos, _PL_rd);
-    what[0] = q;
+    what[0] = (char)q;
     what[1] = EOS;
     rawSyntaxError1("end_of_file_in_quoted", what);
   }
@@ -1223,11 +1223,14 @@ raw_read2(DECL_LD ReadData _PL_rd)
 		    return TRUE;
 		  }
 		  rawSyntaxError("end_of_file");
+		} else if ( true(_PL_rd, M_RDSTRING_TERM) )
+		{ rawSyntaxError("end_of_string");
+		} else
+		{ set_start_line;
+		  strcpy((char *)rb.base, "end_of_file. ");
+		  rb.here = rb.base + 14;
+		  return TRUE;
 		}
-		set_start_line;
-		strcpy((char *)rb.base, "end_of_file. ");
-		rb.here = rb.base + 14;
-		return TRUE;
       case '/': if ( rb.stream->position )
 		{ pbuf = *rb.stream->position;
 		  pbuf.charno--;
@@ -1576,6 +1579,11 @@ reading terms with many named variables   result in quadratic behaviour.
 Not sure whether it is worth the trouble to use a hash-table here.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+#define isVarInfo(w)	(tagex(w) == (TAG_VAR|STG_RESERVED))
+#define consVarInfo(i)	((word)(nv)<<LMASK_BITS)|TAG_VAR|STG_RESERVED
+#define valVarInfo(w)   ((size_t)((word)(w)>>LMASK_BITS))
+#define VAR_INDEX_HASH_OFFSET 1
+
 #define MAX_SINGLETONS 256		/* max singletons _reported_ */
 
 #define FOR_VARS(v) \
@@ -1615,7 +1623,7 @@ linkVariable(Variable var, ReadData _PL_rd)
 { unsigned int key = variableHash(var) % var_hash_size;
 
   var->hash_next = var_buckets[key];
-  var_buckets[key] = (var->signature>>LMASK_BITS)+1;
+  var_buckets[key] = valVarInfo(var->signature)+VAR_INDEX_HASH_OFFSET;
 }
 
 
@@ -1640,7 +1648,7 @@ rehashVariables(ReadData _PL_rd)
 
 static int
 hashVariable(Variable var, ReadData _PL_rd)
-{ unsigned int i = var->signature>>LMASK_BITS;
+{ size_t i = valVarInfo(var->signature);
 
   if ( i > var_hash_size )
     return rehashVariables(_PL_rd);
@@ -1650,26 +1658,23 @@ hashVariable(Variable var, ReadData _PL_rd)
   }
 }
 
-					/* use hash-key? */
+static inline Variable
+var_from_index(size_t i, ReadData _PL_rd)
+{ return &baseBuffer(&var_buffer, struct variable)[i];
+}
 
-static Variable
+static inline Variable
 varInfo(word w, ReadData _PL_rd)
-{ if ( tagex(w) == (TAG_VAR|STG_RESERVED) )
-    return &baseBuffer(&var_buffer, struct variable)[w>>LMASK_BITS];
+{ if ( isVarInfo(w) )
+    return var_from_index(valVarInfo(w), _PL_rd);
 
   return NULL;
 }
 
 
 static Variable
-var_from_index(unsigned int i, ReadData _PL_rd)
-{ return &baseBuffer(&var_buffer, struct variable)[i-1];
-}
-
-static Variable
 lookupVariable(const char *name, size_t len, ReadData _PL_rd)
-{ struct variable next;
-  Variable var;
+{ Variable var;
   size_t nv;
 
   if ( !isAnonVarNameN(name, len) )		/* always add _ */
@@ -1678,7 +1683,7 @@ lookupVariable(const char *name, size_t len, ReadData _PL_rd)
       unsigned int vi;
 
       for(vi = var_buckets[key]; vi; vi=var->hash_next)
-      { var = var_from_index(vi, _PL_rd);
+      { var = var_from_index(vi-VAR_INDEX_HASH_OFFSET, _PL_rd);
 
 	if ( len == var->namelen && strncmp(name, var->name, len) == 0 )
 	{ var->times++;
@@ -1696,13 +1701,12 @@ lookupVariable(const char *name, size_t len, ReadData _PL_rd)
   }
 
   nv = entriesBuffer(&var_buffer, struct variable);
-  next.name      = save_var_name(name, len, _PL_rd);
-  next.namelen   = len;
-  next.times     = 1;
-  next.variable  = 0;
-  next.signature = (nv<<LMASK_BITS)|TAG_VAR|STG_RESERVED;
-  addBuffer(&var_buffer, next, struct variable);
-  var = topBuffer(&var_buffer, struct variable) - 1;
+  var = allocFromBuffer(&var_buffer, sizeof(*var));
+  var->name      = save_var_name(name, len, _PL_rd);
+  var->namelen   = len;
+  var->times     = 1;
+  var->variable  = 0;
+  var->signature = consVarInfo(nv);
   if ( nv >= 16 )
     hashVariable(var, _PL_rd);
 
@@ -2252,9 +2256,9 @@ static strnumstat
 scan_number(cucharp *s, int negative, int b, Number n)
 { int d;
   int64_t maxi = PLMAXINT/b;		/* cache? */
-  int maxlastdigit = PLMAXINT % b;
+  int maxlastdigit = (int)(PLMAXINT % b);
   int64_t mini = PLMININT/b;
-  int minlastdigit = PLMININT % b;
+  int minlastdigit = (int)(PLMININT % b);
   int64_t t = 0;
   cucharp q = *s;
 
@@ -2493,7 +2497,7 @@ again:
 	if ( _PL_rd )
 	{ char tmp[2];
 
-	  tmp[0] = c;
+	  tmp[0] = (char)c;
 	  tmp[1] = EOS;
 	  last_token_start = (unsigned char*)(in-1);
 	  errorWarningA1("undefined_char_escape", tmp, 0, _PL_rd);
@@ -2524,10 +2528,10 @@ addUTF8Buffer(Buffer b, int c)
 
     end = utf8_put_char(buf, c);
     for(p=buf; p<end; p++)
-    { addBuffer(b, *p&0xff, char);
+    { addBuffer(b, *p, char);
     }
   } else
-  { addBuffer(b, c, char);
+  { addBuffer(b, (char)c, char);
   }
 }
 
@@ -2562,7 +2566,7 @@ get_string(unsigned char *in, unsigned char *ein, unsigned char **end, Buffer bu
       }
     } else if ( c >= 0x80 )		/* copy UTF-8 sequence */
     { do
-      { addBuffer(buf, c, char);
+      { addBuffer(buf, (char)c, char);
 	c = *in++;
       } while( c > 0x80 );
 
@@ -2572,7 +2576,7 @@ get_string(unsigned char *in, unsigned char *ein, unsigned char **end, Buffer bu
       return FALSE;
     }
 
-    addBuffer(buf, c, char);
+    addBuffer(buf, (char)c, char);
   }
 
   if ( end )
@@ -2744,10 +2748,10 @@ to_double(cucharp s, cucharp e, int zero, double *dp)
       s = utf8_get_uchar(s, &c);
       if ( c >= zero )
       { assert(c <= zero+9);
-	addBuffer(&b, c-zero+'0', char);
+	addBuffer(&b, (char)(c-zero+'0'), char);
       } else
       { assert(c <= 127);
-	addBuffer(&b, c, char);
+	addBuffer(&b, (char)c, char);
       }
     }
     addBuffer(&b, 0, char);
@@ -3536,7 +3540,7 @@ pop_out_op(ReadData _PL_rd)
 	cstate.out_n--;
 
 #define get_int_arg(t, n) LDFUNC(get_int_arg, t, n)
-static intptr_t
+static sword
 get_int_arg(DECL_LD term_t t, int n)
 { Word p = valTermRef(t);
 
@@ -3550,32 +3554,32 @@ get_int_arg(DECL_LD term_t t, int n)
 static term_t
 opPos(DECL_LD op_entry *op, out_entry *args)
 { if ( op->tpos )
-  { intptr_t fs = get_int_arg(op->tpos, 1);
-    intptr_t fe = get_int_arg(op->tpos, 2);
+  { sword fs = get_int_arg(op->tpos, 1);
+    sword fe = get_int_arg(op->tpos, 2);
     term_t r;
 
     if ( !(r=PL_new_term_ref()) )
       return 0;
 
     if ( op->kind == OP_INFIX )
-    { intptr_t s = get_int_arg(args[0].tpos, 1);
-      intptr_t e = get_int_arg(args[1].tpos, 2);
+    { sword s = get_int_arg(args[0].tpos, 1);
+      sword e = get_int_arg(args[1].tpos, 2);
 
       if ( !op->isblock )
       { if ( !PL_unify_term(r,
 			    PL_FUNCTOR,	FUNCTOR_term_position5,
-			    PL_INTPTR, s,
-			    PL_INTPTR, e,
-			    PL_INTPTR, fs,
-			    PL_INTPTR, fe,
+			    PL_SWORD, s,
+			    PL_SWORD, e,
+			    PL_SWORD, fs,
+			    PL_SWORD, fe,
 			    PL_LIST, 2, PL_TERM, args[0].tpos,
 					PL_TERM, args[1].tpos) )
 	  return (term_t)0;
       } else
       { if ( !PL_unify_term(r,
 			    PL_FUNCTOR,	FUNCTOR_term_position5,
-			    PL_INTPTR, s,
-			    PL_INTPTR, e,
+			    PL_SWORD, s,
+			    PL_SWORD, e,
 			    PL_INT, 0,
 			    PL_INT, 0,
 			    PL_LIST, 3, PL_TERM, op->tpos,
@@ -3584,7 +3588,7 @@ opPos(DECL_LD op_entry *op, out_entry *args)
 	  return (term_t)0;
       }
     } else
-    { intptr_t s, e;
+    { sword s, e;
 
       if ( op->kind == OP_PREFIX )
       { s = fs;
@@ -3597,17 +3601,17 @@ opPos(DECL_LD op_entry *op, out_entry *args)
       if ( !op->isblock )
       { if ( !PL_unify_term(r,
 			    PL_FUNCTOR,	FUNCTOR_term_position5,
-			    PL_INTPTR, s,
-			    PL_INTPTR, e,
-			    PL_INTPTR, fs,
-			    PL_INTPTR, fe,
+			    PL_SWORD, s,
+			    PL_SWORD, e,
+			    PL_SWORD, fs,
+			    PL_SWORD, fe,
 			      PL_LIST, 1, PL_TERM, args[0].tpos) )
 	  return (term_t)0;
       } else
       { if ( !PL_unify_term(r,
 			    PL_FUNCTOR,	FUNCTOR_term_position5,
-			    PL_INTPTR, s,
-			    PL_INTPTR, e,
+			    PL_SWORD, s,
+			    PL_SWORD, e,
 			    PL_INT, 0,
 			    PL_INT, 0,
 			      PL_LIST, 2, PL_TERM, op->tpos,
@@ -3709,9 +3713,9 @@ typedef struct cterm_state
 
 #define isOp(e, kind, _PL_rd) LDFUNC(isOp, e, kind, _PL_rd)
 static bool
-isOp(DECL_LD op_entry *e, int kind, ReadData _PL_rd)
-{ int pri;
-  int type;
+isOp(DECL_LD op_entry *e, unsigned char kind, ReadData _PL_rd)
+{ short pri;
+  unsigned char type;
 
   if ( !currentOperator(_PL_rd->module, op_name(e), kind, &type, &pri) )
     fail;
@@ -3864,7 +3868,7 @@ can_reduce(op_entry *op, short cpri, int out_n, ReadData _PL_rd)
 	LDFUNC(reduce_one_op, cstate, cpri)
 
 static int
-reduce_one_op(DECL_LD cterm_state *cstate, int cpri)
+reduce_one_op(DECL_LD cterm_state *cstate, short cpri)
 { ReadData _PL_rd = cstate->rd;
 
   if ( cstate->out_n > 0 && cstate->side_n > 0 &&
@@ -3900,7 +3904,7 @@ Returns: TRUE:   Ok
 	LDFUNC(reduce_op, cstate, cpri)
 
 static int
-reduce_op(DECL_LD cterm_state *cstate, int cpri)
+reduce_op(DECL_LD cterm_state *cstate, short cpri)
 { int rc;
 
   while((rc=reduce_one_op(cstate, cpri)) == TRUE)
@@ -3982,8 +3986,8 @@ unify_atomic_position(DECL_LD term_t positions, Token token)
 { if ( positions )
   { return PL_unify_term(positions,
 			 PL_FUNCTOR, FUNCTOR_minus2,
-			   PL_INTPTR, token->start,
-			   PL_INTPTR, token->end);
+			   PL_INT64, token->start,
+			   PL_INT64, token->end);
   } else
     return TRUE;
 }
@@ -3997,8 +4001,8 @@ unify_string_position(DECL_LD term_t positions, Token token)
 { if ( positions )
   { return PL_unify_term(positions,
 			 PL_FUNCTOR, FUNCTOR_string_position2,
-			   PL_INTPTR, token->start,
-			   PL_INTPTR, token->end);
+			   PL_INT64, token->start,
+			   PL_INT64, token->end);
   } else
     return TRUE;
 }
@@ -4250,7 +4254,7 @@ exit:
 
 #define set_range_position(positions, start, end) LDFUNC(set_range_position, positions, start, end)
 static void
-set_range_position(DECL_LD term_t positions, intptr_t start, intptr_t end)
+set_range_position(DECL_LD term_t positions, int64_t start, int64_t end)
 { Word p = valTermRef(positions);
 
   deRef(p);
@@ -4261,7 +4265,7 @@ set_range_position(DECL_LD term_t positions, intptr_t start, intptr_t end)
 
 
 #define end_range(positions) LDFUNC(end_range, positions)
-static intptr_t
+static sword
 end_range(DECL_LD term_t positions)
 { Word p = valTermRef(positions);
 
@@ -4296,7 +4300,7 @@ read_list(DECL_LD Token token, term_t positions, ReadData _PL_rd)
   { if ( !(pv = PL_new_term_refs(3)) ||
 	 !PL_unify_term(positions,
 			PL_FUNCTOR, FUNCTOR_list_position4,
-			PL_INTPTR, token->start,
+			PL_INT64, token->start,
 			PL_VARIABLE,
 			PL_TERM, P_LIST,
 			PL_TERM, P_TAIL) )
@@ -4398,7 +4402,7 @@ read_brace_term(DECL_LD Token token, term_t positions, ReadData _PL_rd)
   { if ( !(pa = PL_new_term_ref()) ||
 	 !PL_unify_term(positions,
 			PL_FUNCTOR, FUNCTOR_brace_term_position3,
-			PL_INTPTR, token->start,
+			PL_INT64, token->start,
 			PL_VARIABLE,
 			PL_TERM, pa) )
       return FALSE;
@@ -4425,7 +4429,7 @@ read_parentheses_term(DECL_LD Token token, term_t positions, ReadData _PL_rd)
   { if ( !(pa = PL_new_term_ref()) ||
 	 !PL_unify_term(positions,
 			PL_FUNCTOR, FUNCTOR_parentheses_term_position3,
-			PL_INTPTR, token->start,
+			PL_INT64, token->start,
 			PL_VARIABLE,
 			PL_TERM, pa) )
       return FALSE;
@@ -4458,10 +4462,10 @@ read_compound(DECL_LD Token token, term_t positions, ReadData _PL_rd)
   { if ( !(pv = PL_new_term_refs(2)) ||
 	 !PL_unify_term(positions,
 			PL_FUNCTOR, FUNCTOR_term_position5,
-			PL_INTPTR, token->start,
+			PL_INT64, token->start,
 			PL_VARIABLE,
-			PL_INTPTR, token->start,
-			PL_INTPTR, token->end,
+			PL_INT64, token->start,
+			PL_INT64, token->end,
 			PL_TERM, P_ARG) )
       return FALSE;
   } else
@@ -4568,10 +4572,10 @@ read_dict(DECL_LD Token token, term_t positions, ReadData _PL_rd)
   { if ( !(pv = PL_new_term_refs(3)) ||
 	 !PL_unify_term(positions,
 			PL_FUNCTOR, FUNCTOR_dict_position5,
-			PL_INTPTR, token->start, /* whole term */
+			PL_INT64, token->start, /* whole term */
 			PL_VARIABLE,
-			PL_INTPTR, token->start, /* class position */
-			PL_INTPTR, token->end,   /* key-value pairs */
+			PL_INT64, token->start, /* class position */
+			PL_INT64, token->end,   /* key-value pairs */
 			PL_TERM, P_ARG) )
       return FALSE;
   } else
@@ -4601,7 +4605,7 @@ read_dict(DECL_LD Token token, term_t positions, ReadData _PL_rd)
   if ( !(tstart->type == T_NAME && tstart->value.atom == ATOM_curl) )
   { do
     { Token key, sep;
-      intptr_t kstart, kend;
+      int64_t kstart, kend;
       term_t key_term;
 
       if ( positions )
@@ -4621,7 +4625,7 @@ read_dict(DECL_LD Token token, term_t positions, ReadData _PL_rd)
 
 	if ( n->type == V_INTEGER && valInt(consInt(n->value.i)) == n->value.i )
 	{ key_term = alloc_term(_PL_rd);
-	  PL_put_integer(key_term, n->value.i);
+	  PL_put_int64(key_term, n->value.i);
 	} else
 	  syntaxError("key_domain", _PL_rd); /* representation error? */
       } else
@@ -4643,14 +4647,14 @@ read_dict(DECL_LD Token token, term_t positions, ReadData _PL_rd)
 
 	if ( !PL_unify_term(P_HEAD,
 			    PL_FUNCTOR, FUNCTOR_key_value_position7,
-			    PL_INTPTR, kstart,		/* whole term */
+			    PL_INT64, kstart,		/* whole term */
 			    PL_VARIABLE,
-			    PL_INTPTR, sep->start, /* : start */
-			    PL_INTPTR, sep->end,   /* : end */
+			    PL_INT64, sep->start, /* : start */
+			    PL_INT64, sep->end,   /* : end */
 			    PL_TERM,   key_term,
 			    PL_FUNCTOR, FUNCTOR_minus2,
-			      PL_INTPTR, kstart,
-			      PL_INTPTR, kend,
+			      PL_INT64, kstart,
+			      PL_INT64, kend,
 			    PL_TERM, P_VALUE) )
 	  return FALSE;
       }
@@ -4661,7 +4665,7 @@ read_dict(DECL_LD Token token, term_t positions, ReadData _PL_rd)
 	return rc;
 
       if ( positions )
-      { intptr_t vend = end_range(P_VALUE);
+      { sword vend = end_range(P_VALUE);
 
 	set_range_position(P_HEAD, -1, vend);
       }
@@ -4780,7 +4784,7 @@ subterm_positions = quasi_quotation_position(From, To, TypePos, ContentPos)
       { if ( !(pv = PL_new_term_refs(3)) ||
 	     !PL_unify_term(positions,
 			    PL_FUNCTOR, FUNCTOR_quasi_quotation_position5,
-			      PL_INTPTR, token->start,
+			      PL_INT64, token->start,
 			      PL_VARIABLE,
 			      PL_TERM, pv+0,
 			      PL_TERM, pv+1,
@@ -4808,15 +4812,15 @@ subterm_positions = quasi_quotation_position(From, To, TypePos, ContentPos)
 	return FALSE;
 
       if ( positions )
-      { intptr_t qqend = source_char_no + ptr_to_pos(rdhere, _PL_rd);
+      { int64_t qqend = source_char_no + ptr_to_pos(rdhere, _PL_rd);
 
 	if ( !PL_unify(pv+0, av+0) )
 	  return FALSE;
 	set_range_position(positions, -1, qqend);
 	if ( !PL_unify_term(pv+2,
 			    PL_FUNCTOR, FUNCTOR_minus2,
-			      PL_INTPTR, token->end,	/* end of | token */
-			      PL_INTPTR, qqend-2) )     /* end minus "|}" */
+			      PL_INT64, token->end,	/* end of | token */
+			      PL_INT64, qqend-2) )     /* end minus "|}" */
 	  return FALSE;
       }
 
@@ -4993,12 +4997,12 @@ backSkipBlanks(const unsigned char *start, const unsigned char *end)
 }
 
 
-word
+foreign_t
 pl_raw_read2(term_t from, term_t term)
 { GET_LD
   unsigned char *s, *e, *t2, *top;
   read_data rd;
-  word rval;
+  foreign_t rval;
   IOSTREAM *in;
   int chr;
   PL_chars_t txt;
@@ -5048,13 +5052,13 @@ pl_raw_read2(term_t from, term_t term)
 }
 
 
-word
+foreign_t
 pl_raw_read(term_t term)
 { return pl_raw_read2(0, term);
 }
 
 
-word
+foreign_t
 pl_read2(term_t from, term_t term)
 { GET_LD
   read_data rd;
@@ -5079,7 +5083,7 @@ pl_read2(term_t from, term_t term)
 }
 
 
-word
+foreign_t
 pl_read(term_t term)
 { return pl_read2(0, term);
 }
@@ -5181,12 +5185,12 @@ retry:
 
   if ( options &&
        !PL_scan_options(options, 0, "read_option", read_clause_options,
-		     &rd.varnames,
-		     &tpos,
-		     &rd.subtpos,
-		     &process_comment,
-		     &opt_comments,
-		     &syntax_errors) )
+			&rd.varnames,
+			&tpos,
+			&rd.subtpos,
+			&process_comment,
+			&opt_comments,
+			&syntax_errors) )
   { PL_close_foreign_frame(fid);
     return FALSE;
   }
@@ -5445,7 +5449,9 @@ PRED_IMPL("read_term_from_atom", 3, read_term_from_atom, 0)
 }
 
 
-#define atom_to_term(atom, term, bindings, text_type) LDFUNC(atom_to_term, atom, term, bindings, text_type)
+#define atom_to_term(atom, term, bindings, text_type) \
+	LDFUNC(atom_to_term, atom, term, bindings, text_type)
+
 static int
 atom_to_term(DECL_LD term_t atom, term_t term, term_t bindings, int text_type)
 { PL_chars_t txt;
@@ -5493,6 +5499,7 @@ atom_to_term(DECL_LD term_t atom, term_t term, term_t bindings, int text_type)
       rd.varnames = bindings;
     else if ( bindings )
       return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_list, bindings);
+    set(&rd, M_RDSTRING_TERM);
 
     if ( !(rval = read_term(term, &rd)) && rd.has_exception )
       rval = PL_raise_exception(rd.exception);

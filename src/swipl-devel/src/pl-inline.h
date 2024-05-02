@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2008-2023, University of Amsterdam
+    Copyright (c)  2008-2024, University of Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -72,7 +72,7 @@
 */
 
 #define HAVE_MSB 1
-static inline int
+static inline unsigned int
 MSB(size_t i)
 { unsigned long index;
 #if SIZEOF_VOIDP == 8
@@ -88,7 +88,7 @@ MSB(size_t i)
 
 #if SIZEOF_VOIDP == 8
 #define HAVE_MSB64 1
-static inline int
+static inline unsigned int
 MSB64(int64_t i)
 { unsigned long index;
   _BitScanReverse64(&index, i);
@@ -124,15 +124,25 @@ __builtin_saddll_overflow(long long int a, long long int b, long long int *res)
 #endif /*_MSC_VER*/
 
 #if !defined(HAVE_MSB) && defined(HAVE__BUILTIN_CLZ)
-#if SIZEOF_VOIDP == SIZEOF_LONG
-#define MSB(i) ((int)sizeof(long)*8-1-__builtin_clzl(i)) /* GCC builtin */
 #define HAVE_MSB 1
-#elif SIZEOF_VOIDP == SIZEOF_LONG_LONG
-#define MSB(i) ((int)sizeof(long long)*8-1-__builtin_clzll(i)) /* GCC builtin */
-#define HAVE_MSB 1
-#endif
 #define HAVE_MSB64 1
-#define MSB64(i) ((int)sizeof(long long)*8-1-__builtin_clzll(i))
+
+static inline unsigned int
+MSB(size_t i)
+{
+#if SIZEOF_VOIDP == SIZEOF_LONG
+  return (unsigned int)sizeof(long)*8-1-__builtin_clzl(i);
+#elif SIZEOF_VOIDP == SIZEOF_LONG_LONG
+  return (unsigned int)sizeof(long long)*8-1-__builtin_clzll(i);
+#else
+#error "No MSB";
+#endif
+}
+
+static inline unsigned int
+MSB64(int64_t i)
+{ return (unsigned int)sizeof(long long)*8-1-__builtin_clzll(i);
+}
 #endif
 
 #ifdef HAVE_GCC_ATOMIC
@@ -273,6 +283,20 @@ COMPARE_AND_SWAP_WORD(word *at, word from, word to)
 #endif
 }
 
+static inline int
+COMPARE_AND_SWAP_ATOM(atom_t *at, atom_t from, atom_t to)
+{
+#ifdef _MSC_VER
+# if SIZEOF_ATOM == 4
+  return _InterlockedCompareExchange(at, to, from) == from;
+# else
+  return _InterlockedCompareExchange64(at, to, from) == from;
+#endif
+#else
+  return __COMPARE_AND_SWAP(at, from, to);
+#endif
+}
+
 #else
 #define ATOMIC_ADD(ptr, v)		(*ptr += v)
 #define ATOMIC_SUB(ptr, v)		(*ptr -= v)
@@ -288,6 +312,7 @@ COMPARE_AND_SWAP_WORD(word *at, word from, word to)
 #define COMPARE_AND_SWAP_UINT(ptr,o,n)	COMPARE_AND_SWAP(ptr,o,n)
 #define COMPARE_AND_SWAP_SIZE(ptr,o,n)	COMPARE_AND_SWAP(ptr,o,n)
 #define COMPARE_AND_SWAP_WORD(ptr,o,n)	COMPARE_AND_SWAP(ptr,o,n)
+#define COMPARE_AND_SWAP_ATOM(ptr,o,n)	COMPARE_AND_SWAP(ptr,o,n)
 #endif
 
 #ifndef HAVE_MSB
@@ -507,18 +532,17 @@ Trail(DECL_LD Word p, word v)
 }
 
 
-#define consPtrB(p, base, ts)	f_consPtr(p, (uintptr_t)(base), ts)
-#define consPtr(p, ts)		consPtrB(p, LD->bases[(ts)&STG_MASK], (ts))
-#define f_consPtr(p, base, ts) LDFUNC(f_consPtr, p, base, ts)
 static inline word
-f_consPtr(DECL_LD void *p, uintptr_t base, word ts)
-{ uintptr_t v = (uintptr_t) p;
+consPtr(void *p, word ts)
+{ word v = ptr2word(p);
 
-  v -= base;
-  DEBUG(CHK_SECURE, assert(v < MAXTAGGEDPTR && !(v&0x3)));
-  return (v<<5)|ts;
+  return (v<<LMASK_BITS)|ts;
 }
 
+static inline Word
+valPtr(word w)
+{ return word2ptr(Word, w>>LMASK_BITS);
+}
 
 #if ALIGNOF_DOUBLE == ALIGNOF_VOIDP
 #define valFloat(w) (*(double *)valIndirectP(w))
@@ -531,30 +555,6 @@ valFloat(DECL_LD word w)
 
   memcpy(&d, p, sizeof(d));
   return d;
-}
-#endif
-
-
-#if ALIGNOF_INT64_T == ALIGNOF_VOIDP
-#define valBignum(w) (*(int64_t *)valIndirectP(w))
-#else
-#define valBignum(w) LDFUNC(valBignum, w)
-static inline int64_t
-valBignum(DECL_LD word w)
-{ Word p = valIndirectP(w);
-  union
-  { int64_t i;
-    word w[WORDS_PER_INT64];
-  } val;
-
-#if ( SIZEOF_VOIDP == 4 )
-  val.w[0] = p[0];
-  val.w[1] = p[1];
-#else
-#error "Unsupported int64_t alignment conversion"
-#endif
-
-  return val.i;
 }
 #endif
 
@@ -576,15 +576,12 @@ checking (unless compiled for debugging) and fetches the base address of
 the global stack only once.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define linkValI(p) LDFUNC(linkValI, p)
 static inline word
-linkValI(DECL_LD Word p)
+linkValI(Word p)
 { word w = *p;
-  uintptr_t gb = LD->bases[STG_GLOBAL];
 
   while(isRef(w))
-  { //p = unRef(w);
-    p = (Word)valPtrB(w,gb);
+  { p = unRef(w);
     w = *p;
   }
 
@@ -593,9 +590,8 @@ linkValI(DECL_LD Word p)
   if ( !needsRef(w) )
   { return w;
   } else
-  { // return makeRefG(p);
-    DEBUG(0, assert(p<(Word)lBase));
-    return consPtrB(p, gb, TAG_REFERENCE|STG_GLOBAL);
+  { DEBUG(0, assert(p<(Word)lBase));
+    return makeRefG(p);
   }
 }
 

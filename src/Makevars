@@ -17,7 +17,7 @@ rswipl.o: ../build/done
 ../build/done:
 	mkdir -p ../build
 ifdef CMAKE_VERSION
-	(cd ../build ; CC="$(CC)" CXX="$(CXX)" CFLAGS="$(subst -pedantic,,$(subst -Wstrict-prototypes,,$(CFLAGS)))" CPPFLAGS="$(CPPFLAGS)" LDFLAGS="$(LDFLAGS)" cmake -DCMAKE_CXX_STANDARD=17 -DCMAKE_INSTALL_PREFIX=../inst/swipl -DSWIPL_INSTALL_IN_LIB=ON -DINSTALL_DOCUMENTATION=OFF -DBUILD_TESTING=OFF -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DSWIPL_PACKAGES_PYTHON=OFF -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel)
+	(cd ../build ; CC="$(CC)" CXX="$(CXX)" CFLAGS="$(subst -pedantic,,$(subst -Wstrict-prototypes,,$(CFLAGS)))" LDFLAGS="$(LDFLAGS)" CXXFLAGS="$(subst -Werror=implicit-function-declaration,,$(CXXFLAGS))" cmake -DCMAKE_CXX_STANDARD=17 -DCMAKE_INSTALL_PREFIX=../inst/swipl -DSWIPL_INSTALL_IN_LIB=ON -DINSTALL_DOCUMENTATION=OFF -DBUILD_TESTING=ON -DINSTALL_TESTS=ON -DSWIPL_PACKAGES_JAVA=OFF -DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF -DUSE_GMP=OFF -DSWIPL_PACKAGES_PYTHON=OFF -DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel)
 	LD_LIBRARY_PATH=$(CURDIR)/../build/src:${LD_LIBRARY_PATH} cmake --build ../build
 	cmake --install ../build
 else

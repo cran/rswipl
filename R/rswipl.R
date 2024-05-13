@@ -93,7 +93,9 @@
     return(FALSE)
   }
 
-  packageStartupMessage(options()$rswipl.message)
+  msg <- options()$rswipl.message
+  if(msg != "")
+     packageStartupMessage(msg)
   invisible()
 }
 

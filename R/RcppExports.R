@@ -21,6 +21,10 @@
     .Call('_rswipl_init_', PACKAGE = 'rswipl', argv0)
 }
 
+.swipl <- function(argv0, arglist) {
+    .Call('_rswipl_swipl_', PACKAGE = 'rswipl', argv0, arglist)
+}
+
 .done <- function() {
     .Call('_rswipl_done_', PACKAGE = 'rswipl')
 }

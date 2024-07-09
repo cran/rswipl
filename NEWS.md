@@ -1,3 +1,13 @@
+# rswipl 9.3.7.2
+
+Disable Rcpp::Language until SET-TYPEOF problem has been fixed.
+
+# rswipl 9.3.7.1
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-7/7477
+
+Add unit tests during installation, disable SIGUSR2 in Prolog
+
 # rswipl 9.3.5.1
 
 maintainance release, fixes problems reported for ASAN/UBSAN

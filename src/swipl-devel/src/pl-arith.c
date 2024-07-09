@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2023, University of Amsterdam
+    Copyright (c)  1985-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -80,6 +80,8 @@ in this array.
 #include <ieeefp.h>
 #endif
 #include <fenv.h>
+
+#define O_BIGNUM_PRECHECK_ALLOCATIONS 1
 
 #ifndef DBL_MAX
 #define DBL_MAX     1.7976931348623157e+308
@@ -1710,6 +1712,7 @@ ar_shift(Number n1, Number n2, Number r, int dir)
   if ( ar_sign_i(n1) == 0 )		/* shift of 0 is always 0 */
   { r->value.i = 0;
     r->type = V_INTEGER;
+    return TRUE;
   }
 
   switch(n2->type)			/* amount to shift */
@@ -1744,7 +1747,7 @@ ar_shift(Number n1, Number n2, Number r, int dir)
       if ( dir < 0 )			/* shift left (<<) */
       {
 #ifdef O_BIGNUM				/* msb() is 0..63 */
-	int bits = shift;
+	size_t bits = shift;
 
 	if ( n1->value.i >= 0 )
 	  bits += MSB64(n1->value.i);
@@ -1753,15 +1756,15 @@ ar_shift(Number n1, Number n2, Number r, int dir)
 	else
 	  bits += MSB64(-n1->value.i);
 
-	if ( bits >= (int)(sizeof(int64_t)*8-1) )
+	if ( bits >= sizeof(int64_t)*8-1 )
 	{ promoteToMPZNumber(n1);
 	  goto mpz;
 	} else
 #endif
-	{ r->value.i = n1->value.i << shift;
+	{ r->value.i = (int64_t)((uint64_t)n1->value.i << shift);
 	}
-      } else
-      { if ( shift >= (long)sizeof(int64_t)*8 )
+      } else				/* shift right (>>) */
+      { if ( shift >= sizeof(int64_t)*8 )
 	  r->value.i = (n1->value.i >= 0 ? 0 : -1);
 	else
 	  r->value.i = n1->value.i >> shift;
@@ -1773,15 +1776,17 @@ ar_shift(Number n1, Number n2, Number r, int dir)
     mpz:
       r->type = V_MPZ;
       mpz_init(r->value.mpz);
-      if ( dir < 0 )
+      if ( dir < 0 )		/* shift left (<<) */
       {
 #ifdef O_BIGNUM_PRECHECK_ALLOCATIONS
-	GET_LD
 	uint64_t msb = mpz_sizeinbase(n1->value.mpz, 2)+shift;
 
-	if ( (msb/sizeof(char)) > (uint64_t)globalStackLimit() )
-	{ mpz_clear(r->value.mpz);
-	  return int_too_big();
+	if ( msb > 10000 )
+	{ GET_LD
+	  if ( (msb/sizeof(char)) > (uint64_t)globalStackLimit() )
+	  { mpz_clear(r->value.mpz);
+	    return int_too_big();
+	  }
 	}
 #endif /*O_BIGNUM_PRECHECK_ALLOCATIONS*/
 	mpz_mul_2exp(r->value.mpz, n1->value.mpz, shift);

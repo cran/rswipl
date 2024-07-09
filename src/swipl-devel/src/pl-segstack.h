@@ -76,7 +76,7 @@ emptySegStack(segstack *s)
 
 
 #define popSegStack(stack, to, type) \
-	( ((stack)->top >= (stack)->base + sizeof(type))	\
+	( ((stack)->top && (stack)->top >= (stack)->base + sizeof(type)) \
 		? ( (stack)->top -= sizeof(type),		\
 		    *to = *(type*)(stack)->top,			\
 		    TRUE					\
@@ -86,7 +86,7 @@ emptySegStack(segstack *s)
 	)
 
 #define pushSegStack(stack, data, type) \
-	( ((stack)->top + sizeof(type) <= (stack)->max)	\
+	( ((stack)->top && (stack)->top + sizeof(type) <= (stack)->max)	\
 		? ( *(type*)(stack)->top = data,		\
 		    (stack)->top += sizeof(type),		\
 		    TRUE					\
@@ -101,6 +101,7 @@ COMMON(void*)	topOfSegStack(segstack *stack);
 COMMON(void)	popTopOfSegStack_(segstack *stack);
 COMMON(void)	scanSegStack(segstack *s, void (*func)(void *cell));
 COMMON(void)	clearSegStack_(segstack *s);
+COMMON(void)	free_segstack_chunks(segchunk *c);
 
 		 /*******************************
 		 *	       INLINE		*
@@ -111,6 +112,19 @@ clearSegStack(segstack *s)
 { if ( s->first )
     clearSegStack_(s);
 }
+
+
+static inline void
+discardSegStack(segstack *s)
+{ segchunk *c = s->first;
+
+  if ( c )
+  { if ( !c->allocated )
+      c = c->next;
+    free_segstack_chunks(c);
+  }
+}
+
 
 
 static inline void

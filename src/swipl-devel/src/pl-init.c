@@ -100,7 +100,7 @@ option  parsing,  initialisation  and  handling  of errors and warnings.
 
 static int	usage(void);
 static int	giveVersionInfo(const char *a);
-static bool	vsysError(const char *fm, va_list args);
+static bool	vsysError(const char *errtype, const char *fm, va_list args);
 
 #define	optionString(s) { if (argc > 1) \
 			  { if ( s ) remove_string(s); \
@@ -1356,13 +1356,14 @@ usage(void)
     "    -l file                  Script source file\n",
     "    -s file                  Script source file\n",
     "    -p alias=path            Define file search path 'alias'\n",
-    "    -D name=value		  Set a Prolog flag\n",
+    "    -D name=value            Set a Prolog flag\n",
     "    -O                       Optimised compilation\n",
     "    --on-error=style         One of print, halt or status\n",
     "    --on-warning=style       One of print, halt or status\n",
     "    --tty[=bool]             (Dis)allow tty control\n",
     "    --packs[=bool]           Do (not) attach add-ons\n",
     "    --signals[=bool]         Do (not) modify signal handling\n",
+    "    --sigalert[=num]         Use signal num for alerting threads\n",
     "    --threads[=bool]         Do (not) allow for threads\n",
     "    --debug[=bool]           Do (not) generate debug info\n",
     "    --debug-on-interrupt[=bool] Trap the debugger on interrupt\n",
@@ -1733,12 +1734,11 @@ sysError(const char *fm, ...)
 { va_list args;
 
   va_start(args, fm);
-  vsysError(fm, args);
+  vsysError("system", fm, args);
   va_end(args);
 
   PL_fail;
 }
-
 
 void
 fatalError(const char *fm, ...)
@@ -1773,6 +1773,13 @@ printCrashContext(const char *btname)
   time_t now;
   char tbuf[48];
   int btflags = 0;
+  static bool running = FALSE;
+
+  if ( running )
+  { Sdprintf("Recursive crash; omitting crash report\n");
+    return;
+  }
+  running = TRUE;
 
   now = time(NULL);
   ctime_r(&now, tbuf);
@@ -1802,36 +1809,63 @@ printCrashContext(const char *btname)
 
   print_backtrace_named(btname);
   if ( LD )
-  { if ( LD->shift_status.inferences )
-    { Sdprintf("Last stack shift at %" PRIu64 " inferences\n",
-		LD->shift_status.inferences);
-      print_backtrace_named("SHIFT");
-    }
-    if ( LD->gc.inferences )
-    { Sdprintf("Last garbage collect at %" PRIu64 " inferences\n",
-		LD->gc.inferences);
-      print_backtrace_named("GC");
+  { if ( getenv("SWIPL_DEBUG_GC_STACK") )
+    { if ( LD->shift_status.inferences )
+      { Sdprintf("Last stack shift at %" PRIu64 " inferences\n",
+		 LD->shift_status.inferences);
+	print_backtrace_named("SHIFT");
+      }
+      if ( LD->gc.inferences )
+      { Sdprintf("Last garbage collect at %" PRIu64 " inferences\n",
+		 LD->gc.inferences);
+	print_backtrace_named("GC");
+      }
     }
     Sdprintf("\n\nPROLOG STACK:\n");
     PL_backtrace(10, btflags);
   }
+
+  running = FALSE;
 }
 
+#ifdef HAVE_SETITIMER
+static void
+abort_sig(int sig)
+{ (void)sig;
+  abort();
+}
+#endif
 
+static void
+set_cleanup_timeout(int sec)
+{
+#ifdef HAVE_SETITIMER
+  struct itimerval timeout = {0};
+  struct sigaction act = {0};
+
+  timeout.it_value.tv_sec = sec;
+  act.sa_handler = abort_sig;
+
+  sigaction(SIGALRM, &act, NULL);
+  setitimer(ITIMER_REAL, &timeout, NULL);
+#endif
+}
 
 static bool
-vsysError(const char *fm, va_list args)
+vsysError(const char *errtype, const char *fm, va_list args)
 { static int active = 0;
 
   if ( active++ )
     abort();
 
-  Sfprintf(Serror, "\nERROR: System error: ");
+  set_cleanup_timeout(30);
+
+  Sfprintf(Serror, "\nERROR: %s error: ", errtype);
   Svfprintf(Serror, fm, args);
   Sfprintf(Serror, "\n");
 
-  save_backtrace("SYSERROR");
-  printCrashContext("SYSERROR");
+  save_backtrace(errtype);
+  printCrashContext(errtype);
 
   if ( !(true(Sinput, SIO_ISATTY) &&
 	 true(Serror, SIO_ISATTY)) ||
@@ -1839,13 +1873,13 @@ vsysError(const char *fm, va_list args)
     PL_abort_process();			/* non-interactive or booting */
 
 action:
+  Sflush(Soutput);
+  ResetTty();
 #ifdef HAVE_GETPID
   Sfprintf(Serror, "\n[pid=%d] Action? ", getpid());
 #else
   Sfprintf(Serror, "\nAction? ");
 #endif
-  Sflush(Soutput);
-  ResetTty();
 
   switch(getSingleChar(Sinput, FALSE))
   { case EOF:
@@ -1868,7 +1902,16 @@ PL_system_error(const char *fm, ...)
 { va_list args;
 
   va_start(args, fm);
-  vsysError(fm, args);
+  vsysError("system", fm, args);
+  va_end(args);
+}
+
+void
+PL_api_error(const char *fm, ...)
+{ va_list args;
+
+  va_start(args, fm);
+  vsysError("API", fm, args);
   va_end(args);
 }
 

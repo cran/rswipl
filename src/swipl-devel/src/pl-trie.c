@@ -538,7 +538,7 @@ prune_trie(trie *trie, trie_node *root,
 
 
 #define VMASKBITS  (sizeof(unsigned)*8)
-#define VMASK_SCAN (0x1<<(VMASKBITS-1))
+#define VMASK_SCAN (0x1U<<(VMASKBITS-1))
 
 static inline void
 update_var_mask(trie_children_hashed *hnode, word key)
@@ -547,7 +547,7 @@ update_var_mask(trie_children_hashed *hnode, word key)
     unsigned mask;
 
     if ( vn < VMASKBITS )
-      mask = 0x1<<(vn-1);
+      mask = 0x1U<<(vn-1);
     else
       mask = VMASK_SCAN;
 
@@ -2675,13 +2675,19 @@ fixup_else(trie_compile_state *state)
   base[el] = pc-el-1;
 }
 
+/* Add an indirect to the compiled trie.   Indirects are stored
+ * using the header field, followed by the content.  I.e., the
+ * same format as on the stacks, except that the trailing guard
+ * is missing.  Therefore we write `wsize+1` words.
+ */
+
 static void
 add_indirect(trie_compile_state *state, vmi op, word w)
 { Word p = addressIndirect(w);
   size_t wsize = wsizeofInd(*p);
 
   add_vmi(state, op);
-  addMultipleBuffer(&state->codes, p, wsize, word);
+  addMultipleBuffer(&state->codes, p, wsize+1, word);
 }
 
 static void
@@ -2780,10 +2786,11 @@ compile_trie_value(DECL_LD Word v, trie_compile_state *state)
 	  }
 	  break;
 	case TAG_FLOAT:
-	{ Word ip = valIndirectP(w);
-	  add_vmi_d(state, T_FLOAT, (code)ip[0]);
+	{ Code ip = (Code)valIndirectP(w);
+	  add_vmi_d(state, T_FLOAT, ip[0]);
 #if SIZEOF_CODE == 4
-	  addBuffer(&state->codes, (code)ip[1], code);
+	  static_assertion(sizeof(double) == sizeof(code)*2);
+	  addBuffer(&state->codes, ip[1], code);
 #endif
           break;
 	}
@@ -2890,12 +2897,13 @@ next:
 	    add_vmi_w(state, T_STRING, h->header);
 	  break;
         case TAG_FLOAT:
-	  { static_assertion(sizeof(h->data[0]) == sizeof(word)); }
-	  if ( state->try )
-	    add_vmi_else_w(state, T_TRY_FLOAT, h->data[0]);
-	  else
-	    add_vmi_w(state, T_FLOAT, h->data[0]);
-	  goto indirect_done;
+	  { static_assertion(sizeof(h->data[0]) == sizeof(double));
+	    if ( state->try )
+	      add_vmi_else_w(state, T_TRY_FLOAT, h->data[0]);
+	    else
+	      add_vmi_w(state, T_FLOAT, h->data[0]);
+	    goto indirect_done;
+	  }
       }
 
       addMultipleBuffer(&state->codes, h->data, wsize, word);
@@ -2964,9 +2972,9 @@ children:
       { add_vmi(state, T_VALUE);
 	if ( !isRecord(n->value) )
 	{ if ( isAtom(n->value) )
-	  { add_vmi_d(state, T_ATOM, (code)n->value);
+	  { add_vmi_d(state, T_ATOM, word2code(n->value));
 	  } else
-	  { add_vmi_d(state, T_SMALLINT, (code)n->value);
+	  { add_smallint(state, T_SMALLINT, T_SMALLINTW, n->value);
 	  }
 	} else
 	{ term_t t2;

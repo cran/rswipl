@@ -12,7 +12,7 @@ query(
 \item{q}{an R call. The R call consists of symbols, integers and real numbers,
 character strings, boolean values, expressions, lists, and other calls.
 Vectors of booleans, integers, floating point numbers, and strings with
-length \emph{N} > 1 are translated to prolog compounds !!/N, \%\%/N, ##/N and $$/N,
+length \emph{N} > 1 are translated to prolog compounds !/N, \%/N, #/N and $$/N,
 respectively.}
 }
 \value{
@@ -26,34 +26,9 @@ SWI-Prolog does not allow multiple open queries. If another query is open, it
 it is closed and a warning is shown.
 }
 \examples{
-query(call("writeln", function(x) {sin(x)}))
+q <- query(call("member", 1, expression(X)))
 submit()
-clear()
-
-query(call("=", expression(X), function(x) {sin(x)}))
 submit()
-clear()
-
-query(call("member", expression(X), list(quote(a), "b", 3L, 4, TRUE, expression(Y),
-  NA, NaN, Inf, NULL, NULL, function(x) {y <- sin(x); y^2}, NULL)))
-submit() # X = a
-submit() # X = "b"
-submit() # X = 3L
-submit() # X = 4.0
-submit() # X = TRUE
-submit() # X = expression(Y) or Y = expression(X)
-submit() # X = NA
-submit() # X = NaN
-submit() # X = Inf
-submit() # X = NULL
-submit() # X = NULL
-submit() # X = function(x) {y <- sin(x); y^2}))
-submit() # X = NULL
-submit() # FALSE (no more results)
-submit() # warning that no query is open
-
-query(call("member", expression(X), list(quote(a), "b", 3L, 4)))
-query(call("member", expression(X), list(TRUE, expression(Y)))) # warning that another query is open
 clear()
 
 }

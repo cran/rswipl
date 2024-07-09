@@ -12,7 +12,7 @@ swipl:
 		-DCMAKE_INSTALL_PREFIX=../inst/swipl\
 		-DSWIPL_PACKAGES_X=OFF -DSWIPL_PACKAGES_ODBC=OFF\
 		-DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_PYTHON=OFF\
-		-DBUILD_TESTING=OFF\
+		-DBUILD_TESTING=ON\
 		-DCMAKE_CXX_STANDARD=17\
 		-DUSE_GMP=ON\
 		-DMINGW_ROOT=$(R_TOOLS_SOFT)\
@@ -22,6 +22,7 @@ swipl:
 	# dos2unix all Makefiles
 	find ../mingw64 -name Makefile -exec sed -i 's/\r//' \{\} \;
 	make -C ../mingw64 install
+	-( cd ../mingw64 ; ctest )
 	rm ../inst/swipl/bin/swipl.exe
 	rm ../inst/swipl/bin/swipl-win.exe
 	rm ../inst/swipl/bin/swipl-ld.exe

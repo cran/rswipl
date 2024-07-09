@@ -69,7 +69,7 @@ next_chunk_size(segstack *stack)
 
 void *
 pushSegStack_(segstack *stack, void *data)
-{ if ( stack->top + stack->unit_size <= stack->max )
+{ if ( stack->top && stack->top + stack->unit_size <= stack->max )
   { char *ptr = stack->top;
 
     if ( data )
@@ -134,7 +134,7 @@ int
 popSegStack_(segstack *stack, void *data)
 { again:
 
-  if ( stack->top >= stack->base + stack->unit_size )
+  if ( stack->top && stack->top >= stack->base + stack->unit_size )
   { stack->top -= stack->unit_size;
     if ( data )
       memcpy(data, stack->top, stack->unit_size);
@@ -261,6 +261,15 @@ scanSegStack(segstack *stack, void (*func)(void *cell))
   }
 }
 
+void
+free_segstack_chunks(segchunk *c)
+{ segchunk *n;
+
+  for(; c; c = n)
+  { n = c->next;
+    tmp_free(c);
+  }
+}
 
 void
 clearSegStack_(segstack *s)
@@ -276,15 +285,9 @@ clearSegStack_(segstack *s)
     s->max  = addPointer(c, c->size);
     s->chunk_count = 1;
 
-    for(c=n; c; c = n)
-    { n = c->next;
-      tmp_free(c);
-    }
+    free_segstack_chunks(n);
   } else				/* all dynamic chunks */
-  { for(; c; c = n)
-    { n = c->next;
-      tmp_free(c);
-    }
+  { free_segstack_chunks(c);
     memset(s, 0, sizeof(*s));
   }
 }

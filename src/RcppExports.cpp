@@ -63,6 +63,18 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// swipl_
+LogicalVector swipl_(String argv0, CharacterVector& arglist);
+RcppExport SEXP _rswipl_swipl_(SEXP argv0SEXP, SEXP arglistSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< String >::type argv0(argv0SEXP);
+    Rcpp::traits::input_parameter< CharacterVector& >::type arglist(arglistSEXP);
+    rcpp_result_gen = Rcpp::wrap(swipl_(argv0, arglist));
+    return rcpp_result_gen;
+END_RCPP
+}
 // done_
 LogicalVector done_();
 RcppExport SEXP _rswipl_done_() {
@@ -80,6 +92,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_rswipl_clear_", (DL_FUNC) &_rswipl_clear_, 0},
     {"_rswipl_submit_", (DL_FUNC) &_rswipl_submit_, 0},
     {"_rswipl_init_", (DL_FUNC) &_rswipl_init_, 1},
+    {"_rswipl_swipl_", (DL_FUNC) &_rswipl_swipl_, 2},
     {"_rswipl_done_", (DL_FUNC) &_rswipl_done_, 0},
     {NULL, NULL, 0}
 };

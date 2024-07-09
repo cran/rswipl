@@ -86,6 +86,9 @@
   if(!options()$rswipl.ok)
     return(FALSE)
 
+  if(commandArgs()[1] == "-e" & commandArgs()[2] == "rswipl:::swipl()")
+    return(swipl())
+
   Sys.setenv(SWI_HOME_DIR=options()$rswipl.home)
   if(!.init(commandArgs()[1]))
   {
@@ -112,3 +115,21 @@
   else
     Sys.setenv(SWI_HOME_DIR=home)
 }
+
+#' Invoke SWI-Prolog
+#' 
+#' This function is internally used to emulate swipl using
+#' the R program: R -e "rswipl:::swipl()" -q --no-echo --args -g goal
+#'
+#' @return
+#' nothing useful
+swipl <- function()
+{
+  if(!.swipl(commandArgs()[1], commandArgs(TRUE)))
+  {
+    warning("rswipl: running swipl failed.")
+    return(FALSE)
+  }
+  invisible()
+}
+

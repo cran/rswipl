@@ -428,7 +428,7 @@ extern PL_local_data_t* no_local_ld(void);
 #define WITH_LD(ld) \
 	for (PL_local_data_t *__PL_ld = (ld), *__loopctr = NULL; \
 	     !__loopctr; \
-	     __loopctr++)
+	     __loopctr = (PL_local_data_t*) 1)
 /* Passing an alternate LD to a called function. This uses the same mechanism
  * as DECL_LD, but takes it one step further. _VE_PASSLD below is a macro that
  * does not exist, but when DECL_LDFUNC() pastes __VOID_EMPTY_ to the beginning
@@ -550,7 +550,7 @@ struct foreign_context
 #define YIELD_PTR	0x01		/* Returned a pointer */
 #define REDO_INT	0x02		/* Returned an integer */
 
-#define ForeignRedoIntVal(v)	(((uintptr_t)((v)<<FRG_REDO_BITS))|REDO_INT)
+#define ForeignRedoIntVal(v)	(((uintptr_t)((uintptr_t)(v)<<FRG_REDO_BITS))|REDO_INT)
 #define ForeignRedoPtrVal(v)	(((uintptr_t)(v))|REDO_PTR)
 #define ForeignYieldPtrVal(v)	(((uintptr_t)(v))|YIELD_PTR)
 

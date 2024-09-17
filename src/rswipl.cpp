@@ -3,7 +3,6 @@
 #include <SWI-cpp2.h>
 #include <SWI-cpp2.cpp>
 
-// #include "Rcpp.h"
 using namespace Rcpp ;
 
 // Translate prolog expression to R
@@ -269,6 +268,47 @@ RObject pl2r_symbol(PlTerm pl)
 }
 
 // Forward declaration, needed below
+RObject pl2r_compound(PlTerm pl, CharacterVector& names, PlTerm& vars) ;
+
+// Convert prolog neck to R function
+RObject pl2r_function(PlTerm pl, CharacterVector& names, PlTerm& vars)
+{
+  PlTerm plhead = pl[1] ;
+  PlTerm plbody = pl[2] ;
+
+  PlAtom n(PlAtom::null) ;
+  size_t arity = plhead.arity() ;
+
+  DottedPair head ;
+  for(unsigned int i=1 ; i<=arity ; i++)
+  {
+    PlTerm arg = plhead[i] ;
+
+    // Compounds like mean=100 are translated to named function arguments
+    if(arg.is_compound() && arg.name().as_string() == "=" && arg.arity() == 2)
+    {
+      PlTerm a1 = arg[1] ;
+      PlTerm a2 = arg[2] ;
+      if(a1.is_atom())
+      {
+        head.push_back(Named(a1.as_string(PlEncoding::UTF8)) = pl2r(a2, names, vars)) ;
+        continue ;
+      }
+    }
+
+    // the argument is the name
+    // head.push_back(Named(arg.as_string(PlEncoding::UTF8)) = pl2r_symbol(PlTerm_atom(""))) ;
+    head.push_back(Named(arg.as_string(PlEncoding::UTF8)) = Function("substitute")()) ;
+  }
+
+  RObject body = pl2r_compound(plbody, names, vars) ;
+  head.push_back(body) ;
+
+  Function as_function("as.function") ;
+  Function as_list("as.list") ;
+  return wrap(as_function(as_list(head))) ;
+}
+
 LogicalVector pl2r_boolvec(PlTerm pl)
 {
   size_t arity = pl.arity() ;
@@ -351,6 +391,150 @@ RObject pl2r_variable(PlTerm pl, CharacterVector& names, PlTerm& vars)
   return ExpressionVector::create(Symbol(pl.as_string(PlEncoding::UTF8))) ; // TODO: PlEncoding::Locale?
 }
 
+// Translate prolog compound to R call
+//
+// This function takes care of special compound names (#, %, $, !) for vector
+// objects in R, as well as "named" function arguments like "mean=100", in
+// rnorm(10, mean=100, sd=15).
+RObject pl2r_compound(PlTerm pl, CharacterVector& names, PlTerm& vars)
+{
+  // This function does not (yet) work for cyclic terms
+  if(!PL_is_acyclic(pl.C_))
+    stop("pl2r: Cannot convert cyclic term %s", pl.as_string(PlEncoding::Locale).c_str()) ;
+
+  // Convert ##(#(...), ...) to NumericMatrix
+  if(!strcmp(pl.name().as_string(PlEncoding::UTF8).c_str(), "###"))
+    return pl2r_realmat(pl) ;
+
+  // Convert #(1.0, 2.0, 3.0) to DoubleVector
+  if(!strcmp(pl.name().as_string(PlEncoding::UTF8).c_str(), "##"))
+    return pl2r_realvec(pl) ;
+
+  // Convert %%(%(...), ...) to IntegerMatrix
+  if(!strcmp(pl.name().as_string(PlEncoding::UTF8).c_str(), "%%%"))
+    return pl2r_intmat(pl) ;
+
+  // Convert %(1.0, 2.0, 3.0) to IntegerVector
+  if(!strcmp(pl.name().as_string(PlEncoding::UTF8).c_str(), "%%"))
+    return pl2r_intvec(pl) ;
+
+  // Convert $$$($$(...), ...) to StringMatrix
+  if(!strcmp(pl.name().as_string(PlEncoding::UTF8).c_str(), "$$$"))
+    return pl2r_charmat(pl) ;
+
+  // Convert $$(1.0, 2.0, 3.0) to CharacterVector
+  if(!strcmp(pl.name().as_string(PlEncoding::UTF8).c_str(), "$$"))
+    return pl2r_charvec(pl) ;
+
+  // Convert !!(!(...), ...) to LogicalMatrix
+  if(!strcmp(pl.name().as_string(PlEncoding::UTF8).c_str(), "!!!"))
+    return pl2r_boolmat(pl) ;
+
+  // Convert !(1.0, 2.0, 3.0) to LogicalVector
+  if(!strcmp(pl.name().as_string(PlEncoding::UTF8).c_str(), "!!"))
+    return pl2r_boolvec(pl) ;
+
+  // Convert :- to function
+  if(!strcmp(pl.name().as_string(PlEncoding::UTF8).c_str(), ":-"))
+    return pl2r_function(pl, names, vars) ;
+
+  // Other compounds
+  size_t arity = pl.arity() ;
+  List r ;
+  r.push_back(Symbol(pl.name().as_string(PlEncoding::UTF8).c_str())) ;
+  for(unsigned int i=1 ; i<=arity ; i++)
+  {
+    PlTerm arg = pl[i] ;
+
+    // Compounds like mean=100 are translated to named function arguments
+    if(arg.is_compound() && !strcmp(arg.name().as_string(PlEncoding::UTF8).c_str(), "=") && arg.arity() == 2)
+    {
+      PlTerm a1 = arg[1] ;
+      PlTerm a2 = arg[2] ;
+      if(a1.is_atom())
+      {
+        r.push_back(pl2r(a2, names, vars), a1.name().as_string(PlEncoding::UTF8).c_str())  ;
+        continue ;
+      }
+    }
+
+    // argument has no name
+    r.push_back(pl2r(arg, names, vars)) ;
+  }
+
+  Function as_call("as.call") ;
+  return as_call(r) ;
+}
+
+// Translate prolog list to R list
+//
+// This code allows for lists like [1, 2 | Tail] with variable tail. These 
+// cannot be processed by PlTerm_tail, therefore, the code is a bit more 
+// complicated, also because it can handle named arguments.
+//
+// Examples:
+// [1, 2, 3] -> list(1, 2, 3)
+// [1, 2 | X] -> `[|]`(1, `[|]`(2, expression(X)))
+// [a-1, b-2, c-3] -> list(a=1, b=2, c=3)
+//
+RObject pl2r_list(PlTerm pl, CharacterVector& names, PlTerm& vars)
+{
+  PlTerm head = pl[1] ;
+  
+  // if the tail is a list or empty, return a normal list
+  RObject tail = pl2r(pl[2], names, vars) ;
+  if(TYPEOF(tail) == VECSXP || TYPEOF(tail) == NILSXP)
+  {
+    List r = as<List>(tail) ;
+    
+    // convert prolog pair a-X to named list element
+    if(head.is_compound())
+    {
+      if(!strcmp(head.name().as_string(PlEncoding::UTF8).c_str(), "-") && head.arity() == 2)
+      {
+        PlTerm a1 = head[1] ;
+        PlTerm a2 = head[2] ;
+        if(a1.is_atom())
+        {
+          r.push_front(pl2r(a2, names, vars), a1.name().as_string(PlEncoding::UTF8).c_str()) ;
+          return r ;
+        }
+      }
+    }
+    
+    // element has no name
+    r.push_front(pl2r(head, names, vars)) ; 
+    return r ;
+  }
+    
+  // if the tail is something else, return [|](head, tail)
+  List r ;
+  r.push_back(Symbol(pl.name().as_string(PlEncoding::UTF8).c_str())) ;
+  
+  // convert prolog pair a-X to named list element
+  if(head.is_compound())
+  {
+    if(!strcmp(head.name().as_string(PlEncoding::UTF8).c_str(), "-") && head.arity() == 2)
+    {
+      PlTerm a1 = head[1] ;
+      PlTerm a2 = head[2] ;
+      if(a1.is_atom())
+      {
+        r.push_back(pl2r(a2, names, vars), a1.name().as_string(PlEncoding::UTF8).c_str()) ;
+        r.push_back(tail) ;
+	Function as_call("as.call") ;
+        return as_call(r) ;
+      }
+    }
+  }
+
+  // element has no name
+  r.push_back(pl2r(head, names, vars)) ; 
+  r.push_back(tail) ;
+  Function as_call("as.call") ;
+  return as_call(r) ;
+}
+
 RObject pl2r(PlTerm pl, CharacterVector& names, PlTerm& vars)
 {
   if(pl.type() == PL_NIL)
@@ -367,6 +551,12 @@ RObject pl2r(PlTerm pl, CharacterVector& names, PlTerm& vars)
   
   if(pl.is_atom())
     return pl2r_symbol(pl) ;
+  
+  if(pl.is_list())
+    return pl2r_list(pl, names, vars) ;
+  
+  if(pl.is_compound())
+    return pl2r_compound(pl, names, vars) ;
   
   if(pl.is_variable())
     return pl2r_variable(pl, names, vars) ;
@@ -614,6 +804,45 @@ PlTerm r2pl_string(CharacterVector r)
   return PlCompound("$$", args) ;
 }
 
+// Translate R call to prolog compound, taking into account the names of the
+// arguments, e.g., rexp(50, rate=1) -> rexp(50, =(rate, 1))
+PlTerm r2pl_compound(DottedPair r, CharacterVector& names, PlTerm& vars)
+{
+  // For convenience, collect arguments in a list
+  List l = as<List>(CDR(r)) ;
+
+  // R functions with no arguments are translated to compounds (not atoms)
+  size_t len = (size_t) l.size() ;
+  if(len == 0)
+  {
+    PlTermv pl(3) ;
+    PlCheckFail(pl[1].unify_atom(as<Symbol>(CAR(r)).c_str())) ;
+    PlCheckFail(pl[2].unify_integer(0)) ;
+    PlCall("compound_name_arity", pl) ;
+    return pl[0] ;
+  }
+
+  // Extract names of arguments
+  CharacterVector n ;
+  // if there are no names, l.names() returns NULL and n has length 0
+  if(TYPEOF(l.names()) == STRSXP)
+    n = l.names() ;
+  
+  PlTermv pl(len) ;
+  for(size_t i=0 ; i<len ; i++)
+  {
+    PlTerm arg = r2pl(l(i), names, vars) ;
+    
+    // Convert named arguments to prolog compounds a=X
+    if(n.length() && n(i) != "")
+      PlCheckFail(pl[i].unify_term(PlCompound("=", PlTermv(PlTerm_atom(n(i)), arg)))) ;
+    else
+      PlCheckFail(pl[i].unify_term(arg)) ; // no name
+  }
+
+  return PlCompound(as<Symbol>(CAR(r)).c_str(), pl) ;
+}
+
 // Translate R list to prolog list, taking into account the names of the
 // elements, e.g., list(a=1, b=2) -> [a-1, b-2]. This may change, since the
 // minus sign is a bit specific to prolog, and the conversion in the reverse
@@ -643,8 +872,38 @@ PlTerm r2pl_list(List r, CharacterVector& names, PlTerm& vars)
   return pl ;
 }
 
+// Translate R function to :- ("neck")
+PlTerm r2pl_function(Function r, CharacterVector& names, PlTerm& vars)
+{
+  PlTermv fun(2) ;
+  PlCheckFail(fun[1].unify_term(r2pl_compound(BODY(r), names, vars))) ;
+  
+  List formals = as<List>(FORMALS(r)) ;
+  size_t len = (size_t) formals.size() ;
+  if(len == 0)
+  {
+    PlTermv pl(3) ;
+    PlCheckFail(pl[1].unify_atom("$function")) ;
+    PlCheckFail(pl[2].unify_integer(0)) ;
+    PlCall("compound_name_arity", pl) ;
+
+    PlCheckFail(fun[0].unify_term(pl[0])) ;
+    return PlCompound(":-", fun) ;
+  }
+  
+  CharacterVector n = formals.names() ;
+  PlTermv pl(len) ;
+  for(size_t i=0 ; i<len ; i++)
+    PlCheckFail(pl[i].unify_atom(n(i))) ;
+  PlCheckFail(fun[0].unify_term(PlCompound("$function", pl))) ;
+  return PlCompound(":-", fun) ;
+}
+
 PlTerm r2pl(SEXP r, CharacterVector& names, PlTerm& vars)
 {
+  if(TYPEOF(r) == LANGSXP)
+    return r2pl_compound(r, names, vars) ;
+
   if(TYPEOF(r) == REALSXP)
     return r2pl_real(r) ;
   
@@ -668,6 +927,9 @@ PlTerm r2pl(SEXP r, CharacterVector& names, PlTerm& vars)
   
   if(TYPEOF(r) == NILSXP)
     return r2pl_null() ;
+  
+  if(TYPEOF(r) == CLOSXP)
+    return r2pl_function(r, names, vars) ;
   
   return r2pl_na() ;
 }
@@ -795,34 +1057,11 @@ const char** pl_argv = NULL ;
 
 // Initialize SWI-Prolog. This needs a list of the command-line arguments of 
 // the calling program, the most important being the name of the main 
-// executable, argv[0]. I added "-q" to suppress SWI prolog's welcome message
-// which is shown in .onAttach anyway.
+// executable, argv[0]. Further arguments make sense, e.g. "-q" to suppress
+// SWI-prolog's welcome message (which is shown in .onAttach), and maybe
+// also "--sigalert=0" because it interferes with R's own use of signals.
 // [[Rcpp::export(.init)]]
-LogicalVector init_(String argv0)
-{
-  if(pl_initialized)
-    warning("Please do not initialize SWI-Prolog twice in the same session.") ;
-  
-  // Prolog documentation requires that argv is accessible during the entire 
-  // session. I assume that this pointer is valid during the whole R session,
-  // and that I can safely cast it to const.
-  const int argc = 2 ; // 4 ; // forthcoming
-  pl_argv = new const char*[argc] ;
-  pl_argv[0] = argv0.get_cstring() ;
-  pl_argv[1] = "-q" ;
-//  pl_argv[2] = "-D embedded=true" ;
-//  pl_argv[3] = "--sigalert=0" ;
-  if(!PL_initialise(argc, (char**) pl_argv))
-    stop("rswipl_init: initialization failed.") ;
-
-  pl_initialized = true ;  
-  return true ;
-}
-
-// Run a swipl session from R. This is needed for unit tests. Instead of
-// swipl -g goal, invoke R -e 'library(rswipl)' --no-echo -q --args -g goal
-// [[Rcpp::export(.swipl)]]
-LogicalVector swipl_(String argv0, CharacterVector& arglist)
+LogicalVector init_(String argv0, CharacterVector& arglist)
 {
   if(pl_initialized)
     warning("Please do not initialize SWI-Prolog twice in the same session.") ;
@@ -831,7 +1070,7 @@ LogicalVector swipl_(String argv0, CharacterVector& arglist)
   pl_argv = new const char*[argc] ;
   pl_argv[0] = argv0.get_cstring() ;
   for(R_xlen_t i=1 ; i<argc ; i++)
-    pl_argv[i] = arglist(i-1) ;
+    pl_argv[i] = arglist(i - 1) ;
   if(!PL_initialise(argc, (char**) pl_argv))
     stop("rswipl_init_swipl: initialization failed.") ;
 

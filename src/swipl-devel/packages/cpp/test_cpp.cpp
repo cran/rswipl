@@ -62,9 +62,11 @@ how the various predicates can be called from Prolog.
 #include <memory>
 #include "SWI-cpp2.h"
 #include "SWI-cpp2-atommap.h"
+#include "SWI-cpp2-flags.h"
 #include <errno.h>
 #include <math.h>
 #include <cassert>
+#include <cstdio> // for MyFileBlob
 #include <limits>
 #include <string>
 #include <map>
@@ -142,6 +144,17 @@ PREDICATE(hello3, 2)
     // TODO: use len when fixed: https://github.com/SWI-Prolog/swipl-devel/issues/1074
     return A2.unify_chars(PL_STRING|REP_UTF8, strlen(buf), buf);
   return false;
+}
+
+PREDICATE(hello4, 1)
+{ // The following code is the same as
+  //   A1.unify_term(PlCompound("hello", PlTermv(PlAtom("world"))));
+  // but is in separate statements to make tracig constructors easier.
+  auto hello_world = A1;
+  auto world_atom = PlAtom("world");
+  auto world_termv = PlTermv(world_atom);
+  auto hello_world_compound = PlCompound("hello", world_termv);
+  return hello_world.unify_term(hello_world_compound);
 }
 
 // TODO: add tests
@@ -283,7 +296,7 @@ PREDICATE(term_to_string, 2)
 }
 
 PREDICATE(term, 1)
-{ return A1.unify_term(PlCompound("hello", PlTermv(PlTerm_atom("world"))));
+{ return A1.unify_term(PlCompound("hello", PlTermv(PlAtom("world"))));
 }
 
 PREDICATE(term, 2)
@@ -388,17 +401,17 @@ PREDICATE(eq4, 2)
 }
 
 PREDICATE(write_list, 1)
-{ PlTerm_tail tail(A1);
-  PlTerm_var e;
-  PlStream strm(Scurrent_output);
+{ PlStream strm(Scurrent_output);
+
   // This is an example of using the try...PREDICATE_CATCH for avoiding
   // throwing an exception in the PlStream destructor.
+  PlTerm_tail tail(A1);
+  PlTerm_var e;
   try
   { while( tail.next(e) )
       strm.printf("%s\n", e.as_string().c_str());
   } PREDICATE_CATCH({strm.release(); return false;})
-  PlCheckFail(tail.unify_nil());
-  return true;
+  return tail.close();  // or: PlCheckFail(tail.unify_nil());
 }
 
 PREDICATE(cappend, 3)
@@ -412,6 +425,18 @@ PREDICATE(cappend, 3)
   return A2.unify_term(l3);
 }
 
+static const PlOptionsFlag<int>
+open_query_options("open-query flag",
+                   { // {"debug",         PL_Q_DEBUG},
+                     // {"deterministic", PL_Q_DETERMINISTIC },
+                     {"normal",          PL_Q_NORMAL},
+                     {"nodebug",         PL_Q_NODEBUG},
+                     {"catch_exception", PL_Q_CATCH_EXCEPTION},
+                     {"pass_exception",  PL_Q_PASS_EXCEPTION},
+                     {"allow_exception", PL_Q_ALLOW_YIELD},
+                     {"ext_status",      PL_Q_EXT_STATUS} });
+
+
 // TODO: This doesn't do quite what's expected if there's an
 //       exception.  Instead of returning the exception to Prolog, it
 //       ends up in the debugger.
@@ -420,20 +445,12 @@ PREDICATE(cappend, 3)
 PREDICATE(cpp_call_, 3)
 { int flags = A2.as_int();
   int verbose = A3.as_bool();
-  std::string flag_str;
+  std::string flag_str = open_query_options.as_string(flags);
   PlStream strm(Scurrent_output);
-  // if ( flags & PL_Q_DEBUG )        flag_str.append(",debug");
-  // if ( flags & PL_Q_DETERMINISTIC) flag_str.append(",deterministic");
-  if ( flags & PL_Q_NORMAL )          flag_str.append(",normal");
-  if ( flags & PL_Q_NODEBUG )         flag_str.append(",nodebug");
-  if ( flags & PL_Q_CATCH_EXCEPTION)  flag_str.append(",catch_exception");
-  if ( flags & PL_Q_PASS_EXCEPTION)   flag_str.append(",pass_exception");
-  if ( flags & PL_Q_ALLOW_YIELD)      flag_str.append(",allow_exception");
-  if ( flags & PL_Q_EXT_STATUS)       flag_str.append(",ext_status");
   if ( flag_str.empty() )
     flag_str = "cpp_call";
   else
-    flag_str = std::string("cpp_call(").append(flag_str.substr(1)).append(")");
+    flag_str = "cpp_call(" + flag_str + ")";
   if ( verbose )
     strm.printf("%s: %s\n",  flag_str.c_str(), A1.as_string().c_str());
 
@@ -570,7 +587,6 @@ public:
 
 PREDICATE(make_my_object, 1)
 { auto myobj = new MyClass();
-
   return A1.unify_pointer(myobj);
 }
 
@@ -581,7 +597,6 @@ PREDICATE(my_object_contents, 2)
 
 PREDICATE(free_my_object, 1)
 { auto myobj = static_cast<MyClass*>(A1.as_pointer());
-
   delete myobj;
   return true;
 }
@@ -659,15 +674,15 @@ PREDICATE(hostname2, 1)
 // #pragma GCC diagnostic push
 // #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 // #endif
-
+//
 // PREDICATE(eq_int64, 2)
 // { return A1 == A2.as_int64_t();
 // }
-
+// 
 // PREDICATE(lt_int64, 2)
 // { return A1 < A2.as_int64_t();
 // }
-
+// 
 // #ifdef _MSC_VER
 // #pragma warning( pop )
 // #else
@@ -675,7 +690,7 @@ PREDICATE(hostname2, 1)
 // #endif
 
 PREDICATE(get_atom_ex, 2)
-{ PlAtom a(PlTerm::null);
+{ PlAtom a(PlAtom::null);
   A1.get_atom_ex(&a);
   return A2.unify_atom(a);
 }
@@ -725,6 +740,28 @@ PREDICATE(ensure_PlTerm_forward_declarations_are_implemented, 0)
   const char codes[] = {81,82,83,0};
   PlTerm_list_codes s02(codes);
   PlTerm_list_chars s03("mno");
+
+  PlTerm_var tt;
+  tt.put_variable();
+  tt.put_atom(PlAtom("xyz"));
+  tt.put_bool(false);
+  tt.put_atom_chars("abcdefg");
+  tt.put_string_chars("gfedcba");
+  tt.put_chars(0, 3, "abc");
+  tt.put_list_chars("mnopq");
+  tt.put_list_codes("1234");
+  tt.put_atom_nchars(3, "111");
+  tt.put_string_nchars(3, "222");
+  tt.put_list_nchars(3, "333");
+  tt.put_list_ncodes(3, "444");
+  tt.put_integer(-1234);
+  tt.put_pointer(&tt);
+  tt.put_float(0.123);
+  tt.put_functor(PlFunctor("foo", 1));
+  tt.put_list();
+  tt.put_nil();
+  tt.put_term(t_string1);
+
   PlAtom atom1("atom1");
   PlAtom atom2(L"原子2");
   PlAtom atom3(std::string("atom3"));
@@ -1065,9 +1102,9 @@ PREDICATE(unify_foo_string_2b, 1)
 
 PREDICATE(pl_write_atoms_cpp, 1)
 { auto l = A1;
-  PlTerm_var head;
-  PlTerm tail(l.copy_term_ref());
   PlStream strm(Scurrent_output);
+  PlTerm tail(l.copy_term_ref());
+  PlTerm_var head;
 
   while( tail.get_list_ex(head, tail) )
   { strm.printf("%s\n", head.as_string().c_str());
@@ -1514,7 +1551,7 @@ struct MyBlob : public PlBlob
       connection(std::make_unique<MyConnection>(connection_name)),
       blob_name(connection_name)
   { if ( !connection ) // make_unique should have thrown exception if it can't allocate
-      PL_system_error("MyBlob(%s) connection=%p", blob_name.c_str(), connection.get());
+      PL_api_error("MyBlob(%s) connection=%p", blob_name.c_str(), connection.get());
     if ( !connection->open() )
       throw MyBlobError("my_blob_open_error");
     if ( name_contains("FAIL_new") ) // Test error handling
@@ -1612,12 +1649,161 @@ PREDICATE(portray_my_blob, 2)
 }
 
 
+// TODO: Add the following code to
+// pl2cpp2.doc \subsubsection{Sample PlBlob code (pointer)}
+
+struct MyFileBlob;
+
+static PL_blob_t my_file_blob = PL_BLOB_DEFINITION(MyFileBlob, "my_file_blob");
+
+static const PlOptionsFlag<int>
+MyFileBlob_options("MyFileBlob-options",
+                   { {"absolute", PL_FILE_ABSOLUTE},
+                     {"ospath",   PL_FILE_OSPATH},
+                     {"search",   PL_FILE_SEARCH},
+                     {"exist",    PL_FILE_EXIST},
+                     {"read",     PL_FILE_READ},
+                     {"write",    PL_FILE_WRITE},
+                     {"execute",  PL_FILE_EXECUTE},
+                     {"noerrors", PL_FILE_NOERRORS} });
+
+struct MyFileBlob : public PlBlob
+{ std::FILE* file_;
+
+  std::string mode_;
+  int flags_;
+  std::string filename_;
+  std::vector<char> buffer_; // used by read(), to avoid re-allocation
+
+  explicit MyFileBlob()
+    : PlBlob(&my_file_blob) { }
+
+  explicit MyFileBlob(PlTerm filename, PlTerm mode, PlTerm flags)
+    : PlBlob(&my_file_blob),
+      mode_(mode.as_string())
+  { flags_ = MyFileBlob_options.lookup_list(flags);
+    filename_ = filename.get_file_name(flags_);
+    file_ = fopen(filename_.c_str(), mode_.c_str());
+    if ( !file_ ) // TODO: get error code (might not be existence error)
+      throw PlExistenceError("my_file_blob_open", PlTerm_string(filename_));
+    // for debugging:
+    //   PlTerm_string(filename.as_string() + "\" => \"" +
+    //                 filename_ + "\", \"" + mode_ +
+    //                 ", flags=" + MyFileBlob_options.as_string(flags_) + "\")")
+  }
+
+  PL_BLOB_SIZE
+
+  std::string read(size_t count)
+  { assert(sizeof buffer_[0] == sizeof (char));
+    assert(sizeof (char) == 1);
+
+    buffer_.reserve(count);
+    return std::string(buffer_.data(),
+                       std::fread(buffer_.data(), sizeof buffer_[0], count, file_));
+  }
+
+  bool eof() const
+  { return std::feof(file_);
+  }
+
+  bool error() const
+  { return std::ferror(file_);
+  }
+
+  virtual ~MyFileBlob() noexcept
+  { if ( !close() )
+      // Can't use PL_warning()
+      Sdprintf("***ERROR: Close MyFileBlob failed: (%s)\n", filename_.c_str());
+  }
+
+  bool close() noexcept
+  { if ( !file_ )
+      return true;
+    int rc = std::fclose(file_);
+    file_ = nullptr;
+    return rc == 0;
+  }
+
+  PlException MyFileBlobError(const std::string error) const
+  { return PlGeneralError(PlCompound(error, PlTermv(symbol_term())));
+  }
+
+  int compare_fields(const PlBlob* _b_data) const override
+  { // dynamic_cast is safer than static_cast, but slower (see documentation)
+    // It's used here for testing (the documentation has static_cast)
+    auto b_data = dynamic_cast<const MyFileBlob*>(_b_data);
+    return filename_.compare(b_data->filename_);
+  }
+
+  bool write_fields(IOSTREAM *s, int flags) const override
+  { PlStream strm(s);
+    strm.printf(",");
+    return write_fields_only(strm);
+  }
+
+  bool write_fields_only(PlStream& strm) const
+  { // For debugging:
+    // strm.printf("%s mode=%s flags=%s", filename_.c_str(), mode_.c_str(),
+    //             MyFileBlob_options.as_string(flags_).c_str());
+    strm.printf("%s", filename_.c_str());
+    if ( !file_ )
+      strm.printf("-CLOSED");
+    return true;
+  }
+
+  bool portray(PlStream& strm) const
+  { strm.printf("MyFileBlob(");
+    write_fields_only(strm);
+    strm.printf(")");
+    return true;
+  }
+};
+
+PREDICATE(my_file_open, 4)
+{ auto ref = std::unique_ptr<PlBlob>(new MyFileBlob(A2, A3, A4));
+  return A1.unify_blob(&ref);
+}
+
+PREDICATE(my_file_close, 1)
+{ auto ref = PlBlobV<MyFileBlob>::cast_ex(A1, my_file_blob);
+  if ( !ref->close() ) // TODO: get the error code
+    throw ref->MyFileBlobError("my_file_blob_close_error");
+  return true;
+}
+
+PREDICATE(my_file_filename_atom, 2)
+{ auto ref = PlBlobV<MyFileBlob>::cast_ex(A1, my_file_blob);
+  return A2.unify_atom(ref->filename_);
+}
+
+PREDICATE(my_file_filename_string, 2)
+{ auto ref = PlBlobV<MyFileBlob>::cast_ex(A1, my_file_blob);
+  return A2.unify_string(ref->filename_);
+}
+
+PREDICATE(my_file_read, 3)
+{ auto ref = PlBlobV<MyFileBlob>::cast_ex(A1, my_file_blob);
+  return A3.unify_string(ref->read(A2.as_int64_t()));
+}
+
+// %! my_file_blob_portray(+Stream, +MyFileBlob) is det.
+// % Hook predicate for
+// %   user:portray(MyFileBlob) :-
+// %     blob(MyFileBlob, my_file_blob), !,
+// %     my_file_blob_portray(current_output, MyFileBlob).
+PREDICATE(my_file_blob_portray, 2)
+{ auto ref = PlBlobV<MyFileBlob>::cast_ex(A2, my_file_blob);
+  PlStream strm(A1, 0);
+  return ref->portray(strm);
+}
+
+
 static AtomMap<PlAtom, PlAtom> map_atom_atom("add", "atom_atom");
 
 PREDICATE(atom_atom_find, 2)
 { auto value = map_atom_atom.find(A1.as_atom());
-  PlCheckFail(value.not_null());
-  return A2.unify_atom(value);
+  return value.not_null() && A2.unify_atom(value);
 }
 
 PREDICATE(atom_atom_add, 2)
@@ -1638,9 +1824,7 @@ static AtomMap<PlTerm, PlRecord> map_atom_term("insert", "atom_term");
 
 PREDICATE(atom_term_find, 2)
 { auto value = map_atom_term.find(A1.as_atom());
-  if ( value.is_null() )
-    return false;
-  return A2.unify_term(value);
+  return value.not_null() && A2.unify_term(value);
 }
 
 PREDICATE(atom_term_insert, 2)
@@ -1845,59 +2029,40 @@ PREDICATE_NONDET(enum_map_str_str, 4)
   return false;
 }
 
-static
-void append_sep(std::string *str, unsigned int *flags,
-                const std::string& app, unsigned int one_flag)
-{ if ( (*flags & one_flag) == one_flag )
-  { str->append(",");
-    str->append(app);
-    *flags &= ~one_flag;
-  }
-}
+static const
+PlOptionsFlag<unsigned int>
+nchars_flags("nchars-flags",
+             // compound flags are first, so, e.g. CVT_NUMBER subsumes CVT_RATIONAL, CVT_FLOAT
+             { {"xinteger",        CVT_XINTEGER}, // must be before CVT_INTEGER, CVT_NUMBER
+               {"all",             CVT_ALL},
+               {"atomic",          CVT_ATOMIC},
+               {"number",          CVT_NUMBER},
+
+               {"atom",            CVT_ATOM},
+               {"string",          CVT_STRING},
+               {"integer",         CVT_INTEGER},
+               {"list",            CVT_LIST},
+               {"rational",        CVT_RATIONAL},
+               {"float",           CVT_FLOAT},
+               {"variable",        CVT_VARIABLE},
+               {"write",           CVT_WRITE},
+               {"write_canonical", CVT_WRITE_CANONICAL},
+               {"writeq",          CVT_WRITEQ},
+
+               {"exception",       CVT_EXCEPTION},
+               {"varnofail",       CVT_VARNOFAIL},
+
+               {"stack",           BUF_STACK},
+               {"malloc",          BUF_MALLOC},
+               {"allow_stack",     BUF_ALLOW_STACK},
+
+               {"utf8",            REP_UTF8},
+               {"mb",              REP_MB},
+               {"diff_list",       PL_DIFF_LIST} });
 
 static
 std::string nchars_flags_string(unsigned int flags)
-{ std::string result;
-
-  // "Compound" flags are first - they change `flags`,
-  // so that, e.g. "number" doesn't also output "rational,float,integer".
-  // But "xinteger" is special.
-  unsigned int flags_o = flags;
-  if( (flags & CVT_XINTEGER) == CVT_XINTEGER )
-  { result.append(",xinteger");
-    flags &= ~CVT_XINTEGER;
-  }
-  append_sep(&result, &flags, "all",             CVT_ALL);
-  append_sep(&result, &flags, "atomic",          CVT_ATOMIC);
-  append_sep(&result, &flags, "number",          CVT_NUMBER);
-
-  append_sep(&result, &flags, "atom",            CVT_ATOM);
-  append_sep(&result, &flags, "string",          CVT_STRING);
-  if ( !((flags_o & CVT_XINTEGER) == CVT_XINTEGER ) )
-    append_sep(&result, &flags, "integer",         CVT_INTEGER);
-  append_sep(&result, &flags, "list",            CVT_LIST);
-  append_sep(&result, &flags, "rational",        CVT_RATIONAL);
-  append_sep(&result, &flags, "float",           CVT_FLOAT);
-  append_sep(&result, &flags, "variable",        CVT_VARIABLE);
-  append_sep(&result, &flags, "write",           CVT_WRITE);
-  append_sep(&result, &flags, "write_canonical", CVT_WRITE_CANONICAL);
-  append_sep(&result, &flags, "writeq",          CVT_WRITEQ);
-
-  append_sep(&result, &flags, "exception",       CVT_EXCEPTION);
-  append_sep(&result, &flags, "varnofail",       CVT_VARNOFAIL);
-
-  append_sep(&result, &flags, "stack",           BUF_STACK);
-  append_sep(&result, &flags, "malloc",          BUF_MALLOC);
-  append_sep(&result, &flags, "allow_stack",     BUF_ALLOW_STACK);
-
-  append_sep(&result, &flags, "utf8",            REP_UTF8);
-  append_sep(&result, &flags, "mb",              REP_MB);
-  append_sep(&result, &flags, "diff_list",       PL_DIFF_LIST);
-
-  if ( flags )
-    throw PlDomainError("write-options-flag", PlTerm_integer(flags));
-
-  return result.empty() ? "" : result.substr(1);
+{ return nchars_flags.as_string(flags);
 }
 
 static const std::map<const std::string, unsigned int> write_option_to_flag =
@@ -1942,9 +2107,9 @@ static const std::map<const std::string, unsigned int> write_option_to_flag =
 
 static
 unsigned int nchars_flag(PlTerm list)
-{ PlTerm_tail tail(list);
+{ unsigned int flags = 0;
+  PlTerm_tail tail(list);
   PlTerm_var e;
-  unsigned int flags = 0;
   while ( tail.next(e) )
   { e.must_be_atomic();
     const auto it = write_option_to_flag.find(e.as_string());
@@ -1952,6 +2117,7 @@ unsigned int nchars_flag(PlTerm list)
       throw PlDomainError("write-option", e);
     flags |= it->second;
   }
+  PlCheckFail(tail.close());
   return flags;
 }
 
@@ -2095,4 +2261,167 @@ PREDICATE(compile_only_stream, 0)
   (void)loc2;
 
   return false;
+}
+
+
+// Tests for PlTermScoped
+
+bool
+unify_atom_list(const std::vector<std::string>& array, PlTerm list)
+{ PlTermScoped tail(list);
+  term_t save_head = PlTerm::null; // For checking that PL_free_term_ref() is called
+  for( auto item : array )
+  { PlTermScoped head; // var term
+    if ( save_head != PlTerm::null &&
+         save_head != head.unwrap() )
+      throw PlUnknownError("unify_atom_list head not reused");
+    save_head = head.unwrap();
+    PlCheckFail(tail.unify_list(head, tail));
+    PlCheckFail(head.unify_chars(PL_ATOM, item));
+  }
+  return tail.unify_nil();
+}
+
+// The same code as unify_atom_list, using the C interface:
+int
+unify_atom_list_c(char **array, size_t len, term_t list)
+{ term_t tail;
+
+  if ( !(tail=PL_copy_term_ref(list)) )
+    return FALSE;
+
+  for(size_t i=0; i<len; i++)
+  { term_t head;
+
+    if ( !(head = PL_new_term_ref()) ||
+	 !PL_unify_list(tail, head, tail) ||
+	 !PL_unify_chars(head, PL_ATOM, (size_t)-1, array[i]) )
+    {  PL_free_term_ref(head);
+      return FALSE;
+    }
+    PL_free_term_ref(head);
+  }
+
+  if ( PL_unify_nil(tail) )
+  { PL_free_term_ref(tail);
+    return TRUE;
+  }
+  PL_free_term_ref(tail);
+  return FALSE;
+}
+
+// unify_atom_list(In, Out)
+PREDICATE(unify_atom_list, 2)
+{ std::vector<std::string> array;
+  PlTerm_tail tail(A1);
+  PlTerm_var e;
+  while( tail.next(e) )
+    array.push_back(e.as_string());
+  return tail.close() && unify_atom_list(array, A2);
+}
+
+// unify_atom_list_c(In, Out) - same as unify_atom_list/2
+//                              but uses C API
+PREDICATE(unify_atom_list_c, 2)
+{ std::vector<std::string> array;
+  PlTerm_tail tail(A1);
+  PlTerm_var e;
+  while( tail.next(e) )
+    array.push_back(e.as_string());
+  if ( ! tail.close() )
+    return false;
+  char** array2 = (char**)calloc(sizeof (char*), array.size());
+  for( size_t i = 0; i < array.size(); i++ )
+    array2[i] = strdup(array[i].c_str());
+
+  int rc = unify_atom_list_c(array2, array.size(), A2.unwrap());
+
+  for( size_t i = 0; i < array.size(); i++ )
+    free(array2[i]);
+  free(array2);
+  return rc;
+}
+
+PREDICATE(term_release, 0) // TODO: make this into a proper test
+{ PlStream strm(Scurrent_output);
+  PlTermScoped t1;
+  strm.printf("term_release: t1=%zd\n", t1.unwrap());
+  if ( t1.is_null() )
+    throw PlUnknownError("PlTermScoped t1 ctor didn't get a term");
+  PlTermScoped t2;
+  if ( t2.is_null() )
+    throw PlUnknownError("PlTermScoped t2 ctor didn't get a term");
+  if ( t1.unwrap() == t2.unwrap() )
+    throw PlUnknownError("PlTermScoped t1 == t2");
+
+  term_t save_t1 = t1.unwrap(), save_t2 = t2.unwrap();
+
+  t1.swap(t2);
+  if ( t1.unwrap() != save_t2 )
+    throw PlUnknownError("PlTermScoped t1.swap(t2) 1 failed (1)");
+  if ( t2.unwrap() != save_t1 )
+    throw PlUnknownError("PlTermScoped t1.swap(t2) 1 failed (2)");
+  std::swap(t1, t2); // TODO: add test that this swap is called when sorting a vector
+  if ( t1.unwrap() != save_t1 )
+    throw PlUnknownError("PlTermScoped swap(t1,t2) failed (1)");
+  if ( t2.unwrap() != save_t2 )
+    throw PlUnknownError("PlTermScoped swap(t1,t2) failed (2)");
+
+  PlTermScoped t3(t1.release());
+  if ( t1.not_null() )
+    throw PlUnknownError("PlTermScoped t3(t1.release()) failed");
+  if ( t3.unwrap() != save_t1 )
+    throw PlUnknownError("PlTermScoped t3 ctor failed");
+
+  PlTermScoped t4;
+  t4.reset();
+  if ( t4.not_null() )
+    throw PlUnknownError("PlTermScoped t4.reset() failed");
+  t4.reset(t3.release());
+  if ( t3.not_null() )
+    throw PlUnknownError("PlTermScoped t4.reset(t3.release()) failed");
+  if ( t4.unwrap() != save_t1 )
+    throw PlUnknownError("PlTermScoped t4 != save_t1");
+
+  PlTermScoped t5(std::move(t4));
+  if ( t4.not_null() )
+    throw PlUnknownError("PlTermScoped std::move(t4) failed");
+  if ( t5.unwrap() != save_t1 )
+    throw PlUnknownError("PlTermScoped t5 != save_t1");
+
+  PlTermScoped t6;
+  t6 = std::move(t5);
+  if ( t5.not_null() )
+    throw PlUnknownError("PlTermScoped std::move(t5) failed");
+  if ( t6.unwrap() != save_t1 )
+    throw PlUnknownError("PlTermScoped t6 != save_t1");
+
+  // TODO: why doesn't the following compile? (See t6, which does):
+  // PlTermScoped t7 = std::move(t6);
+
+  return true;
+}
+
+// record_ext(Term, External:string)
+// if External is a variable, unifies it with the external record of Term
+// else unifies Term with the conversion from the external record
+PREDICATE(record_ext, 2)
+{ PlTerm term(A1), external(A2);
+  if ( external.is_variable() )
+  { PlRecordExternalCopy ext(term);
+    return external.unify_string(ext.data());
+  }
+  return term.unify_term(
+      PlRecordExternalCopy::term(external.get_nchars(CVT_STRING|CVT_EXCEPTION)));
+}
+
+// Same as record_ext/2, but calls different method
+PREDICATE(record_ext2, 2)
+{ PlTerm term(A1), external(A2);
+  if ( external.is_variable() )
+  { PlRecordExternalCopy ext(term);
+    return external.unify_string(ext.data());
+  }
+  PlRecordExternalCopy ext(external.get_nchars(CVT_STRING|CVT_EXCEPTION));
+  return term.unify_term(ext.term());
 }

@@ -81,31 +81,10 @@
   invisible()
 }
 
-.onAttach <- function(libname, pkgname)
-{
-  if(!options()$rswipl.ok)
-    return(FALSE)
-
-  if(commandArgs()[1] == "-e" & commandArgs()[2] == "rswipl:::swipl()")
-    return(swipl())
-
-  Sys.setenv(SWI_HOME_DIR=options()$rswipl.home)
-  if(!.init(commandArgs()[1]))
-  {
-    warning("rswipl: initialization of swipl failed.")  
-    return(FALSE)
-  }
-
-  msg <- options()$rswipl.message
-  if(msg != "")
-     packageStartupMessage(msg)
-  invisible()
-}
-
-.onDetach <- function(libpath)
+.finalize <- function(libpath)
 {
   # Clear any open queries
-  clear() 
+  clear()
   if(!.done())
     stop("rswipl: not initialized.")
 
@@ -116,16 +95,62 @@
     Sys.setenv(SWI_HOME_DIR=home)
 }
 
+.onAttach <- function(libname, pkgname)
+{
+   if(!options()$rswipl.ok)
+    return(FALSE)
+
+  Sys.setenv(SWI_HOME_DIR=options()$rswipl.home)
+  if(commandArgs()[1] == "-e" & commandArgs()[2] == "rswipl::swipl()")
+    return(swipl())
+  
+  argv <- "-q" # Suppress welcome message
+  if(.Platform$OS.type == "unix")
+    argv <- c(argv, "--sigalert=0")
+
+  if(!.init(commandArgs()[1], argv))
+  {
+    warning("rswipl: initialization of swipl failed.")  
+    return(FALSE)
+  }
+
+  msg <- options()$rswipl.message
+  if(msg != "")
+     packageStartupMessage(msg)
+
+  parent <- parent.env(environment())
+  reg.finalizer(parent, .finalize, onexit=TRUE)
+  invisible()
+}
+
+.onDetach <- function(libpath)
+{
+  .finalize()
+}
+
 #' Invoke SWI-Prolog
 #' 
-#' This function is internally used to emulate swipl using
-#' the R program: R -e "rswipl:::swipl()" -q --no-echo --args -g goal
+#' This function is internally used to emulate swipl -g goal using
+#' the R program: R -e "rswipl::swipl()" -q --no-echo --args -g goal
+#'
+#' @param sigalert
+#' Use a different alert signal than SIGUSR2 (ignored on Windows)
 #'
 #' @return
 #' nothing useful
-swipl <- function()
+swipl <- function(sigalert=NA)
 {
-  if(!.swipl(commandArgs()[1], commandArgs(TRUE)))
+  if(!options()$rswipl.ok)
+    return(FALSE)
+
+  argv <- "-q"
+  if(!is.na(sigalert) & .Platform$OS.type == "unix")
+    argv <- c(argv, sprintf("--sigalert=%i", sigalert))
+  argv <- c(commandArgs(TRUE), argv)
+  warning(argv)
+
+  Sys.setenv(SWI_HOME_DIR=options()$rswipl.home)
+  if(!.init(commandArgs()[1], argv))
   {
     warning("rswipl: running swipl failed.")
     return(FALSE)

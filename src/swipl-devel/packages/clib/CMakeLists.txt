@@ -106,7 +106,11 @@ if(MULTI_THREADED)
   test_libs(socket af_unix udp_sockets)
 endif()
 endif(HAVE_SOCKET)
+else(NOT EMSCRIPTEN)
+  swipl_plugin(uuid                                                                          PL_LIBS uuid.pl) 
 endif(NOT EMSCRIPTEN)
+
+test_libs(uuid)
 
 ################
 # Documentation

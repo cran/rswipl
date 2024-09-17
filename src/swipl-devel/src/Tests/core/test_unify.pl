@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2008-2015, University of Amsterdam
-                              Vu University Amsterdam
+    Copyright (c)  2008-2024, University of Amsterdam
+                              VU University Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -46,7 +47,8 @@ unification is wrong you won't get as far as running this test :-)
 
 test_unify :-
 	run_tests([ unify,
-		    can_compare
+		    can_compare,
+		    unifiable
 		  ]).
 
 :- begin_tests(unify).
@@ -90,6 +92,11 @@ test(unify_fv, true) :-
 test(unify_arity_0, X == f()) :-
 	unify_ar0(X).
 
+test(cycle_1) :-                       % Kuniaki Mukai
+    X = f(Y), Y=f(X), X=Y.
+test(cycle_2) :-                       % Kuniaki Mukai
+    X = f(X), Y=f(Y), X=f(Y).
+
 :- end_tests(unify).
 
 :- begin_tests(can_compare).
@@ -105,3 +112,29 @@ test(ground, fail) :-
 	?=(a,X).
 
 :- end_tests(can_compare).
+
+:- begin_tests(unifiable).
+
+test(unifiable_1, S == [X=1]) :-
+    unifiable(X, 1, S).
+test(unifiable_2) :-
+    unifiable(a(X,X), a(Y,Z), S),
+    S == [Z=X, Y=X].
+test(gc_1) :-
+    trim_stacks,
+    (   between(2, 10, N),
+        Len is 1<<N,
+        numlist(1, Len, L1),
+        attvar_list(Len, L2),
+        unifiable(L1, L2, _Unifier),
+        fail
+    ;   true
+    ).
+
+attvar_list(0, []) :- !.
+attvar_list(N, [H|T]) :-
+    freeze(H, integer(H)),
+    N2 is N - 1,
+    attvar_list(N2, T).
+
+:- end_tests(unifiable).

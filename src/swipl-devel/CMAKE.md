@@ -105,6 +105,8 @@ and libraries that are built.
   | `-DSTATIC_EXTENSIONS=ON`      | Include packages into the main system |
   | `-DSWIPL_INSTALL_IN_LIB=ON`   | Install libswipl.so in `<prefix>/lib` |
   | `-DSWIPL_INSTALL_IN_SHARE=ON` | Install docs in `<prefix>/share`      |
+  | `-DSWIPL_CC=<string>`         | Default for `c_cc` flag               |
+  | `-DSWIPL_CXX=<string>`        | Default for `c_cxx` flag              |
   | `-DSWIPL_PACKAGES=OFF`        | Only build the core system            |
   | `-DSWIPL_PACKAGES_BASIC=OFF`  | Drop all basic packages               |
   | `-DSWIPL_PACKAGES_ODBC=OFF`   | Drop ODBC and CQL packages            |
@@ -379,21 +381,22 @@ And, for the 32-bit version:
 
 ### Debian based Linux systems (`.deb` or `.rpm`)
 
-The following commands create  `swipl-<version>-<nr>.<cpu>.deb/rpm` file
-with  SWI-Prolog  to  be  installed  in  /usr.  The  process  creates  a
-monolithic installer for a particular configuration of SWI-Prolog.  This
-is  *not*  what is typically used to create packages for  distributions.
-Distro package maintainers are referred to  _Modular packages for Linux_
-below.  The procedure here is intended to create  custom Debian packages
-for in-house deployment.
+The  following  commands  create  `swipl-<version>-<nr>.<cpu>.deb/rpm`
+file with SWI-Prolog to be installed in `/usr`.  The process creates a
+monolithic  installer for  a particular  configuration of  SWI-Prolog.
+This  is  *not*  what  is   typically  used  to  create  packages  for
+distributions.  Distro  package maintainers  are referred  to _Modular
+packages for Linux_  below.  The procedure here is  intended to create
+custom packages for in-house deployment.
 
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -G Ninja ..
+    cmake -DCMAKE_BUILD_TYPE=PGO -DCMAKE_INSTALL_PREFIX=/usr -G Ninja ..
     ninja
-    cpack -G DEB
+    cpack
 
-for generating an RPM, use  `cpack  -G   RPM`.  The  cmake configure run
-selects a default packager depending on  the availability of the package
-installer `apt` (assuming DEB) or `dnf` (assuming RPM).
+The `cmake` configure run selects  a default packager depending on the
+availability of  the package installer  `apt` (assuming DEB)  or `dnf`
+(assuming RPM).  The packager can  be selected explicitly using `cpack
+-G DEB` or `cpack -G RPM`
 
 
 #### Modular packages for Linux
@@ -425,6 +428,7 @@ The defined components are:
   | Perl_regex           | PCRE2 library binding                |
   | YAML_support         | Libyaml binding                      |
   | Java_interface       | Java interface (JPL)                 |
+  | Python_interface     | Python interface (Janus)             |
   | OpenSSL_interface    | Binding to OpenSSL/LibreSSL          |
   | TIPC_networking      | Linux TIPC network support           |
   | Qt_console           | Qt windowed interface                |
@@ -447,7 +451,7 @@ generate the Ubuntu PPA releases.
   have environment variables set to facilitate e.g., embedding in Java.
   The variable names and possibly conflicting values depend on the OS.
   See [issue](https://github.com/SWI-Prolog/swipl-devel/issues/435).
-- Potential problems when having multiple paralell insallations of SWIPL
+- Potential problems when having multiple parallel installations of SWIPL
   (e.g., distribution-based, build, manually installed), and environment
   variables `SWI_HOME_DIR` or `SWIPL` set to specific SWIPL's home
   directory. Read above.

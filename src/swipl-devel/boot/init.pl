@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2023, University of Amsterdam
+    Copyright (c)  1985-2024, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -1068,9 +1068,6 @@ user:file_search_path(library, swi(library)).
 user:file_search_path(library, swi(library/clp)).
 user:file_search_path(library, Dir) :-
     '$ext_library_directory'(Dir).
-user:file_search_path(foreign, swi(ArchLib)) :-
-    current_prolog_flag(apple_universal_binary, true),
-    ArchLib = 'lib/fat-darwin'.
 user:file_search_path(path, Dir) :-
     getenv('PATH', Path),
     current_prolog_flag(path_sep, Sep),
@@ -1093,6 +1090,8 @@ user:file_search_path(app_preferences, user_app_config('.')).
 user:file_search_path(user_profile, app_preferences('.')).
 user:file_search_path(app, swi(app)).
 user:file_search_path(app, app_data(app)).
+user:file_search_path(working_directory, CWD) :-
+    working_directory(CWD, CWD).
 
 '$xdg_prolog_directory'(Which, Dir) :-
     '$xdg_directory'(Which, XDGDir),
@@ -1413,23 +1412,42 @@ user:prolog_file_type(dylib,    executable) :-
     !,
     '$segments_to_atom'(Segments, Atom),
     '$chk_file'(Atom, Ext, Cond, Cache, FullName).
-'$chk_file'(File, Exts, Cond, _, FullName) :-
+'$chk_file'(File, Exts, Cond, _, FullName) :-           % Absolute files
     is_absolute_file_name(File),
     !,
     '$extend_file'(File, Exts, Extended),
     '$file_conditions'(Cond, Extended),
     '$absolute_file_name'(Extended, FullName).
-'$chk_file'(File, Exts, Cond, _, FullName) :-
-    '$relative_to'(Cond, source, Dir),
-    atomic_list_concat([Dir, /, File], AbsFile),
-    '$extend_file'(AbsFile, Exts, Extended),
-    '$file_conditions'(Cond, Extended),
+'$chk_file'(File, Exts, Cond, _, FullName) :-           % Explicit relative_to
+    '$option'(relative_to(_), Cond),
     !,
-    '$absolute_file_name'(Extended, FullName).
-'$chk_file'(File, Exts, Cond, _, FullName) :-
+    '$relative_to'(Cond, none, Dir),
+    '$chk_file_relative_to'(File, Exts, Cond, Dir, FullName).
+'$chk_file'(File, Exts, Cond, _Cache, FullName) :-      % From source
+    source_location(ContextFile, _Line),
+    !,
+    (   file_directory_name(ContextFile, Dir),
+        '$chk_file_relative_to'(File, Exts, Cond, Dir, FullName)
+    ->  true
+    ;   current_prolog_flag(source_search_working_directory, true),
+	'$extend_file'(File, Exts, Extended),
+	'$file_conditions'(Cond, Extended),
+	'$absolute_file_name'(Extended, FullName),
+        '$print_message'(warning,
+                         deprecated(source_search_working_directory(
+                                        File, FullName)))
+    ).
+'$chk_file'(File, Exts, Cond, _Cache, FullName) :-      % Not loading source
     '$extend_file'(File, Exts, Extended),
     '$file_conditions'(Cond, Extended),
     '$absolute_file_name'(Extended, FullName).
+
+'$chk_file_relative_to'(File, Exts, Cond, Dir, FullName) :-
+    atomic_list_concat([Dir, /, File], AbsFile),
+    '$extend_file'(AbsFile, Exts, Extended),
+    '$file_conditions'(Cond, Extended),
+    '$absolute_file_name'(Extended, FullName).
+
 
 '$segments_to_atom'(Atom, Atom) :-
     atomic(Atom),
@@ -1462,7 +1480,7 @@ user:prolog_file_type(dylib,    executable) :-
 	;   file_directory_name(FileOrDir, Dir)
 	)
     ;   Default == cwd
-    ->  '$cwd'(Dir)
+    ->  working_directory(Dir, Dir)
     ;   Default == source
     ->  source_location(ContextFile, _Line),
 	file_directory_name(ContextFile, Dir)
@@ -3538,7 +3556,11 @@ load_files(Module:Files, Options) :-
     length(Args, Arity),
     Head =.. [Name|Args],
     NewHead =.. [NewName|Args],
-    (   '$get_predicate_attribute'(Source:Head, transparent, 1)
+    (   '$get_predicate_attribute'(Source:Head, meta_predicate, Meta)
+    ->  Meta =.. [Name|MetaArgs],
+        NewMeta =.. [NewName|MetaArgs],
+        meta_predicate(Context:NewMeta)
+    ;   '$get_predicate_attribute'(Source:Head, transparent, 1)
     ->  '$set_predicate_attribute'(Context:NewHead, transparent, true)
     ;   true
     ),

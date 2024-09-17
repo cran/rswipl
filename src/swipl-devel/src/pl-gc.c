@@ -679,7 +679,7 @@ unify_gc_stats(DECL_LD term_t t, gc_stat *stats, int index)
 			    PL_INTPTR, this->local,
 			    PL_FLOAT,  this->gc_time,
 			    PL_FLOAT,  gc_percentage(this)) )
-	return FALSE;
+	return false;
     }
   }
 
@@ -783,7 +783,7 @@ unmark_environments(DECL_LD LocalFrame fr, uintptr_t mask)
     return NULL;
 
   for(;;)
-  { if ( false(fr, mask) )
+  { if ( isoff(fr, mask) )
       return NULL;
     clear(fr, mask);
     LD->gc._local_frames--;
@@ -1416,7 +1416,7 @@ static inline int
 slotsInFrame(LocalFrame fr, Code PC)
 { Definition def = fr->predicate;
 
-  if ( !PC || true(def, P_FOREIGN) || !fr->clause )
+  if ( !PC || ison(def, P_FOREIGN) || !fr->clause )
     return def->functor->arity;
 
   return fr->clause->value.clause->prolog_vars;
@@ -2165,12 +2165,18 @@ walk_and_mark(DECL_LD walk_state *state, Code PC, code end)
 	  break;
       }
 	case I_CALLCLEANUP:
-	  mark_frame_var(state, VAROFFSET(1)); /* main goal */
+	{ size_t arity = state->frame->predicate->functor->arity;
+	  size_t arg_goal = arity == 2 ? 1 : 2;
+	  mark_frame_var(state, VAROFFSET(arg_goal-1)); /* main goal */
 	  break;
+	}
 	case I_EXITCLEANUP:
-	  mark_frame_var(state, VAROFFSET(2)); /* The ball */
-	  mark_frame_var(state, VAROFFSET(3)); /* cleanup goal */
+	{ size_t arity = state->frame->predicate->functor->arity;
+	  if ( arity == 4 ) /* setup_call_catcher_cleanup/4 */
+	    mark_frame_var(state, VAROFFSET(arity-2)); /* The ball */
+	  mark_frame_var(state, VAROFFSET(arity-1)); /* cleanup goal */
 	  break;
+	}
 	case I_EXITCATCH:
 	case I_EXITRESET:
 	  mark_frame_var(state, VAROFFSET(1)); /* The ball */
@@ -2368,7 +2374,7 @@ mark_choicepoints(DECL_LD mark_state *state, Choice ch)
       { LocalFrame fr = ch->frame;
 
 	mark_alt_clauses(fr, ch->value.clause.cref);
-	if ( false(fr, FR_MARKED) )
+	if ( isoff(fr, FR_MARKED) )
 	{ set(fr, FR_MARKED);
 	  COUNT(marked_envs);
 	  mark_environments(state, fr->parent, fr->programPointer);
@@ -2422,7 +2428,7 @@ mark_environments(DECL_LD mark_state *mstate, LocalFrame fr, Code PC)
   while ( fr )
   { walk_state state;
 
-    if ( false(fr, FR_MARKED) )
+    if ( isoff(fr, FR_MARKED) )
     { set(fr, FR_MARKED);
       state.flags = GCM_CLEAR;
 
@@ -2433,7 +2439,7 @@ mark_environments(DECL_LD mark_state *mstate, LocalFrame fr, Code PC)
 
     assert(wasFrame(fr));
 
-    if ( true(fr->predicate, P_FOREIGN) || PC == NULL || !fr->clause )
+    if ( ison(fr->predicate, P_FOREIGN) || PC == NULL || !fr->clause )
     { DEBUG(MSG_GC_MARK_ARGS,
 	    Sdprintf("Marking arguments for [%d] %s\n",
 		     levelFrame(fr), predicateName(fr->predicate)));
@@ -2472,7 +2478,7 @@ mark_environments(DECL_LD mark_state *mstate, LocalFrame fr, Code PC)
 	mark_local_variable(argp0);
       }
 
-      if ( true(fr, FR_WATCHED) )
+      if ( ison(fr, FR_WATCHED) )
       { int slots;
 	Word sp;
 
@@ -2586,7 +2592,7 @@ mark_phase(vm_state *state)
   mark_stacks(state);
 
   DEBUG(CHK_SECURE,
-	{ if ( !scan_global(TRUE) )
+	{ if ( !scan_global(true) )
 	    sysError("Global stack corrupted after GC mark-phase");
 	  qsort(mark_base, mark_top - mark_base, sizeof(Word), cmp_address);
 	});
@@ -2817,12 +2823,12 @@ is_dead_attvar(DECL_LD Word p)
 
   if ( (w & MARK_MASK) )
   { *p = (w & ~MARK_MASK);
-    return FALSE;
+    return false;
   }
   if ( isAttVar(w) )
-    return FALSE;
+    return false;
 
-  return TRUE;
+  return true;
 }
 
 
@@ -3148,7 +3154,7 @@ sweep_environments(LocalFrame fr, Code PC)
   for( ; ; )
   { int slots;
 
-    if ( false(fr, FR_MARKED) )
+    if ( isoff(fr, FR_MARKED) )
       return NULL;
     clear(fr, FR_MARKED);
 
@@ -3347,12 +3353,12 @@ check_marked(const char *s)
   }
 
   if ( m == total_marked )
-    return TRUE;
+    return true;
   else
     Sdprintf("**** ERROR: size: %zd != %zd (%s) ****\n",
 	     m, total_marked, s);
 
-  return FALSE;
+  return false;
 }
 
 #endif /* O_DEBUG */
@@ -3481,7 +3487,7 @@ compact_global(void)
   }
 
   DEBUG(CHK_SECURE, check_marked("Before up"));
-  DEBUG(CHK_SECURE, relocated_check=FALSE);	/* see do_relocated_cell() */
+  DEBUG(CHK_SECURE, relocated_check=false);	/* see do_relocated_cell() */
   DEBUG(MSG_GC_PROGRESS, Sdprintf("Scanning global stack upwards\n"));
 
   dest = base;
@@ -3595,12 +3601,12 @@ static void
 setStartOfVMI(vm_state *state)
 { LocalFrame fr = state->frame;
 
-  if ( fr->clause && false(fr->predicate, P_FOREIGN) && state->pc )
+  if ( fr->clause && isoff(fr->predicate, P_FOREIGN) && state->pc )
   { Clause clause = fr->clause->value.clause;
     Code PC, ep, next;
 
     if ( fr->predicate == PROCEDURE_dcall1->definition )
-      state->in_body = TRUE;		/* There is no head code */
+      state->in_body = true;		/* There is no head code */
 
     PC = clause->codes;
     ep = PC + clause->code_size;
@@ -3680,7 +3686,7 @@ setStartOfVMI(vm_state *state)
 	case I_ENTER:
 	case I_SSU_COMMIT:
 	case I_SSU_CHOICE:
-	  state->in_body = TRUE;
+	  state->in_body = true;
 	  assert(state->adepth==0);
       }
     }
@@ -3714,7 +3720,7 @@ get_vmi_state(QueryFrame qf, vm_state *state)
 
   state->choice	     = LD->choicepoints;
   state->lSave	     = lTop;
-  state->in_body     = FALSE;
+  state->in_body     = false;
   state->adepth	     = 0;
   state->new_args    = 0;
   state->lNext       = NULL;
@@ -3770,7 +3776,7 @@ get_vmi_state(QueryFrame qf, vm_state *state)
   { state->frame        = environment_frame;
     state->pc           = NULL;
     state->pc_start_vmi = NULL;
-    state->save_argp	= FALSE;
+    state->save_argp	= false;
     if ( state->frame)
       state->argp       = argFrameP(state->frame, 0);
   }
@@ -3823,7 +3829,7 @@ considerGarbageCollect(Stack s)
 
   if ( truePrologFlag(PLFLAG_GC) )
   { if ( PL_pending(SIG_GC) )
-      return TRUE;
+      return true;
 
     if ( s == NULL || s == &GD->combined_stack )
     { return (considerGarbageCollect((Stack)&LD->stacks.global) ||
@@ -3843,7 +3849,7 @@ considerGarbageCollect(Stack s)
 	if ( LD->gc.inferences == LD->statistics.inferences &&
 	     !LD->exception.processing )
 	{ s->gced_size = used;		/* (*) */
-	  return FALSE;
+	  return false;
 	}
 
 	if ( used > s->factor*s->gced_size + low )
@@ -3858,7 +3864,7 @@ considerGarbageCollect(Stack s)
 			 "(used=%zd, limit=%zd, gced_size=%zd)\n",
 			 s->name, used, limit, s->gced_size));
 	} else
-	  return FALSE;
+	  return false;
 
 	LD->gc.stats.request = (s == (Stack)&LD->stacks.global ?
 				GC_GLOBAL_REQUEST : GC_TRAIL_REQUEST);
@@ -3868,7 +3874,7 @@ considerGarbageCollect(Stack s)
     }
   }
 
-  return FALSE;
+  return false;
 }
 
 void
@@ -3940,7 +3946,7 @@ scan_global(int flags)
   Word current, next;
   int errors = 0;
   intptr_t cells = 0;
-  int marked = (flags & TRUE);
+  int marked = (flags & true);
   int regstart = start_map && (flags & REGISTER_STARTS) != 0;
 
   for( current = gBase; current < gTop; current = next )
@@ -4054,7 +4060,7 @@ check_environments(LocalFrame fr, Code PC, Word key)
   { int slots, n;
     Word sp;
 
-    if ( true(fr, FR_MARKED) )
+    if ( ison(fr, FR_MARKED) )
       return NULL;			/* from choicepoints only */
     set(fr, FR_MARKED);
     local_frames++;
@@ -4066,7 +4072,7 @@ check_environments(LocalFrame fr, Code PC, Word key)
 	  Sdprintf("Check [%ld] %s (PC=%d):",
 		   levelFrame(fr),
 		   predicateName(fr->predicate),
-		   (false(fr->predicate, P_FOREIGN) && PC)
+		   (isoff(fr->predicate, P_FOREIGN) && PC)
 		   ? (PC-fr->clause->value.clause->codes)
 		   : 0));
 
@@ -4219,7 +4225,7 @@ checkStacks(void *state_ptr)
     get_vmi_state(LD->query, state);
   }
 
-  assert(scan_global(FALSE));
+  assert(scan_global(false));
   if ( LD->attvar.attvars )
     checkData(LD->attvar.attvars);
 
@@ -4294,9 +4300,9 @@ PL_check_stacks(void)
 {
 #ifdef HAVE_CHECK_STACKS
   (void)checkStacks(NULL);
-  return TRUE;
+  return true;
 #else
-  return FALSE;
+  return false;
 #endif
 }
 
@@ -4331,7 +4337,7 @@ leaveGC(DECL_LD)
 }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-Returns: < 0: (local) overflow; TRUE: ok; FALSE: shifted;
+Returns: < 0: (local) overflow; true: ok; false: shifted;
 
 If gcEnsureSpace() returns overflow or out-of-stack, it has restored the
 given vm-state.
@@ -4340,7 +4346,7 @@ given vm-state.
 #define gcEnsureSpace(state) LDFUNC(gcEnsureSpace, state)
 static int
 gcEnsureSpace(DECL_LD vm_state *state)
-{ int rc = TRUE;
+{ int rc = true;
   size_t lneeded = 0;
 
   if ( LD->gvar.grefs )
@@ -4359,11 +4365,11 @@ gcEnsureSpace(DECL_LD vm_state *state)
     { int rc2;
 
       restore_vmi_state(state);
-      if ( (rc2=growLocalSpace(lneeded, ALLOW_SHIFT)) != TRUE )
+      if ( (rc2=growLocalSpace(lneeded, ALLOW_SHIFT)) != true )
 	return rc2;
-      rc = FALSE;
+      rc = false;
     } else
-    { enableSpareStack((Stack)&LD->stacks.local, TRUE);
+    { enableSpareStack((Stack)&LD->stacks.local, true);
     }
   }
 
@@ -4372,14 +4378,14 @@ gcEnsureSpace(DECL_LD vm_state *state)
 
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-garbageCollect() returns one of TRUE (ok),   FALSE (blocked or exception
+garbageCollect() returns one of true (ok),   false (blocked or exception
 in printMessage()) or *_OVERFLOW if the   local  stack cannot accomodate
 the term-references for saving ARGP and   global variables or the stacks
 remain too tight after running GC and  the stacks cannot be extended due
 to the stack_limit.
 
 (*) We call trimStacks()  to  reactivate   the  `spare  stacks'  and, if
-LD->trim_stack_requested is TRUE, to shrink the  stacks (this happens at
+LD->trim_stack_requested is true, to shrink the  stacks (this happens at
 the end of  handling  a  stack  overflow   exception).  This  is  a  bit
 complicated:
 
@@ -4413,7 +4419,7 @@ garbageCollect(gc_reason_t reason)
   gc_stat *stats;
 
   if ( gc_status.blocked || !truePrologFlag(PLFLAG_GC) )
-    return FALSE;
+    return false;
 
   gc_stat_start(&LD->gc.stats, reason);
 
@@ -4427,7 +4433,7 @@ garbageCollect(gc_reason_t reason)
   safeLTop = lTop;
   if ( (rc=gcEnsureSpace(&state)) < 0 )
   { return rc;
-  } else if ( rc == FALSE )		/* shifted; reload */
+  } else if ( rc == false )		/* shifted; reload */
   { get_vmi_state(LD->query, &state);
   }
 
@@ -4438,7 +4444,7 @@ garbageCollect(gc_reason_t reason)
   blockGC(0);			/* avoid recursion due to */
   PL_clearsig(SIG_GC);
 
-  gc_status.active = TRUE;
+  gc_status.active = true;
 
   if ( (no_mark_bar=(LD->mark_bar == NO_MARK_BAR)) )
     LD->mark_bar = gTop;		/* otherwise we cannot relocate */
@@ -4451,7 +4457,7 @@ garbageCollect(gc_reason_t reason)
 #if O_DEBUG
   if ( DEBUGGING(CHK_SECURE) )
   { alloc_start_map();
-    if ( !scan_global(FALSE|REGISTER_STARTS) )
+    if ( !scan_global(false|REGISTER_STARTS) )
       sysError("Stack not ok at gc entry");
     checkStacks(&state);
     free(start_map);
@@ -4466,7 +4472,7 @@ garbageCollect(gc_reason_t reason)
     }
 
     mark_base = mark_top = malloc(usedStack(global));
-    relocated_check = TRUE;
+    relocated_check = true;
   }
 #endif
 
@@ -4477,7 +4483,7 @@ garbageCollect(gc_reason_t reason)
   local_marked	    = 0;
   marks_swept	    = 0;
   marks_unswept	    = 0;
-  LD->gc.marked_attvars = FALSE;
+  LD->gc.marked_attvars = false;
 
   setVar(*gTop);	/* always one space; see initPrologStacks() */
   tTop->address = 0;	/* gMax-- and tMax-- */
@@ -4505,7 +4511,7 @@ garbageCollect(gc_reason_t reason)
 
   DEBUG(CHK_SECURE,
 	{ assert(trailtops_marked == 0);
-	  if ( !scan_global(FALSE) )
+	  if ( !scan_global(false) )
 	    sysError("Stack not ok after gc; gTop = %p", gTop);
 	  free(mark_base);
 	});
@@ -4527,7 +4533,7 @@ garbageCollect(gc_reason_t reason)
 	 state.frame == LD->query->registers.fr);
   if ( no_mark_bar )
     LD->mark_bar = NO_MARK_BAR;
-  gc_status.active = FALSE;
+  gc_status.active = false;
   unblockGC(0);
   LD->gc.inferences = LD->statistics.inferences;
 
@@ -4597,9 +4603,9 @@ unblockGC(DECL_LD int flags)
 makeMoreStackSpace(int overflow, int flags)
 
 Used in loops where the  low-level   implementation  does  not allow for
-stack-shifts.  Returns TRUE or FALSE and raises an exception.
+stack-shifts.  Returns true or false and raises an exception.
 
-(*) growStacks() may return  TRUE  without   having  created  more stack
+(*) growStacks() may return  true  without   having  created  more stack
 space. This can  occur  when  if   a  'tight-stacks'  situation  when we
 generally have roomStackP(s)  >  1   and  thus  nextStackSize()  returns
 sizeStackP(s). i.e. we can't increase the stacks  but the 1 byte request
@@ -4623,14 +4629,14 @@ makeMoreStackSpace(int overflow, int flags)
     case MEMORY_OVERFLOW: return raiseStackOverflow(overflow);
   }
 
-  if ( LD->exception.processing && s && enableSpareStack(s, TRUE) )
-    return TRUE;
+  if ( LD->exception.processing && s && enableSpareStack(s, true) )
+    return true;
 
   if ( LD->gc.inferences != LD->statistics.inferences &&
        (flags & ALLOW_GC) &&
        gc_reason &&
        garbageCollect(gc_reason) )
-    return TRUE;
+    return true;
 
   if ( (flags & (ALLOW_SHIFT|ALLOW_GC)) )
   { size_t l=0, g=0, t=0;
@@ -4647,7 +4653,7 @@ makeMoreStackSpace(int overflow, int flags)
 
     oldsize = sizeStackP(s);
 
-    if ( (rc = growStacks(l, g, t)) == TRUE )
+    if ( (rc = growStacks(l, g, t)) == true )
     { size_t newsize = sizeStackP(s);
 
       if ( newsize > oldsize )		/* See (*) */
@@ -4670,7 +4676,7 @@ and trail stack. If the space is not available
   2. If GC or SHIFT is allowed, try shifting the stacks
   3. Use the spare stack and raise a GC request.
 
-Returns TRUE, FALSE or *_OVERFLOW
+Returns true, false or *_OVERFLOW
 
 Normally called through the inline function ensureStackSpace_ex() and
 the macros ensureTrailSpace() and ensureGlobalSpace()
@@ -4679,14 +4685,14 @@ the macros ensureTrailSpace() and ensureGlobalSpace()
 int
 f_ensureStackSpace(DECL_LD size_t gcells, size_t tcells, int flags)
 { if ( hasGlobalSpace_(gcells) && hasTrailSpace(tcells) )
-    return TRUE;
+    return true;
 
   if ( LD->gc.active )
-  { enableSpareStack((Stack)&LD->stacks.global, TRUE);
-    enableSpareStack((Stack)&LD->stacks.trail,  TRUE);
+  { enableSpareStack((Stack)&LD->stacks.global, true);
+    enableSpareStack((Stack)&LD->stacks.trail,  true);
 
     if ( hasGlobalSpace_(gcells) && hasTrailSpace(tcells) )
-      return TRUE;
+      return true;
   }
 
   if ( flags )
@@ -4695,11 +4701,11 @@ f_ensureStackSpace(DECL_LD size_t gcells, size_t tcells, int flags)
     int rc;
 
     if ( (flags & ALLOW_GC) && considerGarbageCollect(NULL) )
-    { if ( (rc=garbageCollect(GC_GLOBAL_OVERFLOW)) != TRUE )
+    { if ( (rc=garbageCollect(GC_GLOBAL_OVERFLOW)) != true )
 	return rc;
 
       if ( hasGlobalSpace_(gcells) && hasTrailSpace(tcells) )
-	return TRUE;
+	return true;
     }
 
     /* Consider a stack-shift.  ALLOW_GC implies ALLOW_SHIFT */
@@ -4714,10 +4720,10 @@ f_ensureStackSpace(DECL_LD size_t gcells, size_t tcells, int flags)
     else
       tmin = 0;
 
-    if ( (rc=growStacks(0, gmin, tmin)) != TRUE )
+    if ( (rc=growStacks(0, gmin, tmin)) != true )
       return rc;
     if ( hasGlobalSpace_(gcells) && hasTrailSpace(tcells) )
-      return TRUE;
+      return true;
   }
 
   if ( !hasGlobalSpace_(gcells) )
@@ -4738,12 +4744,12 @@ NOTE: This is often called from ENSURE_LOCAL_SPACE(), while already lTop
 int
 growLocalSpace(DECL_LD size_t bytes, int flags)
 { if ( addPointer(lTop, bytes) <= (void*)lMax )
-    return TRUE;
+    return true;
 
-  if ( LD->exception.processing || LD->gc.status.active == TRUE )
-  { enableSpareStack((Stack)&LD->stacks.local, TRUE);
+  if ( LD->exception.processing || LD->gc.status.active == true )
+  { enableSpareStack((Stack)&LD->stacks.local, true);
     if ( addPointer(lTop, bytes) <= (void*)lMax )
-      return TRUE;
+      return true;
   }
 
   if ( !flags )
@@ -4751,7 +4757,7 @@ growLocalSpace(DECL_LD size_t bytes, int flags)
 
   growStacks(bytes, 0, 0);
   if ( addPointer(lTop, bytes) <= (void*)lMax )
-    return TRUE;
+    return true;
 
 nospace:
   return LOCAL_OVERFLOW;
@@ -4871,7 +4877,7 @@ update_environments(DECL_LD LocalFrame fr, intptr_t ls, intptr_t gs)
   for(;;)
   { assert(inShiftedArea(local, ls, fr));
 
-    if ( true(fr, FR_MARKED) )
+    if ( ison(fr, FR_MARKED) )
       return NULL;			/* from choicepoints only */
     set(fr, FR_MARKED);
     local_frames++;
@@ -4899,7 +4905,7 @@ update_environments(DECL_LD LocalFrame fr, intptr_t ls, intptr_t gs)
       DEBUG(MSG_SHIFT_FRAME, Sdprintf("ok\n"));
     }
     if ( gs )
-    { if ( true(fr->predicate, P_FOREIGN) || !fr->clause )
+    { if ( ison(fr->predicate, P_FOREIGN) || !fr->clause )
       { update_arguments(fr, gs);
       } else if ( fr->clause->value.clause->codes[0] == encode(T_TRIE_GEN2) ||
 		fr->clause->value.clause->codes[0] == encode(T_TRIE_GEN3) )
@@ -5207,7 +5213,7 @@ nextStackSizeAbove(size_t n)
 
 #ifdef O_DEBUG
   if ( DEBUGGING(CHK_SECURE) )
-  { static int got_incr = FALSE;
+  { static int got_incr = false;
     static size_t increment = 0;
 
     if ( !got_incr )
@@ -5215,7 +5221,7 @@ nextStackSizeAbove(size_t n)
 
       if ( incr )
 	increment = atol(incr);
-      got_incr = TRUE;
+      got_incr = true;
     }
 
     if ( increment )
@@ -5291,11 +5297,11 @@ new_stack_size(Stack s, size_t request, size_t *newsize)
       return s->overflow_id;
     *newsize = new;
 
-    return TRUE;
+    return true;
   } else
   { *newsize = sizeStackP(s);
 
-    return FALSE;
+    return false;
   }
 }
 
@@ -5317,14 +5323,14 @@ grow_stacks(DECL_LD size_t l, size_t g, size_t t)
   int rc;
 #if O_DEBUG
   word key=0;
-  int emergency = FALSE;
+  int emergency = false;
 #endif
 
   if ( !(l || g || t) )
-    return TRUE;			/* not a real request */
+    return true;			/* not a real request */
 
   if ( LD->shift_status.blocked )
-    return FALSE;
+    return false;
 
   if ( (rc=new_stack_size((Stack)&LD->stacks.trail,  t, &tsize))<0 ||
        (rc=new_stack_size((Stack)&LD->stacks.global, g, &gsize))<0 ||
@@ -5347,7 +5353,7 @@ grow_stacks(DECL_LD size_t l, size_t g, size_t t)
       if ( LD->in_print_message || LD->exception.processing )
       { DEBUG(MSG_STACK_OVERFLOW,
 	      { Sdprintf("In error condition; raising limit with 1Mb\n");
-		emergency = TRUE;
+		emergency = true;
 	      });
 	if ( limit < need + 1024*1024 )
 	  limit = need + 1024*1024;
@@ -5386,7 +5392,7 @@ grow_stacks(DECL_LD size_t l, size_t g, size_t t)
   t = (sizeStack(trail)  != tsize);
 
   if ( !(l || g || t) )
-    return TRUE;
+    return true;
 
   LD->shift_status.inferences = LD->statistics.inferences;
   enterGC();			/* atom-gc synchronisation */
@@ -5402,7 +5408,7 @@ grow_stacks(DECL_LD size_t l, size_t g, size_t t)
     double time, time0 = ThreadCPUTime(CPU_USER);
     int verbose = truePrologFlag(PLFLAG_TRACE_GC);
 
-    DEBUG(MSG_SHIFT, verbose = TRUE);
+    DEBUG(MSG_SHIFT, verbose = true);
 
     if ( verbose ) WITH_DEBUG_FOR(MSG_SHIFT)
     { const char *prefix;
@@ -5423,7 +5429,7 @@ grow_stacks(DECL_LD size_t l, size_t g, size_t t)
 
     DEBUG(CHK_SECURE,
 	  { gBase++;
-	    if ( !scan_global(FALSE) )
+	    if ( !scan_global(false) )
 	      sysError("Stack not ok at shift entry");
 	    key = checkStacks(&state);
 	    gBase--;
@@ -5554,7 +5560,7 @@ grow_stacks(DECL_LD size_t l, size_t g, size_t t)
   if ( fatal )
     return fatal->overflow_id;
 
-  return TRUE;
+  return true;
 }
 
 
@@ -5580,7 +5586,7 @@ static void
 reenable_spare_stack(void *ptr, int rc)
 { Stack s = ptr;
 
-  if ( roomStackP(s) >=	s->def_spare || (rc != TRUE) )
+  if ( roomStackP(s) >=	s->def_spare || (rc != true) )
     trim_stack(s);
   else
     Sdprintf("Could not reenable %s-stack\n", s->name);
@@ -5697,7 +5703,7 @@ tight(DECL_LD Stack s)
 
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-Return TRUE on success or *_OVERFLOW when out of space.
+Return true on success or *_OVERFLOW when out of space.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 int
@@ -5712,7 +5718,7 @@ shiftTightStacks(void)
   else
     clear_unused_stack();
 
-  return TRUE;
+  return true;
 }
 
 

@@ -31,8 +31,7 @@ fi
 
 printf "Fixing app bundle in $app\n"
 
-ARCH=$($app/Contents/MacOS/swipl --arch)
-moduledir=$app/Contents/swipl/lib/$ARCH
+moduledir=$app/Contents/PlugIns/swipl
 frameworkdir=$app/Contents/Frameworks
 
 if [ ! -z "$deployqt" ]; then
@@ -81,3 +80,24 @@ while [ ! -z "$changeset" ]; do
   done
   changeset="$newchanges"
 done
+
+# Code signing
+
+if [ ! -z "$CODESIGN_ID" ]; then
+    loginkeychain="$(security login-keychain | tr -d ' "')"
+
+    sign()
+    { xcrun codesign -f -s $CODESIGN_ID --timestamp --options=runtime $* || return 1
+    }
+
+    printf "Code signing using $CODESIGN_ID ...\n"
+    security unlock-keychain $loginkeychain || exit 1
+
+    sign $(find $app \( -name '*.dylib' -o -name '*.so' \) ) || exit 1
+    sign $(find $app/Contents/Frameworks -name '*.framework' -type d) || exit 1
+    sign $app/Contents/MacOS/swipl-ld || exit 1
+    sign $app/Contents/MacOS/swipl || exit 1
+    sign $app/Contents/MacOS/SWI-Prolog || exit 1
+
+    security lock-keychain $loginkeychain
+fi

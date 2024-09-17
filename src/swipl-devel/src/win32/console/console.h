@@ -51,6 +51,7 @@
 
 #include <signal.h>
 #include <stddef.h>
+#include <stdbool.h>
 #ifdef _MSC_VER
 #include <stdint.h>
 #pragma warning(disable : 4996)	/* deprecate open() etc */
@@ -214,7 +215,7 @@ typedef struct _complete_data
   int		call_type;		/* COMPLETE_* */
   int		replace_from;		/* index to start replacement */
   int		quote;			/* closing quote */
-  int		case_insensitive;	/* if TRUE: insensitive match */
+  int		case_insensitive;	/* if true: insensitive match */
   TCHAR		candidate[COMPLETE_MAX_WORD_LEN];
   TCHAR		buf_handle[COMPLETE_MAX_WORD_LEN];
   RlcCompleteFunc function;		/* function for continuation */

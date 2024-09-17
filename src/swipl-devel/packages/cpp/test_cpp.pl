@@ -51,11 +51,21 @@
 
 :- use_foreign_library(foreign(test_cpp)).
 
+:- dynamic user:file_search_path/2.
+:- multifile user:file_search_path/2.
+
+:- prolog_load_context(directory, Dir),
+    asserta(user:file_search_path(my_program_home, Dir)).
+
 :- multifile user:portray/1.
 
 user:portray(MyBlob) :-
     blob(MyBlob, my_blob), !,
     portray_my_blob(current_output, MyBlob).
+
+user:portray(MyFileBlob) :-
+    blob(MyFileBlob, my_file_blob), !,
+    my_file_blob_portray(current_output, MyFileBlob).
 
 % test_cpp :-
 %     run_tests([ cpp,
@@ -93,6 +103,9 @@ test(hello2, Out == "Hello2 world2\nHello2 world2\nHello2 world2\nHello2 world2\
 
 test(hello3, Out == "Hello3 世界弐\n") :-
     hello3(世界弐, Out).
+
+test(hello4, Out == hello(world)) :-
+    hello4(Out).
 
 test(call_cpp, Out == "hello(foo)\n") :-
     with_output_to(string(Out), call_cpp(writeln(hello(foo)))).
@@ -773,24 +786,22 @@ test(throw, error(permission_error(operation, type, the(culprit)))) :-
 test(throw, error(resource_error('NO_RESOURCE'))) :-
     throw_resource_error_cpp('NO_RESOURCE').
 
-/*
-test(compare) :-
-    eq_int64(1, 1).
-test(compare, fail) :-
-    eq_int64(1, 2).
-test(compare, error(type_error(integer,a))) :-
-    eq_int64(1, a).
-test(compare, error(type_error(integer,b))) :-
-    eq_int64(b, 1).
-test(compare) :-
-    lt_int64(1, 2).
-test(compare, fail) :-
-    lt_int64(2, 1).
-test(compare, error(type_error(integer,a))) :-
-    lt_int64(1, a).
-test(compare, error(type_error(integer,b))) :-
-    lt_int64(b, 1).
-*/
+%test(compare) :-
+%    eq_int64(1, 1).
+%test(compare, fail) :-
+%    eq_int64(1, 2).
+%test(compare, error(type_error(integer,a))) :-
+%    eq_int64(1, a).
+%test(compare, error(type_error(integer,b))) :-
+%    eq_int64(b, 1).
+%test(compare) :-
+%    lt_int64(1, 2).
+%test(compare, fail) :-
+%    lt_int64(2, 1).
+%test(compare, error(type_error(integer,a))) :-
+%    lt_int64(1, a).
+%test(compare, error(type_error(integer,b))) :-
+%    lt_int64(b, 1).
 
 test(get_atom, A == abc) :-
     get_atom_ex(abc, A).
@@ -847,7 +858,7 @@ test(blob, [blocked(cant_throw_error),
     create_fail_close_blob,
     garbage_collect,
     garbage_collect_atoms.
-test(blob, blocked(calls_PL_system_error)) :-
+test(blob, blocked('throws std::runtime_error')) :-
     create_my_blob('-FAIL_connection-', _Blob).
 test(blob, error(my_blob_open_error(_))) :-
     create_my_blob('-FAIL_open-', _Blob).
@@ -922,6 +933,45 @@ test(blob_portray, S == "MyBlob(closed)") :-
     create_my_blob(foo, B),
     close_my_blob(B),
     with_output_to(string(S), print(B)).
+
+expected_file_name_my_program_home(ShortPath, AbsPathOS) :-
+    once(user:file_search_path(my_program_home, Home)),
+    concat_atom([Home, '/', ShortPath], AbsPath0),
+    prolog_to_os_filename(AbsPath0, AbsPathOS).
+
+expected_file_name_my_program_home_string(ShortPath, AbsPathOS) :-
+    expected_file_name_my_program_home(ShortPath, AbsPathOS0),
+    atom_string(AbsPathOS0, AbsPathOS).
+
+test(file_blob, Read == "% -*- mode: Prolog; coding: utf-8 -*-\n\n") :-
+    my_file_open(File, my_program_home('test_cpp.pl'), 'r', [search,absolute,ospath]),
+    print(File), nl,
+    absolute_file_name(my_program_home('test_cpp.pl'), Abs, [access(read)]),
+    expected_file_name_my_program_home('test_cpp.pl', AbsPathOS_atom),
+    assertion(AbsPathOS_atom == Abs),
+    my_file_filename_atom(File, Filename),
+    assertion(Filename == Abs),
+    my_file_read(File, 39, Read),
+    my_file_close(File).
+% TODO: the following uses uninstantiated F, so explicit catch/3 is done
+% test(file_blob, error(existence_error(my_file_blob_open,F))) :-
+%     expected_file_name_my_program_home('non-existent-file', F0),
+%     atom_string(F0, F),
+%     my_file_open(_File, my_program_home('non-existent-file'), 'r', [search,absolute,ospath]).
+test(file_blob) :-
+    expected_file_name_my_program_home_string('non-existent-file', F),
+    catch(my_file_open(_File, my_program_home('non-existent-file'), 'r', [search,absolute,ospath]),
+          E,
+          assertion(E =@= error(existence_error(my_file_blob_open,F),_))).
+test(file_blob, error(existence_error(source_sink,my_program_home('non-existent-file')))) :-
+    my_file_open(_File, my_program_home('non-existent-file'), 'r', [search,absolute,ospath,read]).
+test(file_blob, error(existence_error(source_sink,my_program_home('non-existent-file')))) :-
+    absolute_file_name(my_program_home('non-existent-file'), _Abs, [access(read)]).
+
+test(option_flags, error(domain_error('MyFileBlob-options',foo))) :-
+    my_file_open(_File, my_program_home('test_cpp.pl'), 'r', [foo,search,absolute,ospath,read]).
+test(option_flags, error(type_error('atom or string',access(read)))) :-
+    my_file_open(_File, my_program_home('test_cpp.pl'), 'r', [search,absolute,ospath,access(read)]).
 
 test(nchars_flags, F-S == 0x43f-"xinteger,all") :-
     nchars_flags([xinteger,all,atomic,number], F),
@@ -1056,6 +1106,35 @@ test_setup_call_cleanup(X) :-
         between(1, 5, X),
         throw(error)).
 
+% Experimental API tests
+:- if((current_prolog_flag(version,V),V>=90308)).
+% Scoped terms depend on a working PL_free_term_ref()
+% implementation.  9.2.6 and up only provide a dummy.
+test(plterm_scoped, R == []) :-
+    unify_atom_list([], R).
+test(plterm_scoped, R == [a, foo]) :-
+    unify_atom_list(["a", foo], R).
+test(plterm_scoped, error(type_error(list,foo))) :-
+    unify_atom_list(foo, _).
+
+test(plterm_scoped, R == []) :-
+    unify_atom_list_c([], R).
+test(plterm_scoped, R == [a, foo]) :-
+    unify_atom_list_c(["a", foo], R).
+test(plterm_scoped, error(type_error(list,foo))) :-
+    unify_atom_list_c(foo, _).
+
+test(plterm_scoped, [blocked('crashes in PL_free_term_ref')]) :-
+    term_release.
+:- endif.
+
+test(record_ext, P == foo(bar,1,"a\0bc",'xy\0')) :-
+    record_ext(foo(bar,1,"a\0bc", 'xy\0'), Str),
+    record_ext(P, Str).
+test(record_ext, P == foo(bar,1,"a\0bc世界",'\0xy\0')) :-
+    record_ext2(foo(bar,1,"a\0bc世界", '\0xy\0'), Str),
+    record_ext2(P, Str).
+
 :- end_tests(cpp).
 
 :- begin_tests(cpp_atommap).
@@ -1082,7 +1161,7 @@ test(atom_term_map) :-
     % This test uses different keys from the other atom_term_map test.
     % If it succeeds, it will have erased all the entries that were
     % inserted.
-    atom_term_insert(foo, foo_value),
+    atom_term_insert(foo, "foo_value"),
     atom_term_insert(bar, bar_value),
     atom_term_insert(bar, bar_value), % OK to add identical enntry
     catch(atom_term_insert(foo, foo_value2),
@@ -1090,7 +1169,7 @@ test(atom_term_map) :-
           Exc = true),
     assertion(Exc == true),
     atom_term_find(foo, F),
-    assertion(F == foo_value),
+    assertion(F == "foo_value"),
     assertion(\+ atom_term_find(foox, _)),
     atom_term_erase(foo),
     assertion(\+ atom_term_find(foo, _)),

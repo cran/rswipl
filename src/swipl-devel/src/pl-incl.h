@@ -238,7 +238,7 @@ handy for it someone wants to add a data type to the system.
 #define O_ROUND_UP_DOWN		1
 #define O_COVERAGE		1
 #ifndef O_PREFER_RATIONALS
-#define O_PREFER_RATIONALS	FALSE
+#define O_PREFER_RATIONALS	false
 #endif
 #ifndef O_RATIONAL_SYNTAX
 #define O_RATIONAL_SYNTAX	RAT_COMPAT
@@ -251,7 +251,7 @@ handy for it someone wants to add a data type to the system.
 #endif
 
 #ifdef __WINDOWS__
-#define NOTTYCONTROL           TRUE
+#define NOTTYCONTROL           true
 #define O_DDE 1
 #define O_DLL 1
 #define O_HASDRIVES 1
@@ -261,7 +261,7 @@ handy for it someone wants to add a data type to the system.
 #endif
 
 #ifdef __EMSCRIPTEN__
-#define NOTTYCONTROL           TRUE
+#define NOTTYCONTROL           true
 #define O_TIGHT_CSTACK 1
 #endif
 
@@ -422,8 +422,6 @@ typedef _sigset_t sigset_t;
 
 /* prepare including BeOS types */
 #ifdef __BEOS__
-#define bool BOOL
-
 #include <BeBuild.h>
 #if (B_BEOS_VERSION <= B_BEOS_VERSION_5)
 # include <socket.h>      /* include socket.h to get the fd_set structure */
@@ -431,10 +429,6 @@ typedef _sigset_t sigset_t;
 # include <SupportDefs.h> /* not needed for a BONE-based networking stack */
 #endif
 #include <OS.h>
-
-#undef true
-#undef false
-#undef bool
 #define EMULATE_DLOPEN 1		/* Emulated dlopen() in pl-beos.c */
 #endif
 
@@ -523,8 +517,6 @@ A common basis for C keywords.
 Booleans,  addresses,  strings  and other   goodies.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-typedef int			bool;
-
 #if __GNUC__ && !__STRICT_ANSI__
 #define LocalArray(t, n, s)	t n[s]
 #else
@@ -533,13 +525,13 @@ typedef int			bool;
 
 #define TermVector(name, s)	LocalArray(Word, name, s)
 
-#ifndef TRUE
-#define TRUE			1
-#define FALSE			0
+#ifndef true
+#define true			1
+#define false			0
 #endif
-#define succeed			return TRUE
-#define fail			return FALSE
-#define TRY(goal)		do { if (!(goal)) return FALSE; } while(0)
+#define succeed			return true
+#define fail			return false
+#define TRY(goal)		do { if (!(goal)) return false; } while(0)
 
 #define CL_START		((ClauseRef)1)	/* asserta */
 #define CL_END			((ClauseRef)2)	/* assertz */
@@ -582,7 +574,7 @@ them.  Descriptions:
 #define SMALLSTACK		32 * 1024 /* GC policy */
 #define MAX_PORTRAY_NESTING	100	/* Max recursion in portray */
 
-#define LOCAL_MARGIN ((size_t)argFrameP0(LocalFrame, MAXARITY) + \
+#define LOCAL_MARGIN (sizeof(struct localFrame) + MAXARITY*sizeof(word) + \
 		      sizeof(struct choice))
 
 #define WORDBITSIZE		(8 * sizeof(word))
@@ -913,8 +905,8 @@ typedef struct
 #define floatNumber(n)	((n)->type >= V_FLOAT)
 
 typedef enum
-{ NUM_ERROR = FALSE,			/* Syntax error */
-  NUM_OK    = TRUE,			/* Ok */
+{ NUM_ERROR = false,			/* Syntax error */
+  NUM_OK    = true,			/* Ok */
   NUM_FUNDERFLOW = -1,			/* Float underflow */
   NUM_FOVERFLOW = -2,			/* Float overflow */
   NUM_IOVERFLOW = -3,			/* Integer overflow */
@@ -995,9 +987,9 @@ short.  As this allows us to set, clear and test combinations  of  flags
 with one operation, it turns out to be faster as well.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define true(s, a)		((s)->flags & (a))
+#define ison(s, a)		((s)->flags & (a))
 #define alltrue(s, a)		(((s)->flags & (a)) == (a))
-#define false(s, a)		(!true((s), (a)))
+#define isoff(s, a)		(!ison((s), (a)))
 #define set(s, a)		ATOMIC_OR(&(s)->flags, (a))
 #define clear(s, a)		ATOMIC_AND(&(s)->flags, ~(a))
 #define clearFlags(s)		((s)->flags = 0)
@@ -1149,7 +1141,6 @@ Macros for environment frames (local stack frames)
 #define setLevelFrame(fr, l)	do { (fr)->level = (l); } while(0)
 #define levelFrame(fr)		((fr)->level)
 #define argFrameP(f, n)		((Word)((f)+1) + (n))
-#define argFrameP0(t, n)	((Word)((t)1) + (n))
 #define argFrame(f, n)		(*argFrameP((f), (n)) )
 #define varFrameP(f, n)		((Word)(f) + (n))
 #define varFrame(f, n)		(*varFrameP((f), (n)) )
@@ -1158,7 +1149,7 @@ Macros for environment frames (local stack frames)
 				  ? (f)->parent \
 				 : word2ptr(LocalFrame, varFrame( \
 				    (f), -QF_PARENT_ENV_OFFSET)))
-#define slotsFrame(f)		(true((f)->predicate, P_FOREIGN) ? \
+#define slotsFrame(f)		(ison((f)->predicate, P_FOREIGN) ? \
 				      (f)->predicate->functor->arity : \
 				      (f)->clause->clause->prolog_vars)
 
@@ -1407,7 +1398,7 @@ behalf  of  I_USERCALL.  This   is   verified    in   an   assertion  in
 checkCodeTable().
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define sizeofClause(n) ((char *)&((Clause)256)->codes[n] - (char *)((Clause)256))
+#define sizeofClause(n) (offsetof(struct clause, codes[n]))
 
 struct clause
 { Definition		predicate;	/* Predicate I belong to */
@@ -2308,7 +2299,7 @@ stack guarding when compiling with the address sanitizer.
 #define O_C_STACK_GUARDED 1
 #define C_STACK_OVERFLOW_GUARDED(rc, code, cleanup) \
 	do						\
-	{ LD->signal.sig_critical = TRUE;		\
+	{ LD->signal.sig_critical = true;		\
 	  if ( setjmp(LD->signal.context) )		\
 	  { cleanup;					\
 	    unblockSignal(SIGSEGV);			\
@@ -2316,7 +2307,7 @@ stack guarding when compiling with the address sanitizer.
 	  } else					\
 	  { rc = code;					\
 	  }						\
-	  LD->signal.sig_critical = FALSE;		\
+	  LD->signal.sig_critical = false;		\
 	} while(0)
 #else
 #define C_STACK_OVERFLOW_GUARDED(rc, code, cleanup) \
@@ -2855,6 +2846,19 @@ typedef struct
 { atom_t	file;			/* name of the file */
   int		line;			/* line number */
 } sourceloc, *SourceLoc;
+
+
+/* Initialise the preallocated parts of a dynamic array.  The block
+ * pointers must be 1 before the preallocated data.  Unfortunately
+ * clang using -fsanitize=undefined considers this invalid.  It does
+ * not see that this does actually the same.
+ */
+
+#define INIT_DYN_ARRAY(t)						\
+  static_assertion(sizeof(t->preallocated)/sizeof(t->preallocated[0]) == 7); \
+  t->blocks[0] = t->preallocated; t->blocks[0]--;			\
+  t->blocks[1] = t->blocks[0];						\
+  t->blocks[2] = t->blocks[0];						\
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Include debugging info to make it (very) verbose.  SECURE adds  code  to

@@ -70,8 +70,8 @@ freeCodesDefinition() destroys the supervisor of  a predicate, replacing
 it  by  the  statically  allocated  S_VIRGIN  supervisor.  Note  that  a
 predicate *always* has non-NULL def->codes.
 
-If linger == FALSE, we  are  absolutely   sure  that  it  is harmless to
-deallocate the old supervisor. If TRUE,   there may be references. I.e.,
+If linger == false, we  are  absolutely   sure  that  it  is harmless to
+deallocate the old supervisor. If true,   there may be references. I.e.,
 other threads may have started executing this predicate.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
@@ -132,18 +132,18 @@ static int prof_foreign_index = (I_HIGHEST+20);
 
 int
 createForeignSupervisor(Definition def, Func f)
-{ assert(true(def, P_FOREIGN));
+{ assert(ison(def, P_FOREIGN));
 
-  if ( false(def, P_VARARG) )
+  if ( isoff(def, P_VARARG) )
   { if ( def->functor->arity > MAX_FLI_ARGS )
       sysError("Too many arguments to foreign function %s (>%d)", \
 	       predicateName(def), MAX_FLI_ARGS); \
   }
 
-  if ( false(def, P_NONDET) )
+  if ( isoff(def, P_NONDET) )
   { Code codes;
 
-    if ( true(def, P_VARARG) )
+    if ( ison(def, P_VARARG) )
     { codes = allocCodes(2);
       codes[0] = encode(I_FCALLDETVA);
       codes[1] = ptr2code(f);
@@ -158,7 +158,7 @@ createForeignSupervisor(Definition def, Func f)
   { Code codes = allocCodes(5);
 
     codes[0] = encode(I_FOPENNDET);
-    if ( true(def, P_VARARG) )
+    if ( ison(def, P_VARARG) )
       codes[1] = encode(I_FCALLNDETVA);
     else
       codes[1] = encode(I_FCALLNDET0+def->functor->arity);
@@ -187,12 +187,12 @@ equalSupervisors(const Code s1, const Code s2)
 
     if ( sz1 && sz1 == sz2 &&
 	 memcmp(s1, s2, sz1*sizeof(*s1)) == 0 )
-      return TRUE;
+      return true;
 
-    return FALSE;
+    return false;
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -230,7 +230,7 @@ getClauses(Definition def, ClauseRef *refp, int max)
 
 static Code
 undefSupervisor(Definition def)
-{ if ( def->impl.clauses.number_of_clauses == 0 && false(def, PROC_DEFINED) )
+{ if ( def->impl.clauses.number_of_clauses == 0 && isoff(def, PROC_DEFINED) )
     return SUPERVISOR(undef);
 
   return NULL;
@@ -313,8 +313,8 @@ listSupervisor(Definition def)
 
 static Code
 dynamicSupervisor(Definition def)
-{ if ( true(def, P_DYNAMIC) )
-  { if ( def->tabling && true(def->tabling, TP_INCREMENTAL) )
+{ if ( ison(def, P_DYNAMIC) )
+  { if ( def->tabling && ison(def->tabling, TP_INCREMENTAL) )
       return SUPERVISOR(incr_dynamic);
     else
       return SUPERVISOR(dynamic);
@@ -326,7 +326,7 @@ dynamicSupervisor(Definition def)
 
 static Code
 multifileSupervisor(Definition def)
-{ if ( true(def, P_MULTIFILE) )
+{ if ( ison(def, P_MULTIFILE) )
     return SUPERVISOR(multifile);
 
   return NULL;
@@ -362,19 +362,19 @@ copyCodes(Code dest, Code src, size_t count)
 
 static Code
 chainPredicateSupervisor(Definition def, Code post)
-{ if ( (true(def, P_META) && true(def, P_TRANSPARENT)) ||
-       true(def, P_SSU_DET|P_DET) )
+{ if ( (ison(def, P_META) && ison(def, P_TRANSPARENT)) ||
+       ison(def, P_SSU_DET|P_DET) )
   { tmp_buffer buf;
     Code codes;
 
     initBuffer(&buf);
 
-    if ( true(def, P_SSU_DET) )
+    if ( ison(def, P_SSU_DET) )
       addBuffer(&buf, encode(S_SSU_DET), code);
-    if ( true(def, P_DET) )
+    if ( ison(def, P_DET) )
       addBuffer(&buf, encode(S_DET), code);
 
-    if ( true(def, P_META) && true(def, P_TRANSPARENT) )
+    if ( ison(def, P_META) && ison(def, P_TRANSPARENT) )
     { unsigned int i;
       int loffset = -1;
 
@@ -419,10 +419,10 @@ createUndefSupervisor(Definition def)
   if ( (codes = undefSupervisor(def)) )
   { def->codes = codes;
 
-    return TRUE;
+    return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 
@@ -451,11 +451,11 @@ setSupervisor(Definition def, Code codes)
   Code old = def->codes;
 
   if ( equalSupervisors(old, codes) )
-  { freeSupervisor(def, codes, FALSE);
+  { freeSupervisor(def, codes, false);
   } else
   { MEMORY_BARRIER();
     def->codes = codes;
-    freeSupervisor(def, old, TRUE);
+    freeSupervisor(def, old, true);
   }
   PL_UNLOCK(L_PREDICATE);
 }
@@ -470,23 +470,23 @@ code.
 
 int
 setDefaultSupervisor(Definition def)
-{ if ( false(def, P_LOCKED_SUPERVISOR) )
+{ if ( isoff(def, P_LOCKED_SUPERVISOR) )
   { Code codes, old;
 
     PL_LOCK(L_PREDICATE);
     old = def->codes;
     codes = createSupervisor(def);
     if ( equalSupervisors(old, codes) )
-    { freeSupervisor(def, codes, FALSE);
+    { freeSupervisor(def, codes, false);
     } else
     { MEMORY_BARRIER();
       def->codes = codes;
-      freeSupervisor(def, old, TRUE);
+      freeSupervisor(def, old, true);
     }
     PL_UNLOCK(L_PREDICATE);
   }
 
-  return TRUE;
+  return true;
 }
 
 

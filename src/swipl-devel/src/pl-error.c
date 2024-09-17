@@ -64,7 +64,7 @@ put_name_arity(term_t t, functor_t f)
 	    PL_cons_functor(t, FUNCTOR_divide2, a+0, a+1));
   }
 
-  return FALSE;
+  return false;
 }
 
 
@@ -109,13 +109,13 @@ PL_error(const char *pred, int arity, const char *msg, PL_error_code id, ...)
   Definition caller;
   term_t except, formal, swi, msgterm=0;
   va_list args;
-  int do_throw = FALSE;
+  int do_throw = false;
   fid_t fid;
   int rc;
   int msg_rep = REP_UTF8;
 
   if ( exception_term )			/* do not overrule older exception */
-    return FALSE;
+    return false;
 
   if ( environment_frame )
     caller = environment_frame->predicate;
@@ -128,12 +128,12 @@ PL_error(const char *pred, int arity, const char *msg, PL_error_code id, ...)
 
   if ( msg == MSG_ERRNO )
   { if ( errno == EPLEXCEPTION )
-      return FALSE;
+      return false;
     msg = OsError();
     msg_rep = REP_MB;
   }
 
-  LD->exception.processing = TRUE;	/* allow using spare stack */
+  LD->exception.processing = true;	/* allow using spare stack */
 
   if ( !(fid = PL_open_foreign_frame()) )
     goto nomem;
@@ -720,7 +720,7 @@ PL_error(const char *pred, int arity, const char *msg, PL_error_code id, ...)
 			 PL_FUNCTOR, FUNCTOR_existence_error2,
 			   PL_ATOM, ATOM_stream,
 			   PL_POINTER, s);
-      do_throw = TRUE;
+      do_throw = true;
       break;
     }
     case ERR_BUSY:
@@ -757,7 +757,7 @@ PL_error(const char *pred, int arity, const char *msg, PL_error_code id, ...)
       break;
     }
     default:
-      rc = FALSE;
+      rc = false;
       assert(0);
   }
   va_end(args);
@@ -815,20 +815,20 @@ PL_error(const char *pred, int arity, const char *msg, PL_error_code id, ...)
 		 *	  TYPICAL ERRORS	*
 		 *******************************/
 
-int
+bool
 PL_instantiation_error(term_t actual)
 { (void)actual;
 
   return PL_error(NULL, 0, NULL, ERR_INSTANTIATION);
 }
 
-int
+bool
 PL_uninstantiation_error(term_t actual)
 { valid_term_t(actual);
   return PL_error(NULL, 0, NULL, ERR_UNINSTANTIATION, 0, actual);
 }
 
-int
+bool
 PL_representation_error(const char *representation)
 { atom_t r = PL_new_atom(representation);
   int rc = PL_error(NULL, 0, NULL, ERR_REPRESENTATION, r);
@@ -838,14 +838,14 @@ PL_representation_error(const char *representation)
 }
 
 
-int
+bool
 PL_type_error(const char *expected, term_t actual)
 { valid_term_t(actual);
   return PL_error(NULL, 0, NULL, ERR_CHARS_TYPE, expected, actual);
 }
 
 
-int
+bool
 PL_domain_error(const char *expected, term_t actual)
 { valid_term_t(actual);
   atom_t a = PL_new_atom(expected);
@@ -856,7 +856,7 @@ PL_domain_error(const char *expected, term_t actual)
 }
 
 
-int
+bool
 PL_existence_error(const char *type, term_t actual)
 { valid_term_t(actual);
   atom_t a = PL_new_atom(type);
@@ -867,7 +867,7 @@ PL_existence_error(const char *type, term_t actual)
 }
 
 
-int
+bool
 PL_permission_error(const char *op, const char *type, term_t obj)
 { valid_term_t(obj);
   atom_t t = PL_new_atom(type);
@@ -880,8 +880,7 @@ PL_permission_error(const char *op, const char *type, term_t obj)
   return rc;
 }
 
-
-int
+bool
 PL_resource_error(const char *resource)
 { atom_t r = PL_new_atom(resource);
   int rc = PL_error(NULL, 0, NULL, ERR_RESOURCE, r);
@@ -898,7 +897,7 @@ PL_no_memory(void)
 }
 
 
-int
+bool
 PL_syntax_error(const char *msg, IOSTREAM *in)
 { GET_LD
   term_t ex, loc;
@@ -929,14 +928,14 @@ PL_syntax_error(const char *msg, IOSTREAM *in)
 	}
       }
 
-      return FALSE;
+      return false;
     }
 
   ok:
     return PL_raise_exception(ex);
   }
 
-  return FALSE;
+  return false;
 }
 
 		 /*******************************
@@ -950,8 +949,8 @@ Calls print_message(severity, term), where  ...   are  arguments  as for
 PL_unify_term(). This predicate saves possible   pending  exceptions and
 restores them to make the call from B_THROW possible.
 
-Returns FALSE if there was an   exception while executing printMessage()
-and TRUE if the printing succeeded or merely failed.
+Returns false if there was an   exception while executing printMessage()
+and true if the printing succeeded or merely failed.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 #define OK_RECURSIVE 10
@@ -968,9 +967,9 @@ printMessage(atom_t severity, ...)
 
   if ( ++LD->in_print_message >= OK_RECURSIVE*3 )
     fatalError("printMessage(): recursive call\n");
-  if ( !saveWakeup(&wstate, TRUE) )
+  if ( !saveWakeup(&wstate, true) )
   { LD->in_print_message--;
-    return FALSE;
+    return false;
   }
 
   av = PL_new_term_refs(2);
@@ -999,7 +998,7 @@ printMessage(atom_t severity, ...)
   if ( !rc && PL_exception(0) )
     set(&wstate, WAKEUP_KEEP_URGENT_EXCEPTION);
   else
-    rc = TRUE;
+    rc = true;
 
   restoreWakeup(&wstate);
   LD->in_print_message--;
@@ -1021,14 +1020,14 @@ PL_get_atom_ex(DECL_LD term_t t, atom_t *a)
 }
 
 
-API_STUB(int)
+API_STUB(bool)
 (PL_get_atom_ex)(term_t t, atom_t *a)
 ( valid_term_t(t);
   return PL_get_atom_ex(t, a);
 )
 
 
-int
+bool
 PL_get_integer_ex(term_t t, int *i)
 { GET_LD
   valid_term_t(t);
@@ -1053,13 +1052,13 @@ PL_get_long_ex(DECL_LD term_t t, long *i)
   return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_integer, t);
 }
 
-API_STUB(int)
+API_STUB(bool)
 (PL_get_long_ex)(term_t t, long *i)
 ( valid_term_t(t);
   return PL_get_long_ex(t, i);
 )
 
-int
+bool
 PL_get_int64_ex(term_t t, int64_t *i)
 { GET_LD
   valid_term_t(t);
@@ -1084,7 +1083,7 @@ PL_get_intptr_ex(DECL_LD term_t t, intptr_t *i)
 #endif
 }
 
-API_STUB(int)
+API_STUB(bool)
 (PL_get_intptr_ex)(term_t t, intptr_t *i)
 ( valid_term_t(t);
   return PL_get_intptr_ex(t, i);
@@ -1098,11 +1097,11 @@ API_STUB(int)
 static int
 fits_size(int64_t val)
 { if ( (uintptr_t)val <= (uintptr_t)UINTPTR_MAX )
-    return TRUE;
+    return true;
   return PL_error(NULL, 0, NULL, ERR_REPRESENTATION, ATOM_size_t);
 }
 #else
-#define fits_size(v) TRUE
+#define fits_size(v) true
 #endif
 
 int
@@ -1121,7 +1120,7 @@ PL_get_size_ex(DECL_LD term_t t, size_t *i)
 	return PL_error(NULL, 0, NULL, ERR_REPRESENTATION, ATOM_size_t);
 #endif
       *i = (size_t)v;
-      return TRUE;
+      return true;
     }
     return PL_error(NULL, 0, NULL, ERR_DOMAIN,
 		    ATOM_not_less_than_zero, t);
@@ -1133,9 +1132,9 @@ PL_get_size_ex(DECL_LD term_t t, size_t *i)
 	if ( n.value.i >= 0 )
 	{ if ( fits_size(n.value.i) )
 	  { *i = (size_t)n.value.i;
-	    return TRUE;
+	    return true;
 	  }
-	  return FALSE;
+	  return false;
 	} else
 	{ return PL_error(NULL, 0, NULL, ERR_DOMAIN,
 			  ATOM_not_less_than_zero, t);
@@ -1147,7 +1146,7 @@ PL_get_size_ex(DECL_LD term_t t, size_t *i)
 	switch(mpz_to_uint64(n.value.mpz, &v))
 	{ case 0:
 	    *i = v;
-	    return TRUE;
+	    return true;
 	  case -1:
 	    return PL_error(NULL, 0, NULL, ERR_DOMAIN,
 			    ATOM_not_less_than_zero, t);
@@ -1155,7 +1154,7 @@ PL_get_size_ex(DECL_LD term_t t, size_t *i)
 	    return PL_error(NULL, 0, NULL, ERR_REPRESENTATION, ATOM_size_t);
 	  default:
 	    assert(0);
-	    return FALSE;
+	    return false;
 	}
       }
 #else
@@ -1181,11 +1180,11 @@ pl_get_uint64(DECL_LD term_t t, uint64_t *i, int ex)
 
     if ( v >= 0 )
     { *i = v;
-      return TRUE;
+      return true;
     }
     return ex ? PL_error(NULL, 0, NULL, ERR_DOMAIN,
 			 ATOM_not_less_than_zero, t)
-	      : FALSE;
+	      : false;
   }
 
   if ( PL_get_number(t, &n) )
@@ -1193,11 +1192,11 @@ pl_get_uint64(DECL_LD term_t t, uint64_t *i, int ex)
     { case V_INTEGER:
 	if ( n.value.i >= 0 )
 	{ *i = n.value.i;
-	  return TRUE;
+	  return true;
 	} else
 	{ return ex ? PL_error(NULL, 0, NULL, ERR_DOMAIN,
 			       ATOM_not_less_than_zero, t)
-		    : FALSE;
+		    : false;
 	}
 #if O_BIGNUM
       case V_MPZ:
@@ -1206,41 +1205,41 @@ pl_get_uint64(DECL_LD term_t t, uint64_t *i, int ex)
 	switch(mpz_to_uint64(n.value.mpz, &v))
 	{ case 0:
 	    *i = v;
-	    return TRUE;
+	    return true;
 	  case -1:
 	    return ex ? PL_error(NULL, 0, NULL, ERR_DOMAIN,
 				 ATOM_not_less_than_zero, t)
-		      : FALSE;
+		      : false;
 	  case 1:
-	    return ex ? PL_representation_error("uint64_t") : FALSE;
+	    return ex ? PL_representation_error("uint64_t") : false;
 	  default:
 	    assert(0);
-	    return FALSE;
+	    return false;
 	}
       }
 #else
-      return ex ? PL_representation_error("uint64_t") : FALSE;
+      return ex ? PL_representation_error("uint64_t") : false;
 #endif
       default:
 	break;
     }
   }
 
-  return ex ? PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_integer, t) : FALSE;
+  return ex ? PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_integer, t) : false;
 }
 
 int
 PL_get_uint64_ex(DECL_LD term_t t, uint64_t *i)
-{ return pl_get_uint64(t, i, TRUE);
+{ return pl_get_uint64(t, i, true);
 }
 
-API_STUB(int)
+API_STUB(bool)
 (PL_get_size_ex)(term_t t, size_t *i)
 ( valid_term_t(t);
   return PL_get_size_ex(t, i);
 )
 
-int
+bool
 PL_get_bool_ex(term_t t, int *i)
 { valid_term_t(t);
   if ( PL_get_bool(t, i) )
@@ -1250,7 +1249,7 @@ PL_get_bool_ex(term_t t, int *i)
 }
 
 
-int
+bool
 PL_get_char_ex(term_t t, int *p, int eof)
 { valid_term_t(t);
   if ( PL_get_char(t, p, eof) )
@@ -1260,7 +1259,7 @@ PL_get_char_ex(term_t t, int *p, int eof)
 }
 
 
-int
+bool
 PL_get_pointer_ex(term_t t, void **addrp)
 { GET_LD
   valid_term_t(t);
@@ -1271,7 +1270,7 @@ PL_get_pointer_ex(term_t t, void **addrp)
 }
 
 
-int
+bool
 PL_unify_list_ex(term_t l, term_t h, term_t t)
 { GET_LD
   valid_term_t(l);
@@ -1288,7 +1287,7 @@ PL_unify_list_ex(term_t l, term_t h, term_t t)
 }
 
 
-int
+bool
 PL_unify_nil_ex(term_t l)
 { valid_term_t(l);
   if ( PL_unify_nil(l) )
@@ -1301,7 +1300,7 @@ PL_unify_nil_ex(term_t l)
 }
 
 
-int
+bool
 PL_get_list_ex(term_t l, term_t h, term_t t)
 { GET_LD
   valid_term_t(l);
@@ -1317,25 +1316,25 @@ PL_get_list_ex(term_t l, term_t h, term_t t)
   return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_list, l);
 }
 
-int
+bool
 PL_get_nil_ex(term_t l)
 { if ( PL_exception(0) )
-    return FALSE;
+    return false;
 
   valid_term_t(l);
   if ( PL_get_nil(l) )
-    return TRUE;
+    return true;
 
   if ( PL_is_list(l) )
-    return FALSE;
+    return false;
 
   return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_list, l);
 }
 
-int
+bool
 PL_unify_bool_ex(term_t t, int val)
 { GET_LD
-  bool v;
+  int v;
   valid_term_t(t);
 
   if ( PL_is_variable(t) )
@@ -1392,10 +1391,10 @@ PRED_IMPL("$inc_message_count", 1, inc_message_count, 0)
       LD->statistics.warnings++;
     } /* else ignore other levels */
 
-    return TRUE;
+    return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 BeginPredDefs(error)

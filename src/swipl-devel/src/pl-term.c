@@ -39,11 +39,9 @@
 #include <windows.h>
 #endif
 
-#define bool pl_bool			/* avoid conflict with curses */
 #include "pl-term.h"
 #include "pl-fli.h"
 #include "pl-util.h"
-#undef bool
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 This module defines some hacks to get to the unix  termcap  library.   I
@@ -92,7 +90,7 @@ windowing!
 #endif
 
 #define MAX_TERMBUF	1024		/* Conforming manual */
-#define STAT_START	0		/* must be FALSE */
+#define STAT_START	0		/* must be false */
 #define STAT_OK		1
 #define STAT_ERROR	2
 

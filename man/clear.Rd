@@ -12,6 +12,13 @@ TRUE (invisible)
 \description{
 Clear current query
 }
+\examples{
+query(call("member", expression(X), list(quote(a), "b", 3L, 4)))
+submit() # X = a
+submit() # X = "b"
+clear()
+
+}
 \seealso{
 \code{\link[=query]{query()}}
 for opening a query

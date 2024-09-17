@@ -1,3 +1,19 @@
+# rswipl 9.3.11
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-11/7766
+
+# rswipl 9.3.10
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-10/7728
+
+Fixes some memory leaks by open queries.
+
+# rswipl 9.3.8
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-8/7588
+
+Workarounds for Rcpp::Language
+
 # rswipl 9.3.7.2
 
 Disable Rcpp::Language until SET-TYPEOF problem has been fixed.

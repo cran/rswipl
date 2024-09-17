@@ -140,7 +140,7 @@ set(SWIPL_DATA_library explain.pl sort.pl prolog_config.pl
     oset.pl ordsets.pl occurs.pl lists.pl pprint.pl atom.pl
     www_browser.pl url.pl utf8.pl main.pl assoc.pl nb_set.pl
     qpforeign.pl dif.pl when.pl ugraphs.pl streams.pl
-    checklast.pl checkselect.pl operators.pl date.pl
+    operators.pl date.pl
     prolog_stack.pl prolog_clause.pl prolog_xref.pl prolog_source.pl
     broadcast.pl pairs.pl base64.pl record.pl rbtrees.pl settings.pl
     dialect.pl apply_macros.pl apply.pl nb_rbtrees.pl
@@ -735,10 +735,10 @@ else(WIN32)
 if(SWIPL_INSTALL_AS_LINK)
 # Create symbolic link from public installation dir to executables
 install(DIRECTORY DESTINATION bin)
-ilink(${CMAKE_INSTALL_PREFIX}/${SWIPL_INSTALL_ARCH_EXE}/swipl
-      ${CMAKE_INSTALL_PREFIX}/bin/swipl)
-ilink(${CMAKE_INSTALL_PREFIX}/${SWIPL_INSTALL_ARCH_EXE}/swipl-ld
-      ${CMAKE_INSTALL_PREFIX}/bin/swipl-ld)
+ilink(/${SWIPL_INSTALL_ARCH_EXE}/swipl
+      /bin/swipl)
+ilink(/${SWIPL_INSTALL_ARCH_EXE}/swipl-ld
+      /bin/swipl-ld)
 endif()
 
 endif(WIN32)

@@ -115,10 +115,10 @@ __builtin_saddll_overflow(long long int a, long long int b, long long int *res)
 { long long int r = a + b;
   if ( (r > 0 && a < 0 && b < 0) ||
        (r < 0 && a > 0 && b > 0) )
-    return TRUE;
+    return true;
 
   *res = r;
-  return FALSE;
+  return false;
 }
 
 #endif /*_MSC_VER*/
@@ -197,7 +197,7 @@ __atomic_load_n(size_t *ptr, int memorder)
 #endif
 
 #define __COMPARE_AND_SWAP(at, from, to) \
-	__atomic_compare_exchange_n(at, &(from), to, FALSE, \
+	__atomic_compare_exchange_n(at, &(from), to, false, \
 				    __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)
 
 static inline int
@@ -416,18 +416,14 @@ typedef struct bit_vector
 } bit_vector;
 #define BITSPERE (sizeof(bitv_chunk)*8)
 
-#ifndef offset
-#define offset(s, f) ((size_t)(&((struct s *)256)->f) - (size_t)((struct s *)256))
-#endif
-
 static inline size_t
 sizeof_bitvector(size_t bits)
-{ return offset(bit_vector, chunk[(bits+BITSPERE-1)/BITSPERE]);
+{ return offsetof(struct bit_vector, chunk[(bits+BITSPERE-1)/BITSPERE]);
 }
 
 static inline void
 init_bitvector(bit_vector *v, size_t bits)
-{ size_t bytes = offset(bit_vector, chunk[(bits+BITSPERE-1)/BITSPERE]);
+{ size_t bytes = offsetof(struct bit_vector, chunk[(bits+BITSPERE-1)/BITSPERE]);
 
   memset(v, 0, bytes);
   v->size = bits;
@@ -435,7 +431,7 @@ init_bitvector(bit_vector *v, size_t bits)
 
 static inline bit_vector *
 new_bitvector(size_t size)
-{ size_t bytes = offset(bit_vector, chunk[(size+BITSPERE-1)/BITSPERE]);
+{ size_t bytes = offsetof(struct bit_vector, chunk[(size+BITSPERE-1)/BITSPERE]);
   bit_vector *v = allocHeapOrHalt(bytes);
 
   memset(v, 0, bytes);
@@ -445,7 +441,7 @@ new_bitvector(size_t size)
 
 static inline void
 free_bitvector(bit_vector *v)
-{ size_t bytes = offset(bit_vector, chunk[(v->size+BITSPERE-1)/BITSPERE]);
+{ size_t bytes = offsetof(struct bit_vector, chunk[(v->size+BITSPERE-1)/BITSPERE]);
 
   freeHeap(v, bytes);
 }
@@ -510,7 +506,7 @@ static int	  same_type_numbers(Number n1, Number n2) WUNUSED;
 static inline int
 same_type_numbers(Number n1, Number n2)
 { if ( n1->type == n2->type )
-    return TRUE;
+    return true;
   return make_same_type_numbers(n1, n2);
 }
 
@@ -634,27 +630,27 @@ visibleClause(DECL_LD Clause cl, gen_t gen)
   e = cl->generation.erased;
 
   if ( unlikely(e == LD->reload.generation) )
-    return FALSE;
+    return false;
   if ( unlikely(c == LD->reload.generation) )
-    return TRUE;
+    return true;
 
   if ( c <= gen && e > gen )
-    return TRUE;
+    return true;
 
   if ( unlikely(LD->transaction.gen_base && gen >= LD->transaction.gen_base) &&
-       true(cl->predicate, P_TRANSACT) )
+       ison(cl->predicate, P_TRANSACT) )
     return transaction_visible_clause(cl, gen);
 
-  return FALSE;
+  return false;
 }
 
 #define visibleClauseCNT(cl, gen) LDFUNC(visibleClauseCNT, cl, gen)
 static inline int
 visibleClauseCNT(DECL_LD Clause cl, gen_t gen)
 { if ( likely(visibleClause(cl, gen)) )
-    return TRUE;
+    return true;
   LD->clauses.erased_skipped++;
-  return FALSE;
+  return false;
 }
 
 static inline gen_t
@@ -665,7 +661,7 @@ global_generation(void)
 #define current_generation(def) LDFUNC(current_generation, def)
 static inline gen_t
 current_generation(DECL_LD Definition def)
-{ if ( unlikely(!!LD->transaction.generation) && def && true(def, P_TRANSACT) )
+{ if ( unlikely(!!LD->transaction.generation) && def && ison(def, P_TRANSACT) )
   { return LD->transaction.generation;
   } else
   { return GD->_generation;
@@ -675,7 +671,7 @@ current_generation(DECL_LD Definition def)
 #define next_generation(def) LDFUNC(next_generation, def)
 static inline gen_t
 next_generation(DECL_LD Definition def)
-{ if ( unlikely(!!LD->transaction.generation) && def && true(def, P_TRANSACT) )
+{ if ( unlikely(!!LD->transaction.generation) && def && ison(def, P_TRANSACT) )
   { if ( LD->transaction.generation < LD->transaction.gen_max )
       return ++LD->transaction.generation;
     return 0;
@@ -693,7 +689,7 @@ next_generation(DECL_LD Definition def)
 #define max_generation(def) LDFUNC(max_generation, def)
 static inline gen_t
 max_generation(DECL_LD Definition def)
-{ if ( unlikely(!!LD->transaction.generation) && def && true(def, P_TRANSACT) )
+{ if ( unlikely(!!LD->transaction.generation) && def && ison(def, P_TRANSACT) )
     return LD->transaction.gen_max;
   else
     return GEN_MAX;
@@ -714,7 +710,7 @@ generation is updated and thus no harm is done.
 static inline void
 setGenerationFrame(DECL_LD LocalFrame fr)
 { if ( unlikely(LD->transaction.generation &&
-		true(fr->predicate, P_TRANSACT)) )
+		ison(fr->predicate, P_TRANSACT)) )
   { setGenerationFrameVal(fr, LD->transaction.generation);
   } else
   { gen_t gen;

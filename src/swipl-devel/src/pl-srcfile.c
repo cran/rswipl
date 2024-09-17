@@ -103,7 +103,7 @@ static void
 registerSourceFile(SourceFile sf)	/* locked by lookupSourceFile() */
 { size_t index;
   int i;
-  int last = FALSE;
+  int last = false;
 
   if ( GD->files.no_hole_before == 0 )
     GD->files.no_hole_before = 1;
@@ -114,7 +114,7 @@ registerSourceFile(SourceFile sf)	/* locked by lookupSourceFile() */
 
     if ( upto >= GD->files.highest )
     { upto = GD->files.highest;
-      last = TRUE;
+      last = true;
     }
 
     for(; index<upto; index++)
@@ -237,12 +237,12 @@ with exceptions in various conditions.
 static bool
 clearSourceAdmin(atom_t sf_name)
 { GET_LD
-  int rc = FALSE;
+  int rc = false;
   fid_t fid;
   predicate_t pred;
 
   if ( GD->cleaning == CLN_DATA )
-    return TRUE;
+    return true;
 
   pred = _PL_predicate("$clear_source_admin", 1, "system",
 		       &GD->procedures.clear_source_admin1);
@@ -400,7 +400,7 @@ releaseSourceFile(SourceFile sf)
     }
   }
 
-  return TRUE;
+  return true;
 }
 
 int
@@ -410,21 +410,21 @@ releaseSourceFileNo(int index)
   if ( (sf = indexToSourceFile(index)) )
     return releaseSourceFile(sf);
 
-  return TRUE;
+  return true;
 }
 
 int
 hasProcedureSourceFile(SourceFile sf, Procedure proc)
 { ListCell cell;
 
-  if ( true(proc->definition, FILE_ASSIGNED) )
+  if ( ison(proc->definition, FILE_ASSIGNED) )
   { for(cell=sf->procedures; cell; cell = cell->next)
     { if ( cell->value == proc )
-	return TRUE;
+	return true;
     }
   }
 
-  return FALSE;
+  return false;
 }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -463,7 +463,7 @@ addProcedureSourceFile(SourceFile sf, Procedure proc)
 int
 addModuleSourceFile(SourceFile sf, Module m)
 { ListCell *cp, c2;
-  int rc = TRUE;
+  int rc = true;
 
   LOCKSRCFILE(sf);
   for(cp=&sf->modules; *cp; cp = &(*cp)->next)
@@ -474,7 +474,7 @@ addModuleSourceFile(SourceFile sf, Module m)
   }
 
   if ( !(c2 = allocHeap(sizeof(struct list_cell))) )
-  { rc = FALSE;			/* no memory */
+  { rc = false;			/* no memory */
     goto out;
   }
   c2->value = m;
@@ -490,7 +490,7 @@ out:
 static int
 delModuleSourceFile(SourceFile sf, Module m)
 { ListCell *cp, c;
-  int rc = FALSE;
+  int rc = false;
 
   LOCKSRCFILE(sf);
   for(cp=&sf->modules; (c=*cp); cp=&c->next)
@@ -498,7 +498,7 @@ delModuleSourceFile(SourceFile sf, Module m)
     { *cp = c->next;
       freeHeap(c, sizeof(*c));
 
-      rc = TRUE;
+      rc = true;
       break;
     }
   }
@@ -597,7 +597,7 @@ PRED_IMPL("$source_file", 2, source_file, PL_FA_TRANSPARENT)
       return PL_unify_atom(file, sf->name);
   }
 
-  return FALSE;
+  return false;
 }
 
 /** '$source_file_predicates'(+File, -Heads:list(callable)) is semidet.
@@ -607,18 +607,18 @@ static
 PRED_IMPL("$source_file_predicates", 2, source_file_predicates, 0)
 { PRED_LD
   atom_t name;
-  int rc = FALSE;
+  int rc = false;
   SourceFile sf;
 
   term_t file = A1;
 
   if ( PL_get_atom_ex(file, &name) &&
-       (sf = lookupSourceFile(name, FALSE)) )
+       (sf = lookupSourceFile(name, false)) )
   { if ( sf->count > 0 )
     { term_t tail = PL_copy_term_ref(A2);
       term_t head = PL_new_term_ref();
       ListCell cell;
-      rc = TRUE;
+      rc = true;
 
       LOCKSRCFILE(sf);
       for(cell=sf->procedures; rc && cell; cell = cell->next )
@@ -704,7 +704,7 @@ PRED_IMPL("$source_file_property", 3, source_file_property, 0)
 
   if ( PL_get_atom_ex(A1, &filename) &&
        PL_get_atom_ex(A2, &property) )
-  { SourceFile sf = lookupSourceFile(filename, FALSE);
+  { SourceFile sf = lookupSourceFile(filename, false);
     int rc;
 
     if ( property == ATOM_load_count )
@@ -714,9 +714,9 @@ PRED_IMPL("$source_file_property", 3, source_file_property, 0)
     else if ( property == ATOM_number_of_clauses )
       rc = PL_unify_integer(A3, sf ? sf->number_of_clauses : 0);
     else if ( property == ATOM_resource )
-      rc = PL_unify_bool(A3, sf ? sf->resource : FALSE);
+      rc = PL_unify_bool(A3, sf ? sf->resource : false);
     else if ( property == ATOM_from_state )
-      rc = PL_unify_bool(A3, sf ? sf->from_state : FALSE);
+      rc = PL_unify_bool(A3, sf ? sf->from_state : false);
     else
       rc = PL_domain_error("source_file_property", A2);
 
@@ -726,7 +726,7 @@ PRED_IMPL("$source_file_property", 3, source_file_property, 0)
     return rc;
   }
 
-  return FALSE;
+  return false;
 }
 
 static
@@ -737,9 +737,9 @@ PRED_IMPL("$set_source_file", 3, set_source_file, 0)
 
   if ( !PL_get_atom_ex(A1, &filename) ||
        !PL_get_atom_ex(A2, &property) )
-    return FALSE;
+    return false;
 
-  if ( (sf = lookupSourceFile(filename, FALSE)) )
+  if ( (sf = lookupSourceFile(filename, false)) )
   { int rc;
 
     if ( property == ATOM_resource )
@@ -747,9 +747,9 @@ PRED_IMPL("$set_source_file", 3, set_source_file, 0)
 
       if ( PL_get_bool_ex(A3, &v) )
       { sf->resource = (unsigned)v&0x1;
-	rc = TRUE;
+	rc = true;
       } else
-	rc = FALSE;
+	rc = false;
     } else
       rc = PL_domain_error("source_file_property", A2);
 
@@ -766,7 +766,7 @@ PRED_IMPL("$set_source_files", 1, set_source_files, 0)
   atom_t prop;
 
   if ( !PL_get_atom_ex(A1, &prop) )
-    return FALSE;
+    return false;
   if ( prop == ATOM_system || prop == ATOM_from_state )
   { int i, n;
 
@@ -777,13 +777,13 @@ PRED_IMPL("$set_source_files", 1, set_source_files, 0)
 
       if ( f )
       { if ( prop == ATOM_system )
-	  f->system = TRUE;
-	f->from_state = TRUE;
+	  f->system = true;
+	f->from_state = true;
       }
     }
     PL_UNLOCK(L_SRCFILE);
 
-    return TRUE;
+    return true;
   } else
     return PL_domain_error("source_property", A1);
 }
@@ -806,17 +806,17 @@ unloadFile(SourceFile sf)
   { Procedure proc = cell->value;
     Definition def = proc->definition;
 
-    if ( false(def, P_FOREIGN|P_THREAD_LOCAL) )
+    if ( isoff(def, P_FOREIGN|P_THREAD_LOCAL) )
     { deleted += removeClausesPredicate(
-		     def, true(def, P_MULTIFILE) ? sf->index : 0, TRUE);
+		     def, ison(def, P_MULTIFILE) ? sf->index : 0, true);
     }
 
     DEBUG(MSG_UNLOAD,
-	  if ( false(def, P_MULTIFILE) && def->impl.clauses.number_of_clauses )
+	  if ( isoff(def, P_MULTIFILE) && def->impl.clauses.number_of_clauses )
 	    Sdprintf("%s: %d clauses after unload\n",
 		     predicateName(def), def->impl.clauses.number_of_clauses));
 
-    if ( false(def, P_MULTIFILE) )
+    if ( isoff(def, P_MULTIFILE) )
     { clear(def, FILE_ASSIGNED);
       clear_meta_declaration(def);
     }
@@ -828,7 +828,7 @@ unloadFile(SourceFile sf)
   delAllModulesSourceFile__unlocked(sf);
   UNLOCKSRCFILE(sf);
 
-  rc = sendDelayedEvents(TRUE) >= 0;
+  rc = sendDelayedEvents(true) >= 0;
   pl_garbage_collect_clauses();
 
   return rc;
@@ -847,9 +847,9 @@ PRED_IMPL("$unload_file", 1, unload_file, 0)
   atom_t name;
 
   if ( !PL_get_atom_ex(A1, &name) )
-    return FALSE;
+    return false;
 
-  if ( (sf = lookupSourceFile(name, FALSE)) )
+  if ( (sf = lookupSourceFile(name, false)) )
   { ListCell mc, mcn;
     int rc;
 
@@ -870,16 +870,16 @@ PRED_IMPL("$unload_file", 1, unload_file, 0)
 	  setSuperModule(m, MODULE_user);
 	  UNLOCKMODULE(m);
 	}
-	rc = TRUE;
+	rc = true;
       } else
-	rc = FALSE;
+	rc = false;
     }
 
     releaseSourceFile(sf);
     return rc;
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -920,17 +920,17 @@ startReconsultFile(SourceFile sf)
       Definition def = proc->definition;
       ClauseRef c;
 
-      if ( false(def, P_FOREIGN|P_THREAD_LOCAL) )
+      if ( isoff(def, P_FOREIGN|P_THREAD_LOCAL) )
       { acquire_def(def);
 	for(c = def->impl.clauses.first_clause; c; c = c->next)
 	{ Clause cl = c->value.clause;
 
 	  if ( !GLOBALLY_VISIBLE_CLAUSE(cl, global_generation()) ||
-	       true(cl, CL_ERASED) )
+	       ison(cl, CL_ERASED) )
 	    continue;
-	  if ( true(def, P_MULTIFILE) && cl->owner_no != sf->index )
+	  if ( ison(def, P_MULTIFILE) && cl->owner_no != sf->index )
 	    continue;
-	  if ( true(def, P_DYNAMIC) && cl->owner_no == 0 )
+	  if ( ison(def, P_DYNAMIC) && cl->owner_no == 0 )
 	    continue;
 
 	  cl->generation.erased = r->reload_gen;
@@ -938,12 +938,12 @@ startReconsultFile(SourceFile sf)
 	release_def(def);
 	clear(def, P_DISCONTIGUOUS);		/* will be reinstantiated */
       }
-      if ( true(def, P_AUTOLOAD) )
+      if ( ison(def, P_AUTOLOAD) )
       { clear(def, P_AUTOLOAD);			/* should be be more selective? */
       }
     }
 
-    return TRUE;
+    return true;
   }
 
   return PL_no_memory();
@@ -1018,7 +1018,7 @@ equal_clause(Clause cl1, Clause cl2)
     return memcmp(cl1->codes, cl2->codes, bytes) == 0;
   }
 
-  return FALSE;
+  return false;
 }
 
 
@@ -1030,7 +1030,7 @@ reloadHasClauses(DECL_LD SourceFile sf, Procedure proc)
        (reload=lookupHTablePP(sf->reload->procedures, proc)) )
     return reload->number_of_clauses > 0;
 
-  return FALSE;
+  return false;
 }
 
 
@@ -1039,13 +1039,13 @@ isRedefinedProcedure(Procedure proc, gen_t gen)
 { GET_LD
   Definition def = proc->definition;
   ClauseRef c;
-  int ret = FALSE;
+  int ret = false;
 
   acquire_def(def);
   for(c = def->impl.clauses.first_clause; c; c = c->next)
   { Clause cl = c->value.clause;
     if ( GLOBALLY_VISIBLE_CLAUSE(cl, gen) )
-    { ret = TRUE;
+    { ret = true;
       break;
     }
   }
@@ -1069,7 +1069,7 @@ reloadContext(DECL_LD SourceFile sf, Procedure proc)
     }
     memset(reload, 0, sizeof(*reload));
     reload->predicate = def;
-    if ( true(def, P_THREAD_LOCAL|P_FOREIGN) )
+    if ( ison(def, P_THREAD_LOCAL|P_FOREIGN) )
     { set(reload, P_NO_CLAUSES);
     } else if ( isRedefinedProcedure(proc, global_generation()) )
     { definition_ref *dref = pushPredicateAccessObj(def);
@@ -1089,8 +1089,8 @@ reloadContext(DECL_LD SourceFile sf, Procedure proc)
     addNewHTablePP(sf->reload->procedures, proc, reload);
     DEBUG(MSG_RECONSULT_PRED,
 	  Sdprintf("%s %s ...\n",
-		   true(reload, P_NEW)        ? "New"   :
-		   true(reload, P_NO_CLAUSES) ? "Alien" :
+		   ison(reload, P_NEW)        ? "New"   :
+		   ison(reload, P_NO_CLAUSES) ? "Alien" :
 						"Reload",
 		   predicateName(def)));
   }
@@ -1120,7 +1120,7 @@ assertProcedureSource(DECL_LD SourceFile sf, Procedure proc, Clause clause)
       fix_ssu(reload, clause);
     }
 
-    if ( true(reload, P_NEW|P_NO_CLAUSES) )
+    if ( ison(reload, P_NEW|P_NO_CLAUSES) )
       return assertProcedure(proc, clause, CL_END);
 
     if ( (cref = reload->current_clause) )
@@ -1140,9 +1140,9 @@ assertProcedureSource(DECL_LD SourceFile sf, Procedure proc, Clause clause)
       { Clause c2 = cref2->value.clause;
 
 	if ( !GLOBALLY_VISIBLE_CLAUSE(c2, reload->generation) ||
-	     true(c2, CL_ERASED) )
+	     ison(c2, CL_ERASED) )
 	  continue;
-	if ( true(def, P_MULTIFILE) && c2->owner_no != sf->index )
+	if ( ison(def, P_MULTIFILE) && c2->owner_no != sf->index )
 	  continue;
 
 	if ( equal_clause(c2, clause) )
@@ -1152,9 +1152,9 @@ assertProcedureSource(DECL_LD SourceFile sf, Procedure proc, Clause clause)
 	  { Clause c = del->value.clause;
 
 	    if ( !GLOBALLY_VISIBLE_CLAUSE(c, reload->generation) ||
-		 true(c, CL_ERASED) )
+		 ison(c, CL_ERASED) )
 	      continue;
-	    if ( true(def, P_MULTIFILE) && c->owner_no != sf->index )
+	    if ( ison(def, P_MULTIFILE) && c->owner_no != sf->index )
 	      continue;
 
 	    DEBUG(MSG_RECONSULT_CLAUSE,
@@ -1200,7 +1200,7 @@ static void
 associateSource(SourceFile sf, Procedure proc)
 { Definition def = proc->definition;
 
-  if ( false(def, FILE_ASSIGNED) )
+  if ( isoff(def, FILE_ASSIGNED) )
   { GET_LD
 
     DEBUG(2, Sdprintf("Associating %s to %s (%p)\n",
@@ -1232,7 +1232,7 @@ setAttrProcedureSource(DECL_LD SourceFile sf, Procedure proc,
   { p_reload *reload;
 
     if ( !(reload = reloadContext(sf, proc)) )
-      return FALSE;
+      return false;
 
     if ( val )
       set(reload, attr);
@@ -1240,7 +1240,7 @@ setAttrProcedureSource(DECL_LD SourceFile sf, Procedure proc,
       clear(reload, attr);
 
     if ( (attr&(P_ATEND|P_TRANSPARENT)) )
-      return TRUE;
+      return true;
   }
 
   return setAttrDefinition(proc->definition, attr, val);
@@ -1257,12 +1257,12 @@ check_ssu(p_reload *r)
   for(cref=def->impl.clauses.first_clause; cref && !errors; cref=cref->next)
   { Clause cl = cref->value.clause;
 
-    if ( false(cl, CL_ERASED) )
-    { if ( true(def, P_SSU_DET) &&
-	   false(cl, SSU_COMMIT_CLAUSE|SSU_CHOICE_CLAUSE) )
+    if ( isoff(cl, CL_ERASED) )
+    { if ( ison(def, P_SSU_DET) &&
+	   isoff(cl, SSU_COMMIT_CLAUSE|SSU_CHOICE_CLAUSE) )
 	errors++;
-      if ( false(def, P_SSU_DET) &&
-	   true(cl, SSU_COMMIT_CLAUSE|SSU_CHOICE_CLAUSE) )
+      if ( isoff(def, P_SSU_DET) &&
+	   ison(cl, SSU_COMMIT_CLAUSE|SSU_CHOICE_CLAUSE) )
 	errors++;
     }
   }
@@ -1280,7 +1280,7 @@ check_ssu(p_reload *r)
 #define fix_attributes(sf, def, r) LDFUNC(fix_attributes, sf, def, r)
 static void
 fix_attributes(DECL_LD SourceFile sf, Definition def, p_reload *r)
-{ if ( false(def, P_MULTIFILE) )
+{ if ( isoff(def, P_MULTIFILE) )
     def->flags = (def->flags & ~P_ATEND) | (r->flags & P_ATEND);
   else
     def->flags |= (r->flags&P_ATEND);
@@ -1293,9 +1293,9 @@ static void
 fix_det(p_reload *r)
 { Definition def = r->predicate;
 
-  if ( true(def, P_DET) && false(r, P_DET) )
+  if ( ison(def, P_DET) && isoff(r, P_DET) )
   { clear(def, P_DET);
-    freeCodesDefinition(def, TRUE);
+    freeCodesDefinition(def, true);
   }
 }
 
@@ -1304,14 +1304,14 @@ static void
 fix_ssu(p_reload *r, Clause clause)
 { Definition def = r->predicate;
 
-  if ( false(def, P_DYNAMIC|P_MULTIFILE) )
-  { if ( true(clause, SSU_COMMIT_CLAUSE|SSU_CHOICE_CLAUSE) )
-    { if ( false(def, P_SSU_DET) )
+  if ( isoff(def, P_DYNAMIC|P_MULTIFILE) )
+  { if ( ison(clause, SSU_COMMIT_CLAUSE|SSU_CHOICE_CLAUSE) )
+    { if ( isoff(def, P_SSU_DET) )
       { set(def, P_SSU_DET);
 	set(r, P_CHECK_SSU);
       }
     } else
-    { if ( true(def, P_SSU_DET) )
+    { if ( ison(def, P_SSU_DET) )
       { clear(def, P_SSU_DET);
 	set(r, P_CHECK_SSU);
       }
@@ -1330,7 +1330,7 @@ setMetapredicateSource(DECL_LD SourceFile sf, Procedure proc,
     size_t i, arity = proc->definition->functor->arity;
 
     if ( !(reload = reloadContext(sf, proc)) )
-      return FALSE;
+      return false;
 
     if ( !reload->args )
       reload->args = allocHeapOrHalt(sizeof(*reload->args)*arity);
@@ -1346,7 +1346,7 @@ setMetapredicateSource(DECL_LD SourceFile sf, Procedure proc,
   { setMetapredicateMask(proc->definition, args);
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -1357,37 +1357,37 @@ equal_meta(Definition def, const arg_info *args)
 
     for(i=0; i<arity; i++)
     { if ( def->impl.any.args[i].meta != args[i].meta )
-	return FALSE;
+	return false;
     }
 
-    return TRUE;
+    return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 static void
 fix_metapredicate(p_reload *r)
 { Definition def = r->predicate;
 
-  if ( false(def, P_MULTIFILE) )
+  if ( isoff(def, P_MULTIFILE) )
   { int mfmask = (P_META|P_TRANSPARENT);
 
     if ( (def->flags&mfmask) != (r->flags&mfmask) ||
 	 !equal_meta(def, r->args) )
-    { if ( true(def, P_META) && false(r, P_META) )
+    { if ( ison(def, P_META) && isoff(r, P_META) )
 	clear_meta_declaration(def);
-      else if ( true(r, P_META) )
+      else if ( ison(r, P_META) )
 	setMetapredicateMask(def, r->args);
       clear(def, P_TRANSPARENT);
       set(def, r->flags&P_TRANSPARENT);
 
-      freeCodesDefinition(def, TRUE);
+      freeCodesDefinition(def, true);
     }
-  } else if ( true(r, P_META) )
+  } else if ( ison(r, P_META) )
   { setMetapredicateMask(def, r->args);
-    freeCodesDefinition(def, TRUE);
-  } else if ( true(r, P_TRANSPARENT) )
+    freeCodesDefinition(def, true);
+  } else if ( ison(r, P_TRANSPARENT) )
   { set(def, P_TRANSPARENT);
   }
 }
@@ -1459,7 +1459,7 @@ delete_old_predicate(SourceFile sf, Procedure proc)
     for(c = def->impl.clauses.first_clause; c; c = c->next)
     { Clause cl = c->value.clause;
 
-      if ( false(cl, CL_ERASED) &&
+      if ( isoff(cl, CL_ERASED) &&
 	   GLOBALLY_VISIBLE_CLAUSE(cl, global_generation()) )
 	untable_from_clause(cl);
     }
@@ -1468,13 +1468,13 @@ delete_old_predicate(SourceFile sf, Procedure proc)
 
   deleted = removeClausesPredicate(
 		def,
-		true(def, P_MULTIFILE) ? sf->index : 0,
-		TRUE);
+		ison(def, P_MULTIFILE) ? sf->index : 0,
+		true);
 
-  if ( false(def, P_MULTIFILE) )
+  if ( isoff(def, P_MULTIFILE) )
   { clear(def, FILE_ASSIGNED);
     clear_meta_declaration(def);
-    freeCodesDefinition(def, TRUE);
+    freeCodesDefinition(def, true);
   }
 
   DEBUG(MSG_RECONSULT_PRED,
@@ -1495,7 +1495,7 @@ delete_old_predicates(SourceFile sf)
 
     next = cell->next;
 
-    if ( false(proc->definition, P_FOREIGN) &&
+    if ( isoff(proc->definition, P_FOREIGN) &&
 	 !lookupHTablePP(sf->reload->procedures, proc) )
     { delete_old_predicate(sf, proc);
 
@@ -1523,9 +1523,9 @@ delete_pending_clauses(DECL_LD SourceFile sf, Definition def, p_reload *r)
   { Clause c = cref->value.clause;
 
     if ( !GLOBALLY_VISIBLE_CLAUSE(c, r->generation) ||
-	 true(c, CL_ERASED) )
+	 ison(c, CL_ERASED) )
       continue;
-    if ( true(r->predicate, P_MULTIFILE|P_DYNAMIC) && c->owner_no != sf->index )
+    if ( ison(r->predicate, P_MULTIFILE|P_DYNAMIC) && c->owner_no != sf->index )
       continue;
 
     if ( def->functor->functor == FUNCTOR_dtabled2 )
@@ -1550,17 +1550,17 @@ end_reconsult_proc(DECL_LD SourceFile sf, Procedure proc, p_reload *r)
   DEBUG(MSG_RECONSULT_CLAUSE,
 	Sdprintf("Fixup %s\n", predicateName(proc->definition)));
 
-  if ( false(r, P_NEW|P_NO_CLAUSES) )
+  if ( isoff(r, P_NEW|P_NO_CLAUSES) )
   { Definition def = proc->definition;
 
     delete_pending_clauses(sf, def, r);
     fix_attributes(sf, def, r);
     reconsultFinalizePredicate(sf->reload, def, r);
-    if ( true(r, P_CHECK_SSU) )
+    if ( ison(r, P_CHECK_SSU) )
       check_ssu(r);
   } else
   { dropped_access++;
-    if ( true(r, P_NO_CLAUSES) )
+    if ( ison(r, P_NO_CLAUSES) )
     { Definition def = proc->definition;
       fix_attributes(sf, def, r);
     }
@@ -1616,11 +1616,11 @@ endReconsult(SourceFile sf)
       LD->reload.generation = GEN_INVALID;
 
     pl_garbage_collect_clauses();
-    if ( sendDelayedEvents(TRUE) < 0 )
-      return FALSE;
+    if ( sendDelayedEvents(true) < 0 )
+      return false;
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -1647,7 +1647,7 @@ flush_procedure(SourceFile sf, Procedure proc)
   { p_reload *r;
 
     if ( (r=lookupHTablePP(sf->reload->procedures, proc)) )
-    { if ( false(r, P_NEW|P_NO_CLAUSES) )
+    { if ( isoff(r, P_NEW|P_NO_CLAUSES) )
       { Definition def = proc->definition;
 
 	delete_pending_clauses(sf, def, r);
@@ -1660,7 +1660,7 @@ flush_procedure(SourceFile sf, Procedure proc)
     }
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -1689,12 +1689,12 @@ startConsult(SourceFile sf)
   if ( sf->count++ > 0 )		/* This is a re-consult */
   { if ( !startReconsultFile(sf) )
     { releaseSourceFile(sf);
-      return FALSE;
+      return false;
     }
   }
 
   sf->current_procedure = NULL;
-  return TRUE;
+  return true;
 }
 
 
@@ -1713,24 +1713,24 @@ PRED_IMPL("$start_consult", 2, start_consult, 0)
     double mtime;
 
     if ( PL_get_integer(modified, &i) && i == 0 )
-    { isfile = FALSE;
+    { isfile = false;
       mtime = 0.0;
     } else if ( PL_get_float_ex(modified, &mtime) )
-    { isfile = TRUE;
+    { isfile = true;
     } else
-      return FALSE;
+      return false;
 
-    SourceFile sf = lookupSourceFile(name, TRUE);
+    SourceFile sf = lookupSourceFile(name, true);
 
     sf->mtime = mtime;
     sf->isfile = isfile&1;
     startConsult(sf);
     releaseSourceFile(sf);
 
-    return TRUE;
+    return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 
@@ -1750,12 +1750,12 @@ static
 PRED_IMPL("$fixup_reconsult", 1, fixup_reconsult, 0)
 { PRED_LD
   atom_t name;
-  int rc = FALSE;
+  int rc = false;
 
   if ( PL_get_atom_ex(A1, &name) )
   { SourceFile sf;
 
-    if ( (sf=lookupSourceFile(name, FALSE)) )
+    if ( (sf=lookupSourceFile(name, false)) )
     { rc = endReconsult(sf);
       releaseSourceFile(sf);
       sf->current_procedure = NULL;
@@ -1770,12 +1770,12 @@ static
 PRED_IMPL("$end_consult", 1, end_consult, 0)
 { PRED_LD
   atom_t name;
-  int rc = FALSE;
+  int rc = false;
 
   if ( PL_get_atom_ex(A1, &name) )
   { SourceFile sf;
 
-    if ( (sf=lookupSourceFile(name, FALSE)) )
+    if ( (sf=lookupSourceFile(name, false)) )
     { rc = endConsult(sf);
       releaseSourceFile(sf);
     }
@@ -1804,7 +1804,7 @@ PRED_IMPL("$clause_from_source", 4, clause_from_source, 0)
   int ln;
   ListCell cell;
   Clause c = NULL;
-  int rc = FALSE;
+  int rc = false;
   tmp_buffer buf;
 
   term_t owner   = A1;
@@ -1815,15 +1815,15 @@ PRED_IMPL("$clause_from_source", 4, clause_from_source, 0)
   if ( !PL_get_atom_ex(owner, &owner_name) ||
        !PL_get_atom_ex(file, &file_name) ||
        !PL_get_integer_ex(line, &ln) ||
-       !(of = lookupSourceFile(owner_name, FALSE)) )
-    return FALSE;
+       !(of = lookupSourceFile(owner_name, false)) )
+    return false;
 
   initBuffer(&buf);
 
   if ( file_name == owner_name ) {
     source_no = of->index;
   } else {
-    if ( !(sf=lookupSourceFile(file_name, FALSE)) )
+    if ( !(sf=lookupSourceFile(file_name, false)) )
       goto out;
     source_no = sf->index;
   }
@@ -1833,7 +1833,7 @@ PRED_IMPL("$clause_from_source", 4, clause_from_source, 0)
   { Procedure proc = cell->value;
     Definition def = getProcDefinition(proc);
 
-    if ( def && false(def, P_FOREIGN) )
+    if ( def && isoff(def, P_FOREIGN) )
     { ClauseRef cref;
 
       acquire_def(def);
@@ -1867,7 +1867,7 @@ PRED_IMPL("$clause_from_source", 4, clause_from_source, 0)
     for(; clp < elp; clp++)
     { if ( !PL_unify_list(tail, head, tail) ||
 	   !PL_unify_clref(head, c) )
-      { rc = FALSE;
+      { rc = false;
 	break;
       }
     }
@@ -1895,12 +1895,12 @@ flush_predicate(DECL_LD term_t pred)
   Procedure proc;
   Module m = LD->modules.source;
   functor_t fdef;
-  int rc = FALSE;
+  int rc = false;
 
   if ( ReadingSource )
-    sf = lookupSourceFile(source_file_name, TRUE);
+    sf = lookupSourceFile(source_file_name, true);
   else
-    return TRUE;			/* not reading source; nothing to flush */
+    return true;			/* not reading source; nothing to flush */
 
   if ( get_functor(pred, &fdef, &m, 0, GF_PROCEDURE) )
   { if ( (proc=isCurrentProcedure(fdef,m)) )
@@ -1936,14 +1936,14 @@ PRED_IMPL("$flushed_predicate", 1, flushed_predicate, 0)
   int rc;
 
   if ( !PL_strip_module(A1, &m, head) )
-    return FALSE;
+    return false;
   if ( !PL_get_functor(head, &fdef) )
     return PL_type_error("callable", A1);
   if ( !(proc=isCurrentProcedure(fdef, m)) )
-    return FALSE;
+    return false;
 
   if ( ReadingSource )
-    sf = lookupSourceFile(source_file_name, TRUE);
+    sf = lookupSourceFile(source_file_name, true);
   else
     return isDefinedProcedure(proc);
 

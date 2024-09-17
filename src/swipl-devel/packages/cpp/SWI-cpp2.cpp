@@ -100,6 +100,7 @@ PlEx_fail(qid_t qid)
     throw ex2;
   } else
   { // TODO: get the name of the PL_...() function that caused the problem:
+    // assert(0);
     throw PlUnknownError("False return code without exception");
   }
 }
@@ -132,6 +133,22 @@ PlTerm::get_wchars(unsigned int flags) const
     return std::wstring(s, len);
   PlEx_fail();
   return L"<---get_wchars error --->"; // Should never get here
+}
+
+_SWI_CPP2_CPP_inline
+const std::string
+PlTerm::get_file_name(int flags) const
+{ char *name = const_cast<char*>("");
+  PlCheckFail(get_file_name(&name, flags));
+  return name;
+}
+
+_SWI_CPP2_CPP_inline
+const std::wstring
+PlTerm::get_file_nameW(int flags) const
+{ wchar_t *name = const_cast<wchar_t*>(L"");
+  PlCheckFail(get_file_nameW(&name, flags));
+  return name;
 }
 
 #define _MUST_BE_TYPE(must_be_name, is_test, type_name)  \
@@ -351,6 +368,19 @@ PlTerm::copy_term_ref() const
 { return PlTerm(Plx_copy_term_ref(unwrap()));
 }
 
+_SWI_CPP2_CPP_inline
+void
+PlTerm::free_term_ref()
+{ if ( not_null() )
+    Plx_free_term_ref(unwrap());
+}
+
+_SWI_CPP2_CPP_inline
+void
+PlTerm::free_term_ref_reset()
+{ free_term_ref();
+  reset();
+}
 
 _SWI_CPP2_CPP_inline
 void

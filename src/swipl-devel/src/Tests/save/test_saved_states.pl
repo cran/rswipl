@@ -120,6 +120,17 @@ state_output(Id, State) :-
     format(atom(File), 'test_state_~w_~w.exe', [Id, Pid]),
     directory_file_path(Dir, File, State).
 
+me_save(Exe) :-
+    getenv('SWIPL', Exe0),
+    !, Exe = Exe0.
+
+me_save(Exe) :-
+    me(Exe).
+
+me(Exe) :-
+    getenv('SWIPL0', Exe0),
+    !, Exe = Exe0.
+
 me(Exe) :-
     current_prolog_flag(executable, WinExeOS),
     prolog_to_os_filename(WinExe, WinExeOS),
@@ -157,10 +168,12 @@ set_windows_path.
 
 create_state(File, Output, Args) :-
     me(Me),
-    append(Args, ['-o', Output, '-c', File, '-f', none], AllArgs),
+    me_save(MS),
+    format(atom(Emulator), '--emulator=~w', [Me]),
+    append(Args, ['-o', Output, Emulator, '-c', File, '-f', none], AllArgs),
     test_dir(TestDir),
     debug(save, 'Creating state in ~q using ~q ~q', [TestDir, Me, AllArgs]),
-    process_create(Me, AllArgs,
+    process_create(MS, AllArgs,
                    [ cwd(TestDir),
                      stderr(pipe(Err))
                    ]),

@@ -879,8 +879,9 @@ pack_create_install_dir(_, _, _) :-
 %        If the target is already there, wipe it and make a clean
 %        install.
 
-pack_unpack_from_local(Source, PackTopDir, Name, PackDir, Options) :-
-    exists_directory(Source),
+pack_unpack_from_local(Source0, PackTopDir, Name, PackDir, Options) :-
+    exists_directory(Source0),
+    remove_slash(Source0, Source),
     !,
     directory_file_path(PackTopDir, Name, PackDir),
     (   option(link(true), Options)
@@ -892,7 +893,8 @@ pack_unpack_from_local(Source, PackTopDir, Name, PackDir, Options) :-
             link_file(RelPath, PackDir, symbolic),
             assertion(same_file(Source, PackDir))
         )
-    ;   is_git_directory(Source)
+    ;   \+ option(git(false), Options),
+        is_git_directory(Source)
     ->  remove_existing_pack(PackDir, Options),
         run_process(path(git), [clone, Source, PackDir], [])
     ;   prepare_pack_dir(PackDir, Options),
@@ -1543,6 +1545,9 @@ download_info_extra(Info, [git(true),commit(Hash)|Options], Options) :-
     Info.get(git) == true,
     !,
     Hash = Info.get(commit, 'HEAD').
+download_info_extra(Info, [link(true)|Options], Options) :-
+    Info.get(link) == true,
+    !.
 download_info_extra(_, Options, Options).
 
 installed(Info) :-
@@ -3058,6 +3063,13 @@ ensure_slash(Dir, DirS) :-
     ->  DirS = Dir
     ;   atom_concat(Dir, /, DirS)
     ).
+
+remove_slash(Dir0, Dir) :-
+    Dir0 \== '/',
+    atom_concat(Dir1, /, Dir0),
+    !,
+    remove_slash(Dir1, Dir).
+remove_slash(Dir, Dir).
 
 absolute_matching_href(DOM, Pattern, Match) :-
     xpath(DOM, //a(@href), HREF),

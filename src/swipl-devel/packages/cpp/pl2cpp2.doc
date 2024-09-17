@@ -562,7 +562,7 @@ from the PREDICATE() macros. This is a subclass of \ctype{PlExceptionBase},
 which is a subclass of \ctype{std::exception}.
     \classitem{PlFrame}
 This utility-class can be used to discard unused term-references as well
-as to do `\jargon{data-backtracking}'.
+as to do \jargon{data-backtracking}.
     \classitem{PlEngine}
 This class is used in \jargon{embedded} applications (applications
 where the main control is held in C++).  It provides creation and
@@ -659,7 +659,7 @@ The wrapper classes (\ctype{PlFunctor}, \ctype{PlAtom},
 \ctype{PlTerm}), etc.  all contain a field \exam{C_} that contains the
 wrapped value (\ctype{functor_t}, \ctype{atom_t}, \ctype{term_t}
 respectively). If this wrapped value is needed, it should be accessed
-using the unwrap() or unwrap_ptr() methods.
+using the unwrap() or unwrap_as_ptr() methods.
 
 In some cases, it's natural to use a pointer to a wrapper class.
 For those, the function PlUnwrapAsPtr() returns \ctype{nullptr} if
@@ -673,7 +673,7 @@ all define the following methods and constants:
     Default constructor (sets the wrapped value to \exam{null}).
     Some classes do not have a default constructor because it
     can lead to subtle bugs - instead, they either have a different
-    way of creating the object or can use the `null` value for
+    way of creating the object or can use the ``null'' value for
     the class.
   \item
     Constructor that takes the wrapped value (e.g.,
@@ -683,7 +683,9 @@ all define the following methods and constants:
     \exam{C_} - the wrapped value.
     This can be used directly when calling C functions,
     for example, if \exam{t} and \exam{a} are of type \ctype{PlTerm}
-    and \ctype{PlAtom}: \verb$Plcheck_PL(PL_put_atom(t.unwrap(),a.unwrap()))$.
+    and \ctype{PlAtom}: \verb$PlEx(PL_put_atom(t.unwrap(),a.unwrap()))$
+    (although it's better to do \verb$Plx_put_atom(t.unwrap(),a.unwrap())$,
+    which does the check).
   \item
     \exam{null} - the null value (typically \exam{0}, but
     code should not rely on this).
@@ -779,6 +781,8 @@ provides complete documentation of this class.
 
 There are a number of subclasses that exist only to provide a safe way
 of constructing at term.
+There is also a subclass (\ctype{PlTermScoped}) that helps reclaim
+terms.
 
 Most of the \ctype{PlTerm} constructors are defined as subclasses of
 \ctype{PlTerm}, with a name that reflects the Prolog type of what is
@@ -846,23 +850,21 @@ A pointer is
 represented in Prolog as a mangled integer.  The mangling is designed
 to make most pointers fit into a \jargon{tagged-integer}.  Any valid
 pointer can be represented.  This mechanism can be used to represent
-pointers to C++ objects in Prolog.  Please note that `MyClass' should
-define conversion to and from \ctype{void *}.
+pointers to C++ objects in Prolog.  Please note that \ctype{MyClass}
+should define conversion to and from \ctype{void *}.
 \begin{code}
 PREDICATE(make_my_object, 1)
 { auto myobj = new MyClass();
-
   return A1.unify_pointer(myobj);
 }
 
 PREDICATE(my_object_contents, 2)
-{ auto myobj = static_cast<MyClass*>(A1.pointer());
+{ auto myobj = static_cast<MyClass*>(A1.as_pointer());
   return A2.unify_string(myobj->contents);
 }
 
 PREDICATE(free_my_object, 1)
-{ auto myobj = static_cast<MyClass*>(A1.pointer());
-
+{ auto myobj = static_cast<MyClass*>(A1.as_pointer());
   delete myobj;
   return true;
 }
@@ -911,8 +913,10 @@ The methods are:
   \cfunction{bool}{PlTerm::get_nil}{} Wrappper of PL_get_nil(), throwing an exception on Prolog error.
   \cfunction{bool}{PlTerm::get_blob}{void **blob, size_t *len, PL_blob_t **type} Wrappper of PL_get_blob(), throwing an exception on Prolog error.
 
-  \cfunction{bool}{PlTerm::get_file_name}{char **name, int flags} Wrappper of PL_get_file_name(), throwing an exception on Prolog error.
-  \cfunction{bool}{PlTerm::get_file_nameW}{wchar_t **name, int flags} Wrappper of PL_get_file_nameW(), throwing an exception on Prolog error.
+  \cfunction{bool}{PlTerm::get_file_name}{char **name, int flags} Wrappper of PL_get_file_name() (does not throw a C++ exception).
+  \cfunction{bool}{PlTerm::get_file_nameW}{wchar_t **name, int flags} Wrappper of PL_get_file_nameW(), (does not throw a C++ exception).
+  \cfunction{std::string}{PlTerm::get_file_name}{char **name, int flags} Wrapper of PL_get_file_name(), ignoring \const{PL_FILE_NOERRORS} - throws \const{PlFail} on failure, which is interpreted by the enclosing \ctype{PREDICATE} as either failure or an error, depending on the flag bit \const{PL_FILE_NOERRORS}.
+  \cfunction{std::wstring}{PlTerm::get_file_nameW}{int flags} Same as PlTerm::get_file_name(), but returns a wide-character string.
 
   \cfunction{bool}{PlTerm::get_attr}{term_t a} Wrappper of PL_get_attr(), throwing an exception on Prolog error.
 
@@ -1065,7 +1069,14 @@ The methods are:
   \cfunction{bool}{name_arity}{PlAtom *name, size_t *arity} Wrapper of PL_get_name_arity(); \arg{name} and/or \arg{arity} can be \const{nullptr}. Returns \const{false} if the term
   isn't a compound or atom.
   \cfunction{PlTerm}{PlTerm::copy_term_ref}{} Wrapper of PL_copy_term_ref(). Throws
-    an exception error (e.g., \ctype{PlResourceError}).
+  an exception error (e.g., \ctype{PlResourceError}).
+  \cfunction{void}{PlTerm::free_term_ref}{} Wrapper of PL_free_term_ref().
+    Is safe to use if the object wraps \const{PlTerm::null}.
+    Does \emph{not} reset the wrapped term. This is used implicitly in
+    \ctype{PlTermScoped}'s destructor, which does reset the wrapped term.
+    \cfunction{void}{PlTerm::free_term_ref_reset}{} Same as
+    PlTerm::free_term_ref() plus PlTerm::reset().
+    \ctype{PlTermScoped}'s destructor, which does reset the wrapped term.
   \cfunction{bool}{nify_term}{PlTerm t2} Wrapper of PL_unify(). Throws an exception
     on error and returns \const{false} if unification fails. If on failure, there
     isn't an immediate return to Prolog (e.g., by wrapping the call with
@@ -1097,7 +1108,7 @@ The methods are:
   \cfunction{bool}{PlTerm::unify_string}{const std::string\&  v} Wrapper of PL_unify_string_nchars(), throwing an exception on error.
   \cfunction{bool}{PlTerm::unify_string}{const std::wstring\& v} Wrapper of PL_unify_wchars(), throwing an exception on error.
   \cfunction{bool}{PlTerm::unify_functor}{PlFunctor          f} Wrapper of PL_unify_functor(), throwing an exception on error.
-  \cfunction{bool}{PlTerm::unify_pointer}{void *ptr} Wrapper of PL_unify_pointer(), throwing an exception on error.
+  \cfunction{bool}{PlTerm::unify_pointer}{void *ptr} Wrapper of PL_unify_pointer(), throwing an exception on error. An alternative to this is to use a blob that wraps a pointer - see \secref{cpp2-blobs-sample-code-pointer}.
   \cfunction{bool}{PlTerm::unify_nil}{} Wrapper of PL_unify_nil(), throwing an exception on error.
   \cfunction{bool}{PlTerm::unify_list}{PlTerm h, PlTerm t} Wrapper of PL_unify_list(), throwing an exception on error.
   \cfunction{bool}{PlTerm::unify_bool}{bool val} Wrapper of PL_unify_bool(), throwing an exception on error.
@@ -1119,8 +1130,135 @@ The methods are:
 
   \cfunction{void}{reset_term_refs}{} Wrapper for PL_reset_term_refs().
 
-  \cfunction{int}{call}{PlModule module} Wrapper for PL_call(unwrap(); \arg{module} defaults to ``null''.
+  \cfunction{bool}{call}{PlModule module} Wrapper for PL_call(unwrap()); \arg{module} defaults to ``null''. Throws a C++ exception if there's a Prolog error, otherwise returns the success or failure of the call.
 
+\end{description}
+
+\subsection{PlTermScoped class (experimental)}
+\label{sec:cpp-plterm-scoped}
+
+\emph{This class is experimental and subject to change.}
+
+Normally all term references in a \jargon{scope} are discarded
+together or all term references created after a specific one are
+reclaimed using PlTerm::reset_term_refs().  A \ctype{PlTermScoped}
+object is the same as a \ctype{PlTerm} object except that
+PL_free_term_ref() is called on its wrapped term when the object goes
+out of scope. This shrinks the current foreign frame if the term is
+the last one in the frame and otherwise it marks it for reuse.
+
+Here is an example, where \ctype{PlTermScoped} is inside a for-loop.
+If \ctype{PlTerm} were used instead, the stack would grow by the number
+of items in the array; \ctype{PlTermScoped} ensures that stack doesn't
+grow.\footnote{Assuming that unify_atom_list() is called from a
+predicate implementation, if \ctype{PlTerm} were used instead of
+\ctype{PlTermCopy}, all the created terms would be discarded when
+the Prolog stack frame is unwound; the use of \ctype{PlTermScoped}
+reuses the terms in that stack frame.}
+A slightly more effiicient way of preventing the Prolog stack from
+growing is to use PlTerm::put_term() to reuse a term reference; but
+that is more difficult to understand and also more error-prone.
+
+\begin{code}
+bool
+unify_atom_list(const std::vector<std::string>& array, PlTerm list)
+{ PlTermScoped tail(list); // calls PL_copy_term_ref() to copy `list`
+  for( auto item : array )
+  { PlTermScoped head; // var term
+    PlCheckFail(tail.unify_list(head, tail));
+    PlCheckFail(head.unify_chars(PL_ATOM, item));
+  }
+  return tail.unify_nil();
+}
+\end{code}
+
+The design of \ctype{PlTermScoped} is modeled on
+\ctype{std::unique_ptr}\footnote{\ctype{unique_ptr} was originally
+called \ctype{scoped_ptr} in the Boost libraries, but the name was
+changed to contrast with \ctype{std::shared_ptr}, which is
+reference-counted.} and uses \jargon{move semantics} to ensure
+safety.\footnote{\jargon{Move semantics} are a relatively new feature
+in C++ and can be a bit difficult to understand. Roughly speaking, a
+\jargon{move} is a copies the object and then calls its destructor, so
+that any further use of the object is an error. If an object defines
+move methods or constructors, it can optimize this operation, and also
+can catch certain kinds of errors at compile time.}
+
+A \ctype{PlTermScoped} object can be created either with or without a
+wrapped term - the PlTermScoped::reset() method sets (or nulls) the
+wrapped term.  A \ctype{PlTermScoped} object cannot be copied or
+passed as a value to a function; the PlTermScoped::release() method
+returns the wrapped term and resets the \ctype{PlTermScoped} object so
+that any further use of the \ctype{PlTermScoped} object is an error.
+
+As shown in the example above, \ctype{PlTermScoped} can be used
+instead of \ctype{PlTerm}, in places where a loop would otherwise
+cause the stack to grow. There are limitations on the operations that
+are allowed on a \ctype{PlTermScoped} object; in particular, a
+\ctype{PlTermScoped} object cannot be copied and cannot be implicitly
+converted to a \ctype{Plterm}.
+
+The \ctype{PlTermScoped} constructors always create a new term ref, by
+calling either PL_new_term_ref() or PL_copy_term_ref(). If you try to
+copy or create a \ctype{PlTermScoped} object from another
+\ctype{PlTermScoped} object, you will get a compile-time error; you can
+set the value from a \ctype{PlTerm} object, which can be obtained by
+calling PlTermScoped::release().
+
+The methods derived from the PL_put_*() and PL_cons_*() functions
+should not be used with a \ctype{PlTermScoped} object. If you need to
+use these, you can use PlTermScoped::get() to get a \ctype{PlTerm},
+for which a put_*() method can be used.
+
+To copy a \ctype{PlTermScoped} object or to pass it as a value in
+a function call, use the PlTermScoped::release()
+method or std::move():
+\begin{code}
+  PlTermScoped ts(...);
+  PlTerm t;
+
+  // Copy to a PlTerm:
+  t = ts.release(); // or: t = std::move(ts);
+
+  // Pass as a value to a function:
+  foo(ts.release()); // or: foo(std::move(ts);
+
+  // Copy to a PlTermScoped:
+  PlTermScoped ts2;
+  ts2.reset(ts.release()); // or: ts2.reset(std::move(ts));
+\end{code}
+
+The methods are (in addition to, or overriding the methods in \ctype{PlTerm}):
+\begin{description}
+  \constructor{PlTermScoped}{} - same as PlTermScoped(PlTerm::null).
+  \constructor{PlTermScoped}{PlTerm t} - set the value
+    from t.copy_term_ref()
+  \constructor{PlTermScoped}{term_t t} - same as PlTermScoped(PlTerm(t)).
+  \constructor{PlTermScoped}{PlTermScoped\&\& m} - create a
+    new wrapped object from \arg{m} and reset \arg{m}. This is typically
+    used with std::move().
+  \cfunction{PlTermScoped\&}{PlTermScoped::operator=}{PlTermScoped\&\& m} - copy
+    \arg{m} and reset it. This is typically used with std::move().
+  \destructor{PlTermScoped} - if the wrapped term not null,
+    call PL_free_term_ref() on it.
+  \constructor{PlTermScoped}{PlTermScoped\& m} - deleted method.
+  \cfunction{PlTermScoped\&}{operator=}{PlTermScoped\& m} - deleted method.
+  \cfunction{void}{PlTermScoped::reset}{} - same as
+    PlTermScoped::reset(PlTerm::null).
+  \cfunction{void}{PlTermScoped::reset}{PlTerm src} -
+    sets the wrapped term from \arg{src}. To set the wrapped term
+    from a \ctype{PlTermScoped}, use PlTermScoped::release() to
+    convert it to a \ctype{PlTerm}.
+  \cfunction{PlTerm}{PlTermScoped::get}{} - convert the object
+    to a \ctype{PlTerm}. This is typically used when calling a function
+    that expects a \ctype{PlTerm} object and which will not call
+    PlTerm::free_term_ref() on it.
+  \cfunction{PlTerm}{PlTermScoped::release}{} - typically used
+    in the context \exam{t2.reset(t.release())} to copy a
+    \ctype{PlTermScoped}; this can also be written
+    \exam{t2=std::move(t)}.
+  \cfunction{void}{PlTermScoped::swap}{PlTermScoped\& src} -
+    swap two \ctype{PlTermScoped} objects' wrapped terms.
 \end{description}
 
 \subsection{Blobs}
@@ -1128,7 +1266,7 @@ The methods are:
 
 \emph{Nomenclature warning:}
 
-There are two different \ctype{release()} functions:  % TOOD: \cfuncnoref
+There are two different \ctype{release()} functions:  % TODO: \cfunctionref
 \begin{itemize}
    \item The release() callback for a blob (see the definition
          of \ctype{PL_blob_t}).
@@ -1466,6 +1604,7 @@ save(), load() methods (these are described after the sample code).
 
 In this section, the blob is of type \ctype{MyBlob}, a subclass
 of \ctype{PlBlob}. (Example code is given in \secref{cpp2-blobs-sample-code})
+and \secref{cpp2-blobs-sample-code-pointer}.
 
 A blob is typically created by calling a predicate that does
 the following:
@@ -1581,12 +1720,15 @@ PREDICATE(). Their exception handling is as follows:
       calls).
 \end{description}
 
-\subsubsection{Sample PlBlob code}
+\subsubsection{Sample PlBlob code (connection to database)}
 \label{sec:cpp2-blobs-sample-code}
 
 Here is minimal sample code for creating a blob that owns a connection
 to a database. It has a single field (\exam{connection}) and
 defines compare_fields() and write_fields().
+
+A second sample code shows how to wrap a system pointer -
+\secref{cpp2-blobs-sample-code-pointer}
 
 \begin{code}
 struct MyConnection
@@ -1594,7 +1736,6 @@ struct MyConnection
 
   explicit MyConnection();
   explicit MyConnection(const std::string& _name);
-  ~MyConnection() { }
   bool open();
   bool close() noexcept;
   void portray(PlStream& strm) const;
@@ -1881,6 +2022,185 @@ return true;
 
 \end{itemize}
 
+\subsubsection{Sample PlBlob code (wrapping a pointer)}
+\label{sec:cpp2-blobs-sample-code-pointer}
+
+\begin{code}
+struct MyFileBlob;
+
+static PL_blob_t my_file_blob = PL_BLOB_DEFINITION(MyFileBlob, "my_file_blob");
+
+static const PlOptionsFlag<int>
+MyFileBlob_options("MyFileBlob-options",
+                   { {"absolute", PL_FILE_ABSOLUTE},
+                     {"ospath",   PL_FILE_OSPATH},
+                     {"search",   PL_FILE_SEARCH},
+                     {"exist",    PL_FILE_EXIST},
+                     {"read",     PL_FILE_READ},
+                     {"write",    PL_FILE_WRITE},
+                     {"execute",  PL_FILE_EXECUTE},
+                     {"noerrors", PL_FILE_NOERRORS} });
+
+struct MyFileBlob : public PlBlob
+{ std::FILE* file_;
+
+  std::string mode_;
+  int flags_;
+  std::string filename_;
+  std::vector<char> buffer_; // used by read(), to avoid re-allocation
+
+  explicit MyFileBlob()
+    : PlBlob(&my_file_blob) { }
+
+  explicit MyFileBlob(PlTerm filename, PlTerm mode, PlTerm flags)
+    : PlBlob(&my_file_blob),
+      mode_(mode.as_string())
+  { flags_ = MyFileBlob_options.lookup_list(flags);
+    filename_ = filename.get_file_name(flags_);
+    file_ = fopen(filename_.c_str(), mode_.c_str());
+    if ( !file_ ) // TODO: get error code (might not be existence error)
+      throw PlExistenceError("my_file_blob_open", PlTerm_string(filename_));
+    // for debugging:
+    //   PlTerm_string(filename.as_string() + "\" => \"" +
+    //                 filename_ + "\", \"" + mode_ +
+    //                 ", flags=" + MyFileBlob_options.as_string(flags_) + "\")")
+  }
+
+  PL_BLOB_SIZE
+
+  std::string read(size_t count)
+  { assert(sizeof buffer_[0] == sizeof (char));
+    assert(sizeof (char) == 1);
+
+    buffer_.reserve(count);
+    return std::string(buffer_.data(),
+                       std::fread(buffer_.data(), sizeof buffer_[0], count, file_));
+  }
+
+  bool eof() const
+  { return std::feof(file_);
+  }
+
+  bool error() const
+  { return std::ferror(file_);
+  }
+
+  virtual ~MyFileBlob() noexcept
+  { if ( !close() )
+      // Can't use PL_warning()
+      Sdprintf("***ERROR: Close MyFileBlob failed: (%s)\n", filename_.c_str());
+  }
+
+  bool close() noexcept
+  { if ( !file_ )
+      return true;
+    int rc = std::fclose(file_);
+    file_ = nullptr;
+    return rc == 0;
+  }
+
+  PlException MyFileBlobError(const std::string error) const
+  { return PlGeneralError(PlCompound(error, PlTermv(symbol_term())));
+  }
+
+  int compare_fields(const PlBlob* _b_data) const override
+  { // dynamic_cast is safer than static_cast, but slower (see documentation)
+    // It's used here for testing (the documentation has static_cast)
+    auto b_data = dynamic_cast<const MyFileBlob*>(_b_data);
+    return filename_.compare(b_data->filename_);
+  }
+
+  bool write_fields(IOSTREAM *s, int flags) const override
+  { PlStream strm(s);
+    strm.printf(",");
+    return write_fields_only(strm);
+  }
+
+  bool write_fields_only(PlStream& strm) const
+  { // For debugging:
+    // strm.printf("%s mode=%s flags=%s", filename_.c_str(), mode_.c_str(),
+    //             MyFileBlob_options.as_string(flags_).c_str());
+    strm.printf("%s", filename_.c_str());
+    if ( !file_ )
+      strm.printf("-CLOSED");
+    return true;
+  }
+
+  bool portray(PlStream& strm) const
+  { strm.printf("MyFileBlob(");
+    write_fields_only(strm);
+    strm.printf(")");
+    return true;
+  }
+};
+
+PREDICATE(my_file_open, 4)
+{ auto ref = std::unique_ptr<PlBlob>(new MyFileBlob(A2, A3, A4));
+  return A1.unify_blob(&ref);
+}
+
+PREDICATE(my_file_close, 1)
+{ auto ref = PlBlobV<MyFileBlob>::cast_ex(A1, my_file_blob);
+  if ( !ref->close() ) // TODO: get the error code
+    throw ref->MyFileBlobError("my_file_blob_close_error");
+  return true;
+}
+\end{code}
+
+\subsubsection{Discussion of the sample PlBlob code (wrapping a pointer)}
+\label{sec:cpp2-blobs-sample-code-pointer-discussion}
+
+\begin{itemize}
+
+\item This code provides a simple wrapper for some of the C ``stdio''
+  functions defined in \file{<cstdio>}. The blob wraps the file
+  pointer returned from fopen() and also keeps a few other values
+  for debugging (the mode, flags, filename from the call to fopen())
+  plus a buffer for read operations.
+
+\item A utility class `PlOptionsFlag` is defined in file{SWI-cpp2-flags.h},
+  for mapping a list of atoms to a bit-field flag. For example, the
+  list \exam{[search,read]} would map to `exam{PL_FILE_SEARCH|PL_FILE_READ}`.
+
+\item The \ctype{MyFileBlob} struct defines the blob that wraps a
+  \ctype{FILE*}.  The constructor (which is called by predicate
+  my_file_open/4) converts the \arg{flags} term (a list of atoms or
+  strings) to a flag that is passed to PL_get_file_name(), to convert
+  the \arg{filename} to a string containing the abslute file
+  name. This is then passed to fopen(), together with the
+  \arg{mode}. If the call to fopen() fails, a C++ exception is thrown,
+  to be handled by Prolog. Other errors, such as a wrong argument type
+  to PL_get_file_name() can also cause an exception.
+
+\item MyFileBlob::read() ensures that the buffer is big enough and
+  then calls `fread()` to return the buffer's contents.
+
+\item MyFileBlob::eof() and MyFileBlob::error() call feof()
+  and ferror() respectively. They can be used to check the status
+  of the call to MyFileBlob::read().
+
+\item The destructor calls MyFileBlob::close() and outputs a warning
+  if it fails - a destructor is not allowed to throw a C++ exception,
+  so this is the best we can do; it's better if the programmer explicitly
+  closes the file rather than depending on the garbage collector to
+  free the blob.
+
+\item MyFileBlob::close() calls fclose(). It then sets the \ctype{FILE*}
+  to null, so that close won't be done twice.
+
+\item MyFileBlob::compare_fields(), MyFileBlob::write_fields(),
+  MyFileBlob::write_fields_only(), MyFileBlob::portray() are similar
+  to the same methods in \ctype{MyBlob} in \secref{cpp2-blobs-sample-code}.
+
+\item Predicate my_file_open(File,Filename,Mode,Flags) calls the
+  \ctype{MyFileBlob} constructor with \arg{Filename}, \arg{Mode},
+  \arg{flags} and unifies the blob with \arg{File}.
+
+\item Predicate my_file_close/1 calls MyFileBlob::close(), checks for
+  an error and creates a Prolog error if the close failed.
+
+\end{itemize}
+
 \subsubsection{Identifying blobs by atoms}
 \label{sec:cpp2-atom-blob}
 
@@ -1902,7 +2222,7 @@ The C++ API remains a work in progress.
 SWI-Prolog string handling has evolved over time.  The functions that
 create atoms or strings using \ctype{char*} or \ctype{wchar_t*} are
 ``old school''; similarly with functions that get the string as
-\ctype{char*} or \ctype{wchar_t*}. The PL_{get_unify_put}_[nw]chars()
+\ctype{char*} or \ctype{wchar_t*}. The PL_{get,unify,put}_[nw]chars()
 family is more friendly when it comes to different input, output,
 encoding and exception handling.
 
@@ -1967,33 +2287,34 @@ that ensure the matchin PL_release_stream() is done, and also handles
 some subtle problems with C++ exceptions.
 
 The methods are:
-\begin{itemize}
-  \item \constructor{PlStream}{term_t t, int flags} - see
+\begin{description}
+  \constructor{PlStream}{term_t t, int flags} - see
      PL_get_stream() for documentation of the flags.
      Throws a C++ exception on error.
-  \item \constructor{PlStream}{IOSTREAM *s} - calls
+  \constructor{PlStream}{IOSTREAM *s} - calls
     PL_acquire_stream() to lock the stream.
      Throws a C++ exception on error.
-  \item \destructor{PlStream} - calls PlStream::release().
+  \destructor{PlStream} - calls PlStream::release().
     See below for caveats if there are exceptions.
   \cfunction{void}{PlStream::release}{} calls PL_release_stream(),
     throwing an exception if there has been an I/O error on
     the stream, and sets the \ctype{PlStream} object to an
     invalid stream (see PlStream::check_stream()).
-  \item \cppcast{IOSTREAM*}{PlStream} - when used in a context
+  \cppcast{IOSTREAM*}{PlStream} - when used in a context
      that requires an \ctype{IOSTREAM*}, \ctype{PlStream}
      is implicitly converted to \ctype{IOSTREAM*}.
-  \item cfunction{void}{check_stream}{} checks that the
+  \cfunction{void}{check_stream}{} checks that the
      \ctype{PlStream} object contains a valid stream and
      throws an exception if it doesn't. This is used to
      ensure that PlStream::release() hasn't been called.
-   \item Most of the stream I/O functions have corresponding methods
+\end{description}
+
+Most of the stream I/O functions have corresponding methods
      in \ctype{PlStream}. For example, Sfprintf() corresponds to
      PlStream::printf().  PlStream::seek() and PlStream::tell() call
      Sseek64() and Stell64() instead of \ctype{long} (they are also
      deprecated: PlStream::seek64() and PlStream::tell64() are
      preferred).
-\end{itemize}
 
 The C interface to stream I/O doesn't raise a Prolog error when
 there's a stream error (typically indicated by a -1 return
@@ -2112,7 +2433,7 @@ your source files.
 \label{sec:cpp2-examples}
 
 Before going into a detailed description of the C++ classes we present
-a few examples illustrating the `feel' of the interface.
+a few examples illustrating the ``feel'' of the interface.
 
 
 \subsection{Hello(World) (version 2)}
@@ -2405,7 +2726,7 @@ Here is a list of typical changes:
     if failure is expected to happen often.
 
   \item
-    You can use the \cfuncref{PlCheck_PL}{rc} to check the return code
+    You can use the \cfuncref{PlEx}{rc} to check the return code
     from a function in \file{SWI-Prolog} and throw a \ctype{PlFail}
     exception to short-circuit execution and return failure (\const{false})
     to Prolog (or throw a \ctype{PlException} if there was a Prolog error.
@@ -2487,19 +2808,19 @@ unify_zero(term_t a1)
 }
 \end{code}
 
-\subsection{PlCheckFail(), PlCheckEx(), and PlCheck_PL() convenience functions}
+\subsection{PlCheckFail(), and PlEx() convenience functions}
 \label{sec:cpp2-plcheck}
 
 If one of the C PL_*() functions in \file{SWI-Prolog.h} returns
 failure, this can be either a Prolog-style failure (e.g. from
 PL_unify() or PL_next_solution()) or an error. If the failure is due
 to an error, it's usually best to immediately return to Prolog - and
-this can be done with the PlCheckEx() function, which turns
+this can be done with the PlEx() function, which turns
 a Prolog error into a C++ \ctype{PlException}.  \cfuncref{PlCheckFail}{}
-calls PlCheckEx() and additionally throws PlFail() if the failure is
+calls PlEx() and additionally throws PlFail() if the failure is
 for Prolog failure.
 
-PlCheckEx() calls PL_exception() to see if there is a
+PlEx() calls PL_exception() to see if there is a
 Prolog exception; if so, the Prolog exception is converted to a
 \ctype{PlException} object, which is then thrown.  For more details on
 the C++ exceptions, see \secref{cpp2-exceptions}.
@@ -2589,7 +2910,8 @@ Extracts pointer value from a term. The term should have been created
 by PlTerm::PlTerm(void*).
 \end{description}
 
-In addition, the Prolog type (`PL_VARIABLE`, `PL_ATOM`, ... `PL_DICT`)
+In addition, the Prolog type (\const{PL_VARIABLE},
+\const{PL_ATOM}, ... \const{PL_DICT})
 can be determined using the type() method. There are also boolean
 methods that check the type:
 \begin{description}
@@ -2908,29 +3230,30 @@ arguments.  See \ctype{PlTermv} for details.  The example below
 creates the Prolog term \exam{hello(world)}.
 
 \begin{code}
-PlCompound("hello", PlTermv("world"))
+PlCompound("hello", PlTermv(PlAtom("world")))
 \end{code}
 \end{description}
 
 
-\subsection{The class PlTail (version 2)}
+\subsection{The class PlTerm_tail (version 2)}
 \label{sec:cpp2-pltail}
 
-The class \ctype{PlTail} is both for analysing and constructing lists.
-It is called \ctype{PlTail} as enumeration-steps make the term-reference
-follow the `tail' of the list.
+The class \ctype{PlTerm_tail}\footnote{This was named \ctype{PlTail}
+in version 1 of the API.} is both for analysing and constructing
+lists.  It is called \ctype{PlTerm_tail} as enumeration-steps make the
+term-reference follow the ``tail'' of the list.
 
 \begin{description}
-    \constructor{PlTail}{PlTerm list}
-A \ctype{PlTail} is created by making a new term-reference pointing to
-the same object.  As \ctype{PlTail} is used to enumerate or build a
+    \constructor{PlTerm_tail}{PlTerm list}
+A \ctype{PlTerm_tail} is created by making a new term-reference pointing to
+the same object.  As \ctype{PlTerm_tail} is used to enumerate or build a
 Prolog list, the initial \arg{list} term-reference keeps pointing to
 the head of the list.
-    \cfunction{int}{PlTail::append}{const PlTerm \&element}
-Appends \arg{element} to the list and make the \ctype{PlTail} reference
+    \cfunction{int}{PlTerm_tail::append}{const PlTerm \&element}
+Appends \arg{element} to the list and make the \ctype{PlTerm_tail} reference
 point to the new variable tail.  If \arg{A} is a variable, and this
 function is called on it using the argument \exam{"gnat"}, a list of
-the form \exam{[gnat|B]} is created and the \ctype{PlTail} object
+the form \exam{[gnat|B]} is created and the \ctype{PlTerm_tail} object
 now points to the new variable \arg{B}.
 
 This function returns \const{true} if the unification succeeded and
@@ -2944,7 +3267,7 @@ int
 main(int argc, char **argv)
 { PlEngine e(argv[0]);
   PlTermv av(1);
-  PlTail l(av[0]);
+  PlTerm_tail l(av[0]);
 
   for(int i=0; i<argc; i++)
     PlCheckFail(l.append(argv[i]));
@@ -2954,25 +3277,25 @@ main(int argc, char **argv)
   return q.next_solution() ? 0 : 1;
 }
 \end{code}
-    \cfunction{int}{PlTail::close}{}
+    \cfunction{int}{PlTerm_tail::close}{}
 Unifies the term with \const{[]} and returns the result of the
 unification.
-    \cfunction{int}{PlTail::next}{PlTerm \&t}
-Bind \arg{t} to the next element of the list \ctype{PlTail} and advance
-\ctype{PlTail}. Returns \const{true} on success and \const{false} if
-\ctype{PlTail} represents the empty list. If \ctype{PlTail} is neither a
+    \cfunction{int}{PlTerm_tail::next}{PlTerm \&t}
+Bind \arg{t} to the next element of the list \ctype{PlTerm_tail} and advance
+\ctype{PlTerm_tail}. Returns \const{true} on success and \const{false} if
+\ctype{PlTerm_tail} represents the empty list. If \ctype{PlTerm_tail} is neither a
 list nor the empty list, a \except{type_error} is thrown. The example
 below prints the elements of a list.
 
 \begin{code}
 PREDICATE(write_list, 1)
-{ PlTail tail(A1);
-  PlTerm e;
+{ PlTerm_tail tail(A1);
+  PlTerm_var e;
 
   while(tail.next(e))
     cout << e.as_string() << endl;
 
-  return true;
+  return tail.close();
 }
 \end{code}
 \end{description}
@@ -3003,7 +3326,7 @@ Create a vector from 1 to 5 initialising arguments.  For example:
 
 \begin{code}
 load_file(const char *file)
-{ return PlCall("compile", PlTermv(file));
+{ return PlCall("compile", PlTermv(PlAtom(file)));
 }
 \end{code}
 
@@ -3236,13 +3559,29 @@ assert(t.unify_term(r->term()));
 \end{code}
 
 The class \ctype{PlRecordExternalCopy} keeps the \jargon{external record}
-as an uninterpreted string. It supports the following methods.
+as an uninterpreted string (which may contain nulls).
+It supports the following methods.
 \begin{description}
-   \cfunction{}{PlRecordExternalCopy}{} Constructor.
+   \constructor{PlRecordExternalCopy}{PlTerm t}
    Creates a string using Pl_record_external(), copies it into
-   the object,  then deletes the reference using PL_erase_external().
-   \cfunction{PlTerm}{term}{} creates a term from the record,
-   using PL_recorded_external()).
+   the object  then deletes the reference using PL_erase_external().
+   \constructor{PlRecordExternalCopy}{const std::string\& external}
+   Saves the \arg{external} string (which is assumed to have been
+   created using PL_record_external()).
+   \constructor{PlRecordExternalCopy}{const char* external, size_t len}
+   Saves the \arg{external} string (which is assumed to have been
+   created using PL_record_external()).
+   \cfunction{PlTerm}{term}{} creates a term from the saved external
+   record string, using PL_recorded_external()).
+   \cfunction{static PlTerm}{term}{const std::string\& external}
+   Creates a term from the external record string.
+   Equivalent to PlRecordExternalCopy(external).term().
+   \cfunction{static PlTerm}{term}{const char* external}
+   Creates a term from the external record string.
+   Equivalent to PlRecordExternalCopy(external,len).term()
+   except the length is inferred from \arg{external}'s contents.
+   \cfunction{const std::string\&}{data}{} Gets the external
+   string that was created by the constructor.
 \end{description}
 
 \section{The class PlRegister (version 2)}
@@ -3292,17 +3631,29 @@ This construct is currently supported upto 3 arguments.
 This class encapsulates the call-backs onto Prolog.
 
 \begin{description}
-    \constructor{PlQuery}{const char *name, const PlTermv \&av}
+    \constructor{PlQuery}{const char *name, const PlTermv \&av, int flags = PL_Q_PASS_EXCEPTION}
 Create a query where \arg{name} defines the name of the predicate and
 \arg{av} the argument vector.  The arity is deduced from \arg{av}.  The
 predicate is located in the Prolog module \module{user}.
     \constructor{PlQuery}{const char *module, const char *name,
-			  const PlTermv \&av}
+			  const PlTermv \&av, int flags = PL_Q_PASS_EXCEPTION}
 Same, but performs the predicate lookup in the indicated module.
     \cfunction{int}{PlQuery::next_solution}{}
 Provide the next solution to the query.  Yields \const{true} if
 successful and \const{false} if there are no (more) solutions.
 Prolog exceptions are mapped to C++ exceptions.
+If the \class{PlQuery} object was created with the \const{PL_Q_EXT_STATUS}
+flag, the extended return codes can also be returned
+(\const{TRUE},
+ \const{FALSE},
+ \const{PL_S_NOT_INNER},
+ \const{PL_S_EXCEPTION},
+ \const{PL_S_FALSE},
+ \const{PL_S_TRUE},
+ \const{PL_S_LAST}).
+Because of this, you shouldn't use PlCheckFail() with PlQuery::next_solution()
+in this situation.
+
     \cfunction{void}{PlQuery::cut}{}
 Discards the query, but does not delete an of the data created
 by the query. If there is any pending Prolog exception, it is
@@ -3341,10 +3692,11 @@ Same, locating the predicate in the named module.
 Translates \arg{goal} into a term and calls this term as the other
 PlCall() variations. Especially suitable for simple goals such as making
 Prolog load a file.
-    \cfunction{int}{PlTerm::call}{}
-    Wrapper for PL_call(), and throws an exception if there's an error.
+    \cfunction{bool}{PlTerm::call}{}
+    Wrapper for PL_call(), returning \const{true} or \const{false} for
+    the success/failure of the call; and throws an exception if there's an error.
     \exam{t.call()} is essentially the same as \exam{PlCall(t)}.
-    \cfunction{int}{PlTerm::call}{PlModule m}
+    \cfunction{bool}{PlTerm::call}{PlModule m}
     Same as PlTerm::call() but specifying the module.
 \end{description}
 
@@ -3587,7 +3939,7 @@ that \const{PL_av} is not used.
     \cmacro{}{NAMED_PREDICATE}{plname, cname, arity}
 This version can be used to create predicates whose name is not a valid
 C++ identifier. Here is a ---hypothetical--- example, which unifies the
-second argument with a stringified version of the first. The `cname' is
+second argument with a stringified version of the first. The \arg{cname} is
 used to create a name for the functions. The concrete name does not
 matter, but must be unique. Typically it is a descriptive name using the
 limitations imposed by C++ indentifiers.

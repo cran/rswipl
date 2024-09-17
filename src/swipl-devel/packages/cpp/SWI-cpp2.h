@@ -151,7 +151,7 @@ template<typename C_t> [[nodiscard]] C_t PlWrap(C_t rc, qid_t qid = 0);
 // This is for functions that report errors but don't have an
 // indication of "fail" - that is, almost everything except for
 // functions like PL_unify_*() or PL_next_solution().
-template<typename C_T> void PlEx(C_T rc, qid_t qid = 0);
+template<typename C_t> void PlEx(C_t rc, qid_t qid = 0);
 
 // Check the return code: if "false", throw PlFail.
 inline void PlCheckFail(bool rc);
@@ -483,6 +483,8 @@ public:
 
   [[nodiscard]] bool get_file_name(char **name, int flags) const { return Plx_get_file_name(unwrap(), name, flags); }
   [[nodiscard]] bool get_file_nameW(wchar_t **name, int flags) const { return Plx_get_file_nameW(unwrap(), name, flags); }
+  [[nodiscard]] const std::string get_file_name(int flags) const;
+  [[nodiscard]] const std::wstring get_file_nameW(int flags) const;
 
   [[nodiscard]] bool get_attr(term_t a) const { return Plx_get_attr(unwrap(), a); }
 
@@ -556,26 +558,32 @@ public:
   void put_chars(int flags, size_t len, const char *chars) { Plx_put_chars(unwrap(), flags, len, chars); }
   void put_list_chars(const char *chars)                   { Plx_put_list_chars(unwrap(), chars); }
   void put_list_codes(const char *chars)                   { Plx_put_list_codes(unwrap(), chars); }
+  // TODO: add std::string versions of the following
   void put_atom_nchars(size_t l, const char *chars)        { Plx_put_atom_nchars(unwrap(), l, chars); }
   void put_string_nchars(size_t len, const char *chars)    { Plx_put_string_nchars(unwrap(), len, chars); }
   void put_list_nchars(size_t l, const char *chars)        { Plx_put_list_nchars(unwrap(), l, chars); }
   void put_list_ncodes(size_t l, const char *chars)        { Plx_put_list_ncodes(unwrap(), l, chars); }
   void put_integer(long i)                                 { Plx_put_integer(unwrap(), i); }
+  void put_int64(int64_t i)                                { Plx_put_int64(unwrap(), i); }
+  void put_uint64(uint64_t i)                              { Plx_put_uint64(unwrap(), i); }
   void put_pointer(void *ptr)                              { Plx_put_pointer(unwrap(), ptr); }
   void put_float(double f)                                 { Plx_put_float(unwrap(), f); }
   void put_functor(PlFunctor functor)                      { Plx_put_functor(unwrap(), functor.unwrap()); }
   void put_list()                                          { Plx_put_list(unwrap()); }
   void put_nil()                                           { Plx_put_nil(unwrap()); }
   void put_term(PlTerm t2)                                 { Plx_put_term(unwrap(), t2.unwrap()); }
+  void put_blob( void *blob, size_t len, PL_blob_t *type)  { Plx_put_blob(unwrap(), blob, len, type); }
+  PlRecord record() const;
+
+  // TODO: When the following are implemented, add them
+  //       to the deleted methods in PlTermScoped:
   // TODO: PL_put_dict(term_t t, atom_t tag, size_t len, const atom_t *keys, term_t values)
   // TODO: PL_cons_functor(term_t h, functor_t f, ...)
   // TODO: PL_cons_functor_v(term_t h, functor_t fd, term_t a0)
   // TODO: PL_cons_list(term_t l, term_t h, term_t t)
-  void put_blob( void *blob, size_t len, PL_blob_t *type)  { Plx_put_blob(unwrap(), blob, len, type); }
 
   // TODO: PL_unify_*()?
   // TODO: PL_skip_list()
-  PlRecord record() const;
 
 					/* PlTerm --> C */
   [[deprecated("use as_long()")]]     explicit operator long()     const { return as_long(); }
@@ -640,6 +648,8 @@ public:
   PlAtom name() const; // throws PlTypeError if not a "compound" or atom
   [[nodiscard]] bool name_arity(PlAtom *name, size_t *arity) const; // name and/or arity can be nullptr
   [[nodiscard]] PlTerm copy_term_ref() const;
+  void free_term_ref();
+  void free_term_ref_reset();
 
   // The assignment operators from version 1 have been removed because
   // of possible confusion with the standard assignment and copy
@@ -738,7 +748,7 @@ public:
 
   void reset_term_refs() { Plx_reset_term_refs(unwrap()); }
 
-  int call(PlModule module = PlModule()) const { return Plx_call(unwrap(), module.unwrap()); }
+  bool call(PlModule module = PlModule()) const { return Plx_call(unwrap(), module.unwrap()); }
 
 private:
   bool eq(const char *s) const;
@@ -751,6 +761,107 @@ private:
   [[nodiscard]] bool _get_nchars(size_t *len, char **s, unsigned int flags) const { return Plx_get_nchars(unwrap(), len, s, flags); }
   [[nodiscard]] bool _get_wchars(size_t *length, pl_wchar_t **s, unsigned flags) const { return Plx_get_wchars(unwrap(), length, s, flags); }
 };
+
+
+// PlTermScoped is an *experimental* inteface, which may change
+// in the future. It implements a PlTerm that is automatically
+// freed when it goes out of scope. The API is similar to
+// std::unique_ptr.
+
+class PlTermScoped : public PlTerm
+{
+public:
+  explicit PlTermScoped()
+  : PlTerm()
+  { }
+
+  explicit PlTermScoped(PlTerm t)
+    : PlTerm(t.copy_term_ref())
+  { }
+
+  explicit PlTermScoped(term_t t)
+    : PlTerm(Plx_copy_term_ref(t))
+  { }
+
+  explicit PlTermScoped(PlTermScoped&& moving) noexcept
+    : PlTerm(moving)
+  { moving.reset();
+  }
+
+  PlTermScoped& operator=(PlTermScoped&& moving) noexcept
+  { if ( this != &moving )
+    { reset(moving);
+      moving.reset();
+    }
+    return *this;
+  }
+
+  PlTermScoped(const PlTermScoped&) = delete;
+  PlTermScoped& operator=(PlTermScoped const&) = delete;
+
+  ~PlTermScoped()
+  { free_term_ref_reset(); // TODO: reset() isn't needed?
+  }
+
+  void reset()
+  { free_term_ref();
+    PlTerm::reset();
+  }
+
+  void reset(PlTerm src)
+  { free_term_ref();
+    PlTerm::reset(src);
+  }
+
+  PlTerm get() const noexcept { return PlTerm(unwrap()); }
+
+  PlTermScoped release() noexcept
+  { term_t t = unwrap();
+    reset();
+    return PlTermScoped(t);
+  }
+
+  void swap(PlTermScoped& src) noexcept
+  { // std::swap(*this, src);
+    term_t this_unwrap = unwrap();
+    // Must use PlTerm::reset() to avoid call to PL_free_term_ref():
+    static_cast<PlTerm*>(this)->reset(PlTerm(src.unwrap()));
+    static_cast<PlTerm>(src).reset(PlTerm(this_unwrap));
+  }
+
+  // The put_*() and cons_*() methods are incompatible with the
+  // call to PL_free_term_ref() in the destructor.
+  void put_variable() = delete;
+  void put_atom(PlAtom a) = delete;
+  void put_bool(int val) = delete;
+  void put_atom_chars(const char *chars) = delete;
+  void put_string_chars(const char *chars) = delete;
+  void put_chars(int flags, size_t len, const char *chars) = delete;
+  void put_list_chars(const char *chars) = delete;
+  void put_list_codes(const char *chars) = delete;
+  void put_atom_nchars(size_t l, const char *chars) = delete;
+  void put_string_nchars(size_t len, const char *chars) = delete;
+  void put_list_nchars(size_t l, const char *chars) = delete;
+  void put_list_ncodes(size_t l, const char *chars) = delete;
+  void put_integer(long i) = delete;
+  void put_pointer(void *ptr) = delete;
+  void put_float(double f) = delete;
+  void put_functor(PlFunctor functor) = delete;
+  void put_list() = delete;
+  void put_nil() = delete;
+  void put_term(PlTerm t2) = delete;
+  void put_blob( void *blob, size_t len, PL_blob_t *type) = delete;
+};
+
+// TODO: verify that this is the right way to specialize
+//       std::swap()'s use with std containers:
+namespace std
+{
+  inline
+  void swap(PlTermScoped& lhs, PlTermScoped& rhs) noexcept
+  { lhs.swap(rhs);
+  }
+}
 
 
 class PlTerm_atom : public PlTerm
@@ -858,7 +969,7 @@ private:
 public:
   explicit PlTermv(size_t n = 0)
     : size_(n),
-      a0_(n ? Plx_new_term_refs(static_cast<int>(n)) : PlTerm::null)
+      a0_(n ? Plx_new_term_refs(n) : PlTerm::null)
   { if ( size_  )
       PlEx<bool>(a0_ != (term_t)0);
   }
@@ -947,7 +1058,7 @@ public:
 class PlRecord : public WrappedC<record_t>
 {
 public:
-  PlRecord(PlTerm t)
+  explicit PlRecord(PlTerm t)
     : WrappedC<record_t>(Plx_record(t.unwrap()))
   { }
 
@@ -959,9 +1070,22 @@ public:
     : WrappedC<record_t>(r)
   { }
 
-  PlRecord& operator =(const PlRecord& r)
+  PlRecord(PlRecord&& r) noexcept
+    : WrappedC<record_t>(r)
+  { r.reset();
+  }
+
+  PlRecord& operator=(const PlRecord& r)
   { if ( this != &r )
       reset(r);
+    return *this;
+  }
+
+  PlRecord& operator=(PlRecord&& r) noexcept
+  { if ( this != &r )
+    { reset(r);
+      r.reset();
+    }
     return *this;
   }
 
@@ -982,7 +1106,7 @@ public:
   }
 
   ~PlRecord()
-  { // TODO: erase();
+  { // TODO: erase(); -- but probably doesn't work with move constructor
   }
 };
 
@@ -1017,6 +1141,14 @@ public:
     : C_(init(t))
   { }
 
+  PlRecordExternalCopy(const std::string& external)
+    : C_(external)
+  { }
+
+  PlRecordExternalCopy(const char*external, size_t len)
+    : C_(std::string(external, len))
+  { }
+
   PlRecordExternalCopy(const PlRecordExternalCopy& r) = default;
   PlRecordExternalCopy& operator =(const PlRecordExternalCopy&) = delete;
   ~PlRecordExternalCopy() = default;
@@ -1027,14 +1159,26 @@ public:
     return t;
   }
 
+  static PlTerm
+  term(const char* data)
+  { PlTerm_var t;
+    Plx_recorded_external(data, t.unwrap());
+    return t;
+  }
+
+  static PlTerm
+  term(const std::string& data)
+  { return term(data.data());
+  }
+
   const std::string& data() const { return C_; }
 
 private:
   std::string init(PlTerm t)
   { size_t len;
-    char *s =  Plx_record_external(t.unwrap(), &len);
-    std::string result(s, len);
-    Plx_erase_external(s);
+    char *external =  Plx_record_external(t.unwrap(), &len);
+    std::string result(external, len);
+    Plx_erase_external(external);
     return result;
   }
 
@@ -1125,19 +1269,19 @@ protected:
 
 PlException PlGeneralError(PlTerm inside);
 
-PlException PlTypeError(const std::string& expected, PlTerm actual);
+PlException PlTypeError(const std::string& expected, PlTerm culprit);
 
-PlException PlDomainError(const std::string& expected, PlTerm actual);
+PlException PlDomainError(const std::string& expected, PlTerm culprit);
 
-PlException PlDomainError(PlTerm expected, PlTerm actual);
+PlException PlDomainError(PlTerm expected, PlTerm culprit);
 
-PlException PlInstantiationError(PlTerm t);
+PlException PlInstantiationError(PlTerm culprit);
 
-PlException PlUninstantiationError(PlTerm t);
+PlException PlUninstantiationError(PlTerm culprit);
 
 PlException PlRepresentationError(const std::string& resource);
 
-PlException PlExistenceError(const std::string& type, PlTerm actual);
+PlException PlExistenceError(const std::string& type, PlTerm culprit);
 
 PlException PlPermissionError(const std::string& op, const std::string& type, PlTerm obj);
 
@@ -1260,7 +1404,7 @@ public:
 		 *	 CALLING PROLOG		*
 		 *******************************/
 
-class PlFrame : WrappedC<fid_t>
+class PlFrame : public WrappedC<fid_t>
 {
 public:
   PlFrame()
@@ -1294,7 +1438,7 @@ public:
 [[nodiscard]] bool PlRewindOnFail(std::function<bool()> f);
 
 
-class PlQuery : WrappedC<qid_t>
+class PlQuery : public WrappedC<qid_t>
 {
 public:
   PlQuery(PlPredicate pred, const PlTermv& av, int flags = PL_Q_PASS_EXCEPTION)
@@ -1719,7 +1863,7 @@ public:
     // outside of a PREDICATE.
     if ( ref && type == ref->blob_t_ )
     { if ( len != sizeof *ref )
-        PL_system_error("Invalid size %zd (should be %zd) for %s", len, sizeof *ref, typeid(C_t).name());
+        PL_api_error("Invalid size %zd (should be %zd) for %s", len, sizeof *ref, typeid(C_t).name());
       return ref;
     }
     return nullptr;
@@ -1732,7 +1876,7 @@ public:
     // Can't throw PlException here because might be in a context
     // outside of a PREDICATE.
     if ( !ref )
-      PL_system_error("Failed cast to %s", typeid(C_t).name());
+      PL_api_error("Failed cast to %s", typeid(C_t).name());
     return ref;
   }
 
@@ -1748,14 +1892,14 @@ public:
   static void acquire(atom_t a)
   { PlAtom a_(a);
     auto data = cast_check(a_);
-    bool rc;
+    bool rc; // Uninitialized variable warning (some compilers)
     try
     { data->acquire(a_);
       rc = true;
     }
     PREDICATE_CATCH(rc = false)
     if ( !rc )
-      PL_system_error("Failed acquire() for %s", typeid(C_t).name());
+      PL_api_error("Failed acquire() for %s", typeid(C_t).name());
     // TODO: if ( ! rc ) Plx_clear_exception() ?
   }
 
@@ -1781,8 +1925,8 @@ public:
     // types - they should have been already compared by standard
     // order of types; but use cast_check() anyway (which will be
     // optimised away if NDEBUG).
-    bool rc_try = false;
-    int rc;
+    bool rc_try = false; // Uninitialized variable warning (some compilers)
+    int rc = 0;          // Uninitialized variable warning (some compilers)
     try
     { const auto a_data = cast(PlAtom(a));
       const auto b_data = cast(PlAtom(b));
@@ -1793,7 +1937,7 @@ public:
     }
     PREDICATE_CATCH(rc_try = false; rc = 0;)
     if ( !rc_try )
-      PL_system_error("Failed compare() for %s", typeid(C_t).name());
+      PL_api_error("Failed compare() for %s", typeid(C_t).name());
     return rc;
   }
 
@@ -1803,7 +1947,7 @@ public:
     if ( !data )
       // TODO: demangle typeid::name()
       return Sfprintf(s, "<%s>(%p)", typeid(C_t).name(), data) >= 0;
-    int rc;
+    int rc = -1; // Uninitialized variable warning (some compilers)
     try
     { rc = data->write(s, flags);
     }
@@ -1817,7 +1961,7 @@ public:
   { const auto data = cast(PlAtom(a));
     if ( !data )
       return false;
-    bool rc;
+    bool rc = false; // Uninitialized variable warning (some compilers)
     try
     { data->save(fd);
       rc = true;
@@ -1831,7 +1975,7 @@ public:
   static atom_t load(IOSTREAM *fd)
   { C_t ref;
     atom_t atom;
-    int rc_try;
+    int rc_try = false; // Uninitialized variable warning (some compilers)
     try
     { atom = ref.load(fd).unwrap();
       rc_try = true;

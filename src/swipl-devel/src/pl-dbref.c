@@ -50,7 +50,7 @@ write_clause_ref(IOSTREAM *s, atom_t aref, int flags)
   (void)flags;
 
   Sfprintf(s, "<clause>(%p)", ref->value.clause);
-  return TRUE;
+  return true;
 }
 
 
@@ -67,12 +67,12 @@ release_clause_blob(atom_t aref)
 { ClauseRef ref = PL_blob_data(aref, NULL, NULL);
 
   clear(ref->value.clause, DBREF_CLAUSE);
-  if ( true(ref->value.clause, CL_ERASED) )
+  if ( ison(ref->value.clause, CL_ERASED) )
     ATOMIC_DEC(&GD->clauses.db_erased_refs);
-  if ( true(ref->value.clause, DBREF_ERASED_CLAUSE) )
+  if ( ison(ref->value.clause, DBREF_ERASED_CLAUSE) )
     unallocClause(ref->value.clause);
 
-  return TRUE;
+  return true;
 }
 
 
@@ -112,7 +112,7 @@ write_record_ref(IOSTREAM *s, atom_t aref, int flags)
 { recref *ref = PL_blob_data(aref, NULL, NULL);
 
   Sfprintf(s, "<record>(%p)", ref->record);
-  return TRUE;
+  return true;
 }
 
 
@@ -133,7 +133,7 @@ release_record(atom_t aref)
   else
     unallocRecordRef(ref->record);
 
-  return TRUE;
+  return true;
 }
 
 
@@ -195,7 +195,7 @@ PL_put_clref(term_t t, Clause clause)
   _PL_put_atomic(t, a);
   PL_unregister_atom(a);
 
-  return TRUE;
+  return true;
 }
 
 
@@ -215,9 +215,9 @@ PL_is_dbref(term_t t)
   if ( PL_is_blob(t, &type) &&
        ( type == &clause_blob ||
 	 type == &record_blob ) )
-    return TRUE;
+    return true;
 
-  return FALSE;
+  return false;
 }
 
 
@@ -235,7 +235,7 @@ PL_get_dbref(term_t t, db_ref_type *type_ptr)
   if ( type == &clause_blob )
   { ClauseRef ref = data;
 
-    if ( false(ref->value.clause, CL_ERASED) )
+    if ( isoff(ref->value.clause, CL_ERASED) )
     { *type_ptr = DB_REF_CLAUSE;
       return ref;
     }
@@ -243,7 +243,7 @@ PL_get_dbref(term_t t, db_ref_type *type_ptr)
   { recref *ref = data;
 
     if ( ref->record->record &&
-	 false(ref->record->record, R_ERASED) )
+	 isoff(ref->record->record, R_ERASED) )
     { *type_ptr = DB_REF_RECORD;
       return ref->record;
     }
@@ -256,8 +256,8 @@ PL_get_dbref(term_t t, db_ref_type *type_ptr)
 
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-Returns FALSE: error
-         TRUE: existing clause
+Returns false: error
+         true: existing clause
            -1: erased clause
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
@@ -272,10 +272,10 @@ PL_get_clref(term_t t, Clause *cl)
 
   *cl = ref->value.clause;
 
-  if ( true(ref->value.clause, CL_ERASED) )
+  if ( ison(ref->value.clause, CL_ERASED) )
     return -1;
 
-  return TRUE;
+  return true;
 }
 
 
@@ -289,12 +289,12 @@ PL_get_recref(term_t t, RecordRef *rec)
     return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_db_reference, t);
 
   if ( ref->record->record &&
-       false(ref->record->record, R_ERASED) )
+       isoff(ref->record->record, R_ERASED) )
   { *rec = ref->record;
-    return TRUE;
+    return true;
   }
 
-  return FALSE;
+  return false;
 }
 
 

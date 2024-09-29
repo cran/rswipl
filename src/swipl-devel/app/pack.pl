@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        jan@swi-prolog.org
     WWW:           https://www.swi-prolog.org
-    Copyright (c)  2023, SWI-Prolog Solutions b.v.
+    Copyright (c)  2023-2024, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -36,7 +36,7 @@
 :- use_module(library(main)).
 :- use_module(library(dcg/high_order)).
 :- use_module(library(apply)).
-:- use_module(library(lists)).
+:- use_module(library(strings)).
 :- use_module(library(dcg/basics)).
 
 :- initialization(main, main).
@@ -80,7 +80,7 @@ pack_command(list,    "List packages").
 pack_command(find,    "Find packages").
 pack_command(search,  "Alias for `find`").
 pack_command(info,    "Print info on a pack").
-pack_command(install, "Install a package").
+pack_command(install, "Install or upgrade a package").
 pack_command(remove,  "Uninstall a package").
 pack_command(publish, "Register a pack with swi-prolog.org").
 pack_command(help,    "Help on command (also swipl pack command -h)").
@@ -140,7 +140,7 @@ pack_install:opt_help(link,           "Install from local directory using \c
 pack_install:opt_help(version,        "Restrict the version.").
 pack_install:opt_help(branch,         "Checkout GIT branch.").
 pack_install:opt_help(commit,         "Checkout GIT commit.").
-pack_install:opt_help(server,         "Server to contact for finding packages").
+pack_install:opt_help(server,         "Server to contact for finding packages. \c                                       Default is https://www.swi-prolog.org.").
 
 pack_install:opt_help(help(usage),
                       " install [option ...] pack ...").
@@ -155,6 +155,7 @@ pack_install:opt_meta(rebuild,	   'WHEN').
 pack_install:opt_meta(url,	   'URL').
 pack_install:opt_meta(branch,	   'BRANCH').
 pack_install:opt_meta(commit,	   'HASH').
+pack_install:opt_meta(server,	   'URL').
 
 pack_publish:opt_type(git,      git,            boolean).
 pack_publish:opt_type(sign,     sign,           boolean).
@@ -164,6 +165,7 @@ pack_publish:opt_type(register, register,       boolean).
 pack_publish:opt_type(isolated, isolated,       boolean).
 pack_publish:opt_type(dir,      pack_directory, directory(write)).
 pack_publish:opt_type(clean,    clean,          boolean(write)).
+pack_publish:opt_type(server,   server,         atom).
 
 pack_publish:opt_help(register,       "Register at pack repository").
 pack_publish:opt_help(isolated,       "Isolate from my other packs").
@@ -173,8 +175,41 @@ pack_publish:opt_help(git,            "Publish from GIT repository").
 pack_publish:opt_help(sign,           "Sign the git release tag").
 pack_publish:opt_help(force,          "Force (update) the git release tag").
 pack_publish:opt_help(branch,         "Branch used for releases").
+pack_publish:opt_help(server,         "Server to publish package on. \c                                                 Default is https://www.swi-prolog.org.").
+pack_publish:opt_help(help(usage),
+                      " publish [option ...] url|dir").
+pack_publish:opt_help(
+    help(header),
+    md({|string||
+        | # Publish a SWI-Prolog pack
+        |
+        |})).
+pack_publish:opt_help(
+    help(footer),
+    md({|string||
+        | Once your pack is completed, it may be registered at
+        | ``https://www.swi-prolog.org/pack/list``.  The __publish__
+        | sub command of ``swipl pack`` installs your pack from the
+        | given location, notmally in an isolated temporary directory.
+        | After successful installation it informs the pack registry
+        | of the new pack and deletes the temporary directory.
+        |
+        | # Examples:
+        |
+        | The typical command to publish a pack from a git repository is
+        |
+        |     swipl pack publish .
+        |
+        | The above requires the _origin_ of the repo to point at a publically
+        | accessible git repository.
+        |
+        | If your pack is hosted as archive, the typical command is
+        |
+        |     swipl pack publish https://mydomain.org/mydownloads/mypack-1.2.3.zip
+        |})).
 
 pack_publish:opt_meta(branch, 'BRANCH').
+pack_publish:opt_meta(server, 'URL').
 
 cli_pack_list([], Options) =>
     pack_list('', [installed(true)|Options]).
@@ -245,9 +280,14 @@ usage :-
     argv_usage(debug).
 
 opt_help(help(header),
-         [ ansi(bold, 'Manage SWI-Prolog packages',  []),
-           nl
-         ]).
+         md("__Manage SWI-Prolog packs__
+
+            SWI-Prolog packs are community contributed libraries
+            and applications.  You can find the available packs at
+
+                https://www.swi-prolog.org/pack/list
+
+            ")).
 opt_help(help(usage),
          [ ' [option ...] '-[],
            ansi(bold, 'command', []),

@@ -1958,7 +1958,7 @@ set_system_thread_id(PL_thread_info_t *info)
   info->has_tid = true;
 #if defined(HAVE_GETTID_SYSCALL)
   info->pid = syscall(__NR_gettid);
-#elif defined(HAVE_GETTID_MACRO)
+#elif defined(HAVE_GETTID_FUNCTION) || defined(HAVE_GETTID_MACRO)
   info->pid = gettid();
 #elif defined(__CYGWIN__)
   info->pid = getpid();
@@ -5478,6 +5478,28 @@ PRED_IMPL("message_queue_destroy", 1, message_queue_destroy, 0)
 }
 
 
+static
+PRED_IMPL("is_message_queue", 1, is_message_queue, 0)
+{ message_queue *q;
+  PL_blob_t *type;
+  void *data;
+  atom_t id;
+
+  if ( PL_get_blob(A1, &data, NULL, &type) && type == &message_queue_blob )
+  { mqref *ref = data;
+
+    q = ref->queue;
+    return (q && !q->destroyed);
+  }
+
+  if ( queueTable && PL_get_atom(A1, &id) )
+  { if ( (q = lookupHTableWP(queueTable, id)) )
+      return !q->destroyed;
+  }
+
+  return false;
+}
+
 		 /*******************************
 		 *    MESSAGE QUEUE PROPERTY	*
 		 *******************************/
@@ -8410,6 +8432,7 @@ BeginPredDefs(thread)
   PRED_DEF("message_queue_create",   2,	message_queue_create2, PL_FA_ISO)
   PRED_DEF("message_queue_property", 2,	message_property,      NDET|PL_FA_ISO)
   PRED_DEF("message_queue_set",      2, message_queue_set,     0)
+  PRED_DEF("is_message_queue",       1, is_message_queue,      0)
 
   PRED_DEF("thread_send_message",    2,	thread_send_message,   PL_FA_ISO)
   PRED_DEF("thread_send_message",    3,	thread_send_message,   0)

@@ -24,6 +24,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <inttypes.h>
+#ifdef __STDC_NO_ATOMICS__
+#define _Atomic
+#else
+#include <stdatomic.h>
+#endif
 #include <math.h>
 #include <string.h>
 #include <assert.h>
@@ -162,6 +167,26 @@ static inline slimb_t sat_add(slimb_t a, slimb_t b)
 	r = (a >> (LIMB_BITS - 1)) ^ (((limb_t)1 << (LIMB_BITS - 1)) - 1);
     return r;
 }
+
+static void*
+cache_realloc(void *opaque, void *ptr, size_t new)
+{ return realloc(ptr, new);
+}
+
+static void
+cache_free(void *opaque, void *ptr, size_t size)
+{ free(ptr);
+}
+
+#define CACHE_MALLOC_BEGIN(__ctx) \
+  { bf_realloc_func_t *__raf = __ctx->realloc_func; \
+    bf_free_func_t *__rf = __ctx->free_func; \
+    __ctx->realloc_func = cache_realloc; \
+    __ctx->free_func = cache_free;
+#define CACHE_MALLOC_END(__ctx)	 \
+    __ctx->realloc_func = __raf; \
+    __ctx->free_func = __rf; \
+  }
 
 #define malloc(s) malloc_is_forbidden(s)
 #define free(p) free_is_forbidden(p)
@@ -4173,7 +4198,9 @@ int bf_const_pi(bf_t *T, limb_t prec, bf_flags_t flags)
 void bf_clear_cache(bf_context_t *s)
 {
 #ifdef USE_FFT_MUL
+    CACHE_MALLOC_BEGIN(s);
     fft_clear_cache(s);
+    CACHE_MALLOC_END(s);
 #endif
     bf_const_free(&s->log2_cache);
     bf_const_free(&s->pi_cache);
@@ -7317,7 +7344,7 @@ typedef struct BFNTTState {
 
     limb_t ntt_proot_pow[NB_MODS][2][NTT_PROOT_2EXP + 1];
     limb_t ntt_proot_pow_inv[NB_MODS][2][NTT_PROOT_2EXP + 1];
-    NTTLimb *ntt_trig[NB_MODS][2][NTT_TRIG_K_MAX + 1];
+    _Atomic (NTTLimb*)ntt_trig[NB_MODS][2][NTT_TRIG_K_MAX + 1];
     /* 1/2^n mod m */
     limb_t ntt_len_inv[NB_MODS][NTT_PROOT_2EXP + 1][2];
 #if defined(__AVX2__)
@@ -7782,18 +7809,20 @@ static no_inline void mul_trig(NTTLimb *buf,
 
 #endif /* !AVX2 */
 
-static no_inline NTTLimb *get_trig(BFNTTState *s,
-				   int k, int inverse, int m_idx)
-{
-    NTTLimb *tab;
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+This code creates a cache that lives  as long as we do not destroy the
+LibBF  context.  We  share a  single context  for the  entire process.
+Where  we  normally allocate  LibBF  memory  for SWI-Prolog  from  the
+stacks,  we need  to  use permanent  storage here.   That  is what  is
+achieved by CACHE_MALLOC_BEGIN() ... CACHE_MALLOC_END().
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static no_inline NTTLimb *get_trig_mk_cache(BFNTTState *s,
+					    int k, int inverse, int m_idx)
+{   NTTLimb *tab;
     limb_t i, n2, c, c_mul, m, c_mul_inv;
 
-    if (k > NTT_TRIG_K_MAX)
-	return NULL;
-
-    tab = s->ntt_trig[m_idx][inverse][k];
-    if (tab)
-	return tab;
     n2 = (limb_t)1 << (k - 1);
     m = ntt_mods[m_idx];
 #ifdef __AVX2__
@@ -7815,8 +7844,37 @@ static no_inline NTTLimb *get_trig(BFNTTState *s,
 #endif
 	c = mul_mod_fast2(c, c_mul, m, c_mul_inv);
     }
+#ifdef __STDC_NO_ATOMICS__
+    /* May leak, but not so likely and still thread-safe */
     s->ntt_trig[m_idx][inverse][k] = tab;
+#else
+    NTTLimb *nulllimb = NULL;
+    if ( !atomic_compare_exchange_strong(&s->ntt_trig[m_idx][inverse][k],
+					 &nulllimb, tab) )
+    { ntt_free(s, tab);
+      tab = s->ntt_trig[m_idx][inverse][k];
+    }
+#endif
     return tab;
+}
+
+static no_inline NTTLimb *get_trig(BFNTTState *s,
+				   int k, int inverse, int m_idx)
+{
+    NTTLimb *tab;
+
+    if (k > NTT_TRIG_K_MAX)
+	return NULL;
+
+    tab = s->ntt_trig[m_idx][inverse][k];
+    if (tab)
+	return tab;
+
+    NTTLimb *rc;
+    CACHE_MALLOC_BEGIN(s->ctx);
+    rc = get_trig_mk_cache(s, k, inverse, m_idx);
+    CACHE_MALLOC_END(s->ctx);
+    return rc;
 }
 
 void fft_clear_cache(bf_context_t *s1)

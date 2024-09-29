@@ -1,3 +1,9 @@
+# rswipl 9.3.12
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-12/7803
+
+Fixes problems with finding pack dlls under Windows.
+
 # rswipl 9.3.11
 
 see https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-11/7766

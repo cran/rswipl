@@ -1,6 +1,6 @@
 PKG_CPPFLAGS=-Iswipl-devel/src -I../inst/swipl/lib/swipl/include -D_REENTRANT -D__SWI_PROLOG__ -D__SWI_EMBEDDED__
 PKG_LIBS=`pkg-config ../inst/swipl/share/pkgconfig/swipl.pc --libs` -Wl,-rpath,'$$ORIGIN/../swipl/lib'
-PKG_CXXFLAGS=$(CXX_VISIBILITY) $(CXX17STD) 
+PKG_CXXFLAGS=$(CXX_VISIBILITY) 
 
 CMAKE_VERSION := $(shell cmake --version 2>/dev/null)
 CMAKE_VERSION_MACOS := $(shell /Applications/CMake.app/Contents/bin/cmake --version 2>/dev/null)

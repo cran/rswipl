@@ -66,7 +66,8 @@
 :- use_module(library(http/json)).
 :- use_module(library(http/http_client), []).
 :- use_module(library(debug), [assertion/1]).
-:- use_module(library(pairs), [pairs_keys/2]).
+:- use_module(library(pairs),
+              [pairs_keys/2, map_list_to_pairs/3, pairs_values/2]).
 :- autoload(library(git)).
 :- autoload(library(sgml)).
 :- autoload(library(sha)).
@@ -76,6 +77,7 @@
 :- autoload(library(prolog_versions), [require_version/3, cmp_versions/3]).
 :- autoload(library(ugraphs), [vertices_edges_to_ugraph/3, ugraph_layers/2]).
 :- autoload(library(process), [process_which/2]).
+:- autoload(library(aggregate), [aggregate_all/3]).
 
 :- meta_predicate
     pack_install_local(2, +, +).
@@ -631,7 +633,7 @@ search_info(download(_)).
 %     * test(Boolean)
 %       If `true` (default), run the pack tests.
 %     * git(+Boolean)
-%       If `true` (default `false` unless `URL` ends with =.git=),
+%       If `true` (default `false` unless `URL` ends with ``.git``),
 %       assume the URL is a GIT repository.
 %     * link(+Boolean)
 %       Can be used if the installation source is a local directory
@@ -777,7 +779,7 @@ pack_default_options(URL, Pack, OptsIn, Options) :-      % (7)
     pack_version_file(Pack, Version, URL),
     download_url(URL),
     !,
-    available_download_versions(URL, Available),
+    available_download_versions(URL, Available, Options),
     Available = [URLVersion-LatestURL|_],
     NewOptions = [url(LatestURL)|VersionOptions],
     version_options(Version, URLVersion, Available, VersionOptions),
@@ -954,8 +956,9 @@ pack_install_set(Pairs, Dir, Options) :-
         )
     ),
     local_packs(Dir, Existing),
-    pack_resolve(Pairs, Existing, AllVersions, Plan, Options),
+    pack_resolve(Pairs, Existing, AllVersions, Plan0, Options),
     !,                                      % for now, only first plan
+    maplist(hsts_info(Options), Plan0, Plan),
     Options1 = [pack_directory(Dir)|Options],
     download_plan(Pairs, Plan, PlanB, Options1),
     register_downloads(PlanB, Options),
@@ -963,6 +966,12 @@ pack_install_set(Pairs, Dir, Options) :-
     build_plan(PlanB, Built, Options1),
     publish_download(PlanB, Options),
     work_done(Pairs, Plan, PlanB, Built, Options).
+
+hsts_info(Options, Info0, Info) :-
+    hsts(Info0.get(url), URL, Options),
+    !,
+    Info = Info0.put(url, URL).
+hsts_info(_Options, Info, Info).
 
 %!  known_media(+Pair) is semidet.
 %
@@ -1679,7 +1688,9 @@ prolog_version_dotted(Version) :-
 %   system.
 
 is_prolog_token(Token), cmp(Token, prolog, _Cmp, _Version) => true.
-is_prolog_token(prolog:_Feature) => true.
+is_prolog_token(prolog:Feature), atom(Feature) => true.
+is_prolog_token(prolog:Feature), flag_value_feature(Feature, _Flag, _Value) =>
+    true.
 is_prolog_token(_) => fail.
 
 %!  prolog_satisfies(+Token) is semidet.
@@ -1707,7 +1718,8 @@ prolog_satisfies(prolog:Feature), flag_value_feature(Feature, Flag, Value) =>
 
 flag_value_feature(Feature, Flag, Value) :-
     compound(Feature),
-    compound_name_arguments(Feature, Flag, [Value]).
+    compound_name_arguments(Feature, Flag, [Value]),
+    atom(Flag).
 
 
                  /*******************************
@@ -1801,7 +1813,6 @@ pack_git_info(GitDir, Hash, [git(true), installed_size(Bytes)|Info]) :-
 dir_metadata(GitDir, Info) :-
     directory_file_path(GitDir, 'pack.pl', InfoFile),
     read_file_to_terms(InfoFile, Info, [encoding(utf8)]),
-    must_be(ground, Info),
     maplist(valid_term(pack_info_term), Info).
 
 %!  download_file_sanity_check(+Archive, +Pack, +Info) is semidet.
@@ -1924,9 +1935,10 @@ pack_download_from_url(URL, PackTopDir, Pack, Options) :-
     run_process(path(git), [clone, URL, PackDir|Extra], []),
     git_checkout_version(PackDir, [update(false)|Options]),
     option(pack_dir(PackDir), Options, _).
-pack_download_from_url(URL, PackTopDir, Pack, Options) :-
-    download_url(URL),
+pack_download_from_url(URL0, PackTopDir, Pack, Options) :-
+    download_url(URL0),
     !,
+    hsts(URL0, URL, Options),
     directory_file_path(PackTopDir, Pack, PackDir),
     prepare_pack_dir(PackDir, Options),
     pack_download_dir(PackTopDir, DownLoadDir),
@@ -2140,13 +2152,37 @@ pack_download_dir(PackTopDir, DownLoadDir) :-
 %   from them.
 
 download_url(URL) :-
+    url_scheme(URL, Scheme),
+    download_scheme(Scheme).
+
+url_scheme(URL, Scheme) :-
     atom(URL),
     uri_components(URL, Components),
     uri_data(scheme, Components, Scheme),
-    download_scheme(Scheme).
+    atom(Scheme).
 
 download_scheme(http).
 download_scheme(https).
+
+%!  hsts(+URL0, -URL, +Options) is det.
+%
+%   HSTS (HTTP Strict Transport Security) is   standard by which means a
+%   site asks to always use HTTPS. For  SWI-Prolog packages we now force
+%   using HTTPS for all  downloads.  This   may  be  overrules using the
+%   option insecure(true), which  may  also  be   used  to  disable  TLS
+%   certificate  checking.  Note  that  the   pack  integrity  is  still
+%   protected by its SHA1 hash.
+
+hsts(URL0, URL, Options) :-
+    option(insecure(true), Options, false),
+    !,
+    URL = URL0.
+hsts(URL0, URL, _Options) :-
+    url_scheme(URL0, http),
+    !,
+    uri_edit(scheme(https), URL0, URL).
+hsts(URL, URL, _Options).
+
 
 %!  pack_post_install(+Pack, +PackDir, +Options) is det.
 %
@@ -2847,11 +2883,21 @@ git_archive_version('HEAD', _).
 %!  publish_download(+Infos, +Options) is semidet.
 %!  register_downloads(+Infos, +Options) is det.
 %
-%   Register our downloads with the pack server.
+%   Register our downloads with the  pack server. The publish_download/2
+%   version is used to  register  a   specific  pack  after successfully
+%   installing the pack.  In this scenario, we
+%
+%     1. call register_downloads/2 with publish(Pack) that must be
+%        a no-op.
+%     2. build and test the pack
+%     3. call publish_download/2, which calls register_downloads/2
+%        after replacing publish(Pack) by do_publish(Pack).
 
 register_downloads(_, Options) :-
     option(register(false), Options),
-    \+ option(do_publish(_), Options),
+    !.
+register_downloads(_, Options) :-
+    option(publish(_), Options),
     !.
 register_downloads(Infos, Options) :-
     convlist(download_data, Infos, Data),
@@ -2866,7 +2912,7 @@ register_downloads(Infos, Options) :-
             (   Reply = true(Actions),
                 memberchk(Pack-Result, Actions)
             ->  (   registered(Result)
-                ->  true
+                ->  print_message(informational, pack(published(Info, Result)))
                 ;   print_message(error, pack(publish_failed(Info, Result))),
                     fail
                 )
@@ -2884,6 +2930,17 @@ publish_download(Infos, Options) :-
     !,
     register_downloads(Infos, [do_publish(Pack)|Options1]).
 publish_download(_Infos, _Options).
+
+%!  download_data(+Info, -Data) is semidet.
+%
+%   If we downloaded and installed Info, unify Data with the information
+%   that we share with the pack registry. That is a term
+%
+%       download(URL, Hash, Metadata).
+%
+%   Where URL is location of the GIT   repository or URL of the download
+%   archive. Hash is either the  GIT  commit   hash  or  the SHA1 of the
+%   archive file.
 
 download_data(Info, Data),
     Info.get(git) == true =>                % Git clone
@@ -2966,23 +3023,24 @@ message_severity(exception(_), error, _).
                  *        WILDCARD URIs         *
                  *******************************/
 
-%!  available_download_versions(+URL, -Versions:list(atom)) is det.
+%!  available_download_versions(+URL, -Versions:list(atom), +Options) is det.
 %
 %   Deal with wildcard URLs, returning a  list of Version-URL pairs,
 %   sorted by version.
 %
 %   @tbd    Deal with protocols other than HTTP
 
-available_download_versions(URL, Versions) :-
+available_download_versions(URL, Versions, _Options) :-
     wildcard_pattern(URL),
-    github_url(URL, User, Repo),
+    github_url(URL, User, Repo),            % demands https
     !,
     findall(Version-VersionURL,
             github_version(User, Repo, Version, VersionURL),
             Versions).
-available_download_versions(URL, Versions) :-
-    wildcard_pattern(URL),
+available_download_versions(URL, Versions, Options) :-
+    wildcard_pattern(URL0),
     !,
+    hsts(URL0, URL, Options),
     file_directory_name(URL, DirURL0),
     ensure_slash(DirURL0, DirURL),
     print_message(informational, pack(query_versions(DirURL))),
@@ -3002,7 +3060,7 @@ available_download_versions(URL, Versions) :-
     versioned_urls(MatchingURLs, VersionedURLs),
     sort_version_pairs(VersionedURLs, Versions),
     print_message(informational, pack(found_versions(Versions))).
-available_download_versions(URL, [Version-URL]) :-
+available_download_versions(URL, [Version-URL], _Options) :-
     (   pack_version_file(_Pack, Version0, URL)
     ->  Version = Version0
     ;   Version = '0.0.0'
@@ -3346,7 +3404,7 @@ read_selection(Max, Choice) :-
 %
 %   Ask for confirmation.
 %
-%   @param Default is one of =yes=, =no= or =none=.
+%   @arg Default is one of `yes`, `no` or `none`.
 
 confirm(_Question, Default, Options) :-
     Default \== none,
@@ -3518,6 +3576,10 @@ message(git_tag_out_of_sync(Tag)) -->
       ' differs from this tag at the origin'
     ].
 
+message(published(Info, At)) -->
+    [ 'Published pack ' ], msg_pack(Info), msg_info_version(Info),
+    [' to be installed from '],
+    msg_published_address(At).
 message(publish_failed(Info, Reason)) -->
     [ 'Pack ' ], msg_pack(Info), [ ' at version ~w'-[Info.version] ],
     msg_publish_failed(Reason).
@@ -3529,6 +3591,11 @@ msg_publish_failed(download) -->
     [' was already published?'].
 msg_publish_failed(Status) -->
     [ ' failed for unknown reason (~p)'-[Status] ].
+
+msg_published_address(git(URL)) -->
+    msg_url(URL, _).
+msg_published_address(file(URL)) -->
+    msg_url(URL, _).
 
 candidate_dirs([]) --> [].
 candidate_dirs([H|T]) --> [ nl, '    ~w'-[H] ], candidate_dirs(T).
@@ -3578,18 +3645,23 @@ install_label([unpack]) -->
 install_label(_) -->
     [ ansi(bold, 'Download packs?', []) ].
 
-install_plan([], []) -->
-    [].
-install_plan([H|T], [AH|AT]) -->
-    install_step(H, AH), [nl],
-    install_plan(T, AT).
 
-install_step(Info, keep) -->
+install_plan(Plan, Actions) -->
+    install_plan(Plan, Actions, Sec),
+    sec_warning(Sec).
+
+install_plan([], [], _) -->
+    [].
+install_plan([H|T], [AH|AT], Sec) -->
+    install_step(H, AH, Sec), [nl],
+    install_plan(T, AT, Sec).
+
+install_step(Info, keep, _Sec) -->
     { Info.get(keep) == true },
     !,
     [ '  Keep ' ], msg_pack(Info), [ ' at version ~w'-[Info.version] ],
     msg_can_upgrade(Info).
-install_step(Info, Action) -->
+install_step(Info, Action, Sec) -->
     { From = Info.get(upgrade),
       VFrom = From.version,
       VTo = Info.get(version),
@@ -3600,46 +3672,62 @@ install_step(Info, Action) -->
     },
     [ Label ], msg_pack(Info),
     [ ' from version ~w to ~w'- [From.version, Info.get(version)] ],
-    install_from(Info, Action).
-install_step(Info, Action) -->
+    install_from(Info, Action, Sec).
+install_step(Info, Action, Sec) -->
     { _From = Info.get(upgrade) },
     [ '  Upgrade '  ], msg_pack(Info),
-    install_from(Info, Action).
-install_step(Info, Action) -->
+    install_from(Info, Action, Sec).
+install_step(Info, Action, Sec) -->
     { Dep = Info.get(dependency_for) },
     [ '  Install ' ], msg_pack(Info),
     [ ' at version ~w as dependency for '-[Info.version],
       ansi(code, '~w', [Dep])
     ],
-    install_from(Info, Action),
+    install_from(Info, Action, Sec),
     msg_downloads(Info).
-install_step(Info, Action) -->
+install_step(Info, Action, Sec) -->
     { Info.get(commit) == 'HEAD' },
     !,
     [ '  Install ' ], msg_pack(Info), [ ' at current GIT HEAD'-[] ],
-    install_from(Info, Action),
+    install_from(Info, Action, Sec),
     msg_downloads(Info).
-install_step(Info, link) -->
+install_step(Info, link, _Sec) -->
     { Info.get(link) == true,
       uri_file_name(Info.get(url), Dir)
     },
     !,
     [ '  Install ' ], msg_pack(Info), [ ' as symlink to ', url(Dir) ].
-install_step(Info, Action) -->
+install_step(Info, Action, Sec) -->
     [ '  Install ' ], msg_pack(Info), [ ' at version ~w'-[Info.get(version)] ],
-    install_from(Info, Action),
+    install_from(Info, Action, Sec),
     msg_downloads(Info).
-install_step(Info, Action) -->
+install_step(Info, Action, Sec) -->
     [ '  Install ' ], msg_pack(Info),
-    install_from(Info, Action),
+    install_from(Info, Action, Sec),
     msg_downloads(Info).
 
-install_from(Info, download) -->
+install_from(Info, download, Sec) -->
     { download_url(Info.url) },
     !,
-    [ ' from ', url(Info.url) ].
-install_from(Info, unpack) -->
-    [ ' from ', url(Info.url) ].
+    [ ' from '  ], msg_url(Info.url, Sec).
+install_from(Info, unpack, Sec) -->
+    [ ' from '  ], msg_url(Info.url, Sec).
+
+msg_url(URL, unsafe) -->
+    { atomic(URL),
+      atom_concat('http://', Rest, URL)
+    },
+    [ ansi(error, '~w', ['http://']), '~w'-[Rest] ].
+msg_url(URL, _) -->
+    [ url(URL) ].
+
+sec_warning(Sec) -->
+    { var(Sec) },
+    !.
+sec_warning(unsafe) -->
+    [ ansi(warning, '  WARNING: The installation plan includes downloads \c
+                                from insecure HTTP servers.', []), nl
+    ].
 
 msg_downloads(Info) -->
     { Downloads = Info.get(all_downloads),
@@ -3656,6 +3744,12 @@ msg_pack(Pack) -->
     [ ansi(code, '~w', [Pack]) ].
 msg_pack(Info) -->
     msg_pack(Info.pack).
+
+msg_info_version(Info) -->
+    [ ansi(code, '@~w', [Info.get(version)]) ],
+    !.
+msg_info_version(_Info) -->
+    [].
 
 %!  msg_build_plan(+Plan)//
 %

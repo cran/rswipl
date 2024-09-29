@@ -1,6 +1,6 @@
-35ec9a83db8d64bbfeab33cac49dab1c *DESCRIPTION
+6bac0f6440bb87006a7856e13b30c002 *DESCRIPTION
 2b4163c9fb2bbb98b2adbdc0551a683e *NAMESPACE
-837ca1767d09f01014115254a83b6f7c *NEWS.md
+e12fdc38b58b2cc522cee7f8a737d0d1 *NEWS.md
 52e52d9fd91fa18fadae54b998d2bc26 *R/RcppExports.R
 543dd49aab77c8f621288c9abf8435a6 *R/query.R
 b37420c23d06e10b3978c5c68cc0ba23 *R/rswipl.R
@@ -10,10 +10,10 @@ d26d66844737815d4fe1506cdfa2f6b5 *man/clear.Rd
 8b655a94b1d18fd2f5c681cc47660ddc *man/query.Rd
 7f5d55bb18914154643882b8ee89512b *man/submit.Rd
 efa2f746ebd3e85aaef9e04e3d4b16a2 *man/swipl.Rd
-bb4b237ade708d260be72138fc0ca77f *src/Makevars
+abd4b6262bdd14c91046d7a307a1c601 *src/Makevars
 e1d1ac14d14e4c4b60c1f96221c7f1ba *src/Makevars.win
 b5c439c627952f9349dd21a8c81792aa *src/RcppExports.cpp
-3084a44c1057036359d3f21ddd48b4d1 *src/install.libs.R
+adff787fedff71024c543315ca64379b *src/install.libs.R
 b3fdb3756a97d161418559efdcc33178 *src/rswipl.cpp
 21519f443273842c0eedcf68502f6ec2 *src/swipl-devel/CMAKE.md
 b4911b5e5585cb5fef2d91816d03e4dd *src/swipl-devel/CMakeLists.txt
@@ -22,10 +22,10 @@ b4911b5e5585cb5fef2d91816d03e4dd *src/swipl-devel/CMakeLists.txt
 625eb5aaa452821e3efaaf0eb2f1a4a2 *src/swipl-devel/LICENSE
 83a5460f5cf44acc98419ce46a62313a *src/swipl-devel/README.md
 15126c8bf54331b6b51c041a92df7d85 *src/swipl-devel/README.mingw
-b45a7ed1946b871e0cb095fd1c38d12d *src/swipl-devel/VERSION
+590e6a85ec80e374fac4ee872923968a *src/swipl-devel/VERSION
 8affd7f93f2a3cc0e8748baecff314e9 *src/swipl-devel/app/README.md
 1a9e077d682e8197fa6d24351136a077 *src/swipl-devel/app/app.pl
-c61a9bba3e3cb4549bc32aeeceb62ad1 *src/swipl-devel/app/pack.pl
+7edb1675687b43ce9c9014320e8c5fb9 *src/swipl-devel/app/pack.pl
 caf699c2673ec5f216ea5787810d1550 *src/swipl-devel/app/qlf.pl
 886d7970f7304790fd1c1dda6ab2fc4c *src/swipl-devel/bench/README.md
 d2455ffbc9b95c2f16c2366cdd16ea87 *src/swipl-devel/bench/compare.pl
@@ -116,7 +116,7 @@ dd2d179a2eefc2f2d202bf81e6b32744 *src/swipl-devel/cmake/CStack.cmake
 6de6cf5597ee0bc7b34269e1160a4adb *src/swipl-devel/cmake/CheckFloatingPointFormat.c
 8949c2b77501d3daca415b6f8eeab345 *src/swipl-devel/cmake/CheckFloatingPointFormat.cmake
 e612228eba5c003734c0a86bf8b16aeb *src/swipl-devel/cmake/CheckInstallation.cmake
-29c6f01c6a7643c14d49708aa5b555e1 *src/swipl-devel/cmake/Config.cmake
+ff8ed1904acc98276ca257cb0c3821c5 *src/swipl-devel/cmake/Config.cmake
 99838930419dd004dbc7c7911e1da986 *src/swipl-devel/cmake/Dependencies.cmake
 af8e60aaa2237baae994e98339881d33 *src/swipl-devel/cmake/DocDepends.cmake
 2f258b8882e613fb148d0f6ecccd1279 *src/swipl-devel/cmake/Documentation.cmake
@@ -246,7 +246,7 @@ b468adb8d14190bafe923d76e22ae267 *src/swipl-devel/library/dde.pl
 9fd72cb95296a07a4f63863bd16225ee *src/swipl-devel/library/dialect/hprolog.pl
 22bde36cffc482b2ae47de3b2443a9e6 *src/swipl-devel/library/dialect/hprolog/format.pl
 c7a23d019d7f8846ba9c80f410316f80 *src/swipl-devel/library/dialect/ifprolog.pl
-0d8350ae960b2468bcf94e009e367b1b *src/swipl-devel/library/dialect/iso/iso_predicates.pl
+1bbaf1d0807d066830e0467ef0b9487d *src/swipl-devel/library/dialect/iso/iso_predicates.pl
 e5bcb645854ec088405528313014c71e *src/swipl-devel/library/dialect/sicstus.pl
 378504845ff69dbc658de125e4a065dc *src/swipl-devel/library/dialect/sicstus/README.TXT
 1efccfc5ec6d6e363eb55b44740a7faf *src/swipl-devel/library/dialect/sicstus/arrays.pl
@@ -275,7 +275,7 @@ dc4b6e467db84903bb1215d1a36b0f7d *src/swipl-devel/library/dialect/sicstus4/terms
 468fb026ea19cbaf3055f250a4794de3 *src/swipl-devel/library/dialect/swi/syspred_options.pl
 0bf86a6df8f6e52a9a3047dedd7c84a5 *src/swipl-devel/library/dialect/xsb.pl
 4bb286cfe227d656b91d7fa46a4861d9 *src/swipl-devel/library/dialect/xsb/README.md
-e8c6e319f6e968fe692de09f07bfde89 *src/swipl-devel/library/dialect/xsb/basics.pl
+dca7c03f3d57494885521336a7e010d2 *src/swipl-devel/library/dialect/xsb/basics.pl
 69833ef893c399f3fed1695ef5dabf35 *src/swipl-devel/library/dialect/xsb/consult.pl
 d5a9b1bd5185ca3346e96a38a0b8bb95 *src/swipl-devel/library/dialect/xsb/curr_sym.pl
 f048aee2b05145d71f43516ba50e4f0c *src/swipl-devel/library/dialect/xsb/error_handler.pl
@@ -321,7 +321,7 @@ c73b5b60367b1d41796bfcf0dffd8d09 *src/swipl-devel/library/lynx/html_style.pl
 8d0b9b18362ff8685733413366635c6e *src/swipl-devel/library/lynx/html_text.pl
 7d27a9663e2730cfdb5d079dca400ad5 *src/swipl-devel/library/lynx/pldoc_style.pl
 ba17841f3270b84781e63754b0e3b0bd *src/swipl-devel/library/macros.pl
-0328066c213743f4a1a9282e3f2b61ff *src/swipl-devel/library/main.pl
+0900879a1cb99998502e948306010ddc *src/swipl-devel/library/main.pl
 1f348430b16147362af1c150921e1d3b *src/swipl-devel/library/make.pl
 6351d5f806bcc952d26d91a370fa5187 *src/swipl-devel/library/modules.pl
 839c1653d7d21abdbf65fa7841aa578f *src/swipl-devel/library/nb_rbtrees.pl
@@ -342,10 +342,10 @@ f4e280e4d919ae2eee3adfd4f505396b *src/swipl-devel/library/pio.pl
 c5a6810a6fa5cba5bdb97b0a991e021e *src/swipl-devel/library/progman.pl
 2e9836f93a4974790e6832d81c53c660 *src/swipl-devel/library/prolog_autoload.pl
 339d96677488ef1df6c053a7c7539efa *src/swipl-devel/library/prolog_breakpoints.pl
-0d78bca02cfae8713f81c706c2f5aa74 *src/swipl-devel/library/prolog_clause.pl
+aec9e9570e86de92a919ea4bd91433d2 *src/swipl-devel/library/prolog_clause.pl
 c0a46d7991bcd938b12e9a51627077fb *src/swipl-devel/library/prolog_code.pl
 c85818a75797804e997e2d8ef2b4acf9 *src/swipl-devel/library/prolog_codewalk.pl
-268684bb94822185bd793289d7c1eb7e *src/swipl-devel/library/prolog_colour.pl
+1ffe22ddef234acde52b402c4e6144be *src/swipl-devel/library/prolog_colour.pl
 b90fb818e75acc329a2471ae3368d5ba *src/swipl-devel/library/prolog_config.pl
 985fe19c4e5df2e2dbf81dbc924bf227 *src/swipl-devel/library/prolog_coverage.pl
 5cd35835cf1163cf53e8eba4c85ca28a *src/swipl-devel/library/prolog_debug.pl
@@ -355,7 +355,7 @@ b90fb818e75acc329a2471ae3368d5ba *src/swipl-devel/library/prolog_config.pl
 abba73e441f537b9e394da80b22c893d *src/swipl-devel/library/prolog_history.pl
 2d2250dd39fb0cd95f9932dd3a6376ed *src/swipl-devel/library/prolog_jiti.pl
 165f3efcb61c1a7525d471b5ebf7c575 *src/swipl-devel/library/prolog_metainference.pl
-e4b4e026ae0c667e0b57b8b692a974c8 *src/swipl-devel/library/prolog_pack.pl
+5a6729db5180ab038a0b2429a57366bb *src/swipl-devel/library/prolog_pack.pl
 5832cccd123235eab57021c769e5426e *src/swipl-devel/library/prolog_profile.pl
 63ba6130fbf125471a54f4020f9f261e *src/swipl-devel/library/prolog_source.pl
 8aec492c54252e3bf85984c5cc6e0737 *src/swipl-devel/library/prolog_stack.pl
@@ -377,7 +377,7 @@ ba40ec9289630d56a2c46c1a3607b4b6 *src/swipl-devel/library/rwlocks.pl
 cd56592097b27c4b7940f3d367a927e2 *src/swipl-devel/library/sandbox.pl
 c18377560a600c454992a005dc301816 *src/swipl-devel/library/settings.pl
 fe5d1e97bbfddac25fe9b96f04227276 *src/swipl-devel/library/shell.pl
-3da0716dad1b97e639209df9d550892d *src/swipl-devel/library/shlib.pl
+ee9788fc7a148c906df6a1adfc954f98 *src/swipl-devel/library/shlib.pl
 94eca1f46573d270881a971a3276c4b5 *src/swipl-devel/library/solution_sequences.pl
 bdf2d6023d0b3a6455e05c562e348a2e *src/swipl-devel/library/sort.pl
 892da1dfa1d227bb117ef05f82cde4ab *src/swipl-devel/library/statistics.pl
@@ -391,7 +391,7 @@ d6eac82d8bdf8f35aeadbde14490922d *src/swipl-devel/library/theme/auto.pl
 03014a7b3011acad50d453c9a7726a17 *src/swipl-devel/library/theme/dark.pl
 9b19aebe10a6e22c9a79c97cda8efcd6 *src/swipl-devel/library/thread.pl
 abe6aefc0647259a5f89258cbc4cf4c8 *src/swipl-devel/library/thread_pool.pl
-22cee91c6fb45263ece57e598d6072fb *src/swipl-devel/library/threadutil.pl
+77fdf670d207c06101da22b53c502edc *src/swipl-devel/library/threadutil.pl
 1055cbc248b68e5ccab3ab895d3aa4d1 *src/swipl-devel/library/tty.pl
 a95c32eb4c3f90d180a167d052eda6a9 *src/swipl-devel/library/ugraphs.pl
 fdd0492c34d10954e222ebd4f58bb3ed *src/swipl-devel/library/unicode/blocks.pl
@@ -610,14 +610,16 @@ b67588ce2a1ff4322fd644e0ca754846 *src/swipl-devel/packages/cpp/SWI-cpp2-atommap.
 782b051d94e8d282e2b6463cf76b6906 *src/swipl-devel/packages/cpp/SWI-cpp2-flags.h
 04e12cd21a47fa98b1ba36bff7da2f29 *src/swipl-devel/packages/cpp/SWI-cpp2-plx.h
 1480ffc9d996981ac86baa587982fd0c *src/swipl-devel/packages/cpp/SWI-cpp2.cpp
-6c7f2f5828a2cef57846008e5752f791 *src/swipl-devel/packages/cpp/SWI-cpp2.h
+6653b4a60a008779d0ffe05af83b030f *src/swipl-devel/packages/cpp/SWI-cpp2.h
+62d99b17662dab65b8bff364d1764096 *src/swipl-devel/packages/cpp/calc.cpp
+cf9d284ad89d82e40ed84cae9d640e8c *src/swipl-devel/packages/cpp/calc.pl
 c965a67459c81adda6ad1857e6f6238d *src/swipl-devel/packages/cpp/config.h.cmake
 238883b5a09a8d219c48039bc825ebf8 *src/swipl-devel/packages/cpp/likes.cpp
 e133bcf6adbeefe4c538ea15d327beec *src/swipl-devel/packages/cpp/likes.pl
 c0b502066e9cb06bfbd0ba833dcbd4ac *src/swipl-devel/packages/cpp/main.cpp
 854f1789ea08b440c20cdde92d7201eb *src/swipl-devel/packages/cpp/pl2cpp.doc
-56de06d30d1e931588f42c2da2155bc1 *src/swipl-devel/packages/cpp/pl2cpp2.doc
-7ffc06c0f8094323352030b138588b67 *src/swipl-devel/packages/cpp/test_cpp.cpp
+8f61f5f5b35a4f84c20b886b1cbc6b57 *src/swipl-devel/packages/cpp/pl2cpp2.doc
+c832a9bc8825f0cb0998cdf3bfa2cef3 *src/swipl-devel/packages/cpp/test_cpp.cpp
 656d81653d63df18f563907f59e8d3c2 *src/swipl-devel/packages/cpp/test_cpp.pl
 e910f16b7d5f1f935acd06d039613c50 *src/swipl-devel/packages/cpp/test_ffi.c
 3919c6598229112c50ddb288c7890e1a *src/swipl-devel/packages/cpp/test_ffi.pl
@@ -711,7 +713,7 @@ cd5f7c1e3bc6efbd1f8be17d35dfb3e0 *src/swipl-devel/packages/http/http_session.pl
 0718ba3df3d371a4e31e586ce3ff78be *src/swipl-devel/packages/http/http_stream.c
 abca3daa2ed5b5b94e5f2aa2fd8591b7 *src/swipl-devel/packages/http/http_stream.pl
 19f4508db148549a77976cb3335741d3 *src/swipl-devel/packages/http/http_unix_daemon.pl
-f2354df2e4d82094b9f8a44b5b768ff7 *src/swipl-devel/packages/http/http_wrapper.pl
+3e0a28ff5238a33bd28e4c8eeffd6b54 *src/swipl-devel/packages/http/http_wrapper.pl
 6ee3147d0c1eac58c0e88064e0e28f66 *src/swipl-devel/packages/http/hub.pl
 88ddb5430d6f4a7820f098cd96a7a8a6 *src/swipl-devel/packages/http/jquery.pl.in
 cf70f7ca819ff198456bebe0fab5e47d *src/swipl-devel/packages/http/js_grammar.pl
@@ -1155,7 +1157,7 @@ c7a0ebef8265fbec26803e6c2b9e59a4 *src/swipl-devel/snap/gui/swipl.png
 fda8ecfa8396127af466b4c08047cfcc *src/swipl-devel/snap/snapcraft.yaml
 0180c0f16983e54c9620739b376ee3a7 *src/swipl-devel/src/ATOMS
 cf562250c4446b84090c4bc42fbdea77 *src/swipl-devel/src/CMakeLists.txt
-93379a27c87ac6056e62726faefcb899 *src/swipl-devel/src/SWI-Prolog.h
+373e88ab2de092b2c547a1372a062e5d *src/swipl-devel/src/SWI-Prolog.h
 0f7bd4f663e6ba134c3d483ba3ac3d1a *src/swipl-devel/src/Tests/COPYING
 a283951cafa277ba912f6cb52b962b71 *src/swipl-devel/src/Tests/GC/test_agc_copyterm.pl
 55c38e6844204ee4096379015ebddf4e *src/swipl-devel/src/Tests/GC/test_cgc_1.pl
@@ -1177,7 +1179,7 @@ cddec7461b8775c2f421b102048a04de *src/swipl-devel/src/Tests/compile/test_autoloa
 d41d8cd98f00b204e9800998ecf8427e *src/swipl-devel/src/Tests/core/data/empty
 3e075fbd57f389c1cb56a09869937308 *src/swipl-devel/src/Tests/core/test_acyclic.pl
 7adbe13bf0f84bf5060444a09ef12fad *src/swipl-devel/src/Tests/core/test_answer.pl
-e8f2948220e1dc5a51c29e50a5c3e1e7 *src/swipl-devel/src/Tests/core/test_arith.pl
+e080074b26a8fc9325b80e7cd999939e *src/swipl-devel/src/Tests/core/test_arith.pl
 40456f715b84c1271e496399008c63c2 *src/swipl-devel/src/Tests/core/test_bags.pl
 b89088fcb6033fd3655b29c3406079f4 *src/swipl-devel/src/Tests/core/test_bips.pl
 1f3dcb4a853511eb8ca50bc1a059628d *src/swipl-devel/src/Tests/core/test_body_index.pl
@@ -1185,7 +1187,7 @@ b89088fcb6033fd3655b29c3406079f4 *src/swipl-devel/src/Tests/core/test_bips.pl
 c7ff7b9d938118818a90d083613fbfcd *src/swipl-devel/src/Tests/core/test_code_type.pl
 0acfec850903e59e829af8d3959031a8 *src/swipl-devel/src/Tests/core/test_continuation.pl
 16d5337dff821fa563584d419e223d9c *src/swipl-devel/src/Tests/core/test_copy_term.pl
-028e1342eeb4f257c8159f34913d9202 *src/swipl-devel/src/Tests/core/test_coroutining.pl
+57b4bf9a743fcf7318cd32b298b996a0 *src/swipl-devel/src/Tests/core/test_coroutining.pl
 7da3978d3c938730e9822da4976576ef *src/swipl-devel/src/Tests/core/test_dcg.pl
 b8a0af53c21f21e04b6b915b568943e4 *src/swipl-devel/src/Tests/core/test_debug.pl
 500c934c1807e2a6540e83a8afbfdcf1 *src/swipl-devel/src/Tests/core/test_det_decl.pl
@@ -1301,7 +1303,7 @@ ac06d178555721a4a0e33a029fa49afe *src/swipl-devel/src/Tests/save/input/integers.
 bda532f63586d5f42b9273a8f43b1023 *src/swipl-devel/src/Tests/save/input/plain.pl
 3e65d3fda36301c2442dc7f2455e3b9f *src/swipl-devel/src/Tests/save/input/unicode.pl
 ece8855dac82f9cc476673f22a86f7c2 *src/swipl-devel/src/Tests/save/test_qlf.pl
-bcdaead20ae24a6c5a597e552465d232 *src/swipl-devel/src/Tests/save/test_saved_states.pl
+3fbb4d47fec3c34eb733964632bf8c5d *src/swipl-devel/src/Tests/save/test_saved_states.pl
 8f27f39b4ec86a39dfab4292fd16448a *src/swipl-devel/src/Tests/signals/test_bomb.pl
 682c86628ac30426b5e52b9f82ba4dfd *src/swipl-devel/src/Tests/tabling/tabling_testlib.pl
 4ebe557efe4d564cf3f756d56eb893fd *src/swipl-devel/src/Tests/tabling/test_abolish_active_table.pl
@@ -1383,7 +1385,7 @@ c4f9ccb3c682eb66fd2632f37d39508d *src/swipl-devel/src/Tests/unprotected/reload/k
 aaf53262aa32af10fe00a4c5a5a96f75 *src/swipl-devel/src/Tests/unprotected/reload/simple.pl
 8cca15e1f73d2a6f22afd101f6b32b7c *src/swipl-devel/src/Tests/unprotected/test_reload.pl
 12ea965fea7265ebaa5f7743f42b7a6b *src/swipl-devel/src/Tests/unprotected/test_sandbox.pl
-03560389f6954cdb579c9dab9ba4f026 *src/swipl-devel/src/Tests/xsb/README.md
+37491dd28e9a524b9a25a64bd7a8505c *src/swipl-devel/src/Tests/xsb/README.md
 c69149901b1ea41a2971e80f2d5e324e *src/swipl-devel/src/Tests/xsb/ai_tests/can_mono.H
 dfb62a4b5aa5c480ccdd35bd219457a0 *src/swipl-devel/src/Tests/xsb/ai_tests/can_mono.P
 b425c6917d7c0ca61bf839bc75be075a *src/swipl-devel/src/Tests/xsb/ai_tests/cs_o.P
@@ -2214,7 +2216,7 @@ be4c5c3cbf724d9b7828343508e8baa1 *src/swipl-devel/src/libbf/bf_gmp_types.h
 0fc69a05d8c02b6b35c292717cfcbcee *src/swipl-devel/src/libbf/bf_test.pl
 813a4471d471d8a50901ef62235d720d *src/swipl-devel/src/libbf/cutils.c
 ac0bccf9f771e1479597958ab4920099 *src/swipl-devel/src/libbf/cutils.h
-788791c4a307ab4cedd42f66289ebefa *src/swipl-devel/src/libbf/libbf.c
+5fa7cede98e44af42e6642f5c7667dd8 *src/swipl-devel/src/libbf/libbf.c
 222e1b16511002558fb06db469b30194 *src/swipl-devel/src/libbf/libbf.h
 ad5f878cc577d90d186fd8c79e2bd75d *src/swipl-devel/src/libbf/mersenne-twister.c
 0a1335748dc0bb3bc06664c573523220 *src/swipl-devel/src/libbf/mersenne-twister.h
@@ -2360,7 +2362,7 @@ c18a38d05f2a2adf557ddf5685f0ef37 *src/swipl-devel/src/os/windows/uxnt.h
 a1cb38821a640277952401b9ea97bea4 *src/swipl-devel/src/pl-alloc.h
 46578eee371b44122821dc4726cdca78 *src/swipl-devel/src/pl-allocpool.c
 83ebcece4aa39f2bd46998286279dd4d *src/swipl-devel/src/pl-allocpool.h
-bbfc3d6f82d884bf74f65d330675af96 *src/swipl-devel/src/pl-arith.c
+b5762bf693ea7a831e2c808adc29c479 *src/swipl-devel/src/pl-arith.c
 1c3a3a3b48584aed9982008334cffc6d *src/swipl-devel/src/pl-arith.h
 2d11566cb7474e05fd4fafa6aaa4d4bb *src/swipl-devel/src/pl-assert.c
 99f3a2e7f3d87366b942fd37dd3fa85a *src/swipl-devel/src/pl-atom.c
@@ -2369,7 +2371,7 @@ bbfc3d6f82d884bf74f65d330675af96 *src/swipl-devel/src/pl-arith.c
 d835e83091366119605df0156ff12959 *src/swipl-devel/src/pl-attvar.h
 0bc331a08665d14b946c1d23a382f86a *src/swipl-devel/src/pl-bag.c
 af76a9ff06ee9f04964ece778e061cb7 *src/swipl-devel/src/pl-bag.h
-32338cea92238f3309f7a20b6136b943 *src/swipl-devel/src/pl-bf.c
+0fd3f617091b580a1b03ca08b790e3ae *src/swipl-devel/src/pl-bf.c
 b3434c71d2f473a655d0277ff1336e5e *src/swipl-devel/src/pl-bf.h
 6d4f65a8f6d9edbca0d30f53db7a6f43 *src/swipl-devel/src/pl-btree.c
 c36af3c4f5e7128d2b6659bdea2d7f59 *src/swipl-devel/src/pl-builtin.h
@@ -2476,7 +2478,7 @@ c605a986804220168017a0315445e250 *src/swipl-devel/src/pl-tabling.c
 8882afed74a2f01a936b2df5c488e9b8 *src/swipl-devel/src/pl-termhash.c
 23edb7327c8966a957b8b78c5b38f6fe *src/swipl-devel/src/pl-termhash.h
 65203fe29423b61d3ee5a6b15ab7b9fb *src/swipl-devel/src/pl-termwalk.c
-d8185d132f5e4d978c2f77d179efe9b2 *src/swipl-devel/src/pl-thread.c
+f6228f5e059dfc5a78ea583f2832733b *src/swipl-devel/src/pl-thread.c
 799983af5557741913e87eb0e054e6b8 *src/swipl-devel/src/pl-thread.h
 5ba726ac06526f6eb50a14fe9dae7060 *src/swipl-devel/src/pl-trace.c
 05e29410460c6e0568a39c8623924877 *src/swipl-devel/src/pl-trace.h
@@ -2504,7 +2506,7 @@ a5446bcdbc35497b5de7f7555e102e45 *src/swipl-devel/src/pl-write.h
 a6cffd26df786748a9e88e8672d959da *src/swipl-devel/src/pl-xterm.c
 c1b5546f21195116b641672a3f664ad3 *src/swipl-devel/src/pl-zip.c
 2fcb429df22ece274352348583ab175b *src/swipl-devel/src/pl-zip.h
-0c72b0b924ee9f722ff2026f4c754a0c *src/swipl-devel/src/swipl-ld.1
+9c9e77b103f49bfc37daac0da28249ec *src/swipl-devel/src/swipl-ld.1
 7584cba6e8a0750c3aa805e369d6df34 *src/swipl-devel/src/swipl-ld.c
 a53be82b9d39475bc65f94a31095cfe7 *src/swipl-devel/src/swipl.1.in
 0a91677a49bf4a58ad89c5adb2e28575 *src/swipl-devel/src/swipl.ico

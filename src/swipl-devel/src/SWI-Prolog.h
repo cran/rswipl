@@ -61,7 +61,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 90312
+#define PLVERSION 90316
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -414,8 +414,10 @@ PL_EXPORT(const atom_t) *_PL_atoms(void); /* base of reserved (meta-)atoms */
 #define PL_Q_PASS_EXCEPTION	0x0010	/* pass to parent environment */
 #define PL_Q_ALLOW_YIELD	0x0020	/* Support I_YIELD */
 #define PL_Q_EXT_STATUS		0x0040	/* Return extended status */
+#define PL_Q_EXCEPT_HALT	0x0080	/* Handles unwind(halt(Status)) */
 #ifdef PL_KERNEL
 #define PL_Q_DETERMINISTIC	0x0100	/* call was deterministic */
+#define PL_Q_EXCEPT_THREAD_EXIT	0x0200	/* Handles unwind(thread_exit(Term)) */
 #endif
 
 					/* PL_Q_EXT_STATUS return codes */
@@ -558,7 +560,7 @@ PL_EXPORT(bool)		PL_get_list(term_t l, term_t h, term_t t) WUNUSED;
 PL_EXPORT(bool)		PL_get_head(term_t l, term_t h) WUNUSED;
 PL_EXPORT(bool)		PL_get_tail(term_t l, term_t t) WUNUSED;
 PL_EXPORT(bool)		PL_get_nil(term_t l) WUNUSED;
-PL_EXPORT(int)		PL_get_term_value(term_t t, term_value_t *v) WUNUSED;
+PL_EXPORT(int)		PL_get_term_value(term_t t, term_value_t *v) WUNUSED; /* deprecated - doesn't handle big ints, rationals, etc */
 PL_EXPORT(char *)	PL_quote(int chr, const char *data);
 #define PL_FOR_DICT_SORTED	0x1
 PL_EXPORT(int)		PL_for_dict(term_t dict,
@@ -883,6 +885,7 @@ PL_EXPORT(bool)		PL_warningX(const char *fmt, ...);
 PL_EXPORT(void)		PL_fatal_error(const char *fmt, ...) WPRINTF12;
 PL_EXPORT(void)		PL_api_error(const char *fmt, ...) WPRINTF12;
 PL_EXPORT(void)		PL_system_error(const char *fmt, ...) WPRINTF12;
+PL_EXPORT(bool)		PL_print_message(atom_t severity, ...) WUNUSED;
 
 		 /*******************************
 		 *      RECORDED DATABASE	*
@@ -1066,6 +1069,7 @@ PL_EXPORT(bool)	PL_wchars_to_term(const pl_wchar_t *chars,
 #define PL_CLEANUP_STATUS_MASK		(0x0ffff)
 #define PL_CLEANUP_NO_RECLAIM_MEMORY	(0x10000)
 #define PL_CLEANUP_NO_CANCEL		(0x20000)
+#define PL_HALT_WITH_EXCEPTION		(0x40000)
 
 #define PL_CLEANUP_CANCELED	0
 #define PL_CLEANUP_SUCCESS	1
@@ -1080,7 +1084,7 @@ PL_EXPORT(bool)		PL_set_resource_db_mem(const unsigned char *data,
 PL_EXPORT(bool)		PL_toplevel(void);
 PL_EXPORT(int)		PL_cleanup(int status);
 PL_EXPORT(void)		PL_cleanup_fork(void);
-PL_EXPORT(int)		PL_halt(int status);
+PL_EXPORT(bool)		PL_halt(int status);
 
 		 /*******************************
 		 *	  DYNAMIC LINKING	*
@@ -1174,7 +1178,12 @@ typedef enum
 #define OPT_TYPE_MASK	0xff
 #define OPT_INF		0x100		/* allow 'inf' */
 
-#define OPT_ALL		0x1		/* flags */
+#define OPT_UNKNOWN_DEFAULT 0x0		/* Default (from flag) */
+#define OPT_UNKNOWN_ERROR   0x1		/* Unknown Prolog flags raise error */
+#define OPT_UNKNOWN_IGNORE  0x2		/* Unknown Prolog flags are ignored */
+#define OPT_UNKNOWN_WARNING 0x3		/* Unknown Prolog flags warn */
+#define OPT_UNKNOWN_MASK    0x3
+#define OPT_ALL OPT_UNKNOWN_ERROR	/* Compatibility; deprecated */
 
 typedef struct
 { atom_t		name;		/* Name of option */

@@ -256,7 +256,8 @@ raiseSignal(PL_local_data_t *ld, int sig)
 
     do
     { alerted = ld->alerted;
-    } while ( !COMPARE_AND_SWAP_INT(&ld->alerted, alerted, alerted|ALERT_SIGNAL) );
+    } while ( !COMPARE_AND_SWAP_INT(&ld->alerted, alerted,
+				    alerted|ALERT_SIGNAL) );
 
     return true;
   }
@@ -268,7 +269,7 @@ raiseSignal(PL_local_data_t *ld, int sig)
 int
 pendingSignal(PL_local_data_t *ld, int sig)
 { if ( IS_VALID_SIGNAL(sig) && ld )
-  { return WSIGMASK_ISSET(ld->signal.pending, sig) ? true : false;
+  { return WSIGMASK_ISSET(ld->signal.pending, sig);
   }
 
   return -1;
@@ -1099,6 +1100,26 @@ put_vm_call(DECL_LD term_t t, term_t frref, Code PC, code op, int has_firstvar,
 
       return true;
     }
+    case B_ARG_CF:		/* call(arg(C,T,F)) */
+    { Word       gt = allocGlobal(2+1+3);
+      LocalFrame fr = (LocalFrame)valTermRef(frref);
+      Word       tm = varFrameP(fr, (int)PC[2]);
+      Word       a  = varFrameP(fr, (int)PC[3]);
+
+      if ( !gt )
+	return false;
+
+      setVar(*a);
+      gt[0] = FUNCTOR_arg3;
+      gt[1] = (word)PC[1];
+      unify_gl(&gt[2], tm, has_firstvar);
+      unify_gl(&gt[3], a, has_firstvar);
+      gt[4] = FUNCTOR_call1;
+      gt[5] = consPtr(gt, STG_GLOBAL|TAG_COMPOUND);
+      *valTermRef(t) = consPtr(&gt[4], STG_GLOBAL|TAG_COMPOUND);
+
+      return true;
+    }
     case B_EQ_VC:    clean = 0x0; ftor = FUNCTOR_strict_equal2;     goto vc_2;
     case B_NEQ_VC:   clean = 0x0; ftor = FUNCTOR_not_strict_equal2; goto vc_2;
     case B_UNIFY_VC: clean = 0x0; ftor = FUNCTOR_equals2;           goto vc_2;
@@ -1420,10 +1441,10 @@ default_action:
 Trail a raw pointer after we know there is insufficient tail space.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-int
+bool
 grow_trail_ptr(DECL_LD Word p)
 { PushPtr(p);
-  int rc = ensureGlobalSpace(0, ALLOW_GC);
+  bool rc = ensureGlobalSpace(0, ALLOW_GC);
   PopPtr(p);
   if ( !rc )
     return false;
@@ -1977,34 +1998,65 @@ findCatcher() can do  GC/shift!  The  return   value  is  a  local-frame
 reference, so we can deal with relocation of the local stack.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define findCatcher(fr, ch, ex) LDFUNC(findCatcher, fr, ch, ex)
+#define findCatcher(fid, fr, ch, ex) LDFUNC(findCatcher, fid, fr, ch, ex)
 static term_t
-findCatcher(DECL_LD LocalFrame fr, Choice ch, term_t ex)
+findCatcher(DECL_LD fid_t fid, LocalFrame fr, Choice ch, term_t ex0)
 { Definition catch3  = PROCEDURE_catch3->definition;
+  term_t ex = PL_copy_term_ref(ex0);
+  term_t ex2 = 0;
+  wakeup_state wstate;
 
-  for(; fr; fr = fr->parent)
-  { int rc;
-    term_t tref, catcher;
-
-    if ( fr->predicate != catch3 )
-      continue;
-    if ( ison(fr, FR_CATCHED) )
-      continue;				/* thrown from recover */
-    if ( (void*)fr > (void*)ch )
-      continue;				/* call-port of catch/3 */
-
-    tref = consTermRef(fr);
-    catcher = consTermRef(argFrameP(fr, 1));
-    DEBUG(MSG_THROW, Sdprintf("Unify ball for frame %ld\n", (long)tref));
-    rc = PL_unify(catcher, ex);
-    fr = (LocalFrame)valTermRef(tref);
-
-    if ( rc )
-    { DEBUG(MSG_THROW, Sdprintf("Unified for frame %ld\n", (long)tref));
-      set(fr, FR_CATCHED);
-      return consTermRef(fr);
-    }
+  if ( !saveWakeup(&wstate, false) )
+  { LD->outofstack = (Stack)&LD->stacks.local;
+    outOfStack(LD->outofstack, STACK_OVERFLOW_THROW);
+    assert(0);
   }
+
+  while(fr)
+  { if ( fr->predicate == catch3 &&
+	 isoff(fr, FR_CATCHED) &&      /* not thrown from recover */
+	 (void*)fr <= (void*)ch )      /* not call-port of catch/3 */
+    { int rc;
+      term_t tref, catcher;
+
+      tref = consTermRef(fr);
+      catcher = consTermRef(argFrameP(fr, 1));
+      DEBUG(MSG_THROW, Sdprintf("Unify ball for frame %ld\n", (long)tref));
+      rc = PL_unify(catcher, ex);
+      if ( rc )
+      { if ( !ex2 )
+	  ex2 = PL_new_term_ref();
+	rc = foreignWakeup(ex2);
+      }
+      fr = (LocalFrame)valTermRef(tref);
+
+      if ( rc )
+      { DEBUG(MSG_THROW, Sdprintf("Unified for frame %ld\n", (long)tref));
+	restoreWakeup(&wstate);
+	PL_put_term(exception_term, ex);
+	set(fr, FR_CATCHED);
+	return consTermRef(fr);
+      } else
+      { if ( ex2 && !isVar(*valTermRef(ex2)) )
+	{ DEBUG(MSG_THROW, Sdprintf("Exception from foreignWakeup()\n"));
+	  PL_raise_exception(ex2);
+	  PL_put_term(ex, exception_term);
+	  PL_put_variable(ex2);
+	  fr = (LocalFrame)valTermRef(tref);
+	} else if ( exception_term )
+	{ DEBUG(MSG_THROW, Sdprintf("Exception from PL_unify()\n"));
+	  PL_put_term(ex, exception_term);
+	}
+      }
+
+      PL_rewind_foreign_frame(wstate.fid ? wstate.fid : fid);
+    }
+
+    fr = fr->parent;
+  }
+
+  restoreWakeup(&wstate);
+  PL_put_term(exception_term, ex);
 
   return 0;
 }
@@ -2074,6 +2126,44 @@ isCaughtInOuterQuery(DECL_LD qid_t qid, term_t ball)
   return 0;
 }
 
+bool
+handles_unwind(DECL_LD qid_t qid, unsigned int flags)
+{ if ( HAS_LD )
+  { if ( !qid )
+      qid = LD->query->qid;
+    if ( qid )
+    { for(QueryFrame qf = QueryFromQid(qid); qf; qf=qf->parent)
+      { if ( ison(qf, flags) )
+	  return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+#define print_unhandled_exception(qid, ball) \
+	LDFUNC(print_unhandled_exception, qid, ball)
+
+static bool
+print_unhandled_exception(DECL_LD qid_t qid, term_t ex)
+{ except_class exclass = classify_exception(ex);
+
+  if ( exclass == EXCEPT_ABORT )
+    return false;
+  if ( exclass == EXCEPT_THREAD_EXIT &&
+       handles_unwind(qid, PL_Q_EXCEPT_THREAD_EXIT) )
+    return false;
+  if ( exclass == EXCEPT_HALT &&
+       (handles_unwind(qid, PL_Q_EXCEPT_HALT) ||
+	GD->cleaning != CLN_NORMAL ) )
+    return false;
+
+  return printMessage(ATOM_error,
+		      PL_FUNCTOR_CHARS, "unhandled_exception", 1,
+			PL_TERM, ex);
+}
+
 
 #define uncachableException(t) LDFUNC(uncachableException, t)
 static word
@@ -2081,7 +2171,7 @@ uncachableException(DECL_LD term_t t)
 { Word p = valTermRef(t);
 
   deRef(p);
-  if ( *p == ATOM_aborted )
+  if ( hasFunctor(*p, FUNCTOR_unwind1) )
     return *p;
 
   return 0;
@@ -2432,7 +2522,7 @@ chp_chars(Choice ch)
 #endif
 
 
-int
+bool
 existingChoice(DECL_LD Choice ch)
 { if ( onStack(local, ch) && onStack(local, ch->frame) &&
        (int)ch->type >= 0 && (int)ch->type <= CHP_DEBUG )
@@ -2445,6 +2535,24 @@ existingChoice(DECL_LD Choice ch)
   }
 
   return false;
+}
+
+
+bool
+existingFrame(DECL_LD LocalFrame fr)
+{ for(;;)
+  { if ( !onStack(local, fr) )
+      return false;
+    if ( !isFrame(fr) )
+      return false;
+
+    if ( fr->parent )
+    { fr = fr->parent;
+    } else
+    { QueryFrame qf = queryOfFrame(fr);
+      return qf->magic == QID_MAGIC;
+    }
+  }
 }
 
 
@@ -2703,7 +2811,7 @@ PL_open_query(Module ctx, int flags, Procedure proc, term_t args)
     flags = PL_Q_NORMAL;
   else if ( flags == false )
     flags = PL_Q_NODEBUG;
-  flags &= 0xff;			/* mask reserved flags */
+  flags &= ~PL_Q_DETERMINISTIC;		/* mask reserved flags */
 
   qf->magic		= QID_MAGIC;
   qf->foreign_frame	= 0;

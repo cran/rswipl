@@ -780,6 +780,7 @@ static PL_blob_t stream_blob =
 #define SH_OUTPUT   0x08		/* We want an output stream */
 #define SH_INPUT    0x10		/* We want an input stream */
 #define SH_NOPAIR   0x20		/* Do not allow for a pair */
+#define SH_TRYLOCK  0x40		/* Fail if we cannot lock */
 
 #define get_stream_handle(a, sp, flags) LDFUNC(get_stream_handle, a, sp, flags)
 static bool
@@ -828,6 +829,12 @@ get_stream_handle(DECL_LD atom_t a, IOSTREAM **sp, int flags)
     { assert( s->magic == SIO_MAGIC || s->magic == SIO_CMAGIC );
       *sp = s;
       return true;
+    } else if ( flags & SH_TRYLOCK )
+    { if ( (s=tryGetStream(s)) )
+      { *sp = s;
+	return true;
+      } else
+	return false;			/* exception */
     } else if ( (s=getStream(s)) )
     { *sp = s;
       return true;
@@ -859,6 +866,12 @@ get_stream_handle(DECL_LD atom_t a, IOSTREAM **sp, int flags)
 	  { *sp = stream;
 	    return true;
 	  }
+	} else if ( flags & SH_TRYLOCK )
+	{ if ( (s=tryGetStream(stream)) )
+	  { *sp = s;
+	    return true;
+	  } else
+	    return false;		/* exception? */
 	} else if ( (*sp = getStream(stream)) )
 	  return true;
 	goto noent;
@@ -921,6 +934,7 @@ PL_get_stream_from_blob(atom_t a, IOSTREAM **s, int flags)
 
   if ( flags&SIO_INPUT   ) myflags |= SH_INPUT;
   if ( flags&SIO_OUTPUT  ) myflags |= SH_OUTPUT;
+  if ( flags&SIO_TRYLOCK ) myflags |= SH_TRYLOCK;
   if ( flags&SIO_NOERROR ) myflags &= ~SH_ERRORS;
   if ( !(flags&(SIO_INPUT|SIO_OUTPUT)) )
     myflags |= SH_NOPAIR;
@@ -3070,18 +3084,34 @@ read_pending_input(DECL_LD term_t input, term_t list, term_t tail, int chars)
       }
       case ENC_UTF16BE:
       case ENC_UTF16LE:
+#if SIZEOF_WCHAR_T == 2
+      case ENC_WCHAR:
+#endif
       { size_t count = 0;
 	const char *us = buf;
 	const char *es = buf+n;
 	size_t done = 0, i;
+	bool be;		/* big endian */
+
+#if SIZEOF_WCHAR_T == 2
+	if ( s->encoding == ENC_WCHAR )
+	{ union
+	  { wchar_t wc;
+	    char c[2];
+	  } t = { .wc = 'A' };
+	  be = t.c[1] == 'A';
+	} else
+#endif
+	{ be = s->encoding == ENC_UTF16BE;
+	}
 
 	while(us+2<=es)
-	{ int c = get_ucs2(us, s->encoding == ENC_UTF16BE);
+	{ int c = get_ucs2(us, be);
 
 	  us += 2;
 	  if ( IS_UTF16_LEAD(c) )
 	  { if ( us+2 <= es )
-	    { int c2 = get_ucs2(us, s->encoding == ENC_UTF16BE);
+	    { int c2 = get_ucs2(us, be);
 
 	      if ( IS_UTF16_TRAIL(c2) )
 	      { count++;
@@ -3107,7 +3137,6 @@ read_pending_input(DECL_LD term_t input, term_t list, term_t tail, int chars)
 	  if ( c == '\r' && skip_cr(s) )
 	    continue;
 
-#if SIZEOF_WCHAR_T > 2
 	  if ( IS_UTF16_LEAD(c) )
 	  { int c2 = get_ucs2(us, s->encoding == ENC_UTF16BE);
 
@@ -3115,7 +3144,6 @@ read_pending_input(DECL_LD term_t input, term_t list, term_t tail, int chars)
 	    us += 2;
 	    c = utf16_decode(c, c2);
 	  }
-#endif
 
 	  if ( s->position )
 	    S__fupdatefilepos_getc(s, c);
@@ -3128,6 +3156,7 @@ read_pending_input(DECL_LD term_t input, term_t list, term_t tail, int chars)
 	re_buffer(s, buf+done, n-done);
 	break;
       }
+#if SIZEOF_WCHAR_T != 2
       case ENC_WCHAR:
       { const pl_wchar_t *ws = (const pl_wchar_t*)buf;
 	size_t count = (size_t)n/sizeof(pl_wchar_t);
@@ -3153,6 +3182,7 @@ read_pending_input(DECL_LD term_t input, term_t list, term_t tail, int chars)
 	re_buffer(s, buf+done, n-done);
 	break;
       }
+#endif
       case ENC_UNKNOWN:
       default:
 	assert(0);

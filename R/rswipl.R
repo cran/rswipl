@@ -147,7 +147,6 @@ swipl <- function(sigalert=NA)
   if(!is.na(sigalert) & .Platform$OS.type == "unix")
     argv <- c(argv, sprintf("--sigalert=%i", sigalert))
   argv <- c(commandArgs(TRUE), argv)
-  warning(argv)
 
   Sys.setenv(SWI_HOME_DIR=options()$rswipl.home)
   if(!.init(commandArgs()[1], argv))

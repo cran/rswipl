@@ -112,7 +112,7 @@ PL_put_frame(term_t t, LocalFrame fr)
 }
 
 
-static int
+static bool
 PL_get_frame(term_t r, LocalFrame *fr)
 { GET_LD
   intptr_t i;
@@ -121,18 +121,16 @@ PL_get_frame(term_t r, LocalFrame *fr)
   if ( PL_get_intptr(r, &i) )
   { LocalFrame f = ((LocalFrame)((Word)lBase + i));
 
-    if ( !(f >= lBase && f < lTop) )
-      fail;
-    *fr = f;
-
-    succeed;
+    if ( existingFrame(f) )
+    { *fr = f;
+      return true;
+    }
   } else if ( PL_get_atom(r, &a) && a == ATOM_none )
   { *fr = NULL;
-
-    succeed;
+    return true;
   }
 
-  fail;
+  return false;
 }
 
 
@@ -149,7 +147,7 @@ PL_put_choice(term_t t, Choice ch)
 }
 
 
-static int
+static bool
 PL_unify_choice(term_t t, Choice ch)
 { GET_LD
 
@@ -163,7 +161,7 @@ PL_unify_choice(term_t t, Choice ch)
 
 
 #define valid_choice(ch) LDFUNC(valid_choice, ch)
-static inline int
+static inline bool
 valid_choice(DECL_LD Choice ch)
 { if ( (int)ch->type >= 0 && (int)ch->type <= CHP_DEBUG &&
        onStack(local, ch->frame) )
@@ -173,12 +171,12 @@ valid_choice(DECL_LD Choice ch)
 }
 
 
-static int
+static bool
 PL_get_choice(term_t r, Choice *chp)
 { GET_LD
-  long i;
+  intptr_t i;
 
-  if ( PL_get_long(r, &i) )
+  if ( PL_get_intptr(r, &i) )
   { Choice ch = ((Choice)((Word)lBase + i));
 
     if ( !(ch >= (Choice)lBase && ch < (Choice)lTop) ||
@@ -186,7 +184,7 @@ PL_get_choice(term_t r, Choice *chp)
       return PL_error(NULL, 0, NULL, ERR_EXISTENCE, ATOM_choice, r);
     *chp = ch;
 
-    succeed;
+    return true;
   } else
     return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_choice, r);
 }
@@ -200,7 +198,7 @@ tracer. `No-debug' code has HIDE_CHILDS. Calls to  it must be visible if
 the parent is a debug frame.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-int
+bool
 isDebugFrame(LocalFrame FR)
 { if ( isoff(FR->predicate, TRACE_ME) )
     return false;			/* hidden predicate */
@@ -224,7 +222,7 @@ isDebugFrame(LocalFrame FR)
   } else
   { QueryFrame qf = queryOfFrame(FR);
 
-    return (qf->flags & PL_Q_NODEBUG) ? false : true;
+    return !(qf->flags & PL_Q_NODEBUG);
   }
 }
 
@@ -404,10 +402,7 @@ tracePort(DECL_LD LocalFrame frame, Choice bfr, int port, Code PC)
     return ACTION_CONTINUE;
 
   if ( port == EXCEPTION_PORT )		/* do not trace abort */
-  { Word p = valTermRef(LD->exception.pending);
-
-    deRef(p);
-    if ( *p == ATOM_aborted )
+  { if ( classify_exception(LD->exception.pending) >= EXCEPT_ABORT )
       return ACTION_CONTINUE;
   }
 
@@ -469,8 +464,13 @@ We are in searching mode; should we actually give this port?
     }
   }
 
-  if ( !saveWakeup(&wstate, false) )
-    return action;
+  { bool rc;
+    SAVE_PTRS();
+    rc = saveWakeup(&wstate, false);
+    RESTORE_PTRS();
+    if ( !rc )
+      return action;
+  }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Do the Prolog trace interception.
@@ -1017,16 +1017,11 @@ writeFrameGoal(IOSTREAM *out, LocalFrame frame, Code PC, unsigned int flags)
     term_t tmp     = PL_new_term_ref();
     char msg[3];
     const char *pp = portPrompt(flags&PORT_MASK);
-    struct foreign_context ctx;
 
     frame = (LocalFrame)valTermRef(fref);
     put_frame_goal(goal, frame);
     debugstatus.debugging = DBG_OFF;
-    PL_put_atom(tmp, ATOM_debugger_write_options);
-    ctx.context = 0;
-    ctx.control = FRG_FIRST_CALL;
-    ctx.engine  = LD;
-    if ( !pl_prolog_flag5(tmp, options, 0, 0, 0, &ctx) )
+    if ( !PL_get_prolog_flag(ATOM_debugger_write_options, options) )
       PL_put_nil(options);
     PL_unify_stream_or_alias(tmp, out);
 
@@ -1785,14 +1780,15 @@ interruptHandler(int sig)
     return;
   }
 
-#if HAVE_PTHREAD_EXIT
   if ( LD->thread.exit_requested )
-  { term_t rval = PL_new_term_ref();
-    PL_put_atom(rval, ATOM_true);
-    pl_thread_exit(rval);
-    assert(0);				/* should not return */
+  { term_t ex;
+
+    if ( (ex=PL_new_term_ref()) &&
+	 PL_unify_term(ex, PL_FUNCTOR, FUNCTOR_unwind1,
+			     PL_FUNCTOR, FUNCTOR_thread_exit1,
+			       PL_ATOM, ATOM_true) )
+      return;
   }
-#endif
 #endif
 
 #if __unix__				/* actually, asynchronous signal handling */

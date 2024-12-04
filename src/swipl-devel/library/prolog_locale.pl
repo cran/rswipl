@@ -1,12 +1,9 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
+    E-mail:        jan@swi-prolog.org
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2024, University of Amsterdam
-                              VU University Amsterdam
-			      CWI, Amsterdam
-			      SWI-Prolog Solutions b.v.
+    Copyright (c)  2024, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -35,25 +32,30 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef _PL_PROLOGFLAG_H
-#define _PL_PROLOGFLAG_H
-#include "../pl-incl.h"
+:- module(prolog_locale,
+          [ setup_prolog_integer_grouping/0
+          ]).
 
-		 /*******************************
-		 *    FUNCTION DECLARATIONS	*
-		 *******************************/
+/** <module> Tweak the locale for Prolog development
+*/
 
-#define LDFUNC_DECLARATIONS
-void		setPrologFlag(const char *name, unsigned int flags, ...);
-int		set_prolog_flag(term_t key, term_t value, unsigned short flags);
-bool		PL_get_prolog_flag(atom_t name, term_t value);
-int		setDoubleQuotes(atom_t a, unsigned int *flagp);
-int		setBackQuotes(atom_t a, unsigned int *flagp);
-int		setRationalSyntax(atom_t a, unsigned int *flagp);
-void		initPrologFlags(void);
-void		setABIVersionPrologFlag(void);
-void		cleanupPrologFlags(void);
-int		checkPrologFlagsAccess(void);
-#undef LDFUNC_DECLARATIONS
+%!  setup_prolog_integer_grouping is det.
+%
+%   This sets up the Prolog toplevel and  debugger to write numbers with
+%   grouping. I.e., after running   setup_prolog_integer_grouping/0,  we
+%   get:
+%
+%   ```
+%   ?- A is 1<<100.
+%   A = 1_267_650_600_228_229_401_496_703_205_376.
+%   ```
 
-#endif /*_PL_PROLOGFLAG_H*/
+setup_prolog_integer_grouping :-
+    add_write_option(answer_write_options, integer_format('~:D')),
+    add_write_option(debugger_write_options, integer_format('~:D')),
+    add_write_option(print_write_options, integer_format('~:D')).
+
+add_write_option(Set, Option),
+    current_prolog_flag(Set, List) =>
+    set_prolog_flag(Set, [Option|List]).
+

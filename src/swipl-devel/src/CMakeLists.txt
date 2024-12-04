@@ -127,7 +127,10 @@ set(SWIPL_DATA_boot init.pl syspred.pl toplevel.pl license.pl bags.pl apply.pl
     autoload.pl qlf.pl topvars.pl messages.pl load.pl dicts.pl gc.pl
     engines.pl iri.pl tabling.pl)
 if(WIN32)
-  set(SWIPL_DATA_boot ${SWIPL_DATA_boot} menu.pl)
+  list(APPEND SWIPL_DATA_boot menu.pl)
+endif()
+if(O_PLMT)
+  list(APPEND SWIPL_DATA_boot threads.pl)
 endif()
 prepend(SWIPL_BOOT_FILES ${SWIPL_BUILD_HOME}/boot/ ${SWIPL_DATA_boot})
 
@@ -157,7 +160,7 @@ set(SWIPL_DATA_library explain.pl sort.pl prolog_config.pl
     prolog_wrap.pl prolog_trace.pl prolog_code.pl intercept.pl
     prolog_deps.pl tables.pl hashtable.pl strings.pl increval.pl
     prolog_debug.pl prolog_versions.pl prolog_evaluable.pl macros.pl
-    prolog_coverage.pl)
+    prolog_coverage.pl prolog_locale.pl exceptions.pl)
 if(INSTALL_DOCUMENTATION)
   set(SWIPL_DATA_library ${SWIPL_DATA_library} help.pl)
 endif()
@@ -313,7 +316,12 @@ add_custom_command(
 				   -b ${SWIPL_BUILD_HOME}/boot/init.pl
     DEPENDS ${DEP_SWIPL_FOR_BOOT} ${SWIPL_BOOT_FILES}
 )
-add_custom_target(bootfile DEPENDS ${SWIPL_BOOT_FILE})
+add_custom_command(
+    OUTPUT  ${SWIPL_ABI_FILE}
+    COMMAND ${PROG_SWIPL_FOR_BOOT} --abi-version > "${SWIPL_ABI_FILE}"
+    DEPENDS ${DEP_SWIPL_FOR_BOOT}
+)
+add_custom_target(bootfile DEPENDS ${SWIPL_BOOT_FILE} ${SWIPL_ABI_FILE})
 
 add_custom_target(library_index)
 
@@ -653,7 +661,7 @@ install(TARGETS swipl ${SWIPL_INSTALLED_LIBRARIES} EXPORT SWIPL_EXPORT
         LIBRARY DESTINATION ${LIBSWIPL_DIR}
         ARCHIVE DESTINATION ${LIBSWIPL_DIR}
 )
-install(FILES ${SWIPL_BOOT_FILE}
+install(FILES ${SWIPL_BOOT_FILE} ${SWIPL_ABI_FILE}
 	DESTINATION ${SWIPL_INSTALL_PREFIX}
 )
 if(MINGW)

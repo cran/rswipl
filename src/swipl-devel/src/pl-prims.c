@@ -4391,7 +4391,7 @@ PRED_IMPL("atom_number", 2, atom_number, 0)
  * buffer is short.  Thanks to Samer Abdallah for sorting this out.
  *
  * (*) On failure, wcsxfrm() normally returns the required size.
- * The official docs are not completely explicit abut this though
+ * The official docs are not completely explicit about this though
  * and it appears MacOS 15 (beta) does not, requiring another
  * iteration.  We now allow for 5 iterations ...
  */
@@ -5226,11 +5226,12 @@ pl_true()		/* just to define it */
 { succeed;
 }
 
-foreign_t
-pl_halt(term_t code)
-{ GET_LD
+static
+PRED_IMPL("halt", 1, halt, 0)
+{ PRED_LD
   int status;
   atom_t a;
+  term_t code = A1;
 
   if ( PL_get_atom(code, &a) )
   { if ( a == ATOM_abort )
@@ -5245,8 +5246,7 @@ pl_halt(term_t code)
   { return false;
   }
 
-  PL_halt(status);
-  fail;					/* exception? */
+  return PL_halt(status|PL_HALT_WITH_EXCEPTION);
 }
 
 #if defined(O_LIMIT_DEPTH) || defined(O_INFERENCE_LIMIT)
@@ -6327,4 +6327,5 @@ BeginPredDefs(prims)
   PRED_DEF("$seek_list", 4, seek_list, 0)
   PRED_DEF("throw", 1, throw, PL_FA_ISO)
   PRED_DEF("$urgent_exception", 3, urgent_exception, 0)
+  PRED_DEF("halt", 1, halt, 0)
 EndPredDefs

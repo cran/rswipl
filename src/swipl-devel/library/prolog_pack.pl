@@ -1453,19 +1453,25 @@ is_built(PackDir, _Options) :-
 %   packages that rely on them as they may need them during the build.
 
 order_builds(ToBuild, Ordered) :-
-    findall(Pack-Dep, dep_edge(ToBuild, Pack, Dep), Edges),
+    findall(Pack-Dependent, dep_edge(ToBuild, Pack, Dependent), Edges),
     maplist(get_dict(pack), ToBuild, Packs),
     vertices_edges_to_ugraph(Packs, Edges, Graph),
     ugraph_layers(Graph, Layers),
     append(Layers, PackNames),
     maplist(pack_info_from_name(ToBuild), PackNames, Ordered).
 
-dep_edge(Infos, Pack, Dep) :-
+%!  dep_edge(+Infos, -Pack, -Dependent) is nondet.
+%
+%   True when Pack needs to be installed   as a dependency of Dependent.
+%   Both Pack and Dependent are pack _names_. I.e., this implies that we
+%   must build Pack _before_ Dependent.
+
+dep_edge(Infos, Pack, Dependent) :-
     member(Info, Infos),
     Pack = Info.pack,
-    member(Dep, Info.get(dependency_for)),
+    member(Dependent, Info.get(dependency_for)),
     (   member(DepInfo, Infos),
-        DepInfo.pack == Dep
+        DepInfo.pack == Dependent
     ->  true
     ).
 
@@ -1486,7 +1492,7 @@ exec_plan_rebuild_step(Options, Info) :-
 
 %!  attach_from_info(+Options, +Info) is det.
 %
-%   Make the package visible.  Similar to pack_make_available/3.
+%   Make the package visible.
 
 attach_from_info(_Options, Info) :-
     Info.get(keep) == true,
@@ -2158,8 +2164,9 @@ download_url(URL) :-
 url_scheme(URL, Scheme) :-
     atom(URL),
     uri_components(URL, Components),
-    uri_data(scheme, Components, Scheme),
-    atom(Scheme).
+    uri_data(scheme, Components, Scheme0),
+    atom(Scheme0),
+    Scheme = Scheme0.
 
 download_scheme(http).
 download_scheme(https).
@@ -2195,7 +2202,7 @@ hsts(URL, URL, _Options).
 pack_post_install(Pack, PackDir, Options) :-
     post_install_foreign(Pack, PackDir, Options),
     post_install_autoload(PackDir, Options),
-    attach_packs(PackDir, [duplicate(warning)]).
+    pack_attach(PackDir, [duplicate(warning)]).
 
 %!  pack_rebuild is det.
 %!  pack_rebuild(+Pack) is det.
@@ -3037,7 +3044,7 @@ available_download_versions(URL, Versions, _Options) :-
     findall(Version-VersionURL,
             github_version(User, Repo, Version, VersionURL),
             Versions).
-available_download_versions(URL, Versions, Options) :-
+available_download_versions(URL0, Versions, Options) :-
     wildcard_pattern(URL0),
     !,
     hsts(URL0, URL, Options),

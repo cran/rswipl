@@ -73,6 +73,7 @@
 #include "pl-prims.h"
 #include "pl-supervisor.h"
 #include "pl-coverage.h"
+#include "os/pl-prologflag.h"
 #include <stdio.h>
 #include <math.h>
 #include <errno.h>
@@ -568,6 +569,7 @@ static void	print_trace(int depth);
 static void timespec_diff(struct timespec *diff,
 			  const struct timespec *a, const struct timespec *b);
 static int  timespec_sign(const struct timespec *t);
+static void timespec_add_double(struct timespec *ts, double tmo);
 
 #undef LDFUNC_DECLARATIONS
 
@@ -1105,6 +1107,25 @@ dummy_handler(int sig)
 }
 #endif
 
+static double
+halt_grace_time(void)
+{ GET_LD
+  fid_t fid;
+  term_t tmp;
+  double t;
+
+  if ( !( (fid=PL_open_foreign_frame()) &&
+	  (tmp=PL_new_term_ref()) &&
+	  PL_get_prolog_flag(ATOM_halt_grace_time, tmp) &&
+	  PL_get_float(tmp, &t) ) )
+    t = 1.0;
+
+  if ( fid )
+    PL_discard_foreign_frame(fid);
+
+  return t;
+}
+
 int
 exitPrologThreads(void)
 { int rc = true;
@@ -1153,9 +1174,10 @@ exitPrologThreads(void)
 	      }
 	    }
 
-	    if ( PL_thread_raise(i, SIG_PLABORT) )
+	    if ( PL_thread_raise(i, SIG_PLHALT) )
 	    { DEBUG(MSG_CLEANUP_THREAD,
-		    Sdprintf("Sent abort to %d%d\n", i));
+		    Sdprintf("Sent unwind(halt(%d)) to %d\n",
+			     GD->halt_status, i));
 	      canceled++;
 	    }
 	  }
@@ -1169,13 +1191,17 @@ exitPrologThreads(void)
   }
 
   if ( canceled > 0 )		    /* see (*) above */
-  {
+  { double grace_time = halt_grace_time();
+
 #ifdef USE_TIMER_WAIT
-    DEBUG(MSG_CLEANUP_THREAD, Sdprintf("Waiting for %d threads (alarm timer)\n", canceled));
+    DEBUG(MSG_CLEANUP_THREAD,
+	  Sdprintf("Waiting for %d threads (alarm timer)\n", canceled));
     struct itimerval timeout = {0};
     struct sigaction act = {0};
+    double ip, fp=modf(grace_time,&ip);
 
-    timeout.it_value.tv_sec = 1;
+    timeout.it_value.tv_sec = (time_t)ip;
+    timeout.it_value.tv_usec = (long)(fp*1000000.0);
     act.sa_handler = dummy_handler;
 
     if ( sigaction(SIGALRM, &act, NULL) != 0 ||
@@ -1197,8 +1223,7 @@ exitPrologThreads(void)
     struct timespec deadline;
 
     get_current_timespec(&deadline);
-    deadline.tv_nsec += 1000000000; /* 1 sec */
-    carry_timespec_nanos(&deadline);
+    timespec_add_double(&deadline, grace_time);
 
     while(canceled > 0)
     { if ( sem_timedwait(sem_canceled_ptr, &deadline) == 0 )
@@ -2031,15 +2056,24 @@ set_thread_completion(PL_thread_info_t *info, int rc, term_t ex)
   { info->status = PL_THREAD_SUCCEEDED;
   } else
   { if ( ex )
-    { if ( info->detached )
-	info->return_value = 0;
-      else
-	info->return_value = PL_record(ex);
+    { GET_LD
+      if ( info->detached )
+      { info->return_value = 0;
+      } else if ( classify_exception(ex) == EXCEPT_THREAD_EXIT &&
+		  PL_get_arg(1, ex, ex) &&	/* get rid of unwind() */
+		  PL_get_arg(1, ex, ex) )	/* get rid of thread_exit() */
+      { info->return_value = PL_record(ex);
+	info->status = PL_THREAD_EXITED;
+	goto out;
+      } else
+      { info->return_value = PL_record(ex);
+      }
       info->status = PL_THREAD_EXCEPTION;
     } else
     { info->status = PL_THREAD_FAILED;
     }
   }
+out:
   PL_UNLOCK(L_THREAD);
 }
 
@@ -2086,7 +2120,9 @@ start_thread(void *closure)
       { rval = raiseStackOverflow(GLOBAL_OVERFLOW);
 	ex = exception_term;
       } else
-      { rval  = callProlog(info->module, goal, PL_Q_CATCH_EXCEPTION, &ex);
+      { rval  = callProlog(info->module, goal,
+			   PL_Q_CATCH_EXCEPTION|PL_Q_EXCEPT_THREAD_EXIT,
+			   &ex);
       }
     }
 
@@ -2095,7 +2131,8 @@ start_thread(void *closure)
       { int print = true;
 
 	if ( LD->thread.exit_requested )
-	{ if ( classify_exception(ex) == EXCEPT_ABORT )
+	{ except_class exclass = classify_exception(ex);
+	  if ( exclass >= EXCEPT_ABORT )
 	    print = false;
 	}
 
@@ -2162,6 +2199,7 @@ copy_local_data(PL_local_data_t *ldnew, PL_local_data_t *ldold,
   ldnew->prolog_flag.mask	  = ldold->prolog_flag.mask;
   ldnew->prolog_flag.occurs_check = ldold->prolog_flag.occurs_check;
   ldnew->prolog_flag.access_level = ldold->prolog_flag.access_level;
+  ldnew->prolog_flag.unknown_option = ldold->prolog_flag.unknown_option;
 #ifdef O_BIGNUM
   ldnew->arith.rat                = ldold->arith.rat;
 #endif
@@ -2796,29 +2834,6 @@ PRED_IMPL("thread_join", 2, thread_join, 0)
 }
 
 
-#if HAVE_PTHREAD_EXIT
-foreign_t
-pl_thread_exit(term_t retcode)
-{ GET_LD
-  PL_thread_info_t *info = LD->thread.info;
-
-  PL_LOCK(L_THREAD);
-  info->status = PL_THREAD_EXITED;
-  info->return_value = PL_record(retcode);
-  PL_UNLOCK(L_THREAD);
-
-  DEBUG(MSG_THREAD, Sdprintf("thread_exit(%d)\n", info->pl_tid));
-
-  for(QueryFrame qf=LD->query; qf; qf = qf->parent)
-    freeHeap(qf->qid, sizeof(*qf->qid));
-
-  pthread_exit(NULL);
-  assert(0);
-  fail;
-}
-#endif
-
-
 static
 PRED_IMPL("thread_detach", 1, thread_detach, 0)
 { PL_thread_info_t *info;
@@ -2856,6 +2871,27 @@ PRED_IMPL("thread_detach", 1, thread_detach, 0)
     free_thread_info(release);
 
   succeed;
+}
+
+static
+PRED_IMPL("thread_exit", 1, thread_exit, 0)
+{ PRED_LD
+
+  if ( handles_unwind(NULL, PL_Q_EXCEPT_THREAD_EXIT) )
+  { term_t ex;
+
+    return ( (ex=PL_new_term_ref()) &&
+	     PL_unify_term(ex, PL_FUNCTOR, FUNCTOR_unwind1,
+				 PL_FUNCTOR, FUNCTOR_thread_exit1,
+				   PL_TERM, A1) &&
+	     PL_raise_exception(ex) );
+  } else
+  { term_t tid;
+
+    return ( (tid=PL_new_term_ref()) &&
+	     unify_thread_id(tid, LD->thread.info) &&
+	     PL_permission_error("exit", "thread", tid) );
+  }
 }
 
 #endif /*O_PLMT*/
@@ -4917,6 +4953,16 @@ static const PL_option_t timeout_options[] =
 	   false (leading to failure).
 */
 
+static void
+timespec_add_double(struct timespec *ts, double tmo)
+{ double ip, fp=modf(tmo,&ip);
+
+  ts->tv_sec  += (time_t)ip;
+  ts->tv_nsec += (long)(fp*1000000000.0);
+  carry_timespec_nanos(ts);
+}
+
+
 #define process_deadline_options(options, ts, pts, rs, prs) \
 	LDFUNC(process_deadline_options, options, ts, pts, rs, prs)
 
@@ -4967,11 +5013,8 @@ process_deadline_options(DECL_LD term_t options,
   // was set to now + timeout.
   if ( tmo != DBL_MAX )
   { if ( tmo > 0.0 )
-    { double ip, fp=modf(tmo,&ip);
-
-      timeout.tv_sec  = now.tv_sec + (time_t)ip;
-      timeout.tv_nsec = now.tv_nsec + (long)(fp*1000000000.0);
-      carry_timespec_nanos(&timeout);
+    { timeout = now;
+      timespec_add_double(&timeout, tmo);
       if ( dlop==NULL || timespec_cmp(&timeout,&deadline) < 0 )
 	dlop = &timeout;
     } else if ( tmo == 0.0 )
@@ -8421,6 +8464,7 @@ BeginPredDefs(thread)
   PRED_DEF("thread_alias",           1, thread_alias,	       0)
   PRED_DEF("thread_detach",	     1,	thread_detach,	       PL_FA_ISO)
   PRED_DEF("thread_join",	     2,	thread_join,	       0)
+  PRED_DEF("thread_exit",            1, thread_exit,           0)
   PRED_DEF("thread_statistics",	     3,	thread_statistics,     0)
   PRED_DEF("is_thread",		     1,	is_thread,	       0)
   PRED_DEF("$thread_sigwait",	     1, thread_sigwait,	       0)

@@ -231,9 +231,7 @@ END_VMH
 	  __rc = ensureStackSpace(g, t);		\
 	  LOAD_REGISTERS(QID);				\
 	  if ( __rc != true )				\
-	  { raiseStackOverflow(__rc);			\
 	    THROW_EXCEPTION;				\
-	  }						\
 	} while(0)
 
 /* Can be used for debugging to always force GC at a place */
@@ -5054,13 +5052,17 @@ VMH(b_throw, 0, (), ())
 	});
 
   if ( has_emergency_space(&LD->stacks.local, sizeof(struct localFrame)) )
-    fid = open_foreign_frame();
-  else
-    fid = 0;
+  { fid = open_foreign_frame();
+  } else		/* fatal */
+  { fid = 0;		/* Silence Clang; outOfStack() does not return */
+    LD->outofstack = (Stack)&LD->stacks.local;
+    outOfStack(LD->outofstack, STACK_OVERFLOW_THROW);
+    assert(0);
+  }
 
 again:
   SAVE_REGISTERS(QID);
-  catchfr_ref = findCatcher(FR, LD->choicepoints, exception_term);
+  catchfr_ref = findCatcher(fid, FR, LD->choicepoints, exception_term);
   LOAD_REGISTERS(QID);
   DEBUG(MSG_THROW,
 	{ if ( catchfr_ref )
@@ -5080,7 +5082,7 @@ again:
 	});
 
   if ( debugstatus.suspendTrace == false && !rewritten++ &&
-       !uncachableException(exception_term) && /* e.g., $aborted */
+       !uncachableException(exception_term) &&		/* unwind(_) */
        !resourceException(exception_term) )
   { int rc;
 
@@ -5088,7 +5090,7 @@ again:
     rc = exception_hook(QID, consTermRef(FR), catchfr_ref);
     LOAD_REGISTERS(QID);
 
-    if ( rc && fid )
+    if ( rc )
     { DEBUG(MSG_THROW,
 	    Sdprintf("Exception was rewritten to: ");
 	    PL_write_term(Serror, exception_term, 1200, 0);
@@ -5100,8 +5102,7 @@ again:
       goto again;
     }
   }
-  if ( fid )
-    PL_close_foreign_frame(fid);
+  PL_close_foreign_frame(fid);
 
 #if O_DEBUGGER
   start_tracer = false;
@@ -5135,12 +5136,8 @@ again:
 	  }
 	  PL_put_term(exception_printed, exception_term);
 	}
-      } else if ( classify_exception(exception_term) != EXCEPT_ABORT )
-      { int rc = printMessage(ATOM_error,
-			      PL_FUNCTOR_CHARS, "unhandled_exception", 1,
-				PL_TERM, exception_term);
-	(void)rc;
-	PL_put_term(exception_printed, exception_term);
+      } else if ( print_unhandled_exception(QID, exception_term) )
+      {	PL_put_term(exception_printed, exception_term);
       }
       LOAD_REGISTERS(QID);
     }

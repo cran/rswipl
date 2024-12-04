@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2002-2020, University of Amsterdam
+    Copyright (c)  2002-2024, University of Amsterdam
                               VU University Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -48,7 +49,7 @@
             http_status_reply/5,        % +Status, +Out, +HdrExtra,
                                         % +Context, -Code
 
-            http_timestamp/2,           % +Time, -HTTP string
+            http_timestamp/2,           % ?Time, ?HTTPstring
 
             http_post_data/3,           % +Stream, +Data, +HdrExtra
 
@@ -93,6 +94,7 @@
 	    [ integer/3, atom/3, whites/2, blanks_to_nl/2, string/3,
 	      number/3, blanks/2, float/3, nonblanks/3, eos/2
 	    ]).
+:- autoload(library(date), [parse_time/3]).
 :- use_module(library(settings),[setting/4,setting/2]).
 
 :- multifile
@@ -1841,6 +1843,8 @@ send_request_header(Out, String) :-
 %     * content_type
 %     Parsed into media(Type/SubType, Attributes), where Attributes
 %     is a list of Name=Value pairs.
+%     * expires
+%     Parsed into a time stamp using http_timestamp/2.
 %
 %   As some fields are already parsed in the `Request`, this predicate
 %   is a no-op when called on an already parsed field.
@@ -1852,6 +1856,8 @@ http_parse_header_value(Field, Value, Prolog) :-
     known_field(Field, _, Type),
     (   already_parsed(Type, Value)
     ->  Prolog = Value
+    ;   parse_header_value_atom(Field, Value, Prolog)
+    ->  true
     ;   to_codes(Value, Codes),
         parse_header_value(Field, Codes, Prolog)
     ).
@@ -1868,6 +1874,7 @@ already_parsed(Term, V)       :- subsumes_term(Term, V).
 
 known_field(content_length,      true,  integer).
 known_field(status,              true,  integer).
+known_field(expires,             false, number).
 known_field(cookie,              true,  list(_=_)).
 known_field(set_cookie,          true,  list(set_cookie(_Name,_Value,_Options))).
 known_field(host,                true,  _Host:_Port).
@@ -1902,6 +1909,16 @@ field_to_prolog(Field, Codes, Prolog) :-
 field_to_prolog(_, Codes, Atom) :-
     atom_codes(Atom, Codes).
 
+%!  parse_header_value_atom(+Field, +ValueAtom, -Value) is semidet.
+%
+%   As parse_header_value/3, but avoid translation to codes.
+
+parse_header_value_atom(content_length, Atom, ContentLength) :-
+    atomic(Atom),
+    atom_number(Atom, ContentLength).
+parse_header_value_atom(expires, Atom, Stamp) :-
+    http_timestamp(Stamp, Atom).
+
 %!  parse_header_value(+Field, +ValueCodes, -Value) is semidet.
 %
 %   Parse the value text of an HTTP   field into a meaningful Prolog
@@ -1909,6 +1926,8 @@ field_to_prolog(_, Codes, Atom) :-
 
 parse_header_value(content_length, ValueChars, ContentLength) :-
     number_codes(ContentLength, ValueChars).
+parse_header_value(expires, ValueCodes, Stamp) :-
+    http_timestamp(Stamp, ValueCodes).
 parse_header_value(status, ValueChars, Code) :-
     (   phrase(" ", L, _),
         append(Pre, L, ValueChars)
@@ -2384,11 +2403,21 @@ rfc_date(Time, String, Tail) :-
                 '%a, %d %b %Y %T GMT',
                 Date, posix).
 
-%!  http_timestamp(+Time:timestamp, -Text:atom) is det.
+%!  http_timestamp(?Time:timestamp, ?Text:atom) is det.
 %
-%   Generate a description of a Time in HTTP format (RFC1123)
+%   Convert between a SWI-Prolog time stamp and  a string in HTTP format
+%   (RFC1123). When parsing, it  accepts   RFC1123,  RFC1036 and ASCTIME
+%   formats. See parse_time/3.
+%
+%   @error syntax_error(http_timestamp(Text)) if the string cannot
+%   be parsed.
 
-http_timestamp(Time, Atom) :-
+http_timestamp(Time, Text), nonvar(Text) =>
+    (   parse_time(Text, _Format, Time0)
+    ->  Time =:= Time0
+    ;   syntax_error(http_timestamp(Text))
+    ).
+http_timestamp(Time, Atom), number(Time) =>
     stamp_date_time(Time, Date, 'UTC'),
     format_time(atom(Atom),
                 '%a, %d %b %Y %T GMT',

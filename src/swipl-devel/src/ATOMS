@@ -15,7 +15,6 @@ A ISO_8859_1		"ISO-8859-1"
 A dollar		"$"
 A abi			"abi"
 A abort			"abort"
-A aborted		"$aborted"
 A abs			"abs"
 A abstract		"abstract"
 A access		"access"
@@ -339,6 +338,7 @@ A flag			"flag"
 A flag_value		"flag_value"
 A float			"float"
 A float_format		"float_format"
+A float_format_specifier "~h"
 A float_fractional_part	"float_fractional_part"
 A float_integer_part	"float_integer_part"
 A float_overflow	"float_overflow"
@@ -395,6 +395,7 @@ A guard			"guard"
 A guard_in_caller	"guard_in_caller"
 A gvar			"gvar"
 A halt			"halt"
+A halt_grace_time	"halt_grace_time"
 A has_alternatives	"has_alternatives"
 A hash			"hash"
 A hashed		"hashed"
@@ -403,6 +404,7 @@ A heap_gc		"heap_gc"
 A heapused		"heapused"
 A heartbeat		"heartbeat"
 A help			"help"
+A hex			"hex"
 A hidden		"hidden"
 A hide_childs		"hide_childs"
 A history_depth		"history_depth"
@@ -440,9 +442,11 @@ A inserted_char		"inserted_char"
 A instantiation_error	"instantiation_error"
 A int			"int"
 A int64_t		"int64_t"
+A int_format_specifier  "~d"
 A int_overflow		"int_overflow"
 A integer		"integer"
 A integer_expression	"integer_expression"
+A integer_format	"integer_format"
 A interrupt		"interrupt"
 A invalid		"invalid"
 A io_error		"io_error"
@@ -594,6 +598,7 @@ A numbervars		"numbervars"
 A numerator		"numerator"
 A obfuscate		"obfuscate"
 A occurs_check		"occurs_check"
+A octal			"octal"
 A octet		        "octet"
 A off			"off"
 A offset		"offset"
@@ -787,6 +792,7 @@ A sqrt			"sqrt"
 A ssu			"ssu"
 A ssu_commit		"=>"
 A ssu_choice		"?=>"
+A ssu_dcg		"==>"
 A stack			"stack"
 A stack_limit		"stack_limit"
 A stack_overflow	"stack_overflow"
@@ -929,11 +935,13 @@ A uninstantiation_error	"uninstantiation_error"
 A unique		"unique"
 A univ			"=.."
 A unknown		"unknown"
+A unknown_option	"unknown_option"
 A unlimited		"unlimited"
 A unload		"unload"
 A unlock		"unlock"
 A unlocked		"unlocked"
 A untable		"untable"
+A unwind		"unwind"
 A up			"up"
 A update		"update"
 A upper			"upper"
@@ -1141,6 +1149,7 @@ F gc			6
 F goal_expansion	2
 F ground		1
 F grouping		1
+F halt			1
 F hat			2
 F hash			4
 F id			1
@@ -1290,6 +1299,7 @@ F trace			1
 F traceinterc		3
 F tracing		1
 F thread		1
+F thread_exit		1
 F tripwire		2
 F true			0
 F truncate		1
@@ -1299,6 +1309,8 @@ F type_error		2
 F undefinterc		4
 F unify_determined	2
 F uninstantiation_error	1
+F unknown_option	2
+F unwind		1
 F var			1
 F waiting		1
 F wakeup		3

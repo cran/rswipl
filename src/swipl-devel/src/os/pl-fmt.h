@@ -3,10 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2024, University of Amsterdam
-                              VU University Amsterdam
-			      CWI, Amsterdam
-			      SWI-Prolog Solutions b.v.
+    Copyright (c)  2024, University of Amsterdam
+                         VU University Amsterdam
+			 CWI, Amsterdam
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -35,25 +34,12 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef _PL_PROLOGFLAG_H
-#define _PL_PROLOGFLAG_H
-#include "../pl-incl.h"
+#ifndef FMT_H_INCLUDED
+#define FMT_H_INCLUDED
 
-		 /*******************************
-		 *    FUNCTION DECLARATIONS	*
-		 *******************************/
+COMMON(char *)	formatInteger(PL_locale *locale, int div, int radix,
+			      bool smll, Number n, Buffer out);
+COMMON(bool)	do_format(IOSTREAM *fd, PL_chars_t *fmt,
+			  int argc, term_t argv, Module m);
 
-#define LDFUNC_DECLARATIONS
-void		setPrologFlag(const char *name, unsigned int flags, ...);
-int		set_prolog_flag(term_t key, term_t value, unsigned short flags);
-bool		PL_get_prolog_flag(atom_t name, term_t value);
-int		setDoubleQuotes(atom_t a, unsigned int *flagp);
-int		setBackQuotes(atom_t a, unsigned int *flagp);
-int		setRationalSyntax(atom_t a, unsigned int *flagp);
-void		initPrologFlags(void);
-void		setABIVersionPrologFlag(void);
-void		cleanupPrologFlags(void);
-int		checkPrologFlagsAccess(void);
-#undef LDFUNC_DECLARATIONS
-
-#endif /*_PL_PROLOGFLAG_H*/
+#endif /*FMT_H_INCLUDED*/

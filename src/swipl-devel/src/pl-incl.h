@@ -1800,8 +1800,8 @@ stack overflow.
 #define THROW_MAGIC 42424242
 
 typedef struct exception_frame		/* PL_throw exception environments */
-{ struct exception_frame *parent;	/* parent frame */
-  int		magic;			/* THROW_MAGIC */
+{ struct exception_frame * volatile parent;	/* parent frame */
+  volatile int	  magic;			/* THROW_MAGIC */
   jmp_buf	exception_jmp_env;	/* longjmp environment */
 } exception_frame;
 
@@ -1923,13 +1923,21 @@ struct recordRef
 		 *	EXCEPTION CLASSES	*
 		 *******************************/
 
+/* Exception classification is used to define exception priorities:
+   If an exception causes an exception with a higher rank (lower in
+   the list below), use the highest ranked exception
+*/
+
 typedef enum except_class
 { EXCEPT_NONE = 0,			/* no exception */
   EXCEPT_OTHER,				/* any other exception */
   EXCEPT_ERROR,				/* ISO error(Formal,Context) */
   EXCEPT_RESOURCE,			/* ISO error(resource_error(_), _) */
   EXCEPT_TIMEOUT,			/* time_limit_exceeded */
-  EXCEPT_ABORT				/* '$aborted' */
+  EXCEPT_UNWIND,			/* unwind(Term) */
+  EXCEPT_ABORT,				/* unwind(abort) */
+  EXCEPT_THREAD_EXIT,			/* unwind(thread_exit(Term)) */
+  EXCEPT_HALT				/* unwind(halt(Code) */
 } except_class;
 
 
@@ -2214,11 +2222,12 @@ typedef enum virtual_signum
   VSIG_THREAD_SIGNAL,
   VSIG_CLAUSE_GC,
   VSIG_PLABORT,
+  VSIG_PLHALT,
   VSIG_TUNE_GC,
   VSIG_MAX
 } virtual_signum;
 
-#define NUM_VSIGS 6 /* Preprocessor can see this constant */
+#define NUM_VSIGS 7 /* Preprocessor can see this constant */
 static_assertion(NUM_VSIGS == VSIG_MAX); /* Make sure it matches the enum */
 static_assertion(NUM_SIGNALS >= VSIG_MAX && NUM_SIGNALS < 128); /* Sanity check, 128 is arbitrary */
 static_assertion(SIG_PROLOG_OFFSET >= MINSIGNAL && SIG_PROLOG_OFFSET + NUM_VSIGS <= MAXSIGNAL);
@@ -2233,6 +2242,7 @@ static_assertion(SIG_PROLOG_OFFSET >= MINSIGNAL && SIG_PROLOG_OFFSET + NUM_VSIGS
 #endif
 #define SIG_CLAUSE_GC	  (SIG_PROLOG_OFFSET+VSIG_CLAUSE_GC)
 #define SIG_PLABORT	  (SIG_PROLOG_OFFSET+VSIG_PLABORT)
+#define SIG_PLHALT	  (SIG_PROLOG_OFFSET+VSIG_PLHALT)
 #define SIG_TUNE_GC	  (SIG_PROLOG_OFFSET+VSIG_TUNE_GC)
 
 /* The "search for a free signal" functionality of PL_sigaction starts after

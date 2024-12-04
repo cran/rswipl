@@ -68,7 +68,6 @@
 #include <dlfcn.h>
 #endif
 
-#undef bool
 #define ison(s, a)         ((s)->flags & (a))
 #define isoff(s, a)        (!ison((s), (a)))
 
@@ -488,7 +487,7 @@ setRationalSyntax(atom_t a, unsigned int *flagp)
 
 
 
-static int
+static bool
 setUnknown(term_t value, atom_t a, Module m)
 { unsigned int flags = m->flags & ~(UNKNOWN_MASK);
 
@@ -523,6 +522,22 @@ setUnknown(term_t value, atom_t a, Module m)
   return true;
 }
 
+
+static bool
+setUnknownOption(term_t value, atom_t a)
+{ GET_LD
+
+  if ( a == ATOM_ignore )
+  { LD->prolog_flag.unknown_option = OPT_UNKNOWN_IGNORE;
+  } else if ( a == ATOM_warning )
+  { LD->prolog_flag.unknown_option = OPT_UNKNOWN_WARNING;
+  } else if ( a == ATOM_error )
+  { LD->prolog_flag.unknown_option = OPT_UNKNOWN_ERROR;
+  } else
+    return PL_domain_error("unknown_option", value);
+
+  return true;
+}
 
 static int
 checkOnError(term_t value, atom_t a, atom_t key)
@@ -1124,6 +1139,8 @@ set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, unsigned shor
       { rval = setRationalSyntax(a, &m->flags);
       } else if ( k == ATOM_unknown )
       { rval = setUnknown(value, a, m);
+      } else if ( k == ATOM_unknown_option )
+      { rval = setUnknownOption(value, a);
       } else if ( k == ATOM_on_error || k == ATOM_on_warning )
       { rval = checkOnError(value, a, k);
       } else if ( k == ATOM_write_attributes )
@@ -1570,7 +1587,10 @@ typedef struct
   Module module;
 } prolog_flag_enum;
 
-foreign_t
+#define pl_prolog_flag5(key, value, scope, access, type, h) \
+	LDFUNC(pl_prolog_flag5, key, value, scope, access, type, h)
+
+static foreign_t
 pl_prolog_flag5(DECL_LD term_t key, term_t value,
 		term_t scope, term_t access, term_t type,
 		control_t h)
@@ -1693,6 +1713,32 @@ pl_prolog_flag5(DECL_LD term_t key, term_t value,
   freeHeap(e, sizeof(*e));
 
   fail;
+}
+
+bool
+PL_get_prolog_flag(atom_t name, term_t value)
+{ GET_LD
+  fid_t fid;
+  term_t key;
+  bool rc;
+
+  if ( (fid=PL_open_foreign_frame()) &&
+       (key=PL_new_term_ref()) &&
+       PL_put_atom(key, name) )
+  { struct foreign_context ctx = {
+      .context = 0,
+      .control = FRG_FIRST_CALL,
+      .engine  = LD
+    };
+
+    rc = pl_prolog_flag5(key, value, 0, 0, 0, &ctx);
+  } else
+    rc = false;
+
+  if ( fid )
+    PL_close_foreign_frame(fid);
+
+  return rc;
 }
 
 static
@@ -1952,6 +1998,8 @@ initPrologFlags(void)
   setPrologFlag("portable_vmi", FT_BOOL, true, PLFLAG_PORTABLE_VMI);
   setPrologFlag("traditional", FT_BOOL|FF_READONLY, GD->options.traditional, 0);
   setPrologFlag("unknown", FT_ATOM, "error");
+  setPrologFlag("unknown_option", FT_ATOM, "ignore");
+  LD->prolog_flag.unknown_option = OPT_UNKNOWN_IGNORE;
   setPrologFlag("debug", FT_BOOL, false, 0);
   setPrologFlag("debug_on_interrupt", FT_BOOL,
 		truePrologFlag(PLFLAG_DEBUG_ON_INTERRUPT),
@@ -2019,6 +2067,7 @@ initPrologFlags(void)
 		truePrologFlag(PLFLAG_SIGNALS), PLFLAG_SIGNALS);
   setPrologFlag("packs", FT_BOOL, GD->cmdline.packs, 0);
   setPrologFlag("heartbeat", FT_INTEGER, (intptr_t)0);
+  setPrologFlag("halt_grace_time", FT_FLOAT, (double)1.0);
 
 #if defined(__WINDOWS__) && defined(_DEBUG)
   setPrologFlag("kernel_compile_mode", FT_ATOM|FF_READONLY, "debug");

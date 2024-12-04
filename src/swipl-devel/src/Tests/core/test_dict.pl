@@ -3,7 +3,8 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2013-2020, VU University Amsterdam
+    Copyright (c)  2013-2024, VU University Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -230,6 +231,12 @@ test('select_dict/3') :-
 	\+ select_dict(a{k1:v2}, a{k1:v1}, _).
 test('select_dict/3') :-
 	\+ select_dict(a{k2:v1}, a{k1:v1}, _).
+test('select_dict/3', Done == true) :-
+	freeze(VA, Done=true),
+	A = _{ key: VA },
+	B = _{ key: vb },
+	select_dict(A, B, Rest),
+	assertion(Rest =@= _{}).
 test(':</2') :-
 	T{k1:V1} :< a{k1:v1, k2:v2},
 	T == a, V1 == v1.
@@ -264,6 +271,18 @@ test(select, fail) :-
 	a{x:_} :< a{y:2}.
 test(select, R =@= _{z:3}) :-		% implicit conversion
 	select_dict([x(1)], [x(1),z(3)], R).
+test(same_keys, true) :-
+	dict_same_keys(#{a:1, b:2}, ${a:x, b:3}).
+test(same_keys, fail) :-
+	dict_same_keys(#{a:1, b:2}, ${a:x, b:3, c:_}).
+test(same_keys, Copy =@= _{a:_, b:_}) :-
+	dict_same_keys(#{a:1, b:2}, Copy).
+test(same_keys, Copy =@= _{a:_, b:_}) :-
+	dict_same_keys(Copy, #{a:1, b:2}).
+test(same_keys, error(instantiation_error)) :-
+	dict_same_keys(_A1, _A2).
+test(same_keys, error(type_error(dict, aap))) :-
+	dict_same_keys(aap, _{a:1, b:2}).
 
 gd5 :-
 	Dict = #{a:42},

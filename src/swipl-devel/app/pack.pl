@@ -38,6 +38,7 @@
 :- use_module(library(apply)).
 :- use_module(library(strings)).
 :- use_module(library(dcg/basics)).
+:- use_module(library(lists)).
 
 :- initialization(main, main).
 
@@ -63,6 +64,9 @@ pack(info, Argv) =>
 pack(install, Argv) =>
     pack_install:argv_options(Argv, Pos, Options),
     cli_pack_install(Pos, Options).
+pack(rebuild, Argv) =>
+    pack_rebuild:argv_options(Argv, Pos, Options),
+    cli_pack_rebuild(Pos, Options).
 pack(remove, Argv) =>
     pack_remove:argv_options(Argv, Pos, Options),
     cli_pack_remove(Pos, Options).
@@ -76,37 +80,45 @@ pack(help, [Command]) =>
 pack(_, _) =>
     argv_usage(debug).
 
-pack_command(list,    "List packages").
-pack_command(find,    "Find packages").
+pack_command(list,    "List packs").
+pack_command(find,    "Find packs").
 pack_command(search,  "Alias for `find`").
 pack_command(info,    "Print info on a pack").
-pack_command(install, "Install or upgrade a package").
-pack_command(remove,  "Uninstall a package").
+pack_command(install, "Install or upgrade a pack").
+pack_command(rebuild, "Recompile foreign parts for a pack").
+pack_command(remove,  "Uninstall a pack").
 pack_command(publish, "Register a pack with swi-prolog.org").
 pack_command(help,    "Help on command (also swipl pack command -h)").
 
 pack_find:opt_type(_,_,_) :- fail.
-pack_info:opt_type(_,_,_) :- fail.
 
-pack_remove:opt_type(y,    interactive,  boolean(false)).
-pack_remove:opt_type(deps, dependencies, boolean).
+pack_info:opt_type(dir, pack_directory, directory).
+pack_info:opt_help(pack_directory, "Pack directory").
 
-pack_remove:opt_help(interactive,  "Use default answers (non-interactive)").
-pack_remove:opt_help(dependencies, "Remove dependencies as well?").
+pack_remove:opt_type(y,    interactive,    boolean(false)).
+pack_remove:opt_type(deps, dependencies,   boolean).
+pack_remove:opt_type(dir,  pack_directory, directory).
 
-pack_list:opt_type(installed, installed, boolean).
-pack_list:opt_type(i,	      installed, boolean).
-pack_list:opt_type(outdated,  outdated,  boolean).
-pack_list:opt_type(server,    server,    (boolean|atom)).
+pack_remove:opt_help(interactive,    "Use default answers (non-interactive)").
+pack_remove:opt_help(dependencies,   "Remove dependencies as well?").
+pack_remove:opt_help(pack_directory, "Remove pack below directory").
+
+pack_list:opt_type(installed, installed,      boolean).
+pack_list:opt_type(i,         installed,      boolean).
+pack_list:opt_type(outdated,  outdated,       boolean).
+pack_list:opt_type(server,    server,         (boolean|atom)).
+pack_list:opt_type(dir,       pack_directory, directory).
 
 pack_list:opt_meta(server, 'URL|false').
 
-pack_list:opt_help(installed, "Only list installed packages").
-pack_list:opt_help(outdated,  "Only list packages that can be upgraded").
-pack_list:opt_help(server,    "Use as `--no-server` or `server=URL`").
+pack_list:opt_help(installed,      "Only list installed packages").
+pack_list:opt_help(outdated,       "Only list packages that can be upgraded").
+pack_list:opt_help(server,         "Use as `--no-server` or `server=URL`").
+pack_list:opt_help(pack_directory, "Directory for --installed").
 
 pack_install:opt_type(url,      url,            atom).
 pack_install:opt_type(dir,      pack_directory, directory(write)).
+pack_install:opt_type(autoload, autoload,	boolean).
 pack_install:opt_type(global,   global,         boolean).
 pack_install:opt_type(y,        interactive,    boolean(false)).
 pack_install:opt_type(quiet,    silent,         boolean).
@@ -130,6 +142,8 @@ pack_install:opt_help(pack_directory, "Install in DIR/<pack>").
 pack_install:opt_help(global,         "Install system-wide (default: user)").
 pack_install:opt_help(interactive,    "Use default answers (non-interactive)").
 pack_install:opt_help(silent,         "Do not print informational feedback").
+pack_install:opt_help(autoload,       "Make the library available for \c
+                                       autoloading").
 pack_install:opt_help(upgrade,        "Upgrade the package").
 pack_install:opt_help(insecure,       "Do not check TLS certificates").
 pack_install:opt_help(rebuild,        "Rebuilt foreign components").
@@ -156,6 +170,12 @@ pack_install:opt_meta(url,	   'URL').
 pack_install:opt_meta(branch,	   'BRANCH').
 pack_install:opt_meta(commit,	   'HASH').
 pack_install:opt_meta(server,	   'URL').
+
+pack_rebuild:opt_type(dir, pack_directory, directory).
+
+pack_rebuild:opt_help(help(usage),
+                      " rebuild [--dir=DIR] [pack ...]").
+pack_rebuild:opt_help(pack_directory, "Rebuild packs in directory").
 
 pack_publish:opt_type(git,      git,            boolean).
 pack_publish:opt_type(sign,     sign,           boolean).
@@ -211,6 +231,10 @@ pack_publish:opt_help(
 pack_publish:opt_meta(branch, 'BRANCH').
 pack_publish:opt_meta(server, 'URL').
 
+cli_pack_list(Pos, Options),
+    select_option(pack_directory(Dir), Options, Options1) =>
+    attach_packs(Dir, [replace(true)]),
+    cli_pack_list(Pos, [installed(true)|Options1]).
 cli_pack_list([], Options) =>
     pack_list('', [installed(true)|Options]).
 cli_pack_list([Search], Options) =>
@@ -225,6 +249,10 @@ cli_pack_find([Search], Options) =>
 cli_pack_find(_, _) =>
     argv_usage(pack_find:debug).
 
+cli_pack_info(Pos, Options),
+    select_option(pack_directory(Dir), Options, Options1) =>
+    attach_packs(Dir, [replace(true)]),
+    cli_pack_info(Pos, Options1).
 cli_pack_info([Pack], _) =>
     cli(pack_info(Pack)).
 cli_pack_info(_, _) =>
@@ -236,6 +264,19 @@ cli_pack_install(Packs, Options), Packs \== [] =>
 cli_pack_install(_, _) =>
     argv_usage(pack_install:debug).
 
+cli_pack_rebuild(Packs, Options),
+    select_option(pack_directory(Dir), Options, Options1) =>
+    attach_packs(Dir, [replace(true)]),
+    cli_pack_rebuild(Packs, Options1).
+cli_pack_rebuild([], _Options) =>
+    cli(pack_rebuild).
+cli_pack_rebuild(Packs, _Options) =>
+    cli(forall(member(Pack, Packs), pack_rebuild(Pack))).
+
+cli_pack_remove(Packs, Options),
+    select_option(pack_directory(Dir), Options, Options1) =>
+    attach_packs(Dir, [replace(true)]),
+    cli_pack_remove(Packs, Options1).
 cli_pack_remove(Packs, Options), Packs \== [] =>
     cli(forall(member(Pack, Packs), pack_remove(Pack, Options))).
 cli_pack_remove(_, _) =>

@@ -44,6 +44,8 @@
 #define AC_TERM_WALK_LRD 1
 #include "pl-termwalk.c"
 
+#undef LD
+#define LD LOCAL_LD
 
 		 /*******************************
 		 *	    COPY TERM		*
@@ -105,6 +107,13 @@ variables.
 #define COPY_ABSTRACT	0x04			/* Abstract compounds */
 #define COPY_MARKED	0x08			/* Only copy marked variables */
 #define COPYING_ATTVAR  0x10			/* See mark_for_copy() */
+
+typedef struct cp_options
+{ size_t abstract;
+  size_t nshare;
+  term_t share;
+  unsigned int flags;
+} cp_options;
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 mark_vars() is a helper for copy_term/4.
@@ -171,9 +180,25 @@ end_loop:
 }
 
 
-#define mark_for_duplicate(p, flags) LDFUNC(mark_for_duplicate, p, flags)
+#define share_for_duplicate(t, options) \
+	LDFUNC(share_for_duplicate, t, options)
+
+static bool
+share_for_duplicate(DECL_LD const Functor t, const cp_options *options)
+{ for(size_t i=0; i<options->nshare; i++)
+  { Word p = valTermRef(options->share+i);
+    if ( t == valueTerm(*p) )
+      return true;
+  }
+
+  return false;
+}
+
+#define mark_for_duplicate(p, options) \
+	LDFUNC(mark_for_duplicate, p, options)
+
 static int
-mark_for_duplicate(DECL_LD Word p, int flags)
+mark_for_duplicate(DECL_LD Word p, const cp_options *options)
 { term_agenda agenda;
 
   initTermAgenda(&agenda, 1, p);
@@ -182,7 +207,7 @@ mark_for_duplicate(DECL_LD Word p, int flags)
   again:
     switch(tag(*p))
     { case TAG_ATTVAR:
-      { if ( flags & COPY_ATTRS )
+      { if ( ison(options, COPY_ATTRS) )
 	{ p = valPAttVar(*p);
 	  goto again;
 	}
@@ -197,10 +222,15 @@ mark_for_duplicate(DECL_LD Word p, int flags)
       }
       case TAG_COMPOUND:
       { Functor t = valueTerm(*p);
-	int arity = arityFunctor(t->definition);
+	size_t arity = arityFunctor(t->definition);
 
 	if ( virgin(t->definition) )
-	{ set_visited(t->definition);
+	{ if ( options->nshare &&
+	       share_for_duplicate(t, options) )
+	  { set_ground(t->definition);
+	    continue;
+	  }
+	  set_visited(t->definition);
 	} else
 	{ if ( visited_once(t->definition) )
 	    set_shared(t->definition);
@@ -250,19 +280,19 @@ unshare_attvar(DECL_LD Word p)
 }
 
 
-#define can_share(p, flags) \
-	LDFUNC(can_share, p, flags)
+#define can_share(p, options) \
+	LDFUNC(can_share, p, options)
 
-static int
-can_share(DECL_LD Word p, int flags)
+static bool
+can_share(DECL_LD Word p, const cp_options *options)
 {
 again:
   switch(tag(*p))
   { case TAG_VAR:
     case TAG_ATTVAR:
-      if ( (flags&COPY_MARKED) &&
+      if ( ison(options, COPY_MARKED) &&
 	   virgin(*p) &&
-	   !(flags&COPYING_ATTVAR) )
+	   isoff(options, COPYING_ATTVAR) )
 	return true;
       return false;
     case TAG_REFERENCE:
@@ -278,18 +308,18 @@ again:
 }
 
 
-#define update_ground(p, flags) \
-	LDFUNC(update_ground, p, flags)
+#define update_ground(p, options) \
+	LDFUNC(update_ground, p, options)
 
 static void
-update_ground(DECL_LD Word p, int flags)
+update_ground(DECL_LD Word p, const cp_options *options)
 { Functor t = valueTerm(*p);
-  int arity = arityFunctor(t->definition);
+  size_t arity = arityFunctor(t->definition);
   Word a = &t->arguments[arity];
-  int ground = true;
+  bool ground = true;
 
   while(--a >= t->arguments)
-  { if ( !can_share(a, flags) )
+  { if ( !can_share(a, options) )
     { ground = false;
       break;
     }
@@ -356,11 +386,11 @@ must_copy_attvar(word w, int flags, int mode)
 }
 
 
-#define mark_for_copy(p, flags) \
-	LDFUNC(mark_for_copy, p, flags)
+#define mark_for_copy(p, options) \
+	LDFUNC(mark_for_copy, p, options)
 
 static int
-mark_for_copy(DECL_LD Word p, int flags)
+mark_for_copy(DECL_LD Word p, const cp_options *options)
 { Word start = p;
   int mode = 0;
   Word buf[1024];
@@ -368,12 +398,12 @@ mark_for_copy(DECL_LD Word p, int flags)
 
   initSegStack(&stack, sizeof(Word), sizeof(buf), buf);
 
-#define COPY_ALWAYS (!(flags&COPY_MARKED) || (mode&MC_WALK_COPY))
+#define COPY_ALWAYS (isoff(options,COPY_MARKED) || (mode&MC_WALK_COPY))
 
   for(;;)
   { switch(tag(*p))
     { case TAG_ATTVAR:
-      { if ( must_copy_attvar(*p, flags, mode) )
+      { if ( must_copy_attvar(*p, options->flags, mode) )
 	{ if ( !pushForMark(&stack, p, mode) )
 	  { clearSegStack(&stack);
 	    return MEMORY_OVERFLOW;
@@ -452,16 +482,16 @@ mark_for_copy(DECL_LD Word p, int flags)
 
     p--;
     if ( tagex(*p) == (TAG_ATOM|STG_GLOBAL) )	/* functor (compound) */
-    { int f = flags;
+    { cp_options opts = *options;
 
       DEBUG(MSG_COPYTERM,
 	    Sdprintf("Functor %s; mode=0x%x\n",
 		     functorName(word2functor(*p & ~BOTH_MASK)), mode));
 
       if ( mode&MC_WALK_COPY )
-	f |= COPYING_ATTVAR;
+	opts.flags |= COPYING_ATTVAR;
       popForMark(&stack, &p, &mode);
-      update_ground(p, f);
+      update_ground(p, &opts);
     }
   }
 
@@ -564,11 +594,11 @@ exitCyclicCopy(DECL_LD int flags)
 }
 
 
-#define copy_term(from, to, abstract, flags) \
-	LDFUNC(copy_term, from, to, abstract, flags)
+#define copy_term(from, to, options) \
+	LDFUNC(copy_term, from, to, options)
 
 static int
-copy_term(DECL_LD Word from, Word to, size_t abstract, int flags)
+copy_term(DECL_LD Word from, Word to, const cp_options *options)
 { term_agendaLRD agenda;
   int rc = true;
   size_t aleft = (size_t)-1;
@@ -576,7 +606,7 @@ copy_term(DECL_LD Word from, Word to, size_t abstract, int flags)
   initTermAgendaLRD(&agenda, 1, from, to);
   while( nextTermAgendaLRD(&agenda, &from, &to) )
   { if ( agenda.work.depth == 1 )
-      aleft = abstract;
+      aleft = options->abstract;
 
   again:
     switch(tag(*from))
@@ -597,7 +627,7 @@ copy_term(DECL_LD Word from, Word to, size_t abstract, int flags)
 	{ *to = VAR_MARK;
 	  *from = makeRefG(to);
 	  TrailCyclic(from);
-	} else if ( (flags&COPY_ABSTRACT) )
+	} else if ( ison(options, COPY_ABSTRACT) )
 	{ *to = makeRefG(from);
 	} else if ( virgin(*from) )	/* copy_term/4 */
 	{ *to = makeRefG(from);
@@ -608,12 +638,12 @@ copy_term(DECL_LD Word from, Word to, size_t abstract, int flags)
 	continue;
       }
       case TAG_ATTVAR:
-	if ( flags&COPY_ATTRS )
+	if ( ison(options, COPY_ATTRS) )
 	{ Word p = valPAttVar(*from & ~BOTH_MASK);
 
 	  if ( isAttVar(*p) )		/* already copied */
 	  { *to = makeRefG(p);
-	  } else if ( !(flags&COPY_MARKED) || must_copy(*from) )
+	  } else if ( isoff(options,COPY_MARKED) || must_copy(*from) )
 	  { Word attr;
 
 	    if ( !(attr = alloc_attvar()) )
@@ -643,7 +673,7 @@ copy_term(DECL_LD Word from, Word to, size_t abstract, int flags)
 	      TrailCyclic(p);
 	      TrailCyclic(from);
 	    }
-	  } else if ( flags & COPY_MARKED )
+	  } else if ( ison(options, COPY_MARKED) )
 	  { *to = makeRefG(from);
 	  } else
 	  { setVar(*to);
@@ -725,11 +755,11 @@ Both from and to  point  to  locations   on  the  global  stack. From is
 deferenced and to is a variable.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define do_copy_term(from, to, abstract, flags) \
-	LDFUNC(do_copy_term, from, to, abstract, flags)
+#define do_copy_term(from, to, options) \
+	LDFUNC(do_copy_term, from, to, options)
 
 static int
-do_copy_term(DECL_LD Word from, Word to, int abstract, int flags)
+do_copy_term(DECL_LD Word from, Word to, const cp_options *options)
 { int rc;
 
 again:
@@ -750,25 +780,25 @@ again:
       return true;
   }
 
-  if ( (flags&COPY_SHARE) )
-  { DEBUG(CHK_SECURE, { mark_for_copy(from, flags);
-			cp_unmark(from, flags);
+  if ( ison(options, COPY_SHARE) )
+  { DEBUG(CHK_SECURE, { mark_for_copy(from, options);
+			cp_unmark(from, options->flags);
 			checkData(from);
 		      });
-    if ( (rc=mark_for_copy(from, flags)) != true )
-    { cp_unmark(from, flags);
+    if ( (rc=mark_for_copy(from, options)) != true )
+    { cp_unmark(from, options->flags);
       return rc;
     }
-  } else if ( !(flags&COPY_ABSTRACT) )
-  { if ( (rc=mark_for_duplicate(from, flags)) != true )
-    { cp_unmark(from, flags);
+  } else if ( isoff(options, COPY_ABSTRACT) )
+  { if ( (rc=mark_for_duplicate(from, options)) != true )
+    { cp_unmark(from, options->flags);
       return rc;
     }
   }
   initCyclicCopy();
-  rc = copy_term(from, to, abstract, flags);
-  exitCyclicCopy(flags);
-  cp_unmark(from, flags);
+  rc = copy_term(from, to, options);
+  exitCyclicCopy(options->flags);
+  cp_unmark(from, options->flags);
   DEBUG(0,
 	if ( rc == true )	     // May lead to "Reference to higher address"
 	{ checkData(from);
@@ -779,12 +809,12 @@ again:
 }
 
 
-#define copy_term_refs(from, to, vars, abstract, flags) \
-	LDFUNC(copy_term_refs, from, to, vars, abstract, flags)
+#define copy_term_refs(from, to, vars, options) \
+	LDFUNC(copy_term_refs, from, to, vars, options)
 
-static int
+static bool
 copy_term_refs(DECL_LD term_t from, term_t to, term_t vars,
-	       size_t abstract, int flags)
+	       const cp_options *options)
 { for(;;)
   { fid_t fid;
     int rc;
@@ -805,7 +835,7 @@ copy_term_refs(DECL_LD term_t from, term_t to, term_t vars,
     { if ( mark_vars(vars, true) != true )
 	return PL_no_memory();
     }
-    rc = do_copy_term(src, dest, abstract, flags);
+    rc = do_copy_term(src, dest, options);
 
     if ( rc < 0 )			/* no space for copy */
     { PL_discard_foreign_frame(fid);
@@ -830,15 +860,25 @@ copy_term_refs(DECL_LD term_t from, term_t to, term_t vars,
 }
 
 
-int
-duplicate_term(DECL_LD term_t in, term_t copy)
-{ return copy_term_refs(in, copy, 0, (size_t)-1, COPY_ATTRS);
+bool
+duplicate_term(DECL_LD term_t in, term_t copy, size_t nshare, term_t share)
+{ const cp_options opts = { .abstract = (size_t)-1,
+			    .nshare = nshare,
+			    .share = share,
+			    .flags = COPY_ATTRS
+			  };
+
+  return copy_term_refs(in, copy, 0, &opts);
 }
 
 
-int
+bool
 size_abstract_term(DECL_LD term_t in, term_t copy, size_t abstract)
-{ return copy_term_refs(in, copy, 0, abstract, COPY_ATTRS|COPY_ABSTRACT);
+{ const cp_options opts = { .abstract = abstract,
+			    .flags = COPY_ATTRS|COPY_ABSTRACT
+			  };
+
+  return copy_term_refs(in, copy, 0, &opts);
 }
 
 
@@ -922,7 +962,7 @@ term_to_fastheap(DECL_LD term_t t)
   size_t indirect_cells = 0;
   Word indirects;
 
-  if ( !duplicate_term(t, copy) )
+  if ( !duplicate_term(t, copy, 0, 0) )
     return NULL;
   gcopy = valTermRef(copy);
   gtop  = gTop;
@@ -1035,8 +1075,9 @@ PRED_IMPL("copy_term", 2, copy_term, 0)
   { return PL_unify(A1, A2);
   } else
   { term_t copy = PL_new_term_ref();
+    const cp_options opts = { .abstract = (size_t)-1, .flags = COPY_SHARE|COPY_ATTRS };
 
-    if ( copy_term_refs(A1, copy, 0, (size_t)-1, COPY_SHARE|COPY_ATTRS) )
+    if ( copy_term_refs(A1, copy, 0, &opts) )
       return PL_unify(copy, A2);
 
     fail;
@@ -1050,12 +1091,12 @@ PRED_IMPL("copy_term", 2, copy_term, 0)
 static int
 copy_term_4(DECL_LD term_t vs0, term_t t0, term_t vs, term_t t, int flags)
 { term_t term, copy;
+  const cp_options opts = { .abstract = (size_t)-1, .flags = COPY_SHARE|COPY_MARKED|flags };
 
   return ( (term = PL_new_term_ref()) &&
 	   (copy = PL_new_term_ref()) &&
 	   PL_cons_functor(term, FUNCTOR_minus2, vs0, t0) &&
-	   copy_term_refs(term, copy, vs0, (size_t)-1,
-			  COPY_SHARE|COPY_MARKED|flags) &&
+	   copy_term_refs(term, copy, vs0, &opts) &&
 	   PL_get_arg(1, copy, term) &&
 	   PL_unify(vs, term) &&
 	   PL_get_arg(2, copy, term) &&
@@ -1082,7 +1123,7 @@ PRED_IMPL("duplicate_term", 2, duplicate_term, 0)
   } else
   { term_t copy = PL_new_term_ref();
 
-    if ( duplicate_term(A1, copy) )
+    if ( duplicate_term(A1, copy, 0, 0) )
       return PL_unify(copy, A2);
 
     fail;
@@ -1094,8 +1135,9 @@ static
 PRED_IMPL("copy_term_nat", 2, copy_term_nat, 0)
 { PRED_LD
   term_t copy = PL_new_term_ref();
+  const cp_options opts = { .abstract = (size_t)-1, .flags = COPY_SHARE };
 
-  if ( copy_term_refs(A1, copy, 0, (size_t)-1, COPY_SHARE) )
+  if ( copy_term_refs(A1, copy, 0, &opts) )
     return PL_unify(copy, A2);
 
   fail;

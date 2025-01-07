@@ -1,3 +1,9 @@
+# rswipl 9.3.18
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-18/8721
+
+Fixes problems reported for reverse dependency _rolog_ under gcc-UBSAN
+
 # rswipl 9.3.16
 
 See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-16/8645

@@ -43,6 +43,7 @@
 #include "pl-fli.h"
 #include "pl-gc.h"
 #include "pl-gvar.h"
+#include "pl-copyterm.h"
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Dicts are associative arrays,  where  keys   are  either  atoms  or small
@@ -113,8 +114,8 @@ is_dict_term(DECL_LD word w)
 		 *******************************/
 
 #define get_dict_ex(t, dp, ex) LDFUNC(get_dict_ex, t, dp, ex)
-static int
-get_dict_ex(DECL_LD term_t t, Word dp, int ex)
+static bool
+get_dict_ex(DECL_LD term_t t, Word dp, bool ex)
 { Word p = valTermRef(t);
 
   deRef(p);
@@ -130,8 +131,7 @@ get_dict_ex(DECL_LD term_t t, Word dp, int ex)
   if ( !ex )
     return false;
 
-  PL_type_error("dict", t);
-  return false;
+  return PL_type_error("dict", t),false;
 }
 
 
@@ -170,23 +170,26 @@ dict_lookup_ptr() returns a pointer to the value for a given key
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 Word
-dict_lookup_ptr(DECL_LD word dict, word name)
+dict_lookup_ptr(DECL_LD word dict, word name, size_t *arg)
 { Functor data = valueTerm(dict);
-  int arity = arityFunctor(data->definition);
-  int l = 1, h = arity/2;
+  size_t arity = arityFunctor(data->definition);
+  size_t l = 1, h = arity/2;
 
   if ( arity == 1 )
     return NULL;			/* empty */
   assert(arity%2 == 1);
 
   for(;;)
-  { int m = (l+h)/2;
+  { size_t m = (l+h)/2;
     Word p;
 
     deRef2(&data->arguments[m*2], p);
 
     if ( *p == name )
+    { if ( arg )
+	*arg = m;
       return p-1;
+    }
 
     if ( l == h )
       return NULL;
@@ -352,7 +355,9 @@ assign_in_dict(DECL_LD Word dp, Word val)
 }
 
 
-#define put_dict(dict, size, nv, new_dict) LDFUNC(put_dict, dict, size, nv, new_dict)
+#define put_dict(dict, size, nv, new_dict) \
+	LDFUNC(put_dict, dict, size, nv, new_dict)
+
 static int
 put_dict(DECL_LD word dict, int size, Word nv, word *new_dict)
 { Functor data = valueTerm(dict);
@@ -439,6 +444,11 @@ put_dict(DECL_LD word dict, int size, Word nv, word *new_dict)
 }
 
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Push a new dict to the global stack   that  has the same keys as `dict`,
+but whose tag and values are all set to variables.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
 #define copy_keys_dict(dict, new_dict) \
 	LDFUNC(copy_keys_dict, dict, new_dict)
 
@@ -448,13 +458,13 @@ copy_keys_dict(DECL_LD word dict, word *new_dict)
   size_t arity = arityFunctor(data->definition);
   Word new, out, in, in_end;
 
-  if ( gTop+1 > gMax )
+  if ( gTop+1+arity > gMax )
     return GLOBAL_OVERFLOW;
 
   new    = gTop;
   out    = new;
-  *out++ = data->definition;
-  setVar(*out++);
+  *out++ = data->definition;		/* copy C'dict functor */
+  setVar(*out++);			/* set tag to var */
   in     = data->arguments+1;
   in_end = in+arity-1;
 
@@ -1348,7 +1358,7 @@ pl_get_dict(term_t PL__t0, size_t PL__ac, int ex, control_t PL__ctx)
       if ( is_dict_key(*np) )
       { Word vp;
 
-	if ( (vp=dict_lookup_ptr(dict, *np)) )
+	if ( (vp=dict_lookup_ptr(dict, *np, NULL)) )
 	  return unify_ptrs(vp, valTermRef(A3), ALLOW_GC|ALLOW_SHIFT);
 
 	if ( ex )
@@ -1435,7 +1445,7 @@ PRED_IMPL("get_dict", 5, get_dict, 0)
   if ( !get_name_ex(A1, &key) ||
        !(*valTermRef(av+1) = key) ||
        !get_create_dict_ex(A2, dt) ||
-       !(vp=dict_lookup_ptr(*valTermRef(dt), key)) ||
+       !(vp=dict_lookup_ptr(*valTermRef(dt), key, NULL)) ||
        !unify_ptrs(vp, valTermRef(A3), ALLOW_GC|ALLOW_SHIFT) ||
        !PL_put_term(av+0, A5) )
     return false;
@@ -1691,49 +1701,20 @@ Backtrackable destructive assignment, similar to setarg/3.
 #define SETDICT_BACKTRACKABLE    0x1
 #define SETDICT_LINK		0x2
 
-#define setdict(key, dict, value, flags) LDFUNC(setdict, key, dict, value, flags)
-static int
-setdict(DECL_LD term_t key, term_t dict, term_t value, int flags)
+#define setdict(key, dict, value, flags) \
+	LDFUNC(setdict, key, dict, value, flags)
+
+static bool
+setdict(DECL_LD term_t key, term_t dict, term_t value, unsigned int flags)
 { word k, m;
-  Word val;
-
-retry:
-  val = valTermRef(value);
-  deRef(val);
-
-  if ( (flags&SETDICT_BACKTRACKABLE) )
-  { if ( !hasGlobalSpace(0) )
-    { int rc;
-
-      if ( (rc=ensureGlobalSpace(0, ALLOW_GC)) != true )
-	return raiseStackOverflow(rc);
-      goto retry;
-    }
-  } else
-  { if ( storage(*val) == STG_GLOBAL )
-    { if ( !(flags & SETDICT_LINK) )
-      { term_t copy = PL_new_term_ref();
-
-	if ( !duplicate_term(value, copy) )
-	  return false;
-	value = copy;
-	val = valTermRef(value);
-	deRef(val);
-      }
-      freezeGlobal();
-    }
-  }
 
   if ( get_dict_ex(dict, &m, true) &&
        get_name_ex(key, &k) )
   { Word vp;
+    size_t arg;
 
-    if ( (vp=dict_lookup_ptr(m, k)) )
-    { if ( (flags&SETDICT_BACKTRACKABLE) )
-	TrailAssignment(vp);
-      unify_vp(vp, val);
-      return true;
-    }
+    if ( (vp=dict_lookup_ptr(m, k, &arg)) )
+      return setarg(arg*2, dict, value, flags);
 
     return PL_error(NULL, 0, NULL, ERR_EXISTENCE3,
 		    ATOM_key, key, dict);
@@ -1747,7 +1728,7 @@ static
 PRED_IMPL("b_set_dict", 3, b_set_dict, 0)
 { PRED_LD
 
-  return setdict(A1, A2, A3, SETDICT_BACKTRACKABLE);
+  return setdict(A1, A2, A3, SETARG_BACKTRACKABLE);
 }
 
 static
@@ -1761,7 +1742,7 @@ static
 PRED_IMPL("nb_link_dict", 3, nb_link_dict, 0)
 { PRED_LD
 
-  return setdict(A1, A2, A3, SETDICT_LINK);
+  return setdict(A1, A2, A3, SETARG_LINK);
 }
 
 
@@ -1783,7 +1764,7 @@ retry:
        get_name_ex(A1, &key) )
   { Word vp;
 
-    if ( (vp=dict_lookup_ptr(*valTermRef(mt), key)) &&
+    if ( (vp=dict_lookup_ptr(*valTermRef(mt), key, NULL)) &&
 	 unify_ptrs(vp, valTermRef(A3), ALLOW_GC|ALLOW_SHIFT) )
     { int rc;
       word new;
@@ -1999,7 +1980,7 @@ PL_get_dict_key(atom_t key, term_t dict, term_t value)
 
   if ( !get_dict_ex(dict, &d, false) )
     return false;
-  if ( (vp=dict_lookup_ptr(d, key)) )
+  if ( (vp=dict_lookup_ptr(d, key, NULL)) )
   { *valTermRef(value) = linkValI(vp);
     return true;
   }

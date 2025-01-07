@@ -667,13 +667,13 @@ PREDICATE(hostname2, 1)
 
 // The eq_int64/2 and lt_int64/2 predicates test the deprecated PlTerm::operator==()
 
-// #ifdef _MSC_VER
-// #pragma warning( push )
-// #pragma warning (disable:4996)
-// #else
+#ifdef _MSC_VER
+#pragma warning( push )
+#pragma warning (disable:4996)
+#else
 // #pragma GCC diagnostic push
 // #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-// #endif
+#endif
 
 // PREDICATE(eq_int64, 2)
 // { return A1 == A2.as_int64_t();
@@ -683,11 +683,11 @@ PREDICATE(hostname2, 1)
 // { return A1 < A2.as_int64_t();
 // }
 
-// #ifdef _MSC_VER
-// #pragma warning( pop )
-// #else
+#ifdef _MSC_VER
+#pragma warning( pop )
+#else
 // #pragma GCC diagnostic pop
-// #endif
+#endif
 
 PREDICATE(get_atom_ex, 2)
 { PlAtom a(PlAtom::null);
@@ -2174,7 +2174,7 @@ PREDICATE(free_blob, 1)
 
 PREDICATE(nil_repr, 1)
 { char buf[100];
-  snprintf(buf, sizeof buf, "%p", nullptr);
+  snprintf(buf, sizeof buf, "%p", (void*) nullptr);
   return A1.unify_string(buf);
 }
 

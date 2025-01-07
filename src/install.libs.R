@@ -12,5 +12,5 @@ if(SHLIB_EXT == ".so")
   unlink(file.path("inst", "swipl", "lib", "libswipl.so.9"))
   dir.create(file.path(R_PACKAGE_DIR, "swipl", "lib"), recursive=TRUE, showWarnings=FALSE)
   file.symlink("libswipl.so.9", file.path(R_PACKAGE_DIR, "swipl", "lib", "libswipl.so"))
-  file.symlink("libswipl.so.9.3.16", file.path(R_PACKAGE_DIR, "swipl", "lib", "libswipl.so.9"))
+  file.symlink("libswipl.so.9.3.18", file.path(R_PACKAGE_DIR, "swipl", "lib", "libswipl.so.9"))
 }

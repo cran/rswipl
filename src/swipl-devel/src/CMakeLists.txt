@@ -211,7 +211,7 @@ set(SWIPL_DATA_library_dialect_swi syspred_options.pl)
 set(SWIPL_DATA_library_dialect_eclipse test_util_iso.pl)
 set(SWIPL_DATA_library_dialect_hprolog format.pl)
 set(SWIPL_DATA_library_dialect_sicstus arrays.pl block.pl lists.pl ordsets.pl
-    README.TXT sockets.pl swipl-lfr.pl system.pl terms.pl timeout.pl)
+    README.TXT sockets.pl system.pl terms.pl timeout.pl)
 set(SWIPL_DATA_library_dialect_sicstus4 aggregate.pl between.pl clpfd.pl
     file_systems.pl lists.pl ordsets.pl samsort.pl sets.pl sockets.pl
     system.pl terms.pl timeout.pl types.pl)
@@ -229,7 +229,7 @@ endif()
 set(SWIPL_DATA_demo likes.pl README.md)
 set(SWIPL_DATA_cmake swipl.cmake)
 
-set(SWIPL_DATA_app pack.pl app.pl qlf.pl README.md)
+set(SWIPL_DATA_app pack.pl app.pl qlf.pl splfr.pl README.md)
 
 ################
 # Custom targets and commands
@@ -312,7 +312,7 @@ configure_file(version.h.in version.h)
 add_custom_command(
     OUTPUT  ${SWIPL_BOOT_FILE}
     COMMAND ${CMAKE_COMMAND} -E remove -f ${SWIPL_BOOT_FILE}
-    COMMAND ${PROG_SWIPL_FOR_BOOT} -q -O -o ${SWIPL_BOOT_FILE}
+    COMMAND ${PROG_SWIPL_FOR_BOOT} --home=${SWIPL_BUILD_HOME} -q -O -o ${SWIPL_BOOT_FILE}
 				   -b ${SWIPL_BUILD_HOME}/boot/init.pl
     DEPENDS ${DEP_SWIPL_FOR_BOOT} ${SWIPL_BOOT_FILES}
 )
@@ -466,12 +466,17 @@ function(libswipl_properties lib outname)
   else()
     set(LIB_PREFIX)
   endif()
-
-  set_target_properties(${lib} PROPERTIES
-			OUTPUT_NAME ${LIB_PREFIX}${outname}
-			VERSION ${SWIPL_VERSION_STRING}
-			SOVERSION ${SWIPL_VERSION_MAJOR}
-			GNUtoMS ON)
+  if(SWIPL_SO_VERSIONS)
+    set_target_properties(${lib} PROPERTIES
+                          OUTPUT_NAME ${LIB_PREFIX}${outname}
+                          VERSION ${SWIPL_VERSION_STRING}
+                          SOVERSION ${SWIPL_VERSION_MAJOR}
+                          GNUtoMS ON)
+  else()
+    set_target_properties(${lib} PROPERTIES
+                          OUTPUT_NAME ${LIB_PREFIX}${outname}
+                          GNUtoMS ON)
+  endif()
   target_include_directories(${lib} INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/os>

@@ -39,6 +39,7 @@
 #include "pl-prims.h"
 #include "pl-arith.h"
 #include "pl-attvar.h"
+#include "pl-copyterm.h"
 #include "pl-fli.h"
 #include "pl-gc.h"
 #include "pl-wam.h"
@@ -2487,10 +2488,6 @@ PRED_IMPL("arg", 3, arg, PL_FA_NONDETERMINISTIC)
 }
 
 
-#define SETARG_BACKTRACKABLE    0x1
-#define SETARG_LINK		0x2
-
-
 /* unify_vp() assumes *vp is a variable and binds it to val.
    The assignment is *not* trailed. As no allocation takes
    place, there are no error conditions.
@@ -2520,21 +2517,32 @@ unify_vp(DECL_LD Word vp, Word val)
 }
 
 
-#define setarg(n, term, value, flags) LDFUNC(setarg, n, term, value, flags)
-static foreign_t
-setarg(DECL_LD term_t n, term_t term, term_t value, int flags)
-{ size_t arity, argn;
-  atom_t name;
+#define may_share_in_duplicate(p) LDFUNC(may_share_in_duplicate, p)
+
+static term_t
+may_share_in_duplicate(DECL_LD Word p)
+{ deRef(p);
+  if ( isTerm(*p) )
+  { term_t share = PL_new_term_ref();
+    *valTermRef(share) = *p;
+    return share;
+  }
+
+  return 0;
+}
+
+bool
+setarg(DECL_LD size_t argn, term_t term, term_t value, unsigned int flags)
+{ size_t arity;
   Word a, v;
 
-  if ( !PL_get_size_ex(n, &argn) )
-    return false;
-  if ( argn == 0 )
-    return false;
-  if ( !PL_get_name_arity(term, &name, &arity) )
+  a = valTermRef(term);
+  deRef(a);
+  if ( !isTerm(*a) )
     return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_compound, term);
+  arity = arityTerm(*a);
 
-  if ( argn > arity )
+  if ( argn == 0 || argn > arity )
     return false;
 
   if ( (flags & SETARG_BACKTRACKABLE) )
@@ -2567,9 +2575,11 @@ setarg(DECL_LD term_t n, term_t term, term_t value, int flags)
     if ( storage(*v) == STG_GLOBAL )
     { if ( isTerm(*v) && !(flags & SETARG_LINK) )
       { term_t copy = PL_new_term_ref();
+	term_t keep = may_share_in_duplicate(argTermP(*a, argn-1));
+	size_t nshare = keep ? 1 : 0;
 
-	if ( !duplicate_term(value, copy) )
-	  fail;
+	if ( !duplicate_term(value, copy, nshare, keep) )
+	  return false;
 	value = copy;
       }
 
@@ -2588,12 +2598,24 @@ setarg(DECL_LD term_t n, term_t term, term_t value, int flags)
   return true;
 }
 
+#define setarg_t(arg, term, value, flags) \
+	LDFUNC(setarg_t, arg, term, value, flags)
+
+static inline bool
+setarg_t(DECL_LD term_t arg, term_t term, term_t value, unsigned int flags)
+{ size_t argn;
+
+  if ( !PL_get_size_ex(arg, &argn) || argn == 0 )
+    return false;
+
+  return setarg(argn, term, value, flags);
+}
 
 static
 PRED_IMPL("setarg", 3, setarg, 0)
 { PRED_LD
 
-  return setarg(A1, A2, A3, SETARG_BACKTRACKABLE);
+  return setarg_t(A1, A2, A3, SETARG_BACKTRACKABLE);
 }
 
 
@@ -2601,7 +2623,7 @@ static
 PRED_IMPL("nb_setarg", 3, nb_setarg, 0)
 { PRED_LD
 
-  return setarg(A1, A2, A3, 0);
+  return setarg_t(A1, A2, A3, 0);
 }
 
 
@@ -2609,7 +2631,7 @@ static
 PRED_IMPL("nb_linkarg", 3, nb_linkarg, 0)
 { PRED_LD
 
-  return setarg(A1, A2, A3, SETARG_LINK);
+  return setarg_t(A1, A2, A3, SETARG_LINK);
 }
 
 

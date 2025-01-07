@@ -786,22 +786,24 @@ test(throw, error(permission_error(operation, type, the(culprit)))) :-
 test(throw, error(resource_error('NO_RESOURCE'))) :-
     throw_resource_error_cpp('NO_RESOURCE').
 
-%test(compare) :-
-%    eq_int64(1, 1).
-%test(compare, fail) :-
-%    eq_int64(1, 2).
-%test(compare, error(type_error(integer,a))) :-
-%    eq_int64(1, a).
-%test(compare, error(type_error(integer,b))) :-
-%    eq_int64(b, 1).
-%test(compare) :-
-%    lt_int64(1, 2).
-%test(compare, fail) :-
-%    lt_int64(2, 1).
-%test(compare, error(type_error(integer,a))) :-
-%    lt_int64(1, a).
-%test(compare, error(type_error(integer,b))) :-
-%    lt_int64(b, 1).
+/*
+test(compare) :-
+    eq_int64(1, 1).
+test(compare, fail) :-
+    eq_int64(1, 2).
+test(compare, error(type_error(integer,a))) :-
+    eq_int64(1, a).
+test(compare, error(type_error(integer,b))) :-
+    eq_int64(b, 1).
+test(compare) :-
+    lt_int64(1, 2).
+test(compare, fail) :-
+    lt_int64(2, 1).
+test(compare, error(type_error(integer,a))) :-
+    lt_int64(1, a).
+test(compare, error(type_error(integer,b))) :-
+    lt_int64(b, 1).
+*/
 
 test(get_atom, A == abc) :-
     get_atom_ex(abc, A).

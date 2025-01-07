@@ -412,7 +412,7 @@ pushVolatileAtom(DECL_LD atom_t a)
 typedef unsigned int bitv_chunk;
 typedef struct bit_vector
 { size_t size;
-  bitv_chunk chunk[1];				/* bits */
+  bitv_chunk chunk[];				/* bits */
 } bit_vector;
 #define BITSPERE (sizeof(bitv_chunk)*8)
 
@@ -592,7 +592,7 @@ linkValI(Word p)
 }
 
 #define is_signalled(_) LDFUNC(is_signalled, _)
-static inline int
+static inline bool
 is_signalled(DECL_LD)
 { sigmask_t msk = 0;
 
@@ -620,8 +620,15 @@ register_attvar(DECL_LD Word gp)
   LD->attvar.attvars = gp;
 }
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+True when clause  is visible at generation.  This notably  needs to be
+critically aligned with committing  or discarding transactions.  These
+operations       update      cl->generation.erased       and      next
+cl->generation.created.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
 #define visibleClause(cl, gen) LDFUNC(visibleClause, cl, gen)
-static inline int
+static inline bool
 visibleClause(DECL_LD Clause cl, gen_t gen)
 { gen_t c, e;
 
@@ -645,7 +652,7 @@ visibleClause(DECL_LD Clause cl, gen_t gen)
 }
 
 #define visibleClauseCNT(cl, gen) LDFUNC(visibleClauseCNT, cl, gen)
-static inline int
+static inline bool
 visibleClauseCNT(DECL_LD Clause cl, gen_t gen)
 { if ( likely(visibleClause(cl, gen)) )
     return true;
@@ -744,6 +751,13 @@ mask) and may never be 0.
 #define KEY_INDEX_MAX 4
 
 static inline word
+clean_index_key(word key)
+{ key &= ~((word)STG_GLOBAL);
+  if ( !key ) key = 1;
+  return key;
+}
+
+static inline word
 murmur_key(const void *ptr, size_t n)
 { word k;
 
@@ -763,10 +777,7 @@ murmur_key(const void *ptr, size_t n)
   { k = MurmurHashAligned2(ptr, n, MURMUR_SEED);
   }
 
-  k &= ~((word)STG_GLOBAL);
-  if ( !k ) k = 1;
-
-  return k;
+  return clean_index_key(k);
 }
 
 		 /*******************************

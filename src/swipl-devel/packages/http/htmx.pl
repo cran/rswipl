@@ -34,7 +34,8 @@
 
 :- module(htmx,
           [ reply_htmx/1,               % +HTML
-            reply_htmx/2                % +HTML, +Request
+            reply_htmx/2,               % +HTML, +Request
+            htmx_oob//2                 % ++Id, :HTML
           ]).
 :- use_module(library(http/html_write)).
 
@@ -52,7 +53,7 @@ that cause an HTTP request. The  HTTP   response  is typically a (short)
 HTML fragment that extends or replaces  an   element  on  the page. This
 allows us to program a most functionality interactive seen in modern web
 applications using the powerful  SWI-Prolog   HTML  generation framework
-rather than having to write a  JSON backend and accompagnying JavaScript
+rather than having to write a  JSON backend and  accompanying JavaScript
 frontend that runs in the browser.
 
 Below is a minimal, yet fully functional application
@@ -97,7 +98,8 @@ additional utility predicates.
 
 :- html_meta
     reply_htmx(html),
-    reply_htmx(html, +).
+    reply_htmx(html, +),
+    htmx_oob(+, html, ?, ?).
 
 %!  reply_htmx(+HTML) is det.
 %!  reply_htmx(+HTML, +Request) is det.
@@ -115,3 +117,12 @@ reply_htmx(HTML) :-
 
 reply_htmx(HTML, _Request) :-
     reply_htmx(HTML).
+
+%!  htmx_oob(++Target, :HTML)// is det.
+%
+%   Emit an htmx out-of-band element.  HTML is used to swap the
+%   content of the DOM element with id Target.
+
+htmx_oob(Target, HTML) -->
+    html(div([id(Target), 'hx-swap-oob'(true)],
+             HTML)).

@@ -51,11 +51,11 @@
 #define	skip_list(l, tailp)		LDFUNC(skip_list, l, tailp)
 #define	is_acyclic(p)			LDFUNC(is_acyclic, p)
 #define	numberVars(t, opts, n)		LDFUNC(numberVars, t, opts, n)
-#define	duplicate_term(in, copy)	LDFUNC(duplicate_term, in, copy)
 #define	pl_statistics_ld(k, value, ld)	LDFUNC(pl_statistics_ld, k, value, ld)
 #define	ground(p)			LDFUNC(ground, p)
 #define	PL_same_term(t1, t2)		LDFUNC(PL_same_term, t1, t2)
 #define do_unify(t1, t2)		LDFUNC(do_unify, t1, t2)
+#define setarg(n, term, value, flags)   LDFUNC(setarg, n, term, value, flags)
 #endif /*USE_LD_MACROS*/
 
 #define LDFUNC_DECLARATIONS
@@ -70,7 +70,6 @@ intptr_t	skip_list(Word l, Word *tailp);
 intptr_t	lengthList(term_t list, int errors);
 int		is_acyclic(Word p);
 intptr_t	numberVars(term_t t, nv_options *opts, intptr_t n);
-int		duplicate_term(term_t in, term_t copy);
 word		stringToList(char *s);
 foreign_t	pl_sub_atom(term_t atom,
 			    term_t before, term_t len, term_t after,
@@ -88,8 +87,12 @@ int		PL_factorize_term(term_t term,
 int		PL_var_occurs_in(term_t var, term_t value);
 void		raiseInferenceLimitException(void);
 int		PL_same_term(term_t t1, term_t t2);
+bool		setarg(size_t argn, term_t term, term_t value,
+		       unsigned int flags);
 
 #undef LDFUNC_DECLARATIONS
 
+#define SETARG_BACKTRACKABLE    0x1
+#define SETARG_LINK		0x2
 
 #endif /*_PL_PRIMS_H*/

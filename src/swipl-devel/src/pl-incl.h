@@ -996,47 +996,50 @@ with one operation, it turns out to be faster as well.
 
 /* Flags on predicates (packed in uint64_t) */
 
-#define P_SSU_DET		(0x00000001LL) /* Single Sided Unification: det */
-#define P_CLAUSABLE		(0x00000002LL) /* Clause/2 always works */
-#define P_QUASI_QUOTATION_SYNTAX (0x00000004LL) /* {|Type||Quasi Quote|} */
-#define P_NON_TERMINAL		(0x00000008LL) /* Grammar rule (Name//ArityLL) */
-#define P_SHRUNKPOW2		(0x00000010LL) /* See reconsider_index(LL) */
-#define P_FOREIGN		(0x00000020LL) /* Implemented in C */
-#define P_NONDET		(0x00000040LL) /* Foreign: nondet */
-#define P_VARARG		(0x00000080LL) /* Foreign: use alt calling API */
-#define P_FOREIGN_CREF		(0x00000100LL) /* Foreign: ndet ctx is clause */
-#define P_DYNAMIC		(0x00000200LL) /* Dynamic predicate */
-#define P_THREAD_LOCAL		(0x00000400LL) /* Thread local predicate */
-#define P_VOLATILE		(0x00000800LL) /* Clauses are not saved */
-#define P_DISCONTIGUOUS		(0x00001000LL) /* Clauses are not together */
-#define P_MULTIFILE		(0x00002000LL) /* Clauses are in multiple files */
-#define P_PUBLIC		(0x00004000LL) /* Called from somewhere */
-#define P_ISO			(0x00008000LL) /* Part of the ISO standard */
-#define P_LOCKED		(0x00010000LL) /* Locked as system predicate */
-#define P_NOPROFILE		(0x00020000LL) /* Profile children, not me */
-#define P_TRANSPARENT		(0x00040000LL) /* Inherit calling module */
-#define P_META			(0x00080000LL) /* Has meta_predicate decl */
-#define P_MFCONTEXT		(0x00100000LL) /* Used for Goal@Module */
-#define P_DIRTYREG		(0x00200000LL) /* Part of GD->procedures.dirty */
-#define P_ERASED		(0x00400000LL) /* Predicate has been destroyed */
-#define HIDE_CHILDS		(0x00800000LL) /* Hide children from tracer */
-#define SPY_ME			(0x01000000LL) /* Spy point placed */
-#define TRACE_ME		(0x02000000LL) /* Can be debugged */
-#define P_DET			(0x04000000LL) /* Predicate is deterministic */
-#define P_AUTOLOAD		(0x08000000LL) /* autoload/2 explicit import */
-#define P_WAITED_FOR		(0x10000000LL) /* Someone is waiting for me */
-#define	P_LOCKED_SUPERVISOR	(0x20000000LL) /* Fixed supervisor */
-#define FILE_ASSIGNED		(0x40000000LL) /* Is assigned to a file */
-#define P_REDEFINED		(0x80000000LL) /* Overrules a definition */
-#define P_SIG_ATOMIC	      (0x0100000000LL) /* Do not call handleSignals */
-#define P_TRANSACT	      (0x0200000000LL) /* Subject to transactions */
+#define FLAG64(i) (1LL<<((i)-1))
+#define P_SSU_DET		FLAG64(1)  /* Single Sided Unification: det */
+#define P_CLAUSABLE		FLAG64(2)  /* Clause/2 always works */
+#define P_QUASI_QUOTATION_SYNTAX FLAG64(3) /* {|Type||Quasi Quote|} */
+#define P_NON_TERMINAL		FLAG64(4)  /* Grammar rule (Name//Arity) */
+#define P_SHRUNKPOW2		FLAG64(5)  /* See reconsider_index() */
+#define P_FOREIGN		FLAG64(6)  /* Implemented in C */
+#define P_NONDET		FLAG64(7)  /* Foreign: nondet */
+#define P_VARARG		FLAG64(8)  /* Foreign: use alt calling API */
+#define P_FOREIGN_CREF		FLAG64(9)  /* Foreign: ndet ctx is clause */
+#define P_DYNAMIC		FLAG64(10) /* Dynamic predicate */
+#define P_THREAD_LOCAL		FLAG64(11) /* Thread local predicate */
+#define P_LOCALISED		FLAG64(12) /* Thread local instance */
+#define P_VOLATILE		FLAG64(13) /* Clauses are not saved */
+#define P_DISCONTIGUOUS		FLAG64(14) /* Clauses are not together */
+#define P_MULTIFILE		FLAG64(15) /* Clauses are in multiple files */
+#define P_PUBLIC		FLAG64(16) /* Called from somewhere */
+#define P_ISO			FLAG64(17) /* Part of the ISO standard */
+#define P_LOCKED		FLAG64(18) /* Locked as system predicate */
+#define P_NOPROFILE		FLAG64(19) /* Profile children, not me */
+#define P_TRANSPARENT		FLAG64(20) /* Inherit calling module */
+#define P_META			FLAG64(21) /* Has meta_predicate decl */
+#define P_MFCONTEXT		FLAG64(22) /* Used for Goal@Module */
+#define P_DIRTYREG		FLAG64(23) /* Part of GD->procedures.dirty */
+#define P_ERASED		FLAG64(24) /* Predicate has been destroyed */
+#define HIDE_CHILDS		FLAG64(25) /* Hide children from tracer */
+#define SPY_ME			FLAG64(26) /* Spy point placed */
+#define TRACE_ME		FLAG64(27) /* Can be debugged */
+#define P_DET			FLAG64(28) /* Predicate is deterministic */
+#define P_AUTOLOAD		FLAG64(29) /* autoload/2 explicit import */
+#define P_WAITED_FOR		FLAG64(30) /* Someone is waiting for me */
+#define	P_LOCKED_SUPERVISOR	FLAG64(31) /* Fixed supervisor */
+#define FILE_ASSIGNED		FLAG64(32) /* Is assigned to a file */
+#define P_REDEFINED		FLAG64(33) /* Overrules a definition */
+#define P_SIG_ATOMIC		FLAG64(34) /* Do not call handleSignals */
+#define P_TRANSACT		FLAG64(35) /* Subject to transactions */
 #define PROC_DEFINED		(P_DYNAMIC|P_FOREIGN|P_MULTIFILE|\
 				 P_DISCONTIGUOUS|P_LOCKED_SUPERVISOR)
+#define P_RELOADING		P_MODIFIED /* We are reloading */
 /* flags for p_reload data (reconsult) */
-#define P_MODIFIED	      (0x1000000000LL) /* Clause list as modified */
-#define P_NEW		      (0x2000000000LL) /* New predicate */
-#define P_NO_CLAUSES	      (0x4000000000LL) /* Foreign or thread local */
-#define P_CHECK_SSU	      (0x8000000000LL) /* Check mixed => and :- */
+#define P_MODIFIED		FLAG64(36) /* Clause list is modified */
+#define P_NEW			FLAG64(37) /* New predicate */
+#define P_NO_CLAUSES		FLAG64(38) /* Foreign or thread local */
+#define P_CHECK_SSU		FLAG64(39) /* Check mixed => and :- */
 
 /* Flags on clauses (unsigned int) */
 
@@ -1425,7 +1428,7 @@ struct clause
 typedef struct arg_info
 { float		speedup;		/* Computed speedup */
   unsigned	list	   : 1;		/* Index using lists */
-  unsigned	ln_buckets : 5;		/* lg2(bucket count) */
+  unsigned	ln_buckets : 5;		/* lg2(bucket count) (max 4G buckets) */
   unsigned	assessed   : 1;		/* Value was assessed */
   unsigned int	meta	   : 4;		/* Meta-argument info */
 } arg_info;
@@ -1459,6 +1462,9 @@ typedef struct clause_list
   unsigned int	number_of_clauses;	/* number of associated clauses */
   unsigned int	erased_clauses;		/* number of erased clauses in set */
   unsigned int	number_of_rules;	/* number of real rules */
+  unsigned	unindexed : 1;		/* no index possible */
+  unsigned	fixed_indexes : 1;	/* Do not search for alternatives */
+  unsigned	pindex_verified : 1;	/* Primary index is verified */
   iarg_t	jiti_tried;		/* number of times we tried to find */
   iarg_t	primary_index;		/* Index used to link clauses */
 } clause_list, *ClauseList;
@@ -1806,6 +1812,7 @@ typedef struct exception_frame		/* PL_throw exception environments */
 typedef struct queryRef
 { PL_engine_t	engine;			/* Engine for the query */
   uintptr_t	offset;			/* queryFrane offset in local stack */
+  void*		data[PL_MAX_QUERY_DATA];/* User data */
 } *QueryRef;
 
 #define QF_NODEBUG		0x0001	/* debug-able query */
@@ -2246,25 +2253,24 @@ static_assertion(SIG_PROLOG_OFFSET >= MINSIGNAL && SIG_PROLOG_OFFSET + NUM_VSIGS
  * the predefined VSIG numbers */
 #define SIG_USER_OFFSET	  (SIG_PROLOG_OFFSET+VSIG_MAX)
 
-/* Get a zero-based array index for this signal */
-#define SIGNAL_INDEX(sig)	((sig) - MINSIGNAL)
 /* Return the signal given an array index */
 #define SIGNAL_FROM_INDEX(idx)	((idx) + MINSIGNAL)
 /* Is this a valid signal number? */
 #define IS_VALID_SIGNAL(sig)	((sig) >= MINSIGNAL && (sig) <= MAXSIGNAL)
 /* Is this a virtual signal? */
 #define IS_VSIG(sig)		((sig) >= SIG_PROLOG_OFFSET)
-
-#if O_DEBUG
-#undef SIGNAL_INDEX
+/* Get a zero-based array index for this signal */
 static inline int
 SIGNAL_INDEX(int sig)
-{ assert(IS_VALID_SIGNAL(sig));
+{
+#if O_DEBUG
+  assert(IS_VALID_SIGNAL(sig));
+#endif
   return sig - MINSIGNAL;
 }
-#endif
 
-/* We want fast types for signal bitmasks; on a 64-bit arch this is probably the same as uint64_t */
+/* We want fast types for signal bit masks; on a 64-bit arch
+ * this is probably the same as uint64_t */
 typedef uint_fast32_t		sigmask_t;
 
 /* How many bits can fit in a single sigmask_t? */
@@ -2949,6 +2955,10 @@ static inline int __ptr_to_bool(const intptr_t ptr) { return ptr != 0; }
 	(WEAK_FUNC(Name) != NULL ? WEAK_FUNC(Name)(__VA_ARGS__) : 0)
 #define WEAK_TRY_CALL_VOID(Name, ...) \
 	(WEAK_FUNC(Name) != NULL ? WEAK_FUNC(Name)(__VA_ARGS__) : (void)0)
+
+#if defined(O_ENGINES) && !defined(O_PLMT)
+extern struct PL_local_data *PL_current_engine_ptr;
+#endif
 
 #include "pl-util.h"			/* (Debug) utilities */
 #include "pl-alloc.h"			/* Allocation primitives */

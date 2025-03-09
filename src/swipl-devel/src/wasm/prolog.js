@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker and Raivo Laanemets
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2022, SWI-Prolog Solutions b.v.
+    Copyright (c)  2022-2025, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -31,6 +31,113 @@
     ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
 */
+
+		 /*******************************
+		 *	  MODULE DEFAULTS	*
+		 *******************************/
+
+Module.noInitialRun = true;
+
+
+		 /*******************************
+		 *	   BIND OUTPUT		*
+		 *******************************/
+
+/* Set `Module.on_output` to a function that receives the next output
+   fragment.  This may be a line or the result of a flush.  The passed
+   line will end with a newline if the flush is due to a newline.
+
+   This function will normally ass a `span` element to the DOM that
+   has the following style:
+
+   ```
+   .stderr, .stdout {
+      white-space: pre-wrap;
+      font-family: monospace;
+      overflow-wrap: anywhere;
+    }
+    ```
+
+    The second argument is one of "stdout" or "stderr", depending on the
+    stream flushed.
+*/
+
+let decoder;
+let buffers =
+    {  stdout: [],
+       stderr: []
+    };
+
+function write(to, c)
+{ const buf = buffers[to];
+
+  if ( c == 10 && buf.length == 0 )
+    buf.push(32);
+  if ( c )
+    buf.push(c);
+
+  if ( c == 10 || c == null )
+    flush(to);
+}
+
+function decode(bytes)
+{ const ar = new Uint8Array(bytes.length);
+
+  for(var i=0; i<bytes.length; i++)
+  { let c = bytes[i];
+
+    if ( c < 0 )
+      c = 256+c;
+
+    ar[i] = c;
+  }
+
+  return decoder.decode(ar);
+}
+
+function flush(to)
+{ if ( buffers[to].length )
+  { const line = decode(buffers[to]);
+
+    Module.on_output(line, to);
+    buffers[to] = [];
+  }
+}
+
+
+function log_output(stream, args)
+{ if ( module.on_output )
+  { let s = "";
+
+    flush(stream);
+    args.forEach((a) => { s += a; });
+    Module.on_output(s, stream);
+  } else
+  { console.log.apply(null, args);
+  }
+}
+
+
+function bind_std_streams()
+{ decoder = new TextDecoder('utf-8');
+  Module.FS.init(undefined,
+		 (c) => write("stdout", c),
+		 (c) => write("stderr", c));
+}
+
+if ( Module.on_output )
+{ if (typeof Module.preRun === 'function') {
+    Module.preRun = [ Module.preRun ]
+  } else if (!Array.isArray(Module.preRun)) {
+    Module.preRun = []
+  }
+
+  Module.preRun.push(bind_std_streams);
+}
+
+		 /*******************************
+		 *        PROLOG CLASSES        *
+		 *******************************/
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Notes:
@@ -154,19 +261,22 @@ const class_abortable_promise = (class AbortablePromise extends Promise {
 
 class Prolog
 { constructor(module, args)
-  { this.module = module;
-    this.args = args;
-    this.lastyieldat = 0;
+  { this.module = module;		// Emscripten module
+    this.args = args;			// Prolog initialization args
     this.functor_arg_names_ = {};
     this.objects = {};			// id --> Object
-    this.object_ids = new WeakMap();	// objec --> id
+    this.object_ids = new WeakMap();	// object --> id
     this.next_object_id = 0;
-    this.open_queries = [];		// Stack with open queries
 
     this.__set_foreign_constants();
     this.__bind_foreign_functions();
     this.__export_classes();
     this.__initialize();
+
+    this.__engine_id = 0;		// GenId for anonymous engines
+    this.__id_engines = {};		// id --> Engine
+    this.engines = {};			// name --> Engine
+    this.main_engine = this.__init_main_engine("main");
   }
 
 
@@ -200,6 +310,7 @@ class Prolog
     this.List	  = class_list;
     this.Blob	  = class_blob;
     this.Promise  = class_abortable_promise;
+    this.Engine   = class_engine;
   }
 
   __set_foreign_constants()
@@ -290,6 +401,13 @@ class Prolog
     this.PL_S_TRUE		 = 1;
     this.PL_S_LAST		 = 2;
     this.PL_S_YIELD		 = 255;
+
+    this.PL_ENGINE_MAIN		 = 1;
+    this.PL_ENGINE_CURRENT	 = 2;
+    this.PL_ENGINE_NONE		 = 3;
+    this.PL_ENGINE_SET		 = 0;
+    this.PL_ENGINE_INVAL	 = 2;
+    this.PL_ENGINE_INUSE	 = 3;
 
     this.PL_WRT_QUOTED		 = 0x0001;
     this.PL_WRT_NEWLINE		 = 0x2000;
@@ -395,6 +513,24 @@ class Prolog
 	'PL_exception', 'number', ['number']),
       PL_raise_exception: this.module.cwrap(
 	'PL_raise_exception', 'number', ['number']),
+      PL_query_engine: this.module.cwrap(
+	'PL_query_engine', 'number', ['number']),
+      PL_query_arguments: this.module.cwrap(
+	'PL_query_arguments', 'number', ['number']),
+      PL_set_query_data: this.module.cwrap(
+	'PL_set_query_data', 'number', ['number', 'number', 'number']),
+      PL_query_data: this.module.cwrap(
+	'PL_query_data', 'number', ['number', 'number']),
+      PL_current_engine: this.module.cwrap(
+	'PL_current_engine', 'number', []),
+      PL_create_engine: this.module.cwrap(
+	'PL_create_engine', 'number', ['number']),
+      PL_destroy_engine: this.module.cwrap(
+	'PL_destroy_engine', 'number', ['number']),
+      _PL_switch_engine: this.module.cwrap(
+	'_PL_switch_engine', 'number', ['number']),
+      _PL_reset_engine: this.module.cwrap(
+	'_PL_reset_engine', 'number', ['number', 'number']),
       WASM_ttymode: this.module.cwrap(
 	'WASM_ttymode', 'number', []),
       WASM_yield_request: this.module.cwrap(
@@ -408,6 +544,28 @@ class Prolog
       js_get_obj: this.module.cwrap(
 	'js_get_obj', 'number', ['number'])
     };
+  }
+
+  __init_main_engine(name)
+  { const eid = this.bindings.PL_current_engine();
+    return new this.Engine(name, {prolog:this, eid:eid});
+  }
+
+/**
+ * Return the active Engine.  If this is not known to
+ * JavaScript, give it a unique name.
+ * @return {Engine} or `undefined`
+ */
+  current_engine()
+  { const eid = this.bindings.PL_current_engine();
+    if ( eid )
+    { if ( this.__id_engines[eid] )
+      { return this.__id_engines[eid];
+      } else
+      { return new this.Engine(undefined, {prolog:this, eid:eid});
+      }
+    }
+    // else `undefined`
   }
 
 /**
@@ -430,7 +588,7 @@ class Prolog
 	{ const term = this.new_term_ref();
 
 	  if ( !this.chars_to_term(goal, term) )
-	    throw new Error('Query has a syntax error: ' + query);
+	    throw new Error(`Query has a syntax error: ${query}`);
 
 	  const module = opts.module ? this.new_module(opts.module)
 				     : this.MODULE_user;
@@ -447,10 +605,10 @@ class Prolog
  * within the scope of the frame;
  */
 
-  with_frame(f, persist)
+  with_frame(func, persist)
   { const fid = this.bindings.PL_open_foreign_frame();
     if ( fid )
-    { const rc = f.call(this);
+    { const rc = func.call(this);
       if ( persist === false )
 	this.bindings.PL_discard_foreign_frame(fid);
       else
@@ -648,105 +806,157 @@ class Prolog
 
   /**
    * Signature:
-   *  - query(module, flags, pred, argv, [map], [fid])
-   *  - query(goal[, input])
+   *  - query(goal, [input])
+   *  - query(module, flags, pred, argv, [map], [fid]) (deprecated)
    */
 
-  query(module, flags, pred, argv, map, fid)
-  { if ( typeof(argv) === "number" )	   /* term_t array */
-    { return new Query(this, module, flags, pred, argv, map);
-    } else if ( typeof(module) === "string" && pred === undefined )
-    { const goal = module;
-      const fid = this.bindings.PL_open_foreign_frame();
-      const av = this.new_term_ref(3);
-      const input = flags||{};
+  query(...argv)
+  { if ( typeof argv[3] === "number" )
+      return this.__query(...argv)
+    else
+      return this.query2(...argv)
+  }
 
-      this.frame = fid;
-      this.put_chars(av+0, goal);
-      this.toProlog(input, av+1);
-      const q = new Query(this, 0, this.PL_Q_CATCH_EXCEPTION,
+  /** Run a  query from a  goal represented  as a string,  an optional
+   * input object and optional options.
+   *
+   * @param {String} goal provides the goal using valid Prolog syntax
+   * @param {Object} [input] provides bindings for a subset of the
+   * variables in `goal`.  The remaining variables that do not start
+   * with an `_` are used to form the result object.
+   * @param {Boolean} [options.engine] If `true`, run the goal in a
+   * temporary engine.  Default is to use the current engine.  See
+   * also Engine.query()
+   */
+
+  query2(goal, input, options)
+  { const prolog = this;
+
+    function __query(goal, input, options)
+    { const fid = prolog.bindings.PL_open_foreign_frame();
+      const av = prolog.new_term_ref(3);
+
+      input = input||{};
+      options = options||{};
+      prolog.put_chars(av+0, goal);
+      prolog.toProlog(input, av+1);
+
+      const q = new Query(prolog, 0, prolog.PL_Q_CATCH_EXCEPTION,
 			  "wasm_call_string/3", av,
-			  (a) => this.toJSON(a+2));
+			  { map: (a) => prolog.toJSON(a+2),
+			    frame: fid,
+			    ...options
+			  });
       q.from_text = true;
       return q;
     }
+
+    if ( options && options.engine )
+    { const e = new prolog.Engine({auto_close:true});
+      return e.with(() => __query(goal, input, options))
+    } else
+    { return __query(goal, input, options)
+    }
   }
 
+  __query(module, flags, pred, argv, map, fid)
+  { return new Query(this, module, flags, pred, argv,
+		     { map:map, frame:fid});
+  }
 
   /**
    * Run a possibly long running goal and process its answers.
    * Signature:
-   *  - foreach(goal, [input], [callback])
+   *  - foreach(goal, [input], [callback], [options])
    * @return {Promise} that is resolved on completion and rejected on
    * a Prolog exception.
    */
 
-
   forEach(goal, ...args)
   { const prolog = this;
-    const fid = this.bindings.PL_open_foreign_frame();
-    const av = this.new_term_ref(3);
-    let callback;
     let input;
+    let callback;
+    let options;
 
     if ( typeof(args[0]) === "object" )
     { input = args[0];
-      callback = args[1];
+      args.shift();
     } else
-    { input = {};
-      callback = args[0];
+      input = {};
+
+    if ( typeof(args[0]) === "function" )
+    { callback = args[0];
+      args.shift();
     }
 
-    if ( callback !== undefined && typeof(callback) !== "function" )
-      throw TypeError("callback must be a function");
+    if ( typeof(args[0]) === "object" )
+    { options = args[0];
+    } else
+      options = {};
 
-    this.frame = fid;
-    this.put_chars(av+0, goal);
-    this.toProlog(input, av+1);
+    function __foreach(goal, input, callback, heartbeat)
+    { const fid = prolog.bindings.PL_open_foreign_frame();
+      const av = prolog.new_term_ref(4);
+      prolog.put_chars(av+0, goal);
+      prolog.toProlog(input, av+1);
+      if ( heartbeat !== undefined )
+	prolog.toProlog(heartbeat, av+3);
 
-    const q = new Query(this, this.MODULE_user,
-			this.PL_Q_ALLOW_YIELD|this.PL_Q_CATCH_EXCEPTION,
-			"wasm_call_string_with_heartbeat/3", av,
-			(a) => this.toJSON(a+2));
+      const q = new Query(prolog, prolog.MODULE_user,
+			  prolog.PL_Q_ALLOW_YIELD|prolog.PL_Q_CATCH_EXCEPTION,
+			  "wasm_call_string_with_heartbeat/4", av,
+			  { map: (a) => prolog.toJSON(a+2),
+			    frame: fid
+			  });
 
-    return new Promise(function(resolve, reject) {
-      let answers = callback ? 0 : [];
+      return new Promise(function(resolve, reject) {
+	let answers = callback ? 0 : [];
 
-      function next_foreach(rc)
-      { while(true)
-	{ if ( rc.yield !== undefined )
-	  { switch(rc.yield)
-	    { case "beat":
-		return setTimeout(() => next_foreach(rc.resume("true")), 0);
-	      case "builtin":
-		return rc.resume((rc) => next_foreach(rc));
-	      default:		// unsupported yield
-		throw(rc);
+	function next_foreach(rc)
+	{ while(true)
+	  { if ( rc.yield !== undefined )
+	    { switch(rc.yield)
+	      { case "beat":
+		  return setTimeout(() =>
+		    q.engine.with(() =>
+		      next_foreach(rc.resume("true"))));
+		case "builtin":
+		  return rc.resume((rc) => next_foreach(rc));
+		default:		// unsupported yield
+		  throw(rc);
+	      }
+	    } else if ( rc.value )
+	    { if ( callback )
+	      { answers++;
+		callback.call(prolog, rc.value);
+	      } else
+	      { answers.push(rc.value);
+	      }
+
+	      if ( rc.done == false )
+	      { rc = q.next_yieldable();
+		continue;
+	      }
 	    }
-	  } else if ( rc.value )
-	  { if ( callback )
-	    { answers++;
-	      callback.call(prolog, rc.value);
-	    } else
-	    { answers.push(rc.value);
-	    }
 
-	    if ( rc.done == false )
-	    { rc = q.next_yieldable();
-	      continue;
-	    }
+	    q.close();
+	    if ( rc.error )
+	      return reject(rc.message);
+	    if ( rc.done )
+	      return resolve(answers);
 	  }
-
-	  q.close();
-	  if ( rc.error )
-	    return reject(rc.message);
-	  if ( rc.done )
-	    return resolve(answers);
 	}
-      }
 
-      return next_foreach(q.next_yieldable());
-    });
+	return next_foreach(q.next_yieldable());
+      });
+    } // end __foreach()
+
+    if ( options.engine )
+    { const e = new prolog.Engine({auto_close:true});
+      return e.with(() => __foreach(goal, input, callback, options.heartbeat))
+    } else
+    { return __foreach(goal, input, callback, options.heartbeat);
+    }
   }
 
 
@@ -967,7 +1177,7 @@ class Prolog
  * using the passed function. The returned object may provide an `abort`
  * key to abort the query immediately.
  *
- * @param {String_t} goal  Prolog goal to be called
+ * @param {String} goal  Prolog goal to be called
  * @param {String} [module] Module in which to call the goal.
  * @return Either the result of Query.next() or a _yield_ request as
  * described above.
@@ -984,7 +1194,8 @@ class Prolog
     const term = this.new_term_ref();
     if ( !this.chars_to_term(goal, term) )
       throw new Error('Query has a syntax error: ' + query);
-    const q = this.query(module, flags, pred_call1, term, undefined, fid);
+    const q = new Query(this, module, flags, pred_call1, term,
+			{ frame:fid });
     return q.next_yieldable();
   }
 
@@ -1359,25 +1570,140 @@ class Prolog
 
 
 /**
- * Open a new query.  Signatures:
+ * class Engine([name], [options])
  *
- *  1) module:{String|0},
- *     flags:{Integer},
- *     predicate:{String|predicate_t},
- *     argv:{term_t}
- *     [map]:{Function}
- *     [fid]:{fid_t}
- *  2) module:{String|0},
- *     flags:{Integer},
- *     predicate:{String|predicate_t},
- *     argv:{Array}
+ * @param {String} [name] is the identifier name of the engine.  When
+ * omitted, a _genid_ `engine<n>` is created.
+ * @param {Prolog} [options.prolog] identifies the Prolog instance.
+ * Only used to create the initial engine.
+ * @param {engine_t} [options.eid] is the WASM identifier for the engine.
+ * @param {Boolean}  [options.auto_close] Causes the engine to be closed
+ * when the last query is closed.
+ */
+
+const class_engine = (class Engine{
+  constructor(...argv)
+  { let name;
+    let options = {};
+
+    if ( typeof argv[0] === 'object' )
+    { options = argv[0];
+    } else if ( typeof argv[0] === 'string' )
+    { name = argv[0];
+      if ( typeof argv[1] === 'object' )
+      { options = argv[1];
+      }
+    }
+
+    const prolog = options.prolog||Module.prolog;
+    if ( name && prolog.engines[name] )
+      return prolog.engines[name];
+    name = name||("engine" + ++prolog.__engine_id);
+    const eid = options.eid ? options.eid
+                            : prolog.bindings.PL_create_engine(0);
+    this.name = name;
+    this.eid = eid;
+    this.prolog = prolog;
+    this.open = true;
+    prolog.__id_engines[eid] = this;
+    prolog.engines[name]   = this;
+    this.open_queries = [];
+    this.lastyieldat = 0;
+    this.auto_close = !!options.auto_close;
+  }
+
+  __push_query(q)
+  { this.open_queries.push(q);
+  }
+
+  __pop_query(q)
+  { this.__must_be_innermost_query(q);
+    this.open_queries.pop();
+    if ( this.auto_close && this.open_queries.length == 0 )
+      this.close();
+  }
+
+  __must_be_innermost_query(q)
+  { if ( q != this.open_queries.at(-1) )
+      throw new Error("Attempt to access not innermost query");
+  }
+
+  close()
+  { if ( this.open )
+    { if ( this.name === "main" )
+        throw new Error('Cannot close "main" engine')
+      this.prolog.bindings.PL_destroy_engine(this.eid);
+      delete this.prolog.__id_engines[this.eid];
+      delete this.prolog.engines[this.name];
+      this.open = false;
+    }
+  }
+
+
+  /**
+   * Run Prolog goal on a specific engine
+   */
+  call(goal, opts)
+  { return this.with(() => this.prolog.call(goal, opts));
+  }
+
+  /**
+   * Run a query on a specific engine
+   */
+  query(...args)
+  { return this.with(() => this.prolog.query(...args));
+  }
+
+  /**
+   * Run Prolog goals on a specific engine
+   */
+  forEach(goal, ...args)
+  { return this.with(() => this.prolog.forEach(goal, ...args));
+  }
+
+  /**
+   * Create a frame on a specific engine
+   */
+  with_frame(func, persist)
+  { return this.with(() => this.prolog.with_frame(func, persist));
+  }
+
+  /**
+   * Run code using a given engine.
+   * @param engine is the engine to use
+   * @param func is the code to execute under this engine.
+   */
+
+  with(func)
+  { const old = this.prolog.bindings._PL_switch_engine(this.eid);
+    let rc;
+    if ( old )
+      rc = func.call(this);
+    this.prolog.bindings._PL_reset_engine(old);
+    return rc;
+  }
+});
+
+/**
+ * Open a new query.  Signature:
+ *
+ *     new Query(module:{String|0},
+ *               flags:{Integer},
+ *               predicate:{String|predicate_t},
+ *               argv:{term_t}
+ *               [options]: {Object}
  *
  * @param {String} [module] Optional module name
+ * @param {Function} [options.map] Function to map `term_t` into
+ *        properties of the Query.next() result object.
+ * @param {fid_t} [options.frame] Prolog frame used to create
+ *        the query.  Must be closed when the query is closed.
  */
 
 class Query {
-  constructor(prolog, module, flags, pred, argv, map, fid)
-  { module = module ? prolog.new_module(module) : 0;
+  constructor(prolog, module, flags, pred, argv, options)
+  { options = options||{};
+    module = typeof module === "string" ? prolog.new_module(module) : 0;
     if ( typeof(pred) === "string" )
       pred = prolog.predicate(pred);
     flags |= prolog.PL_Q_EXT_STATUS;
@@ -1386,14 +1712,14 @@ class Query {
 		    prolog.PL_Q_NORMAL)) )
       flags |= prolog.PL_Q_CATCH_EXCEPTION;
 
-    this.flags  = flags;
-    this.prolog = prolog;
-    this.map    = map;
-    this.qid    = prolog.bindings.PL_open_query(module, flags, pred, argv);
-    this.open   = true;
-    this.argv   = argv;
-    this.frame  = fid;
-    prolog.open_queries.push(this);
+    this.options = options;
+    this.flags   = flags;
+    this.prolog  = prolog;
+    this.engine  = prolog.current_engine();
+    this.qid     = prolog.bindings.PL_open_query(module, flags, pred, argv);
+    this.open    = true;
+    this.argv    = argv;
+    this.engine.__push_query(this);
   }
 
   [Symbol.iterator]() {
@@ -1401,41 +1727,56 @@ class Query {
     return this;
   }
 
-  next()
+  // Run on engine of query
+  once()           { return this.engine.with(() => this.__once()); }
+  next()           { return this.engine.with(() => this.__next()); }
+  next_yieldable() { return this.engine.with(() => this.__next_yieldable()); }
+  close()          { return this.engine.with(() => this.__close()); }
+
+  // Actual implementations, running on current engine
+  __next()
   { const prolog = this.prolog;
+    const engine = this.engine;
     const argv   = this.argv;
 
     if ( !this.open )
       return { done: true };
 
-    if ( this != prolog.open_queries.at(-1) )
-      console.log("Attempt for Query.next() on not innermost query");
+    engine.__must_be_innermost_query(this);
+
+    function map_result(query, argv)
+    { if ( query.options.map )
+        return query.options.map.call(query, argv);
+      return argv;
+    }
 
     switch(prolog.bindings.PL_next_solution(this.qid))
     { case prolog.PL_S_EXCEPTION:
       { /* `value` is `undefined` */
 	if ( (this.flags & prolog.PL_Q_NORMAL) )
-	{ this.close();
+	{ this.__close();
 	  return { done: !this.is_iterator, error: true }
 	} else
 	{ const msg = prolog.message_to_string(
 				 prolog.bindings.PL_exception(this.qid));
 	  console.log(msg);
-	  this.close();
+	  this.__close();
 	  return { done: !this.is_iterator, error: true, message: msg };
 	}
       }
       case prolog.PL_S_FALSE:
-	this.close();
+	this.__close();
 	return { done: true };
       case prolog.PL_S_LAST:
-	this.close();
-        return { done: !this.is_iterator,
-		 value: this.map ? this.map.call(this, argv) : argv
-	       };
+      { const rc = { done: !this.is_iterator,
+		     value: map_result(this, argv)
+		   };
+	this.__close();
+        return rc;
+      }
       case prolog.PL_S_TRUE:
 	return { done: false,
-		 value: this.map ? this.map.call(this, argv) : argv
+		 value: map_result(this, argv)
 	       };
       case prolog.PL_S_YIELD:
       { let request = prolog.yield_request();
@@ -1445,19 +1786,20 @@ class Query {
 		 yield: request,
 		 resume: (value) =>
 		 { prolog.set_yield_result(value);
-		   return this.next();
+		   return this.__next();
 		 }
 	       };
       }
     }
   }
 
-  next_yieldable()
-  { function next(query)
+  __next_yieldable()
+  { function ynext(query)
     { const prolog = query.prolog;
+      const engine = query.engine;
 
       while(true)
-      { let rc = query.next();
+      { let rc = query.__next();
 
 	if ( rc.yield !== undefined )
 	{ let request = rc.yield;
@@ -1470,31 +1812,37 @@ class Query {
 
 	  if ( request === "beat" )
 	  { const now = Date.now();
-	    const passed = now - prolog.lastyieldat;
+	    const passed = now - engine.lastyieldat;
 
 	    if ( passed < 20 )
 	    { prolog.set_yield_result("true");
 	      continue;
 	    }
-	    prolog.lastyieldat = now;
+	    engine.lastyieldat = now;
 	  } else if ( request instanceof Promise )
 	  { let result = { yield: "builtin",
 			   request: request,
 			   query: query,
 			   resume: (cont) =>
 			   { if ( typeof(cont) === "string" )
-			     { prolog.set_yield_result(cont);
-			       return next(query);
+			     { return query.engine.with(() => {
+				 prolog.set_yield_result(cont);
+				 return ynext(query);
+			       });
 			     } else
 			     { result.cont = cont;
 			       request
 			       .then((value) =>
-				 { prolog.set_yield_result(value);
-				   cont.call(prolog, next(query));
+				 { query.engine.with(() => {
+				     prolog.set_yield_result(value);
+				     cont.call(prolog, ynext(query));
+				   })
 				 })
 			       .catch((error) =>
-				 { prolog.set_yield_result({$error: error});
-				   cont.call(prolog, next(query));
+				 { query.engine.with(() => {
+				     prolog.set_yield_result({$error: error});
+				     cont.call(prolog, ynext(query));
+				   })
 				 })
 			     }
 			   },
@@ -1508,20 +1856,20 @@ class Query {
 	    return result;
 	  }
 
-	  // Get back here instead of Query.next()
+	  // Get back here instead of Query.ynext()
 	  rc.resume = (value) =>
 	  { prolog.set_yield_result(value);
-	    return next(query);
+	    return ynext(query);
 	  };
 	} else if ( rc.done === false )
-	{ rc.resume = () => next(query);
+	{ rc.resume = () => ynext(query);
 	}
 
 	return rc;
       }
     }
 
-    return next(this);
+    return ynext(this);
   }
 
   /**
@@ -1531,9 +1879,9 @@ class Query {
    * completed without an error.
    */
 
-  once()
+  __once()
   { const rc = this.next();
-    this.close();
+    this.__close();
     if ( this.from_text )
     { delete rc.done;
       if ( rc.value )
@@ -1549,18 +1897,16 @@ class Query {
     }
   }
 
-  close()
+  __close()
   { if ( this.open )
     { const prolog = this.prolog;
-
-      if ( this != prolog.open_queries.at(-1) )
-	console.log("Attempt for Query.close() on not innermost query");
-      prolog.open_queries.pop();
+      const engine = this.engine;
 
       this.prolog.bindings.PL_cut_query(this.qid);
-      if ( this.frame )
-	this.prolog.bindings.PL_discard_foreign_frame(this.frame);
+      if ( this.options.frame )
+	this.prolog.bindings.PL_discard_foreign_frame(this.options.frame);
       this.open = false;
+      engine.__pop_query(this);
     }
   }
 }
@@ -1570,9 +1916,8 @@ class Query {
 		 *   BIND PROLOG TO THE MODULE  *
 		 *******************************/
 
-
 Module.onRuntimeInitialized = function()
-{ Module.prolog = new Prolog(Module, Module.arguments);
+{ Module.prolog = new Prolog(Module, arguments_);
 };
 
 		 /*******************************

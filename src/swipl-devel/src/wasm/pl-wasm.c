@@ -3,9 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2022, University of Amsterdam
-                         VU University Amsterdam
-		         CWI, Amsterdam
+    Copyright (c)  2022-2025, SWI-Prolog Solutions.h
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -75,25 +73,25 @@ WASM_variable_id(term_t t)
  * Out
  */
 
-static term_t yield_request = 0;
-static term_t yield_result  = 0;
-static int    yield_unified = false;
-
 static
 PRED_IMPL("$await", 2, await, PL_FA_NONDETERMINISTIC)
-{ switch(CTX_CNTRL)
+{ PRED_LD
+
+  switch(CTX_CNTRL)
   { case FRG_FIRST_CALL:
-    { yield_request = A1;
-      yield_result  = A2;
-      yield_unified = false;
-      PL_yield_address(&yield_request);
+    { DEBUG(MSG_WASM_ASYNC, Sdprintf("$await: wait on engine %p\n", LD));
+      LD->wasm.yield_request = A1;
+      LD->wasm.yield_result  = A2;
+      LD->wasm.yield_unified = false;
+      PL_yield_address(&LD->wasm.yield_request);
     }
     case PL_RESUME:
-    { int rc = yield_unified;
+    { DEBUG(MSG_WASM_ASYNC, Sdprintf("$await: resume on engine %p\n", LD));
+      bool rc = LD->wasm.yield_unified;
 
-      yield_request = 0;
-      yield_result  = 0;
-      yield_unified = false;
+      LD->wasm.yield_request = 0;
+      LD->wasm.yield_result  = 0;
+      LD->wasm.yield_unified = false;
 
       return rc;
     }
@@ -105,12 +103,22 @@ PRED_IMPL("$await", 2, await, PL_FA_NONDETERMINISTIC)
 
 term_t
 WASM_yield_request(void)
-{ return yield_request;
+{ GET_LD
+  return LD->wasm.yield_request;
 }
 
 void
 WASM_set_yield_result(term_t result)
-{ yield_unified = PL_unify(yield_result, result);
+{ GET_LD
+
+  DEBUG(MSG_WASM_ASYNC,
+	Sdprintf("set_yield_result: on engine %p; "
+		 "LD->wasm.yield_result = %zd\n",
+		 LD, LD->wasm.yield_result));
+  if ( !LD->wasm.yield_result )
+    PL_api_error("WASM_set_yield_result(): not in await/2");
+
+  LD->wasm.yield_unified = PL_unify(LD->wasm.yield_result, result);
 }
 
 static

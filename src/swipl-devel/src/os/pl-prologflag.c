@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2024, University of Amsterdam
+    Copyright (c)  2011-2025, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -47,6 +47,7 @@
 #include "pl-ctype.h"
 #include "pl-funct.h"
 #include "../pl-arith.h"
+#include "../pl-index.h"
 #include "../pl-tabling.h"
 #include "../pl-fli.h"
 #include "../pl-write.h"
@@ -930,6 +931,8 @@ set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, unsigned shor
       return tbl_set_restraint_flag(value, k) ? PSEUDO_FLAG : NULL;
     if ( is_arith_flag(k) )
       return set_arith_flag(value, k) ? PSEUDO_FLAG : NULL;
+    if ( ci_is_flag(k) )
+      return ci_set_flag(value, k) ? PSEUDO_FLAG : NULL;
 
 #ifdef O_PLMT
     if ( GD->statistics.threads_created > 1 )
@@ -1220,7 +1223,7 @@ set_prolog_flag_unlocked(DECL_LD Module m, atom_t k, term_t value, unsigned shor
       { if ( i < 0 )
 	  return PL_error(NULL, 0, NULL, ERR_DOMAIN,
 			  ATOM_not_less_than_zero, value),NULL;
-	LD->yield.frequency = i/16;
+	LD->yield.frequency = (i+15)/16;
       }
 
       f->value.i = i;
@@ -1504,6 +1507,8 @@ unify_prolog_flag_value(DECL_LD Module m, atom_t key, prolog_flag *f, term_t val
   { return tbl_get_restraint_flag(val, key) == true;
   } else if ( is_arith_flag(key) )
   { return get_arith_flag(val, key) == true;
+  } else if ( ci_is_flag(key) )
+  { return ci_get_flag(val, key);
   }
 
   switch(f->flags & FT_MASK)
@@ -1920,6 +1925,7 @@ initPrologFlags(void)
 #endif
 #ifdef O_PLMT
   setPrologFlag("threads",	FT_BOOL, !GD->options.nothreads, 0);
+  setPrologFlag("engines",	FT_BOOL, true, 0);
   if ( GD->options.xpce >= 0 )
     setPrologFlag("xpce",	FT_BOOL, GD->options.xpce, 0);
   setPrologFlag("system_thread_id", FT_INTEGER|FF_READONLY, (intptr_t)0);
@@ -1929,6 +1935,9 @@ initPrologFlags(void)
 #else
   setPrologFlag("threads",	FT_BOOL|FF_READONLY, false, 0);
   setPrologFlag("gc_thread",    FT_BOOL|FF_READONLY, false, PLFLAG_GCTHREAD);
+#ifdef O_ENGINES
+  setPrologFlag("engines",	FT_BOOL, true, 0);
+#endif
 #endif
 #ifdef O_DDE
   setPrologFlag("dde", FT_BOOL|FF_READONLY, true, 0);

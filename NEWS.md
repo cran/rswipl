@@ -1,3 +1,9 @@
+# rswipl 9.3.20
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-20/8772
+
+Avoids the use of non-API calls BODY, FORMALS.
+
 # rswipl 9.3.18
 
 See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-18/8721

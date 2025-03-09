@@ -876,9 +876,14 @@ PlTerm r2pl_list(List r, CharacterVector& names, PlTerm& vars)
 PlTerm r2pl_function(Function r, CharacterVector& names, PlTerm& vars)
 {
   PlTermv fun(2) ;
+
+#if defined(R_VERSION) && R_VERSION >= R_Version(4, 5, 0)
+  PlCheckFail(fun[1].unify_term(r2pl_compound(R_ClosureBody(r), names, vars))) ;
+  List formals = as<List>(R_ClosureFormals(r)) ;
+#else
   PlCheckFail(fun[1].unify_term(r2pl_compound(BODY(r), names, vars))) ;
-  
   List formals = as<List>(FORMALS(r)) ;
+#endif
   size_t len = (size_t) formals.size() ;
   if(len == 0)
   {

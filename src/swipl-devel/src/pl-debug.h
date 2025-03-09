@@ -3,7 +3,7 @@
     Author:        Keri Harris
     E-mail:        keri.harris@securitease.com
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2011-2024, University of Amsterdam
+    Copyright (c)  2011-2025, University of Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -180,6 +180,7 @@
 #define MSG_JIT			 180
 #define MSG_JIT_DELINDEX	 181
 #define MSG_JIT_POOR		 182
+#define MSG_JIT_PRIMARY		 183
 
 #define MSG_RECONSULT		 190
 #define MSG_RECONSULT_PRED	 191
@@ -239,6 +240,8 @@
 #define MSG_READ_OP		 362
 
 #define MSG_WRITE_FLOAT		 370
+
+#define MSG_WASM_ASYNC		 400
 
 #define CHK_SECURE              1000
 #define CHK_HIGH_ARITY          1001

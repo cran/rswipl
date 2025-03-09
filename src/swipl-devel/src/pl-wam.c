@@ -1517,7 +1517,7 @@ reclaim_attvars(DECL_LD Word after)
 
 #define __do_undo(m) LDFUNC(__do_undo, m)
 static inline void
-__do_undo(DECL_LD mark *m)
+__do_undo(DECL_LD const mark *m)
 { TrailEntry tt = tTop;
   TrailEntry mt = m->trailtop.as_ptr;
 
@@ -2417,7 +2417,7 @@ choice_type last_choice;
 #endif
 
 #define FRAME_FAILED		GO(deep_backtrack)
-#define CLAUSE_FAILED		GO(shallow_backtrack)
+#define CLAUSE_FAILED		GO(unify_backtrack)
 #define BODY_FAILED		GO(shallow_backtrack)
 #ifdef O_DEBUGGER
 #define TRACE_RETRY		VMH_GOTO(retry)
@@ -2722,18 +2722,6 @@ PL_open_query(Module ctx, int flags, Procedure proc, term_t args)
   Word ap;
   size_t lneeded;
 
-  if ( !GD->clauses.top_clause )
-  { Clause cl = allocHeapOrHalt(sizeofClause(1));
-
-    memset(cl, 0, sizeofClause(1));
-    cl->predicate = PROCEDURE_dc_call_prolog->definition;
-    cl->generation.erased = ~(gen_t)0;
-    cl->code_size = 1;
-    cl->codes[0] = encode(I_EXITQUERY);
-    GD->clauses.top_cref.value.clause = cl;
-    GD->clauses.top_clause = cl;	/* MT-safe as a init is a single thread */
-  }
-
   DEBUG(2, { FunctorDef f = proc->definition->functor;
 	     size_t n;
 
@@ -2775,6 +2763,13 @@ PL_open_query(Module ctx, int flags, Procedure proc, term_t args)
 #endif
   IS_WORD_ALIGNED(qf);
   qf->saved_ltop = lTop;
+  if ( (qf->qid = malloc(sizeof(*qf->qid))) )
+  { struct queryRef qr = { .engine=LD, .offset=consTermRef(qf) };
+    *qf->qid = qr;
+  } else
+  { PL_resource_error("memory");
+    return (qid_t)0;
+  }
 					/* fill top-frame */
   top		     = &qf->top_frame;
   IS_WORD_ALIGNED(top);
@@ -2878,9 +2873,6 @@ PL_open_query(Module ctx, int flags, Procedure proc, term_t args)
   environment_frame = fr;
   qf->parent = LD->query;
   LD->query = qf;
-  qf->qid = allocHeapOrHalt(sizeof(*qf->qid));
-  qf->qid->engine = LD;
-  qf->qid->offset = consTermRef(qf);
 
   DEBUG(2, Sdprintf("QID=%p\n", QidFromQuery(qf)));
   updateAlerted(LD);
@@ -2939,7 +2931,7 @@ restore_after_query(QueryFrame qf)
 }
 
 
-int
+int				/* true,false or PL_S_NOT_INNER */
 PL_cut_query(qid_t qid)
 { int rc = true;
 
@@ -2965,7 +2957,7 @@ PL_cut_query(qid_t qid)
       restore_after_query(qf);
       qf->magic = QID_CMAGIC;		/* disqualify the frame */
 
-      freeHeap(qid, sizeof(*qid));
+      free(qid);
     }
   }
 
@@ -2973,7 +2965,7 @@ PL_cut_query(qid_t qid)
 }
 
 
-int
+int				/* true,false or PL_S_NOT_INNER */
 PL_close_query(qid_t qid)
 { int rc = true;
 
@@ -3001,7 +2993,7 @@ PL_close_query(qid_t qid)
 
       restore_after_query(qf);
       qf->magic = QID_CMAGIC;		/* disqualify the frame */
-      freeHeap(qid, sizeof(*qid));
+      free(qid);
     }
   }
 
@@ -3036,6 +3028,35 @@ PL_query_engine(qid_t qid)
 { return qid->engine;
 }
 
+term_t
+PL_query_arguments(qid_t qid)
+{ WITH_LD(qid->engine)
+  { QueryFrame qf = QueryFromQid(qid);
+    if ( qf->magic == QID_MAGIC )
+      return consTermRef(argFrameP(&qf->frame, 0));
+    PL_api_error("PL_query_arguments(): invalid qid");
+  }
+  return 0;
+}
+
+void *
+PL_set_query_data(qid_t qid, unsigned int offset, void*data)
+{ if ( offset < PL_MAX_QUERY_DATA )
+  { void *old = qid->data[offset];
+    qid->data[offset] = data;
+    return old;
+  }
+  PL_api_error("PL_set_query_data(): invalid offset");
+  return NULL;
+}
+
+void *
+PL_query_data(qid_t qid, unsigned int offset)
+{ if ( offset < PL_MAX_QUERY_DATA )
+    return qid->data[offset];
+  PL_api_error("PL_query_data(): invalid offset");
+  return NULL;
+}
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 PL_exception(qid) is used to extract exceptions   from an query executed
@@ -3551,3 +3572,17 @@ resumebreak:
   assert(0);
   return false;
 } /* end of PL_next_solution() */
+
+
+void
+initVM(void)
+{ Clause cl = allocHeapOrHalt(sizeofClause(1));
+
+  memset(cl, 0, sizeofClause(1));
+  cl->predicate = PROCEDURE_dc_call_prolog->definition;
+  cl->generation.erased = ~(gen_t)0;
+  cl->code_size = 1;
+  cl->codes[0] = encode(I_EXITQUERY);
+  GD->clauses.top_cref.value.clause = cl;
+  GD->clauses.top_clause = cl;
+}

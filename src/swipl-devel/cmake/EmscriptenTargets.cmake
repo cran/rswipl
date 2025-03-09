@@ -34,15 +34,40 @@ set_target_properties(swipl PROPERTIES
 
 set(WASM_BOOT_FILE "${WASM_PRELOAD_DIR}/boot.prc")
 set(WASM_ABI_FILE "${WASM_PRELOAD_DIR}/ABI")
-add_custom_command(
+
+find_program(PROG_RSYNC rsync)
+if(PROG_RSYNC)
+  set(RSYNC_DEL_FLAGS -r --ignore-existing --delete)
+else()
+  set(PROG_RSYNC :)
+endif()
+
+# On Linux we use  hard links using GNU cp -l.   Using soft links does
+# not work  as it makes  the preload  file system holds  just dangling
+# symlinks.   Using links  makes sure  edits in  the Prolog  files are
+# reflected in the output.
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+  message("${SWIPL_BUILD_LIBRARY} ${WASM_PRELOAD_DIR}")
+  add_custom_command(
+    OUTPUT ${WASM_BOOT_FILE}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${WASM_PRELOAD_DIR}
+    COMMAND cp -Llf ${SWIPL_BOOT_FILE} ${WASM_BOOT_FILE}
+    COMMAND cp -Llf ${SWIPL_ABI_FILE} ${WASM_ABI_FILE}
+    COMMAND cp -LlRf ${SWIPL_BUILD_LIBRARY} ${WASM_PRELOAD_DIR}
+    COMMAND ${PROG_RSYNC} ${RSYNC_DEL_FLAGS} ${SWIPL_BUILD_LIBRARY}/ ${WASM_PRELOAD_DIR}/library
+    DEPENDS ${SWIPL_BOOT_FILE} prolog_home bootfile library_index
+    VERBATIM)
+else()
+  add_custom_command(
     OUTPUT ${WASM_BOOT_FILE}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${WASM_PRELOAD_DIR}
     COMMAND ${CMAKE_COMMAND} -E copy ${SWIPL_BOOT_FILE} ${WASM_BOOT_FILE}
     COMMAND ${CMAKE_COMMAND} -E copy ${SWIPL_ABI_FILE} ${WASM_ABI_FILE}
     COMMAND ${CMAKE_COMMAND} -E copy_directory
 			     ${SWIPL_BUILD_LIBRARY} ${WASM_PRELOAD_DIR}/library
-    DEPENDS ${SWIPL_BOOT_FILE} prolog_home library_index
+    DEPENDS ${SWIPL_BOOT_FILE} prolog_home bootfile library_index
     VERBATIM)
+endif()
 
 add_custom_target(wasm_preload_dir DEPENDS ${WASM_BOOT_FILE})
 add_dependencies(wasm_preload wasm_preload_dir)
@@ -50,8 +75,7 @@ add_dependencies(wasm_preload wasm_preload_dir)
 # Next, build the binaries for deployment.
 # Build the browser-deployed binary with a bit different linker flags.
 
-set(POSTJS ${CMAKE_CURRENT_SOURCE_DIR}/wasm/prolog.js)
-set(PREJS ${CMAKE_CURRENT_SOURCE_DIR}/wasm/pre.js)
+set(PREJS ${CMAKE_CURRENT_SOURCE_DIR}/wasm/prolog.js)
 
 set(WASM_DIST_LINK_FLAGS
     -s WASM=1
@@ -60,8 +84,7 @@ set(WASM_DIST_LINK_FLAGS
     -s NO_EXIT_RUNTIME=0
     -s EXPORTED_FUNCTIONS=@${CMAKE_SOURCE_DIR}/src/wasm/exports.json
     -s EXPORTED_RUNTIME_METHODS=@${CMAKE_SOURCE_DIR}/src/wasm/runtime_exports.json
-    --pre-js ${PREJS}
-    --post-js ${POSTJS})
+    --pre-js ${PREJS})
 list(APPEND WASM_DIST_LINK_FLAGS ${WASM_SHARED_LINK_FLAGS})
 if(MULTI_THREADED)
   list(APPEND WASM_DIST_LINK_FLAGS
@@ -71,7 +94,7 @@ endif()
 
 # Create swipl-web.js, swipl-web.wasm, swipl-web.data
 set(WASM_WEB_LINK_FLAGS
-    --preload-file ${WASM_PRELOAD_DIR}@swipl)
+    --preload-file ${WASM_PRELOAD_DIR}@swipl -Wno-unused-main)
 join_list(WASM_WEB_LINK_FLAGS_STRING " "
 	  ${WASM_WEB_LINK_FLAGS} ${WASM_DIST_LINK_FLAGS})
 add_executable(swipl-web ${SWIPL_SRC})
@@ -84,7 +107,7 @@ set_property(TARGET swipl-web PROPERTY LINK_DEPENDS
 
 # Create swipl-bundle.js
 set(WASM_BUNDLE_LINK_FLAGS
-    -s SINGLE_FILE
+    -s SINGLE_FILE -Wno-unused-main
     --embed-file ${WASM_PRELOAD_DIR}@swipl)
 join_list(WASM_BUNDLE_LINK_FLAGS_STRING " "
 	  ${WASM_BUNDLE_LINK_FLAGS} ${WASM_DIST_LINK_FLAGS})
@@ -98,7 +121,7 @@ set_property(TARGET swipl-bundle PROPERTY LINK_DEPENDS
 
 # Create swipl-bundle-no-data.js
 set(WASM_NO_DATA_BUNDLE_LINK_FLAGS
-    -s SINGLE_FILE)
+    -s SINGLE_FILE -Wno-unused-main)
 join_list(WASM_NO_DATA_BUNDLE_LINK_FLAGS_STRING " "
 	  ${WASM_NO_DATA_BUNDLE_LINK_FLAGS} ${WASM_DIST_LINK_FLAGS})
 add_executable(swipl-bundle-no-data ${SWIPL_SRC})

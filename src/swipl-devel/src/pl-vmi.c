@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2008-2024, University of Amsterdam
+    Copyright (c)  2008-2025, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -2023,9 +2023,8 @@ VMH(depart_or_retry_continue, 0, (), ())
 	case ACTION_ABORT:  THROW_EXCEPTION;
 	case ACTION_RETRY:
 	  if ( debugstatus.retryFrame )
-	    TRACE_RETRY;			/* otherwise retrying the call-port */
-					/* is a no-op */
-      }
+	    TRACE_RETRY;		/* otherwise retrying the call-port */
+      }					/* is a no-op */
     }
 #endif /*O_DEBUGGER*/
   } /* end of if (LD->alerted) */
@@ -3652,99 +3651,29 @@ VMI(S_CALLWRAPPER, 0, 3, (CA1_CLAUSEREF,CA1_DATA,CA1_DATA))
 }
 END_VMI
 
-
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-S_ALLCLAUSES: Simply try the clauses one-by-one. This works for all code
-and is the ultimate fallback of the indexing code.  The supervisor code
-is
-
-	S_ALLCLAUSES
-	S_NEXTCLAUSE
+S_LIST(ArgN, NilClause, ListClause):
+Predicate consisting of two clauses, one of them using [] and
+the other [_|_] for argument ArgN (0-based)
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-
-VMI(S_ALLCLAUSES, 0, 0, ())		/* Uses CHP_JUMP */
-{ VMH_GOTO(next_clause, DEF->impl.clauses.first_clause);
-}
-END_VMI
-
-VMH(next_clause, 1, (ClauseRef), (cref))
-{ ARGP = argFrameP(FR, 0);
-  for(; cref; cref = cref->next)
-  { if ( visibleClauseCNT(cref->value.clause, generationFrame(FR)) )
-    { TRY_CLAUSE(cref, cref->next, PC);
-    }
-  }
-
-  FRAME_FAILED;
-}
-END_VMH
-
-
-VMI(S_NEXTCLAUSE, 0, 0, ())
-{ ClauseRef cref = CL->next;
-
-  if ( debugstatus.debugging && !debugstatus.suspendTrace )
-  { ARGP = argFrameP(FR, 0);
-    lTop = (LocalFrame)ARGP + FR->predicate->functor->arity;
-
-    for(; cref; cref = cref->next)
-    { if ( visibleClauseCNT(cref->value.clause, generationFrame(FR)) )
-      {	LocalFrame fr;
-	CL = cref;
-
-	if ( (fr = dbgRedoFrame(FR, CHP_CLAUSE)) )
-	{ int action;
-
-	  SAVE_REGISTERS(QID);
-	  action = tracePort(fr, BFR, REDO_PORT, NULL);
-	  LOAD_REGISTERS(QID);
-
-	  switch( action )
-	  { case ACTION_FAIL:
-	      FRAME_FAILED;
-	    case ACTION_IGNORE:
-	      VMI_GOTO(I_EXIT);
-	    case ACTION_RETRY:
-	      VMH_GOTO(depart_or_retry_continue);
-	    case ACTION_ABORT:
-	      THROW_EXCEPTION;
-	  }
-	}
-
-	break;
-      }
-    }
-  }
-
-  PC--;
-  VMH_GOTO(next_clause, cref);
-}
-END_VMI
-
-
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-S_LIST: Predicate consisting of two clauses, one of them using [] and
-the other [_|_].
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-
-VMI(S_LIST, 0, 2, (CA1_CLAUSEREF, CA1_CLAUSEREF))
+VMI(S_LIST, 0, 3, (CA1_INTEGER, CA1_CLAUSEREF, CA1_CLAUSEREF))
 { ClauseRef cref;
   Word k;
 
   ARGP = argFrameP(FR, 0);
-  deRef2(ARGP, k);
+  deRef2(ARGP+PC[0], k);
   if ( isList(*k) )
-    cref = code2ptr(ClauseRef, PC[1]);
+    cref = code2ptr(ClauseRef, PC[2]);
   else if ( isNil(*k) )
-    cref = code2ptr(ClauseRef, PC[0]);
+    cref = code2ptr(ClauseRef, PC[1]);
   else if ( canBind(*k) )
   { PC = SUPERVISOR(staticp) + 1;
     VMI_GOTO(S_STATIC);
   } else
     FRAME_FAILED;
 
-  PC += 2;
+  PC += 3;
 
   TRUST_CLAUSE(cref);
 }
@@ -6458,23 +6387,28 @@ END_VMH
 		 *	   BACKTRACKING		*
 		 *******************************/
 
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-The  rest  of  this  giant  file  handles  backtracking. This used to be
-very complicated, but as of pl-3.3.6, choice-points are explicit objects
-and life is a lot easier. In the old days we distinquished between three
-cases to get here. We leave that   it for documentation purposes as well
-as to investigate optimization in the future.
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+/* CLAUSE_FAILED
+   We get here if unification of the head failed.
+ */
 
-// clause_failed:
-// body_failed:
+VMH(unify_backtrack, 0, (), ())
+{ QF = QueryFromQid(QID);	/* ARGP is pushed an unknown amount */
+  aTop = QF->aSave;
+
+  VMH_GOTO(shallow_backtrack);
+}
+END_VMH
+
+/* BODY_FAILED
+   We get here if execution of the body failed.  This happens if some
+   body goal is translated into a VM instruction and this instruction
+   fails.
+ */
 VMH(shallow_backtrack, 0, (), ())
-{ Choice ch = BFR;				/* shallow backtracking */
+{ Choice ch = BFR;
 
   if ( FR == ch->frame )
   { Undo(ch->mark);
-    QF = QueryFromQid(QID);
-    aTop = QF->aSave;
 
     if ( ch->type == CHP_JUMP )
     { DiscardMark(ch->mark);
@@ -6488,32 +6422,37 @@ VMH(shallow_backtrack, 0, (), ())
     { ARGP = argFrameP(FR, 0);
       if ( !(CL = nextClause(&ch->value.clause, ARGP, FR, DEF)) )
 	FRAME_FAILED;		/* can happen if scan-ahead was too short */
+      Word nTop = argFrameP(FR, CL->value.clause->variables);
       PC = CL->value.clause->codes;
       UMODE = uread;
 
-      if ( ch == (Choice)argFrameP(FR, CL->value.clause->variables) )
-      { DiscardMark(ch->mark);		/* is this needed? */
+      if ( f_hasSpace(nTop, lMax, LOCAL_MARGIN, 1) )
+      { if ( (Word)ch != nTop ) /* Choice point needs to move */
+	{ Choice nch = (Choice)nTop;
+	  memmove(nch, ch, sizeof(*ch));
+	  BFR = ch = nch;
+	}
+
 	if ( ch->value.clause.cref )
-	{ Mark(ch->mark);
-	  lTop = (LocalFrame)(ch+1);
+	{ lTop = (LocalFrame)(ch+1);
 	  NEXT_INSTRUCTION;
 	} else if ( unlikely(debugstatus.debugging) )
 	{ ch->type = CHP_DEBUG;
-	  Mark(ch->mark);
 	  lTop = (LocalFrame)(ch+1);
 	  NEXT_INSTRUCTION;
 	}
 
+	DiscardMark(ch->mark);
 	BFR = ch->parent;
 	lTop = (LocalFrame)ch;
 	NEXT_INSTRUCTION;
-      } else				/* Choice point needs to move */
+      } else	       /* We need GC/shift to move the choice point */
       { struct clause_choice chp;
 
 	DiscardMark(ch->mark);
 	BFR = ch->parent;
 	chp = ch->value.clause;
-	lTop = (LocalFrame)argFrameP(FR, CL->value.clause->variables);
+	lTop = (LocalFrame)nTop;
 	ENSURE_LOCAL_SPACE(LOCAL_MARGIN, THROW_EXCEPTION);
 
 	if ( chp.cref )

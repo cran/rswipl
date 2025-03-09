@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2014-2024, VU University Amsterdam
+    Copyright (c)  2014-2025, VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -359,7 +359,7 @@ acquireSourceFileNo(int index)
 }
 
 
-int
+bool
 #ifdef O_DEBUG
 releaseSourceFile_d(SourceFile sf, const char *file, unsigned int line)
 #else
@@ -393,7 +393,7 @@ releaseSourceFile(SourceFile sf)
     PL_UNLOCK(L_SRCFILE);
 
     if ( name )
-    { int rc = clearSourceAdmin(name);
+    { bool rc = clearSourceAdmin(name);
       PL_unregister_atom(name);
 
       return rc;
@@ -403,7 +403,7 @@ releaseSourceFile(SourceFile sf)
   return true;
 }
 
-int
+bool
 releaseSourceFileNo(int index)
 { SourceFile sf;
 
@@ -413,7 +413,7 @@ releaseSourceFileNo(int index)
   return true;
 }
 
-int
+bool
 hasProcedureSourceFile(SourceFile sf, Procedure proc)
 { ListCell cell;
 
@@ -936,6 +936,7 @@ startReconsultFile(SourceFile sf)
 	  cl->generation.erased = r->reload_gen;
 	}
 	release_def(def);
+	set(def, P_RELOADING);
 	clear(def, P_DISCONTIGUOUS);		/* will be reinstantiated */
       }
       if ( ison(def, P_AUTOLOAD) )
@@ -1034,24 +1035,28 @@ reloadHasClauses(DECL_LD SourceFile sf, Procedure proc)
 }
 
 
-static int
-isRedefinedProcedure(Procedure proc, gen_t gen)
-{ GET_LD
-  Definition def = proc->definition;
+/* True if `proc` has at least one globally visible clause */
+
+#define isRedefinedProcedure(proc, gen) \
+	LDFUNC(isRedefinedProcedure, proc, gen)
+
+static bool
+isRedefinedProcedure(DECL_LD const Procedure proc, gen_t gen)
+{ Definition def = proc->definition;
   ClauseRef c;
-  int ret = false;
+  bool rc = false;
 
   acquire_def(def);
   for(c = def->impl.clauses.first_clause; c; c = c->next)
   { Clause cl = c->value.clause;
     if ( GLOBALLY_VISIBLE_CLAUSE(cl, gen) )
-    { ret = true;
+    { rc = true;
       break;
     }
   }
   release_def(def);
 
-  return ret;
+  return rc;
 }
 
 
@@ -1222,9 +1227,9 @@ associateSource(SourceFile sf, Procedure proc)
 
 #define P_ATEND	(P_VOLATILE|P_PUBLIC|P_ISO|P_NOPROFILE|P_NON_TERMINAL)
 
-int
+bool
 setAttrProcedureSource(DECL_LD SourceFile sf, Procedure proc,
-		       uint64_t attr, int val)
+		       uint64_t attr, bool val)
 { if ( val && (attr&PROC_DEFINED) )
     associateSource(sf, proc);
 
@@ -1248,7 +1253,10 @@ setAttrProcedureSource(DECL_LD SourceFile sf, Procedure proc,
 
 static void
 check_ssu(p_reload *r)
-{ GET_LD
+{
+#ifdef O_PLMT
+  GET_LD
+#endif
   Definition def = r->predicate;
   ClauseRef cref;
   int errors = 0;
@@ -1320,9 +1328,9 @@ fix_ssu(p_reload *r, Clause clause)
 }
 
 
-int
+bool
 setMetapredicateSource(DECL_LD SourceFile sf, Procedure proc,
-		       arg_info *args)
+		       const arg_info *args)
 { associateSource(sf, proc);
 
   if ( sf->reload )
@@ -1413,10 +1421,9 @@ registerReloadModule(SourceFile sf, Module module)
 }
 
 
-int
-exportProcedureSource(SourceFile sf, Module module, Procedure proc)
-{ GET_LD
-  m_reload *r;
+bool
+exportProcedureSource(DECL_LD SourceFile sf, Module module, Procedure proc)
+{ m_reload *r;
 
   if ( sf->reload && sf->reload->modules &&
        (r = lookupHTablePP(sf->reload->modules, module)) )
@@ -1452,7 +1459,10 @@ delete_old_predicate(SourceFile sf, Procedure proc)
   size_t deleted;
 
   if ( def->functor->functor == FUNCTOR_dtabled2 )
-  { GET_LD
+  {
+#ifdef O_PLMT
+    GET_LD
+#endif
     ClauseRef c;
 
     acquire_def(def);
@@ -1531,8 +1541,8 @@ delete_pending_clauses(DECL_LD SourceFile sf, Definition def, p_reload *r)
     if ( def->functor->functor == FUNCTOR_dtabled2 )
       untable_from_clause(c);
 
-    c->generation.erased = rl->reload_gen;
     set(r, P_MODIFIED);
+    c->generation.erased = rl->reload_gen;
     DEBUG(MSG_RECONSULT_CLAUSE,
 	  Sdprintf("  %s: deleted clause %d\n",
 		   predicateName(def),
@@ -1572,11 +1582,19 @@ end_reconsult_proc(DECL_LD SourceFile sf, Procedure proc, p_reload *r)
   return dropped_access;
 }
 
+/* Finish up a _reconsult_.  During  a reconsult the compiler adds and
+   removes clauses to static predicates using the `reload` generation:
+   - The reloading thread sees the file as empty at start and sees
+     the clauses being added as a first load.
+   - Other threads see no change during the reload and an _atomic_
+     change to the new state during the execution of endReconsult().
+ */
 
-static int
-endReconsult(SourceFile sf)
-{ GET_LD
-  sf_reload *reload;
+#define endReconsult(sf) LDFUNC(endReconsult, sf)
+
+static bool
+endReconsult(DECL_LD SourceFile sf)
+{ sf_reload *reload;
 
   if ( (reload=sf->reload) )
   { size_t accessed_preds = reload->procedures->size;
@@ -1683,7 +1701,7 @@ There are two options.
     This way other threads can happily keep running.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-int
+bool
 startConsult(SourceFile sf)
 { acquireSourceFile(sf);
   if ( sf->count++ > 0 )		/* This is a re-consult */
@@ -1709,7 +1727,8 @@ PRED_IMPL("$start_consult", 2, start_consult, 0)
   term_t modified = A2;
 
   if ( PL_get_atom_ex(file, &name) )
-  { int isfile, i;
+  { bool isfile;
+    int i;
     double mtime;
 
     if ( PL_get_integer(modified, &i) && i == 0 )
@@ -1723,7 +1742,7 @@ PRED_IMPL("$start_consult", 2, start_consult, 0)
     SourceFile sf = lookupSourceFile(name, true);
 
     sf->mtime = mtime;
-    sf->isfile = isfile&1;
+    sf->isfile = isfile;
     startConsult(sf);
     releaseSourceFile(sf);
 
@@ -1734,9 +1753,9 @@ PRED_IMPL("$start_consult", 2, start_consult, 0)
 }
 
 
-int
-endConsult(SourceFile sf)
-{ int rc;
+bool
+endConsult(DECL_LD SourceFile sf)
+{ bool rc;
 
   sf->current_procedure = NULL;
   rc = endReconsult(sf);

@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2008-2024, University of Amsterdam
+    Copyright (c)  2008-2025, University of Amsterdam
 			      VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -61,7 +61,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 90318
+#define PLVERSION 90320
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -428,6 +428,8 @@ PL_EXPORT(const atom_t) *_PL_atoms(void); /* base of reserved (meta-)atoms */
 #define PL_S_LAST		2	/* Query succeeded without CP */
 #define PL_S_YIELD	      255	/* Foreign yield */
 
+#define PL_MAX_QUERY_DATA	2	/* Max offset for PL_query_data() */
+
 			/* Foreign context frames */
 PL_EXPORT(fid_t)	PL_open_foreign_frame(void);
 PL_EXPORT(void)		PL_rewind_foreign_frame(fid_t cid);
@@ -450,7 +452,11 @@ PL_EXPORT(int)		PL_close_query(qid_t qid); /* true,false or PL_S_NOT_INNER */
 PL_EXPORT(int)		PL_cut_query(qid_t qid);   /* true,false or PL_S_NOT_INNER */
 PL_EXPORT(qid_t)	PL_current_query(void);
 PL_EXPORT(PL_engine_t)	PL_query_engine(qid_t qid);
+PL_EXPORT(term_t)	PL_query_arguments(qid_t qid);
 PL_EXPORT(bool)		PL_can_yield(void);
+PL_EXPORT(void*)	PL_set_query_data(qid_t qid, unsigned int offset,
+					  void *data);
+PL_EXPORT(void*)	PL_query_data(qid_t qid, unsigned int offset);
 
 			/* Simplified (but less flexible) call-back */
 PL_EXPORT(bool)		PL_call(term_t t, module_t m) WUNUSED;
@@ -1329,7 +1335,7 @@ PL_EXPORT(int)	PL_unify_thread_id(term_t t, int i);
 PL_EXPORT(int)	PL_get_thread_id_ex(term_t t, int *idp);
 PL_EXPORT(int)	PL_get_thread_alias(int tid, atom_t *alias);	/* Locks alias */
 PL_EXPORT(int)	PL_thread_attach_engine(PL_thread_attr_t *attr);
-PL_EXPORT(int)	PL_thread_destroy_engine(void);
+PL_EXPORT(bool)	PL_thread_destroy_engine(void);
 PL_EXPORT(int)	PL_thread_at_exit(void (*function)(void *),
 				  void *closure,
 				  int global);
@@ -1342,19 +1348,33 @@ PL_EXPORT(const char*) PL_w32_running_under_wine(void);
 #endif
 
 		 /*******************************
-		 *	 ENGINES (MT-ONLY)	*
+		 *	     ENGINES		*
 		 *******************************/
+
+/* Requires multi-threading or engine support enabled.  In
+ * both cases the flag `engines` is `true`.
+ */
 
 #define PL_ENGINE_MAIN	  ((PL_engine_t)0x1)
 #define PL_ENGINE_CURRENT ((PL_engine_t)0x2)
+#define PL_ENGINE_NONE    ((PL_engine_t)0x3)
 
 #define PL_ENGINE_SET   0		/* engine set successfully */
 #define PL_ENGINE_INVAL	2		/* engine doesn't exist */
 #define PL_ENGINE_INUSE	3		/* engine is in use */
 
+PL_EXPORT(PL_engine_t)	PL_current_engine(void);
 PL_EXPORT(PL_engine_t)	PL_create_engine(PL_thread_attr_t *attributes);
 PL_EXPORT(int)		PL_set_engine(PL_engine_t engine, PL_engine_t *old);
-PL_EXPORT(int)		PL_destroy_engine(PL_engine_t engine);
+PL_EXPORT(bool)		PL_destroy_engine(PL_engine_t engine);
+PL_EXPORT(PL_engine_t)	_PL_switch_engine(PL_engine_t e);
+PL_EXPORT(PL_engine_t)	_PL_reset_engine(PL_engine_t old);
+
+#define PL_WITH_ENGINE(e)			\
+  for(PL_engine_t old = _PL_switch_engine(e);	\
+      old;					\
+      old = _PL_reset_engine(old))		\
+    for(bool __we = true; __we; __we=false)
 
 
 		 /*******************************
@@ -1477,6 +1497,13 @@ PL_EXPORT(int)	PL_describe_context(struct pl_context_t *c,
 #else
 #warning "Term arity has changed from int to size_t."
 #warning "Please update your code or use #define PL_ARITY_AS_SIZE 0."
+#endif
+
+/* Provide SWIPL_HOME when compiling using swipl-ld. */
+#ifdef _SWIPL_HOME
+#define _pl_xstr(a) _pl_str(a)
+#define _pl_str(a) #a
+#define SWIPL_HOME _pl_xstr(_SWIPL_HOME)
 #endif
 
 #ifdef __cplusplus

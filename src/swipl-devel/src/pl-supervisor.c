@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2008-2024, University of Amsterdam
+    Copyright (c)  2008-2025, University of Amsterdam
                               VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
@@ -41,6 +41,8 @@
 #include "pl-wrap.h"
 #include "pl-tabling.h"
 #include "pl-util.h"
+#include "pl-index.h"
+#include "pl-proc.h"
 
 #define MAX_FLI_ARGS 10			/* extend switches on change */
 
@@ -82,7 +84,7 @@ free_codes_ptr(void *ptr)
 
 
 void
-freeSupervisor(Definition def, Code codes, int do_linger)
+freeSupervisor(Definition def, Code codes, bool do_linger)
 { size_t size = (size_t)codes[-1];
 
   if ( size > 0 )		/* 0: built-in, see initSupervisors() */
@@ -95,7 +97,7 @@ freeSupervisor(Definition def, Code codes, int do_linger)
 
 
 void
-freeCodesDefinition(Definition def, int do_linger)
+freeCodesDefinition(Definition def, bool do_linger)
 { Code codes;
 
   if ( (codes=def->codes) != SUPERVISOR(virgin) )
@@ -269,30 +271,45 @@ The code is
 
 static Code
 listSupervisor(Definition def)
-{ if ( def->impl.clauses.number_of_clauses == 2 )
+{ size_t arity = def->functor->arity;
+
+  if ( def->impl.clauses.number_of_clauses == 2 && arity > 0 )
   { ClauseRef cref[2];
     word c[2];
     int found = getClauses(def, cref, 2);
 
-    if ( found == 2 &&
-	 arg1Key(cref[0]->value.clause->codes, &c[0]) &&
-	 arg1Key(cref[1]->value.clause->codes, &c[1]) &&
-	 ( (c[0] == ATOM_nil && c[1] == FUNCTOR_dot2) ||
-	   (c[1] == ATOM_nil && c[0] == FUNCTOR_dot2) ) )
-    { Code codes = allocCodes(3);
+    if ( found == 2 )
+    { Code pc1 = cref[0]->value.clause->codes;
+      Code pc2 = cref[1]->value.clause->codes;
+      int h_void1 = 0;
+      int h_void2 = 0;
 
-      DEBUG(1, Sdprintf("List supervisor for %s\n", predicateName(def)));
+      for(size_t arg=0; arg<arity; arg++)
+      { if ( !mode_arg_is_unbound(def, arg) )
+	{ if ( arg1Key(pc1, &c[0]) &&
+	       arg1Key(pc2, &c[1]) &&
+	       ( (c[0] == ATOM_nil && c[1] == FUNCTOR_dot2) ||
+		 (c[1] == ATOM_nil && c[0] == FUNCTOR_dot2) ) )
+	  { Code codes = allocCodes(4);
 
-      codes[0] = encode(S_LIST);
-      if ( c[0] == ATOM_nil )
-      { codes[1] = ptr2code(cref[0]);
-	codes[2] = ptr2code(cref[1]);
-      } else
-      { codes[1] = ptr2code(cref[1]);
-	codes[2] = ptr2code(cref[0]);
+	    DEBUG(1, Sdprintf("List supervisor for %s\n", predicateName(def)));
+
+	    codes[0] = encode(S_LIST);
+	    codes[1] = (code)arg;
+	    if ( c[0] == ATOM_nil )
+	    { codes[2] = ptr2code(cref[0]);
+	      codes[3] = ptr2code(cref[1]);
+	    } else
+	    { codes[2] = ptr2code(cref[1]);
+	      codes[3] = ptr2code(cref[0]);
+	    }
+
+	    return codes;
+	  }
+	}
+	pc1 = skipArgs(pc1, 1, &h_void1);
+	pc2 = skipArgs(pc2, 1, &h_void2);
       }
-
-      return codes;
     }
   }
 
@@ -463,6 +480,7 @@ setDefaultSupervisor(Definition def)
   { Code codes, old;
 
     PL_LOCK(L_PREDICATE);
+    update_primary_index(def);
     old = def->codes;
     codes = createSupervisor(def);
     if ( equalSupervisors(old, codes) )
@@ -533,7 +551,6 @@ of the sequence.
 void
 initSupervisors(void)
 { MAKE_SV1(exit,	 I_EXIT);
-  MAKE_SV1(next_clause,	 S_NEXTCLAUSE);
   MAKE_SV1(virgin,	 S_VIRGIN);
   MAKE_SV1(undef,	 S_UNDEF);
   MAKE_SV1(dynamic,      S_DYNAMIC);

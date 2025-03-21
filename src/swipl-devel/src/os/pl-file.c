@@ -3676,12 +3676,14 @@ prompt1(atom_t prompt)
 
 static
 PRED_IMPL("prompt1", 1, prompt1, 0)
-{ GET_LD
+{ PRED_LD
   atom_t a;
   PL_chars_t txt;
 
   if ( PL_get_atom(A1, &a) )
   { prompt1(a);
+  } else if ( PL_is_variable(A1) )
+  { return LD->prompt.first && PL_unify_atom(A1, LD->prompt.first);
   } else if ( PL_get_text(A1, &txt,  CVT_ALL|CVT_EXCEPTION) )
   { prompt1(textToAtom(&txt));
   } else
@@ -3836,7 +3838,7 @@ file_name_to_atom(const char *fn)
 		 *	     IRI HOOKS		*
 		 *******************************/
 
-int
+int /* returns length of iri scheme, i.e., 4 for `http://` */
 file_name_is_iri(const char *path)
 { const char *s;
 

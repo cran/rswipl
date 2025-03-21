@@ -32,6 +32,8 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
+let prolog;
+
 		 /*******************************
 		 *	  MODULE DEFAULTS	*
 		 *******************************/
@@ -62,22 +64,272 @@ Module.noInitialRun = true;
     stream flushed.
 */
 
+const ansi_color =		// xterm default color palette
+      { 0: "#000000",
+	1: "#cd0000",
+	2: "#00cd00",
+	3: "#cdcd00",
+	4: "#0000ee",
+	5: "#cd00cd",
+	6: "#00cdcd",
+	7: "#e5e5e5",
+	8: "#7f7f7f",
+	9: "#ff0000",
+	10: "#00ff00",
+	11: "#ffff00",
+	12: "#5c5cff",
+	13: "#ff00ff",
+	14: "#00ffff",
+	15: "#ffffff"
+      };
+
+function new_ansi_state()
+{ return(
+  { state: "initial",
+    argv: [],
+    argstat: 0,
+    sgr:
+    { color: undefined,
+      background_color: undefined,
+      bold: false,
+      underline: false
+    }
+  });
+}
+
+function set_sgr(sgr, codes)
+{ codes.forEach((code) => {
+    if ( code == 0 )
+    { sgr.bold = false;
+      sgr.underline = false;
+      sgr.color = undefined;
+      sgr.background_color = undefined;
+    } else if ( code >= 30 && code <= 39 )
+    { if ( code == 39 )
+      { sgr.color = undefined;
+      } else
+      { sgr.color = ansi_color[code-30];
+      }
+    } else if ( code >= 40 && code <= 49 )
+    { if ( code == 49 )
+      { sgr.background_color = undefined;
+      } else
+      { sgr.background_color = ansi_color[code-40];
+      }
+    } else if ( code >= 90 && code <= 99 )
+    { if ( code == 99 )
+      { sgr.color = undefined;
+      } else
+      { sgr.color = ansi_color[code-90+8];
+      }
+    } else if ( code >= 100 && code <= 109 )
+    { if ( code == 109 )
+      { sgr.background_color = undefined;
+      } else
+      { sgr.background_color = ansi_color[code-100+8];
+      }
+    } else if ( code == 1 )
+    { sgr.bold = true;
+    } else if ( code == 4 )
+    { sgr.underline = true;
+    }
+  });
+}
+
+function set_ansi(sgr, cmd)
+{ switch(cmd.cmd)
+  { case "sgr":
+    { set_sgr(sgr, cmd.argv);
+    }
+  }
+}
+
+/**
+ * @param {Object} ansi_state contains the current state for ANSI
+ * decoding
+ * @param {Number} c is the next character from the stream
+ * @return {Number|Object|undefined} If `c` is eaten by the decoder return
+ * `undefined`.  If `c` is uninterpreted, return it.  If an ANSI sequence
+ * is completed return an object holding `cmd` and `argv`.
+ */
+
+function decode_ansi(ansi_state, c)
+{ switch(ansi_state.state)
+  { case "initial":
+    { if ( c == 27 )
+      { ansi_state.state = "esc";
+	return;
+      } else
+      { return c;
+      }
+    }
+    case "esc":
+    { if ( c == 91 )		// '['
+      { ansi_state.state = "ansi";
+	ansi_state.argv = [];
+	return;
+      } else if ( c == 93 )	// ']'
+      { ansi_state.state = "link";
+	ansi_state.must_see = [56, 59, 59]; // 8;;
+	return;
+      } else
+      { ansi_state.state = "initial";
+	return c;
+      }
+    }
+    case "link":
+    { if ( c != ansi_state.must_see.shift() )
+      { ansi_state.state = "initial";
+	return c;
+      }
+      if ( ansi_state.must_see.length == 0 )
+      { ansi_state.chars = [];
+	ansi_state.state = "linkarg";
+      }
+      return;
+    }
+    case "linkarg":
+    { ansi_state.chars.push(c);
+      const end = [27, 93, 56, 59, 59, 27, 92]; // \e]8;;\e\\
+
+      if ( c == 92 &&		// '\\'
+	   ends_with(ansi_state.chars, end) )
+      { ansi_state.chars.splice(-end.length);
+	const text = decode(ansi_state.chars);
+	ansi_state.state = "initial";
+	return { cmd: "link",
+		 argv: text.split("\x1b\\")
+	       }
+      }
+      return;
+    }
+    case "ansi":
+    { if ( c >= 48 && c <= 57 )	// 0..9
+      { if ( !ansi_state.argstat )
+	{ ansi_state.argv.push(c-48);
+	  ansi_state.argstat = 1;
+	} else
+	{ const i = ansi_state.argv.length-1;
+	  ansi_state.argv[i] = ansi_state.argv[i] * 10 + (c - 48);
+	}
+	ansi_state.state = "ansi";
+	return;
+      } else if ( !ansi_state.argstat && c == 45 )	// -
+      { ansi_state.argstat = -1;
+	ansi_state.state = "ansi";
+	return;
+      } else if ( ansi_state.argstat )
+      { const i = ansi_state.argv.length-1;
+	if ( i >= 0 )
+	{ ansi_state.argv[i] *= ansi_state.argstat;
+	  ansi_state.argstat = 0;
+	} else
+	{ ansi_state.state = "initial";
+	  return c;
+	}
+      }
+
+      if ( c == 59 )		// ';'
+        return;
+
+      ansi_state.state = "initial";
+
+      switch(c)
+      { case 72:		// 'H'
+	case 102:		// 'f'
+	{ return { cmd: "set_caret",
+		   argv: [arg(1, 0), arg(2,0)]
+		 }
+	}
+	case 65:		// 'A'
+	{ return cmd("caret_up");
+	}
+	case 66:		// 'B'
+	{ return cmd("caret_down");
+	}
+	case 67:		// 'C'
+	{ return cmd("caret_forward");
+	}
+	case 68:		// 'D'
+	{ return cmd("caret_backward");
+	}
+	case 115:		// 's'
+	{ return { cmd: "save_caret_position"
+		 };
+	}
+	case 117:		// 'u'
+	{ return { cmd: "restore_caret_position"
+		 };
+	}
+	case 74:		// 'J'
+	{ if ( ansi_state.argv[0] == 2 )
+	  { return { cmd: "erase_display"
+		   };
+	  }
+	}
+	case 75:		// 'K'
+	{ return { cmd: "erase_line"
+		 };
+	}
+	case 109:		// 'm'
+	{ if ( ansi_state.argv.length == 0 )
+	    ansi_state.argv.push(0);
+	  return { cmd: "sgr",
+		   argv: ansi_state.argv
+		 };
+	}
+      }
+    }
+  }
+
+  function ends_with(array, end)
+  { let a = array.length-1;
+    let e = end.length-1;
+
+    if ( a >= e )
+    { while(e >= 0 && array[a] == end[e])
+      { a--; e--;
+      }
+      if ( e == -1 )
+	return true;
+    }
+    return false;
+  }
+}
+
 let decoder;
-let buffers =
-    {  stdout: [],
-       stderr: []
-    };
+const buffers =
+      {  stdout: { buf: [],
+		   ansi: new_ansi_state()
+		 },
+	 stderr: { buf: [],
+		   ansi: new_ansi_state()
+		 }
+      };
 
 function write(to, c)
-{ const buf = buffers[to];
+{ const buf = buffers[to].buf;
 
-  if ( c == 10 && buf.length == 0 )
-    buf.push(32);
   if ( c )
-    buf.push(c);
-
-  if ( c == 10 || c == null )
-    flush(to);
+  { c = decode_ansi(buffers[to].ansi, c);
+    if ( typeof c === "number" )
+    { if ( c == 10 && buf.length == 0 )
+        buf.push(32);
+      buf.push(c);
+      if ( c == 10 || c == null )
+	flush(to);
+    } else if ( c !== undefined )
+    { flush(to);
+      switch(c.cmd)
+      { case "link":
+	{ Module.on_output(c.argv[1], to, {link:c.argv[0]});
+	}
+	default:
+	{ set_ansi(buffers[to].ansi.sgr, c);
+	}
+      }
+    }
+  }
 }
 
 function decode(bytes)
@@ -96,11 +348,12 @@ function decode(bytes)
 }
 
 function flush(to)
-{ if ( buffers[to].length )
-  { const line = decode(buffers[to]);
+{ const buf = buffers[to].buf;
+  if ( buf.length )
+  { const line = decode(buf);
 
-    Module.on_output(line, to);
-    buffers[to] = [];
+    Module.on_output(line, to, buffers[to].ansi.sgr);
+    buffers[to].buf = [];
   }
 }
 
@@ -190,7 +443,7 @@ const class_rational = (class PrologRational {
 });
 
 const class_compound = (class PrologCompound {
-  constructor(name, args)
+  constructor(name, ...args)
   { this.$t = "t";
     this.functor = name;
     this[name] = args;
@@ -230,6 +483,22 @@ const class_blob = (class PrologBlob {
   }
 });
 
+const class_term = (class PrologTerm {
+  constructor(arg)
+  { this.$t = "term_t";
+    if ( typeof arg === "string" )
+    { const h = prolog.new_term_ref();
+
+      if ( !prolog.chars_to_term(arg, h) )
+	throw new Error(`Query has a syntax error: ${arg}`);
+      this.term_t = h;
+    } else if ( typeof arg == "number" )
+    { this.term_t = arg;
+    } else
+    { throw new Error(`String or term handle expected.  Found ${arg}`);
+    }
+  }
+});
 
 const class_abortable_promise = (class AbortablePromise extends Promise {
   constructor(executer)
@@ -277,6 +546,7 @@ class Prolog
     this.__id_engines = {};		// id --> Engine
     this.engines = {};			// name --> Engine
     this.main_engine = this.__init_main_engine("main");
+    prolog = this;
   }
 
 
@@ -296,6 +566,7 @@ class Prolog
     if (!this.bindings.PL_initialise(argv.length, ptr)) {
 	throw new Error('SWI-Prolog initialisation failed.');
     }
+    this.bindings.WASM_bind_standard_streams();
     this.MODULE_user = this.new_module("user");
     this.call("set_prolog_flag(color_term, false).");
     this.call("set_prolog_flag(debug_on_error, false)");
@@ -307,6 +578,7 @@ class Prolog
     this.String	  = class_string;
     this.Rational = class_rational;
     this.Compound = class_compound;
+    this.Term     = class_term;
     this.List	  = class_list;
     this.Blob	  = class_blob;
     this.Promise  = class_abortable_promise;
@@ -395,11 +667,15 @@ class Prolog
     this.PL_Q_PASS_EXCEPTION	 = 0x0010;
     this.PL_Q_ALLOW_YIELD	 = 0x0020;
     this.PL_Q_EXT_STATUS	 = 0x0040;
+    this.PL_Q_EXCEPT_HALT	 = 0x0080;
+    this.PL_Q_TRACE_WITH_YIELD	 = 0x0100;
 
+    this.PL_S_NOT_INNER		 = -2;
     this.PL_S_EXCEPTION		 = -1;
     this.PL_S_FALSE		 = 0;
     this.PL_S_TRUE		 = 1;
     this.PL_S_LAST		 = 2;
+    this.PL_S_YIELD_DEBUG	 = 254;
     this.PL_S_YIELD		 = 255;
 
     this.PL_ENGINE_MAIN		 = 1;
@@ -410,6 +686,9 @@ class Prolog
     this.PL_ENGINE_INUSE	 = 3;
 
     this.PL_WRT_QUOTED		 = 0x0001;
+    this.PL_WRT_IGNOREOPS	 = 0x0002;
+    this.PL_WRT_NUMBERVARS	 = 0x0004;
+    this.PL_WRT_PORTRAY		 = 0x0008;
     this.PL_WRT_NEWLINE		 = 0x2000;
   }
 
@@ -531,8 +810,16 @@ class Prolog
 	'_PL_switch_engine', 'number', ['number']),
       _PL_reset_engine: this.module.cwrap(
 	'_PL_reset_engine', 'number', ['number', 'number']),
+      PL_set_trace_action: this.module.cwrap(
+	'PL_set_trace_action', 'number', ['number']),
+      PL_get_trace_context: this.module.cwrap(
+	'PL_get_trace_context', 'number', ['number']),
+      PL_prompt_string: this.module.cwrap(
+	'PL_prompt_string', 'number', ['number']),
       WASM_ttymode: this.module.cwrap(
 	'WASM_ttymode', 'number', []),
+      WASM_bind_standard_streams: this.module.cwrap(
+	'WASM_bind_standard_streams', 'number', []),
       WASM_yield_request: this.module.cwrap(
 	'WASM_yield_request', 'number', []),
       WASM_set_yield_result: this.module.cwrap(
@@ -568,6 +855,18 @@ class Prolog
     // else `undefined`
   }
 
+  __put_goal(goal, term) {
+    if ( typeof goal === "string" ) {
+      if ( !this.chars_to_term(goal, term) )
+	throw new Error(`Query has a syntax error: ${query}`);
+    } else if ( typeof goal === "object" &&
+		goal instanceof this.Compound ) {
+      this.toProlog(goal, term);
+    } else {
+      throw new TypeError("string or compound expected");
+    }
+  }
+
 /**
  * Call a Prolog goal.  This function deals with many variations to
  * call Prolog.
@@ -575,26 +874,26 @@ class Prolog
  * @param {String}  goal Goal to run
  * @param {String}  [opts.module] Module in which to call Goal
  * @param {Boolean} [opts.async]  Call as yieldable
+ * @param {Boolean} [opts.nodebug]  Do not debug the goal
  */
 
-  call(goal, opts)
-  { opts = opts||{};
+  call(goal, opts) {
+    if ( opts && opts.async ) {
+      return this.__call_yieldable(goal, opts);
+    } else {
+      return this.with_frame(function() {
+	if ( opts ) {		// not possible during initialization
+	  return !!this
+	    .query("call(Goal)",
+		   {Goal:new this.Term(goal)}, opts)
+	    .once();
+	} else {
+	  const term = this.new_term_ref();
 
-    if ( typeof(goal) === "string" )
-    { if ( opts.async )
-      { return this.__call_yieldable(goal, opts);
-      } else
-      { return this.with_frame(function()
-	{ const term = this.new_term_ref();
-
-	  if ( !this.chars_to_term(goal, term) )
-	    throw new Error(`Query has a syntax error: ${query}`);
-
-	  const module = opts.module ? this.new_module(opts.module)
-				     : this.MODULE_user;
-	  return !!this.bindings.PL_call(term, module);
-	});
-      }
+	  this.__put_goal(goal, term);
+	  return !!this.bindings.PL_call(term, this.MODULE_user);
+	}
+      });
     }
   }
 
@@ -692,7 +991,12 @@ class Prolog
  */
 
   consult(...args)
-  { return this.forEach("load_files(user:Files)", {Files:args});
+  { let options = {};
+    if ( args.length > 0 && typeof args[args.length-1] === "object" )
+    { options = args.pop();
+    }
+    const module = options.module||"user";
+    return this.forEach("load_files(M:Files)", {M:module, Files:args});
   }
 
   load_string(s, id)
@@ -827,6 +1131,8 @@ class Prolog
    * @param {Boolean} [options.engine] If `true`, run the goal in a
    * temporary engine.  Default is to use the current engine.  See
    * also Engine.query()
+   * @param {string} [options.string] Describes the target type for
+   * JavaScript strings.  One of `atom` or `string` (default)
    */
 
   query2(goal, input, options)
@@ -839,7 +1145,10 @@ class Prolog
       input = input||{};
       options = options||{};
       prolog.put_chars(av+0, goal);
-      prolog.toProlog(input, av+1);
+      if ( options.string )
+	prolog.toProlog(input, av+1, {string:options.string});
+      else
+	prolog.toProlog(input, av+1);
 
       const q = new Query(prolog, 0, prolog.PL_Q_CATCH_EXCEPTION,
 			  "wasm_call_string/3", av,
@@ -985,6 +1294,7 @@ class Prolog
 	f.timer = undefined;
 	f.reject("abort");
       }
+      return true;
     }
 
     return new this.Promise(f);
@@ -1011,11 +1321,26 @@ class Prolog
 
   write(term, opts)
   { opts = opts||{};
-
+    let s;
     const precedence = opts.precedence||1200;
-    const flags	   = opts.flags == undefined ? this.PL_WRT_QUOTED|this.PL_WRT_NEWLINE
-					       : flags;
-    let s = undefined;
+    let   flags	     = opts.flags === undefined
+			? (this.PL_WRT_QUOTED|this.PL_WRT_NEWLINE)
+			: opts.flags;
+
+    const map = { "quoted":     this.PL_WRT_QUOTED,
+		  "ignore_ops": this.PL_WRT_IGNOREOPS,
+		  "portray":    this.PL_WRT_PORTRAY,
+		  "numbervars": this.PL_WRT_NUMBERVARS,
+		  "nl":         this.PL_WRT_NEWLINE
+		};
+
+    for(const k in map)
+    { if ( opts[k] === true )
+      { flags |= map[k];
+      } else if ( opts[k] === false )
+      { flags &= ~map[k];
+      }
+    }
 
     if ( opts.stream )
     { if ( typeof(stream) === "string" )
@@ -1164,6 +1489,19 @@ class Prolog
     }, true);
   }
 
+  set_trace_action(obj)
+  { this.with_frame(() =>
+    { const term = this.toProlog(obj, undefined, {string:"atom"});
+
+      if ( !term )
+      { console.log("Could not convert", obj);
+	throw("Could not convert JavaScript data to Prolog");
+      }
+
+      this.bindings.PL_set_trace_action(term);
+    }, true);
+  }
+
 /**
  * Call a goal that may yield.  When no yield happens this returns the
  * result of Query.next().  If the predicate called await/2 an
@@ -1178,24 +1516,21 @@ class Prolog
  * key to abort the query immediately.
  *
  * @param {String} goal  Prolog goal to be called
- * @param {String} [module] Module in which to call the goal.
+ * @param {Object} [options] Additional options
+ * @param {String} [options.module] Module in which to call the goal.
  * @return Either the result of Query.next() or a _yield_ request as
  * described above.
  */
 
-  __call_yieldable(goal, module)
-  { var pred_call1;
+  __call_yieldable(goal, opts)
+  { opts = opts||{};
+    const pred_call1 = this.predicate("call", 1, "system");
     const flags = this.PL_Q_NORMAL|this.PL_Q_ALLOW_YIELD;
-
-    if ( !pred_call1 )
-      pred_call1 = this.predicate("call", 1, "system");
-
     const fid = this.bindings.PL_open_foreign_frame();
     const term = this.new_term_ref();
-    if ( !this.chars_to_term(goal, term) )
-      throw new Error('Query has a syntax error: ' + query);
-    const q = new Query(this, module, flags, pred_call1, term,
-			{ frame:fid });
+    this.__put_goal(goal, term);
+    const q = new Query(this, opts.module, flags, pred_call1, term,
+			{ ...opts, frame:fid });
     return q.next_yieldable();
   }
 
@@ -1439,6 +1774,10 @@ class Prolog
 	      { rc = toList(term, data.v, data.t);
 		break;
 	      }
+	      case "term_t":
+	      { rc = prolog.bindings.PL_put_term(term, data.term_t);
+		break;
+	      }
 	      default:
 	      { console.log(`Object with invalid $t:${data.$t}`);
 	      }
@@ -1526,6 +1865,12 @@ class Prolog
     _free(ptr);
 
     return rc;
+  }
+
+  prompt_string(fd)
+  { const bytes = this.bindings.PL_prompt_string(fd||0)
+    if ( bytes )
+      return this.module.UTF8ToString(bytes);
   }
 
 // If t is compound and index is between 1 and arity (inclusive),
@@ -1694,6 +2039,7 @@ const class_engine = (class Engine{
  *               [options]: {Object}
  *
  * @param {String} [module] Optional module name
+ * @param {Object} [options] Optional options
  * @param {Function} [options.map] Function to map `term_t` into
  *        properties of the Query.next() result object.
  * @param {fid_t} [options.frame] Prolog frame used to create
@@ -1711,6 +2057,10 @@ class Query {
 		    prolog.PL_Q_PASS_EXCEPTION|
 		    prolog.PL_Q_NORMAL)) )
       flags |= prolog.PL_Q_CATCH_EXCEPTION;
+    if ( options.debugger )
+      flags |= prolog.PL_Q_TRACE_WITH_YIELD;
+    if ( options.nodebug )
+      flags |= prolog.PL_Q_NODEBUG;
 
     this.options = options;
     this.flags   = flags;
@@ -1753,16 +2103,13 @@ class Query {
     switch(prolog.bindings.PL_next_solution(this.qid))
     { case prolog.PL_S_EXCEPTION:
       { /* `value` is `undefined` */
-	if ( (this.flags & prolog.PL_Q_NORMAL) )
-	{ this.__close();
-	  return { done: !this.is_iterator, error: true }
-	} else
-	{ const msg = prolog.message_to_string(
-				 prolog.bindings.PL_exception(this.qid));
+	const msg = prolog.message_to_string(prolog.bindings.PL_exception(this.qid));
+	if ( this.flags & prolog.PL_Q_NORMAL)
+	  console.error(msg);
+	else
 	  console.log(msg);
-	  this.__close();
-	  return { done: !this.is_iterator, error: true, message: msg };
-	}
+	this.__close();
+	return { done: !this.is_iterator, error: true, message: msg };
       }
       case prolog.PL_S_FALSE:
 	this.__close();
@@ -1790,6 +2137,20 @@ class Query {
 		 }
 	       };
       }
+      case prolog.PL_S_YIELD_DEBUG:
+      { const event = prolog.new_term_ref(1);
+	prolog.bindings.PL_get_trace_context(event);
+
+	return { done: false,
+		 value: null,
+		 trace_event: event,
+		 yield: "trace",
+		 resume: (value) =>
+		 { prolog.set_trace_action(value);
+		   return this.__next();
+		 }
+	       };
+      }
     }
   }
 
@@ -1802,7 +2163,7 @@ class Query {
       { let rc = query.__next();
 
 	if ( rc.yield !== undefined )
-	{ let request = rc.yield;
+	{ const request = rc.yield;
 
 	  if ( prolog.abort_request )
 	  { prolog.abort_request = undefined;
@@ -1833,13 +2194,13 @@ class Query {
 			     { result.cont = cont;
 			       request
 			       .then((value) =>
-				 { query.engine.with(() => {
+				 { return query.engine.with(() => {
 				     prolog.set_yield_result(value);
 				     cont.call(prolog, ynext(query));
 				   })
 				 })
 			       .catch((error) =>
-				 { query.engine.with(() => {
+				 { return query.engine.with(() => {
 				     prolog.set_yield_result({$error: error});
 				     cont.call(prolog, ynext(query));
 				   })
@@ -1857,12 +2218,23 @@ class Query {
 	  }
 
 	  // Get back here instead of Query.ynext()
-	  rc.resume = (value) =>
-	  { prolog.set_yield_result(value);
-	    return ynext(query);
-	  };
-	} else if ( rc.done === false )
-	{ rc.resume = () => ynext(query);
+	  if ( request == "trace" ) {
+	    rc.resume = (value) => {
+	      return query.engine.with(() => {
+		prolog.set_trace_action(value);
+		return ynext(query);
+	      });
+	    }
+	  } else {
+	    rc.resume = (value) => {
+	      return query.engine.with(() => {
+		prolog.set_yield_result(value);
+		return ynext(query);
+	      });
+	    };
+	  }
+	} else if ( rc.done === false ) {
+	  rc.resume = () => ynext(query);
 	}
 
 	return rc;
@@ -2041,6 +2413,13 @@ function release_registered_object(id)
   delete prolog.objects[id];
 }
 
+function flush_std_stream(s)
+{ if ( s == 1 )
+  { flush("stdout");
+  } else if ( s == 2 )
+  { flush("stderr");
+  }
+}
 
 if ( globalThis.BigInt.prototype.toJSON === undefined )
 { globalThis.BigInt.prototype.toJSON = function ()

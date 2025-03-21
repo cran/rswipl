@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2024, University of Amsterdam
+    Copyright (c)  1985-2025, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -1348,10 +1348,6 @@ absolute_file_name(Spec, Path, Options) :-
     '$member'(Elem, List).
 '$one_or_member'(Elem, Elem).
 
-
-'$file_type_extensions'(source, Exts) :-       % SICStus 3.9 compatibility
-    !,
-    '$file_type_extensions'(prolog, Exts).
 '$file_type_extensions'(Type, Exts) :-
     '$current_module'('$bags', _File),
     !,
@@ -1386,6 +1382,8 @@ absolute_file_name(Spec, Path, Options) :-
 user:prolog_file_type(pl,       prolog).
 user:prolog_file_type(prolog,   prolog).
 user:prolog_file_type(qlf,      prolog).
+user:prolog_file_type(pl,       source).
+user:prolog_file_type(prolog,   source).
 user:prolog_file_type(qlf,      qlf).
 user:prolog_file_type(Ext,      executable) :-
     current_prolog_flag(shared_object_extension, Ext).
@@ -2240,9 +2238,17 @@ consult(M:X) :-
     flag('$user_consult', N, N+1),
     NN is N + 1,
     atom_concat('user://', NN, Id),
-    load_files(M:Id, [stream(user_input), check_script(false), silent(false)]).
+    '$consult_user'(M:Id).
 consult(List) :-
     load_files(List, [expand(true)]).
+
+%!  '$consult_user'(:Id) is det.
+%
+%   Handle ``?- [user].``. This is a   separate  predicate, such that we
+%   can easily wrap this for the browser version.
+
+'$consult_user'(Id) :-
+    load_files(Id, [stream(user_input), check_script(false), silent(false)]).
 
 %!  load_files(:File, +Options)
 %
@@ -2285,8 +2291,7 @@ load_files(Module:Files, Options) :-
 
 '$load_one_file'(Spec, Module, Options) :-
     atomic(Spec),
-    '$option'(expand(Expand), Options, false),
-    Expand == true,
+    '$option'(expand(true), Options, false),
     !,
     expand_file_name(Spec, Expanded),
     (   Expanded = [Load]
@@ -2346,9 +2351,20 @@ load_files(Module:Files, Options) :-
 '$qlf_file'(Spec, _, Spec, stream, Options) :-
     '$option'(stream(_), Options),      % stream: no choice
     !.
-'$qlf_file'(Spec, FullFile, FullFile, compile, _) :-
+'$qlf_file'(Spec, FullFile, LoadFile, compile, _) :-
     '$spec_extension'(Spec, Ext),       % user explicitly specified
-    user:prolog_file_type(Ext, prolog),
+    (   user:prolog_file_type(Ext, qlf)
+    ->  absolute_file_name(Spec, LoadFile,
+                           [ file_type(qlf),
+                             access(read)
+                           ])
+    ;   user:prolog_file_type(Ext, prolog)
+    ->  LoadFile = FullFile
+    ),
+    !.
+'$qlf_file'(_, FullFile, FullFile, compile, _) :-
+    current_prolog_flag(source, true),
+    access_file(FullFile, read),
     !.
 '$qlf_file'(Spec, FullFile, LoadFile, Mode, Options) :-
     '$compilation_mode'(database),
@@ -2357,7 +2373,7 @@ load_files(Module:Files, Options) :-
     user:prolog_file_type(QlfExt, qlf),
     file_name_extension(Base, QlfExt, QlfFile),
     (   access_file(QlfFile, read),
-	(   '$qlf_out_of_date'(FullFile, QlfFile, Why)
+        (   '$qlf_out_of_date'(FullFile, QlfFile, Why)
 	->  (   access_file(QlfFile, write)
 	    ->  print_message(informational,
 			      qlf(recompile(Spec, FullFile, QlfFile, Why))),
@@ -2386,7 +2402,6 @@ load_files(Module:Files, Options) :-
 	LoadFile = FullFile
     ).
 '$qlf_file'(_, FullFile, FullFile, compile, _).
-
 
 %!  '$qlf_out_of_date'(+PlFile, +QlfFile, -Why) is semidet.
 %
@@ -2436,11 +2451,13 @@ load_files(Module:Files, Options) :-
 
 '$spec_extension'(File, Ext) :-
     atom(File),
+    !,
     file_name_extension(_, Ext, File).
 '$spec_extension'(Spec, Ext) :-
     compound(Spec),
     arg(1, Spec, Arg),
-    '$spec_extension'(Arg, Ext).
+    '$segments_to_atom'(Arg, File),
+    file_name_extension(_, Ext, File).
 
 
 %!  '$load_file'(+Spec, +ContextModule, +Options) is det.
@@ -2514,20 +2531,43 @@ load_files(Module:Files, Options) :-
 %!  '$resolve_source_path'(+File, -FullFile, +Options) is semidet.
 %
 %   Resolve a source file specification to   an absolute path. May throw
-%   existence and other errors.
+%   existence and other errors.  Attempts:
+%
+%     1. Do a regular file search
+%     2. Find a known source file.  This is used if the actual file was
+%        loaded from a .qlf file.
+%     3. Fail silently if if(exists) is in Options
+%     4. Raise a existence_error(source_sink, File)
 
-'$resolve_source_path'(File, FullFile, Options) :-
-    (   '$option'(if(If), Options),
-	If == exists
-    ->  Extra = [file_errors(fail)]
-    ;   Extra = []
-    ),
+'$resolve_source_path'(File, FullFile, _Options) :-
+    absolute_file_name(File, AbsFile,
+		       [ file_type(prolog),
+			 access(read),
+                         file_errors(fail)
+		       ]),
+    !,
+    '$admin_file'(AbsFile, FullFile),
+    '$register_resolved_source_path'(File, FullFile).
+'$resolve_source_path'(File, FullFile, _Options) :-
     absolute_file_name(File, FullFile,
 		       [ file_type(prolog),
-			 access(read)
-		       | Extra
+                         solutions(all),
+                         file_errors(fail)
 		       ]),
-    '$register_resolved_source_path'(File, FullFile).
+    source_file(FullFile),
+    !.
+'$resolve_source_path'(_File, _FullFile, Options) :-
+    '$option'(if(exists), Options),
+    !,
+    fail.
+'$resolve_source_path'(File, _FullFile, _Options) :-
+    '$existence_error'(source_sink, File).
+
+%!  '$register_resolved_source_path'(+Spec, -FullFile) is det.
+%
+%   If Spec is Path(File), cache where  we   found  the  file. This both
+%   avoids many lookups on the  file  system   and  avoids  that Spec is
+%   resolved to different locations.
 
 '$register_resolved_source_path'(File, FullFile) :-
     (   compound(File)
@@ -3051,23 +3091,44 @@ load_files(Module:Files, Options) :-
     source_location(FromFile, Line),
     !,
     '$master_file'(FromFile, MasterFile),
-    '$check_load_non_module'(File, Module),
+    '$admin_file'(File, PlFile),
+    '$check_load_non_module'(PlFile, Module),
     '$add_dialect'(Options, Options1),
     '$load_ctx_options'(Options1, Options2),
     '$store_admin_clause'(
-	system:'$load_context_module'(File, Module, Options2),
+	system:'$load_context_module'(PlFile, Module, Options2),
 	_Layout, MasterFile, FromFile:Line).
 '$assert_load_context_module'(File, Module, Options) :-
-    '$check_load_non_module'(File, Module),
+    '$admin_file'(File, PlFile),
+    '$check_load_non_module'(PlFile, Module),
     '$add_dialect'(Options, Options1),
     '$load_ctx_options'(Options1, Options2),
-    (   clause('$load_context_module'(File, Module, _), true, Ref),
+    (   clause('$load_context_module'(PlFile, Module, _), true, Ref),
 	\+ clause_property(Ref, file(_)),
 	erase(Ref)
     ->  true
     ;   true
     ),
-    assertz('$load_context_module'(File, Module, Options2)).
+    assertz('$load_context_module'(PlFile, Module, Options2)).
+
+%!  '$admin_file'(+File, -PlFile) is det.
+%
+%   Get the canonical Prolog file name in case File is a .qlf file. Note
+%   that all source admin uses the Prolog file names rather than the qlf
+%   file names.
+
+'$admin_file'(QlfFile, PlFile) :-
+    file_name_extension(_, qlf, QlfFile),
+    '$qlf_module'(QlfFile, Info),
+    get_dict(file, Info, PlFile),
+    !.
+'$admin_file'(File, File).
+
+%!  '$add_dialect'(+Options0, -Options) is det.
+%
+%   If we are in a dialect  environment,   add  this to the load options
+%   such  that  the  load  context  reflects  the  correct  options  for
+%   reloading this file.
 
 '$add_dialect'(Options0, Options) :-
     current_prolog_flag(emulated_dialect, Dialect), Dialect \== swi,

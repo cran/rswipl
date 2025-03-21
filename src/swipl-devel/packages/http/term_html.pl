@@ -128,7 +128,9 @@ any(Term, Options) -->
 %   Process a compound term.
 
 compound('$VAR'(Var), Options) -->
-    { Options.get(numbervars) == true,
+    { (   Options.get(numbervars) == true
+      ;   Options.get(portray) == true
+      ),
       !,
       format(string(S), '~W', ['$VAR'(Var), [numbervars(true)]]),
       (   S == "_"
@@ -345,7 +347,7 @@ op1(prefix, Term, ArgPri, Options) -->
                 'data-name'(Functor)
               | Attrs
               ],
-              [ span(class('pl-functor'), S),
+              [ span(class(['pl-functor', 'pl-trigger']), S),
                 \space(Functor, Arg, o, a, FuncOptions, ArgOptions),
                 \op_arg(Arg, ArgOptions)
               ])).
@@ -405,14 +407,16 @@ op2(Term, _Type, LeftPri, RightPri, Options) -->
       quote_op(Functor, S, Options),
       extra_classes(Term, Classes, Attrs, Options.put(op, infix))
     },
-    html(span([ class(['pl-compound', 'pl-op', 'pl-infix-op'|Classes]),
+    html(span([ class([ 'pl-compound', 'pl-adaptive', 'pl-op', 'pl-infix-op'
+                      | Classes
+                      ]),
                 'data-arity'(2),
                 'data-name'(Functor)
               | Attrs
               ],
               [ \op_arg(Left, LeftOptions),
                 Space,
-                span(class('pl-functor'), S),
+                span(class(['pl-functor', 'pl-trigger']), S),
                 Space,
                 \op_arg(Right, RightOptions)
               ])).

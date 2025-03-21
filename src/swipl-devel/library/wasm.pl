@@ -49,22 +49,26 @@
 
             op(700, xfx, :=),           % Result := Expression
             op(50,  fx,  #),            % #Value
-            op(40,  yf,  [])            % Expr[Expr]
+            op(40,  yf,  []),           % Expr[Expr]
+            wasm_query/1                % +Query:string
           ]).
 :- autoload(library(apply), [exclude/3, maplist/3]).
 :- autoload(library(terms), [mapsubterms/3]).
-:- autoload(library(error), [instantiation_error/1, existence_error/2]).
-
-:- use_module(library(uri), [uri_is_global/1, uri_normalized/3]).
+:- autoload(library(error),
+            [instantiation_error/1, existence_error/2, permission_error/3]).
+:- use_module(library(uri), [uri_is_global/1, uri_normalized/3, uri_normalized/2]).
 :- use_module(library(debug), [debug/3]).
+
+:- set_prolog_flag(generate_debug_info, false).
 
 /** <module> WASM version support
 */
 
 :- meta_predicate
-   wasm_call_string(:, +, -),
-   wasm_call_string_with_heartbeat(:, +, -, +),
-   with_heartbeat(0, +).
+    wasm_query(:),
+    wasm_call_string(:, +, -),
+    wasm_call_string_with_heartbeat(:, +, -, +),
+    with_heartbeat(0, +).
 
 :- create_prolog_flag(wasm_heartbeat, 10_000, [type(integer), keep(true)]).
 
@@ -73,6 +77,17 @@
 wasm_query_loop :-
     current_prolog_flag(wasm_heartbeat, Rate),
     with_heartbeat('$toplevel':'$query_loop', Rate).
+
+%!  wasm_query(:Query:string)
+%
+%   Execute a single query
+
+wasm_query(M:String) :-
+    term_string(Query, String, [variable_names(Bindings)]),
+    current_prolog_flag(wasm_heartbeat, Rate),
+    with_heartbeat(
+        '$execute_query'(M:Query, Bindings, _Truth),
+        Rate).
 
 %!  wasm_abort
 %
@@ -149,7 +164,7 @@ await(Request, Result) :-
     '$await'(Request, Result0),
     (   is_dict(Result0),
         get_dict('$error', Result0, Error)
-    ->  (   Error == abort
+    ->  (   Error == "abort"
         ->  wasm_abort
         ;   throw(Error)
         )
@@ -165,6 +180,14 @@ await(Request, Result) :-
 is_async :-
     '$can_yield'.
 
+
+%!  must_be_async(+Message) is det.
+
+must_be_async(_) :-
+    is_async,
+    !.
+must_be_async(Message) :-
+    permission_error(run, goal, Message).
 
 %!  sleep(+Seconds)
 %
@@ -307,10 +330,14 @@ js_script(String, _Options) :-
 %
 %   Hook for load_files/2 that allows loading files from URLs.
 
-:- multifile user:prolog_load_file/2.
+:- multifile
+    user:prolog_load_file/2,
+    system:term_expansion/2.
 
 user:prolog_load_file(Module:File, Options) :-
     file_url(File, URL),
+    debug(load_file(url), '~p resolves to ~p', [File, URL]),
+    must_be_async(load_file(File)),
     load_options(URL, Options, Options1, Modified),
     (   already_loaded(URL, Modified)
     ->  '$already_loaded'(File, URL, Module, Options)
@@ -323,9 +350,24 @@ user:prolog_load_file(Module:File, Options) :-
             close(In))
     ).
 
-file_url(File, _), compound(File), compound_name_arity(File, _, 1) =>
-    !,
-    fail.                               % Alias(Path)
+:- multifile system:term_expansion/2.
+system:term_expansion((:- include(Path)), Expansion) :-
+    file_url(Path, URL),
+    must_be_async(include(Path)),
+    fetch(URL, text, String),
+    open_string(String, Stream),
+    Expansion = (:- include(stream(URL, Stream, [close(true)]))).
+
+%!  file_url(+FileSpec, -URL) is semidet.
+%
+%   True when FileSpec refers to a URL, i.e., we must load the file from
+%   the internet.
+
+file_url(Spec, URL), compound(Spec), compound_name_arity(Spec, _, 1) =>
+    absolute_file_name(Spec, URL0, [solutions(all)]),
+    uri_is_global(URL0),
+    ensure_extension(URL0, pl, URL1),
+    uri_normalized(URL1, URL).
 file_url(File, URL), atom(File), uri_is_global(File) =>
     URL = File.
 file_url(File, URL), relative_path(File, Path) =>
@@ -498,5 +540,8 @@ prolog:message(JsError) -->
       Msg := JsError.toString()
     },
     [ 'JavaScript: ~w'-[Msg] ].
+prolog:message(error(permission_error(yield, engine, _Engine),
+                     context(system:'$await'/2, _))) -->
+    [ 'await/2 is only allowed in Prolog.forEach() queries' ].
 prolog:error_message(js_error(Msg)) -->
     [ 'JavaScript: ~w'-[Msg] ].

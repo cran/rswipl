@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1997-2024, University of Amsterdam
+    Copyright (c)  1997-2025, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
@@ -1283,12 +1283,17 @@ prolog_message(threads) -->
     [].
 prolog_message(copyright) -->
     [ 'SWI-Prolog comes with ABSOLUTELY NO WARRANTY. This is free software.', nl,
-      'Please run ?- license. for legal details.'
+      'Please run ', ansi(code, '?- license.', []), ' for legal details.'
     ].
 prolog_message(documentaton) -->
-    [ 'For online help and background, visit https://www.swi-prolog.org', nl,
-      'For built-in help, use ?- help(Topic). or ?- apropos(Word).'
-    ].
+    [ 'For online help and background, visit ', url('https://www.swi-prolog.org') ],
+    (   { exists_source(library(help)) }
+    ->  [ nl,
+          'For built-in help, use ', ansi(code, '?- help(Topic).', []),
+          ' or ', ansi(code, '?- apropos(Word).', [])
+        ]
+    ;   []
+    ).
 prolog_message(about) -->
     [ 'SWI-Prolog version (' ],
     prolog_message(threads),
@@ -1339,15 +1344,27 @@ query_result(yes(Bindings, Delays, Residuals)) -->
 query_result(more(Bindings, Delays, Residuals)) -->
     result(Bindings, Delays, Residuals),
     prompt(more, Bindings, Delays, Residuals).
+:- if(current_prolog_flag(emscripten, true)).
 query_result(help) -->
     [ ansi(bold, '  Possible actions:', []), nl,
-      '  ; (n,r,space,TAB): redo              | t:         trace&redo'-[], nl,
-      '  *:                 show choicepoint  | c (a,RET): stop'-[], nl,
-      '  w:                 write             | p:         print'-[], nl,
-      '  +:                 max_depth*10      | -:         max_depth//10'-[], nl,
-      '  b:                 break             | h (?):     help'-[],
+      '  ; (n,r,space): redo              | t:       trace&redo'-[], nl,
+      '  *:             show choicepoint  | . (c,a): stop'-[], nl,
+      '  w:             write             | p:       print'-[], nl,
+      '  +:             max_depth*5       | -:       max_depth//5'-[], nl,
+      '  h (?):         help'-[],
       nl, nl
     ].
+:- else.
+query_result(help) -->
+    [ ansi(bold, '  Possible actions:', []), nl,
+      '  ; (n,r,space,TAB): redo              | t:           trace&redo'-[], nl,
+      '  *:                 show choicepoint  | . (c,a,RET): stop'-[], nl,
+      '  w:                 write             | p:           print'-[], nl,
+      '  +:                 max_depth*5       | -:           max_depth//5'-[], nl,
+      '  b:                 break             | h (?):       help'-[],
+      nl, nl
+    ].
+:- endif.
 query_result(action) -->
     [ 'Action? '-[], flush ].
 query_result(confirm) -->
@@ -1642,17 +1659,28 @@ tracing_list([trace(Head, Ports)|T]) -->
     translate_message(trace(Head, Ports)),
     tracing_list(T).
 
-prolog_message(frame(Frame, backtrace, _PC)) -->
+% frame(+Frame, +Choice, +Port, +PC) - Print for the debugger.
+prolog_message(frame(Frame, _Choice, backtrace, _PC)) -->
     !,
     { prolog_frame_attribute(Frame, level, Level)
     },
     [ ansi(frame(level), '~t[~D] ~10|', [Level]) ],
     frame_context(Frame),
     frame_goal(Frame).
-prolog_message(frame(Frame, choice, PC)) -->
+prolog_message(frame(Frame, _Choice, choice, PC)) -->
     !,
     prolog_message(frame(Frame, backtrace, PC)).
-prolog_message(frame(_, cut_call, _)) --> !, [].
+prolog_message(frame(_, _Choice, cut_call(_PC), _)) --> !.
+prolog_message(frame(Frame, _Choice, Port, _PC)) -->
+    frame_flags(Frame),
+    port(Port),
+    frame_level(Frame),
+    frame_context(Frame),
+    frame_depth_limit(Port, Frame),
+    frame_goal(Frame),
+    [ flush ].
+
+% frame(:Goal, +Trace)		- Print for trace/2
 prolog_message(frame(Goal, trace(Port))) -->
     !,
     thread_context,
@@ -1665,14 +1693,6 @@ prolog_message(frame(Goal, trace(Port, Id))) -->
     [ ' T ' ],
     port(Port, Id),
     goal(Goal).
-prolog_message(frame(Frame, Port, _PC)) -->
-    frame_flags(Frame),
-    port(Port),
-    frame_level(Frame),
-    frame_context(Frame),
-    frame_depth_limit(Port, Frame),
-    frame_goal(Frame),
-    [ flush ].
 
 frame_goal(Frame) -->
     { prolog_frame_attribute(Frame, goal, Goal)
@@ -1735,8 +1755,9 @@ port(Port, _Id-Level) -->
     [ '[~d] '-[Level] ],
     port(Port).
 
-port(Port) -->
-    { port_name(Port, Name)
+port(PortTerm) -->
+    { functor(PortTerm, Port, _),
+      port_name(Port, Name)
     },
     !,
     [ ansi(port(Port), '~w: ', [Name]) ].

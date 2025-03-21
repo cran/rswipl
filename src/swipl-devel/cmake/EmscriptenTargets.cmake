@@ -6,6 +6,7 @@ set(WASM_SHARED_LINK_FLAGS
     -s WASM_BIGINT=1
     -s ALLOW_MEMORY_GROWTH=1
     -s STACK_SIZE=${SWIPL_C_STACK_SIZE}
+    -s LZ4=1
     -s STACK_OVERFLOW_CHECK=1)
 if(MULTI_THREADED)
   list(APPEND WASM_SHARED_LINK_FLAGS
@@ -35,6 +36,8 @@ set_target_properties(swipl PROPERTIES
 set(WASM_BOOT_FILE "${WASM_PRELOAD_DIR}/boot.prc")
 set(WASM_ABI_FILE "${WASM_PRELOAD_DIR}/ABI")
 
+has_package(chr PKG_CHR)
+
 find_program(PROG_RSYNC rsync)
 if(PROG_RSYNC)
   set(RSYNC_DEL_FLAGS -r --ignore-existing --delete)
@@ -42,12 +45,53 @@ else()
   set(PROG_RSYNC :)
 endif()
 
+set(wasm_preload_depends
+    ${SWIPL_BOOT_FILE} prolog_home bootfile library_index)
+if(INSTALL_QLF)
+  list(APPEND wasm_preload_depends library_qlf)
+endif()
+
+if(INSTALL_PROLOG_SRC)
+  set(CP_SRC :)
+else()
+  list(APPEND RSYNC_DEL_FLAGS --delete-excluded --exclude=[a-z]*.pl)
+  list(TRANSFORM WASM_prolog_src PREPEND ${SWIPL_BUILD_LIBRARY}/)
+  set(CP_SRC cp -Llf ${WASM_prolog_src} ${WASM_PRELOAD_DIR}/library)
+endif()
+
+# Copy the CHR main file.  These are built in packages/chr rather than
+# home/library, so we need to deal with them explicitly.
+if(PKG_CHR)
+  set(chr_bin_dir ${CMAKE_BINARY_DIR}/packages/chr)
+  set(chr_files)
+  set(chr_chr_files)
+  if(INSTALL_PROLOG_SRC)
+    list(APPEND chr_files ${chr_bin_dir}/chr.pl)
+    list(APPEND chr_chr_files
+	 ${chr_bin_dir}/chr_translate.pl
+	 ${chr_bin_dir}/guard_entailment.pl)
+  endif()
+  if(INSTALL_QLF)
+    list(APPEND chr_files ${chr_bin_dir}/chr.qlf)
+    list(APPEND chr_chr_files
+	 ${chr_bin_dir}/chr_translate.qlf
+	 ${chr_bin_dir}/guard_entailment.qlf)
+  endif()
+  set(CP_CHR1
+      cp -LlRf ${chr_files} ${WASM_PRELOAD_DIR}/library/ext/chr/)
+  set(CP_CHR2
+      cp -LlRf ${chr_chr_files} ${WASM_PRELOAD_DIR}/library/ext/chr/chr/)
+else()
+  set(CP_CHR1 :)
+  set(CP_CHR2 :)
+endif()
+
 # On Linux we use  hard links using GNU cp -l.   Using soft links does
 # not work  as it makes  the preload  file system holds  just dangling
 # symlinks.   Using links  makes sure  edits in  the Prolog  files are
 # reflected in the output.
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
-  message("${SWIPL_BUILD_LIBRARY} ${WASM_PRELOAD_DIR}")
+  #message("${SWIPL_BUILD_LIBRARY} ${WASM_PRELOAD_DIR}")
   add_custom_command(
     OUTPUT ${WASM_BOOT_FILE}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${WASM_PRELOAD_DIR}
@@ -55,7 +99,10 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     COMMAND cp -Llf ${SWIPL_ABI_FILE} ${WASM_ABI_FILE}
     COMMAND cp -LlRf ${SWIPL_BUILD_LIBRARY} ${WASM_PRELOAD_DIR}
     COMMAND ${PROG_RSYNC} ${RSYNC_DEL_FLAGS} ${SWIPL_BUILD_LIBRARY}/ ${WASM_PRELOAD_DIR}/library
-    DEPENDS ${SWIPL_BOOT_FILE} prolog_home bootfile library_index
+    COMMAND ${CP_CHR1}
+    COMMAND ${CP_CHR2}
+    COMMAND ${CP_SRC}
+    DEPENDS ${wasm_preload_depends}
     VERBATIM)
 else()
   add_custom_command(
@@ -65,7 +112,7 @@ else()
     COMMAND ${CMAKE_COMMAND} -E copy ${SWIPL_ABI_FILE} ${WASM_ABI_FILE}
     COMMAND ${CMAKE_COMMAND} -E copy_directory
 			     ${SWIPL_BUILD_LIBRARY} ${WASM_PRELOAD_DIR}/library
-    DEPENDS ${SWIPL_BOOT_FILE} prolog_home bootfile library_index
+    DEPENDS ${wasm_preload_depends}
     VERBATIM)
 endif()
 

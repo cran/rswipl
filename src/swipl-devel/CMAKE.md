@@ -14,13 +14,10 @@ all use Ninja. Drop `-G Ninja` to use classical Unix make.
 
 ## Getting cmake
 
-Building SWI-Prolog requires cmake version 3.9  or later (*). Many Linux
+Building SWI-Prolog requires cmake version  3.10   or  later. Many Linux
 systems ship with a cmake package. On  MacOS we use the Macport version.
 If the shipped cmake version is too old   you may wish to download cmake
 from https://cmake.org/download/
-
-(*) The ODBC package requires 3.9.  For the rest 3.5 should suffice.
-
 
 ## Native build
 
@@ -94,29 +91,31 @@ allow for restricting the system, define   the  layout of the filesystem
 and libraries that are built.
 
   | Option                        | Description                           |
-  | ----------------------------- | ------------------------------------- |
-  | `-DMULTI_THREADED=OFF`        | Drop support for Prolog threads       |
-  | `-DENGINES=OFF`               | Drop support for Prolog engines       |
-  | `-DUSE_SIGNALS=OFF`           | Drop signal support                   |
-  | `-DUSE_GMP=OFF`               | Use bundled LibBF instead of GMP      |
-  | `-DUSE_TCMALLOC=OFF`          | Do not link against `-ltcmalloc`      |
-  | `-DVMI_FUNCTIONS=ON`          | Use functions for the VM instructions |
-  | `-DSWIPL_SHARED_LIB=OFF`      | Build Prolog kernel as static lib     |
-  | `-DSWIPL_STATIC_LIB=ON`       | Also build `libswipl_static.a`        |
-  | `-DSTATIC_EXTENSIONS=ON`      | Include packages into the main system |
-  | `-DSWIPL_INSTALL_IN_LIB=ON`   | Install libswipl.so in `<prefix>/lib` |
-  | `-DSWIPL_INSTALL_IN_SHARE=ON` | Install docs in `<prefix>/share`      |
-  | `-DSWIPL_CC=<string>`         | Default for `c_cc` flag               |
-  | `-DSWIPL_CXX=<string>`        | Default for `c_cxx` flag              |
-  | `-DSWIPL_PACKAGES=OFF`        | Only build the core system            |
-  | `-DSWIPL_PACKAGES_BASIC=OFF`  | Drop all basic packages               |
-  | `-DSWIPL_PACKAGES_ODBC=OFF`   | Drop ODBC and CQL packages            |
-  | `-DSWIPL_PACKAGES_JAVA=OFF`   | Drop JPL Java interface               |
-  | `-DSWIPL_PACKAGES_X=OFF`      | Drop graphics (xpce)                  |
-  | `-DSWIPL_PACKAGE_LIST=List`   | ;-separated list of packages          |
-  | `-DBUILD_TESTING=OFF`         | Do not setup for ctest unit tests     |
-  | `-DINSTALL_TESTS=ON`          | Add tests to installed system         |
-  | `-DINSTALL_DOCUMENTATION=OFF` | Drop generating the HTML docs         |
+  | ----------------------------- | -------------------------------------- |
+  | `-DMULTI_THREADED=OFF`        | Drop support for Prolog threads        |
+  | `-DENGINES=OFF`               | Drop support for Prolog engines        |
+  | `-DUSE_SIGNALS=OFF`           | Drop signal support                    |
+  | `-DUSE_GMP=OFF`               | Use bundled LibBF instead of GMP       |
+  | `-DUSE_TCMALLOC=OFF`          | Do not link against `-ltcmalloc`       |
+  | `-DVMI_FUNCTIONS=ON`          | Use functions for the VM instructions  |
+  | `-DSWIPL_SHARED_LIB=OFF`      | Build Prolog kernel as static lib      |
+  | `-DSWIPL_STATIC_LIB=ON`       | Also build `libswipl_static.a`         |
+  | `-DSTATIC_EXTENSIONS=ON`      | Include packages into the main system  |
+  | `-DSWIPL_INSTALL_IN_LIB=ON`   | Install libswipl.so in `<prefix>/lib`  |
+  | `-DSWIPL_INSTALL_IN_SHARE=ON` | Install docs in `<prefix>/share`       |
+  | `-DSWIPL_CC=<string>`         | Default for `c_cc` flag                |
+  | `-DSWIPL_CXX=<string>`        | Default for `c_cxx` flag               |
+  | `-DSWIPL_PACKAGES=OFF`        | Only build the core system             |
+  | `-DSWIPL_PACKAGES_BASIC=OFF`  | Drop all basic packages                |
+  | `-DSWIPL_PACKAGES_ODBC=OFF`   | Drop ODBC and CQL packages             |
+  | `-DSWIPL_PACKAGES_JAVA=OFF`   | Drop JPL Java interface                |
+  | `-DSWIPL_PACKAGES_X=OFF`      | Drop graphics (xpce)                   |
+  | `-DSWIPL_PACKAGE_LIST=List`   | ;-separated list of packages           |
+  | `-DBUILD_TESTING=OFF`         | Do not setup for ctest unit tests      |
+  | `-DINSTALL_TESTS=ON`          | Add tests to installed system          |
+  | `-DINSTALL_DOCUMENTATION=OFF` | Drop generating the HTML docs          |
+  | `-DINSTALL_QLF=ON`            | Compile and install library .qlf files |
+  | `-DINSTALL_PROLOG_SRC=OFF`    | Do not install library .pl files       |
 
 Note that packages for  which  the   prerequisites  cannot  be found are
 dropped automatically, as are packages  for   which  the sources are not
@@ -148,9 +147,14 @@ or home brewed. Please consult the   CMake documentation on the specific
 requirement or selecting the right version if you have multiple versions
 of the requirement installed on your system.
 
-In particular, see
+In                            particular,                            see
 [FindPython.cmake](https://cmake.org/cmake/help/latest/module/FindPython.html)
-to control the Python version used by the Janus interface to Python.
+to control the Python version used by the Janus interface to Python. For
+example, if you want to use  a   particular  Python library (for example
+from   a   (`conda`)   environment),   you     can    use   the   option
+`-DPython_LIBRARY:FILEPATH=/path/to/your/library`                    and
+`-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE` to make sure   the library is
+found also at runtime.
 
 
 ## Embedding SWI-Prolog in Java, C, C++, etc.
@@ -255,7 +259,13 @@ in the cmake _build_ directory. If possible,   the files from the source
 tree that do not need modification are   created  as _symbolic links_ to
 the real sources. This  implies  that  `src/swipl`   can  be  used  as a
 complete development environment and library   and system predicates can
-be edited using edit/1 and friends.
+be edited using edit/1 and  friends.   Note  that current cmake supports
+``-DCMAKE_INSTALL_MODE=ABS_SYMLINK``,  installing  the    system   using
+symbolic links to provide  a  similar   result.  The  advantage of using
+``-DCMAKE_INSTALL_MODE=ABS_SYMLINK`` is that all files are in the target
+position while this is  not  the  case   when  running  from  the  build
+directory. The disadvantage is that  ``ninja   install``  must  still be
+executed on changes such as adding new files to the library.
 
 The script `scripts/swi-activate` may be used   to  create symlinks from
 `$HOME/bin` to the version in the  current   working  directory. It may

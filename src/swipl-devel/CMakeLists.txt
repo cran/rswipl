@@ -2,7 +2,7 @@ set(CMAKE_POLICY_DEFAULT_CMP0074 NEW)
 set(CMAKE_POLICY_DEFAULT_CMP0075 NEW)
 set(CMAKE_POLICY_DEFAULT_CMP0079 NEW)
 
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 project(SWI-Prolog)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -97,6 +97,12 @@ option(BUILD_SWIPL_LD
 option(INSTALL_TESTS
        "Install script and files needed to run tests of the final installation"
        OFF)
+option(INSTALL_QLF
+       "Build and install .qlf files for all libraries"
+       OFF)
+option(INSTALL_PROLOG_SRC
+       "Install the Prolog sources (.pl files)"
+       ON)
 option(GCOV
        "Compile for coverage analysis using gcov (gcc)"
        OFF)

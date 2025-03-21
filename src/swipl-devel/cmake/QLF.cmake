@@ -20,7 +20,7 @@ function(add_swipl_target name)
   set(options --no-packs "--home=${SWIPL_BUILD_HOME}")
   cmake_parse_arguments(
       my "QUIET;QLF;NOINSTALL"
-         "COMMENT;COMMAND;APP"
+         "COMMENT;COMMAND;APP;WORKING_DIRECTORY"
          "OUTPUT;BYPRODUCTS;SCRIPT;DEPENDS;OPTIONS;LIBS"
          ${ARGN})
 
@@ -46,7 +46,7 @@ function(add_swipl_target name)
       set(options ${options} -g "use_module(library(${s}))")
     endforeach()
     foreach(s ${my_SCRIPT})
-      set(options ${options} -s ${s})
+      set(options ${options} -l ${s})
     endforeach()
     set(options ${options} -g ${my_COMMAND} --)
   elseif(my_APP)
@@ -61,6 +61,7 @@ function(add_swipl_target name)
       COMMAND ${CMAKE_COMMAND} -E env --unset=DISPLAY
 	      ${PROG_SWIPL} ${options} ${my_OPTIONS}
       COMMENT "${my_COMMENT}"
+      WORKING_DIRECTORY "${my_WORKING_DIRECTORY}"
       DEPENDS core prolog_home
               ${SWIPL_COMMAND_DEPENDS} "${my_DEPENDS}"
       VERBATIM)
@@ -71,6 +72,7 @@ function(add_swipl_target name)
   if(NOT my_NOINSTALL)
     list(GET my_OUTPUT 0 primary)
     string(REPLACE "${SWIPL_BUILD_HOME}" "" rel "${primary}")
+    string(REGEX REPLACE "^/*([^/].*)" "\\1" rel "${rel}")
     get_filename_component(rel ${rel} DIRECTORY)
     install(FILES ${primary}
 	    DESTINATION ${SWIPL_INSTALL_PREFIX}/${rel})
@@ -174,4 +176,3 @@ function(qcompile)
 			COMMENT "-- QLF compiling library(${f})")
   endforeach()
 endfunction()
-

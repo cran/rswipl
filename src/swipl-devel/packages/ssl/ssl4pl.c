@@ -47,6 +47,10 @@
 #include <pthread.h>
 #endif
 
+#if defined(__WINDOWS__) || defined (__CYGWIN__)
+#include <windows.h>
+#endif
+
 #include <openssl/x509v3.h>
 #include <openssl/ssl.h>
 #include <openssl/bn.h>

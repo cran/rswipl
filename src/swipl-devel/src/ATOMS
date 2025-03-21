@@ -171,6 +171,7 @@ A cos			"cos"
 A cosh			"cosh"
 A cputime		"cputime"
 A create		"create"
+A creep			"creep"
 A csym			"csym"
 A csymf			"csymf"
 A cumulative		"cumulative"
@@ -273,6 +274,7 @@ A dvariable_names	"$variable_names"
 A dwakeup		"$wakeup"
 A dyield		"$yield"
 A dynamic		"dynamic"
+A dyndict		"#"
 A e			"e"
 A eager			"eager"
 A else			"else"
@@ -468,6 +470,7 @@ A last			"last"
 A last_modified_generation "last_modified_generation"
 A lazy			"lazy"
 A lcm			"lcm"
+A leap			"leap"
 A level			"level"
 A lgamma		"lgamma"
 A li			"li"
@@ -995,6 +998,7 @@ A xor			"xor"
 A xpceref		"@"
 A yf			"yf"
 A yfx			"yfx"
+A yield			"yield"
 A zero			"zero"
 A zero_divisor		"zero_divisor"
 A zip_options		"zip_options"
@@ -1142,6 +1146,7 @@ F float_integer_part	1
 F floor			1
 F foreign_function	1
 F frame			3
+F frame			4
 F frame_finished	1
 F fresh			2
 F gcd			2
@@ -1246,7 +1251,6 @@ F representation_error	1
 F representation_errors 1
 F reset			3
 F resource_error	1
-F retry			1
 F rollback		1
 F round			1
 F roundtoward		2

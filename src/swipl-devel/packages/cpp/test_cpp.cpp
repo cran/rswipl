@@ -668,8 +668,8 @@ PREDICATE(hostname2, 1)
 // The eq_int64/2 and lt_int64/2 predicates test the deprecated PlTerm::operator==()
 
 #ifdef _MSC_VER
-#pragma warning( push )
-#pragma warning (disable:4996)
+// #pragma warning( push )
+// #pragma warning (disable:4996)
 #else
 // #pragma GCC diagnostic push
 // #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -684,7 +684,7 @@ PREDICATE(hostname2, 1)
 // }
 
 #ifdef _MSC_VER
-#pragma warning( pop )
+// #pragma warning( pop )
 #else
 // #pragma GCC diagnostic pop
 #endif

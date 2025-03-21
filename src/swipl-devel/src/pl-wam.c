@@ -36,6 +36,9 @@
 */
 
 /*#define O_DEBUG 1*/
+#ifdef O_DEBUG
+#define O_DEBUG_BACKTRACK 1
+#endif
 #define USE_FLI_INLINES 1
 #define USE_ALLOC_INLINES 1
 
@@ -117,7 +120,8 @@ typedef foreign_t (*NdetFunc10)(term_t a1, term_t a2, term_t a3, term_t a4,
 				term_t a5, term_t a6, term_t a7, term_t a8,
 				term_t a9, term_t a10, control_t);
 
-
+#define YIELD_TERM_FOREIGN ((term_t)(intptr_t)-1)
+#define YIELD_TERM_DEBUG   ((term_t)(intptr_t)-2)
 
 		 /*******************************
 		 *	     DEBUGGING		*
@@ -430,10 +434,10 @@ PL_discard_foreign_frame(fid_t id)
 #define determinism_error(fr, bfr, found) \
 	LDFUNC(determinism_error, fr, bfr, found)
 
-static int
+static bool
 determinism_error(DECL_LD LocalFrame fr, Choice bfr, atom_t found)
 { fid_t fid;
-  int rc = false;
+  bool rc = false;
   atom_t a = ATOM_error;
 
   if ( found == ATOM_nondet )
@@ -509,7 +513,7 @@ determinism_error(DECL_LD LocalFrame fr, Choice bfr, atom_t found)
 
 
 #define ssu_or_det_failed(fr) LDFUNC(ssu_or_det_failed, fr)
-static int
+static bool
 ssu_or_det_failed(DECL_LD LocalFrame fr)
 { fid_t fid;
   int rc = false;
@@ -875,12 +879,14 @@ callCleanupHandler(DECL_LD LocalFrame fr, enum finished reason)
 
 
 #define frameFinished(fr, reason) LDFUNC(frameFinished, fr, reason)
-static int
+static bool
 frameFinished(DECL_LD LocalFrame fr, enum finished reason)
 { if ( ison(fr, FR_CLEANUP) )
-  { size_t fref = consTermRef(fr);
+  { term_t fref = consTermRef(fr);
     callCleanupHandler(fr, reason);
     fr = (LocalFrame)valTermRef(fref);
+    if ( exception_term )
+      return false;
   }
 
   if ( ison(fr, FR_DEBUG) )
@@ -889,6 +895,22 @@ frameFinished(DECL_LD LocalFrame fr, enum finished reason)
   return true;
 }
 
+#define frameFailed(fr) LDFUNC(frameFailed, fr)
+static bool
+frameFailed(DECL_LD LocalFrame fr)
+{ environment_frame = fr;
+  lTop = (LocalFrame)argFrameP(fr, fr->predicate->functor->arity);
+
+  if ( ison(fr, FR_SSU_DET|FR_DET|FR_DETGUARD) )
+  { term_t fref = consTermRef(fr);
+    ssu_or_det_failed(fr);
+    fr = (LocalFrame)valTermRef(fref);
+    if ( exception_term )
+      return false;
+  }
+
+  return frameFinished(fr, FINISH_FAIL);
+}
 
 #define mustBeCallable(call) LDFUNC(mustBeCallable, call)
 static int
@@ -986,7 +1008,7 @@ unify_gl(DECL_LD Word g, Word l, int has_firstvar)
 
 
 #define put_call_goal(t, proc) LDFUNC(put_call_goal, t, proc)
-static int
+static bool
 put_call_goal(DECL_LD term_t t, Procedure proc)
 { FunctorDef fd  = proc->definition->functor;
 
@@ -995,16 +1017,15 @@ put_call_goal(DECL_LD term_t t, Procedure proc)
     LocalFrame NFR = LD->query->next_environment;
     Word ap        = argFrameP(NFR, 0);
     Word gp	   = gt;
-    int i;
 
     if ( !gt )
       return false;			/* could not allocate */
 
     DEBUG(MSG_TRACE,
-	  Sdprintf("Copy %d call args from %p\n", fd->arity, ap));
+	  Sdprintf("Copy %zd call args from %p\n", fd->arity, ap));
 
     *gp++ = fd->functor;
-    for(i=0; i<fd->arity; i++)
+    for(size_t i=0; i<fd->arity; i++)
       unify_gl(gp++, ap++, false);
     *valTermRef(t) = consPtr(gt, STG_GLOBAL|TAG_COMPOUND);
   } else
@@ -1921,16 +1942,25 @@ exceptionUnwindGC(void)
 		 *******************************/
 
 #ifdef O_DEBUGGER
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+/*
 findStartChoice(LocalFrame fr, Choice ch)
-    Within the same query, find the choice-point that was created at the
-    start of this frame.  This is used for the debugger at the fail-port
-    as well as for realising retry.
 
-    Note that older versions also considered the initial choicepoint a
-    choicepoint for the initial frame, but this is not correct as the
-    frame may be replaced due to last-call optimisation.
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+Within the same  query, find the choice-point that was  created at the
+start of  this frame.  This  is used by the  debugger at the  fail and
+exception ports as well as for  realising retry.  In debug mode, every
+frame  has  a  start  choicepoint.   If no  choicepoint  is  needed  a
+CHP_DEBUG  one  is  created.   When the  debugger  is  trapped  during
+execution in normal mode, such a  port may not exist, which implies we
+cannot trace the fail or exception port and we cannot redo at the exit
+port because we cannot rewind to the state at the call port.
+
+Note that  older versions  also considered  the initial  choicepoint a
+choicepoint for  the initial  frame, but  this is  not correct  as the
+frame may be replaced due to last-call optimisation.
+
+Note that a CHP_JUMP need not  reflect the initial state of the frame,
+but it does for nondet foreign predicates.
+*/
 
 static Choice
 findStartChoice(LocalFrame fr, Choice ch)
@@ -1938,7 +1968,8 @@ findStartChoice(LocalFrame fr, Choice ch)
   { if ( ch->frame == fr )
     { switch ( ch->type )
       { case CHP_JUMP:
-	  continue;			/* might not be at start */
+	  if ( isoff(fr->predicate, P_FOREIGN) )
+	    continue;
 	default:
 	  return ch;
       }
@@ -1946,15 +1977,6 @@ findStartChoice(LocalFrame fr, Choice ch)
   }
 
   return NULL;
-}
-
-
-static Choice
-findChoiceBeforeFrame(LocalFrame fr, Choice ch)
-{ while ( (void*)ch > (void*)fr )
-    ch = ch->parent;
-
-  return ch;
 }
 
 #endif /*O_DEBUGGER*/
@@ -2221,17 +2243,17 @@ of redo.  We always show redo for an external redo.
 #define dbgRedoFrame(fr, cht) LDFUNC(dbgRedoFrame, fr, cht)
 static LocalFrame
 dbgRedoFrame(DECL_LD LocalFrame fr, choice_type cht)
-{ DEBUG(MSG_TRACE, Sdprintf("REDO on [%d] %s\n",
-			    (int)levelFrame(fr), predicateName(fr->predicate)));
+{ DEBUG(MSG_TRACE_REDO, Sdprintf("REDO on [%u] %s\n",
+				 levelFrame(fr), predicateName(fr->predicate)));
 
   if ( SYSTEM_MODE )
     return fr;				/* system mode; debug everything */
-  if ( isDebugFrame(fr) && isoff(fr->predicate, HIDE_CHILDS) )
+  if ( isDebugFrame(fr, REDO_PORT) && isoff(fr->predicate, HIDE_CHILDS) )
     return fr;				/* normal user code */
   for( ; fr && fr->parent && ison(fr->parent->predicate, HIDE_CHILDS);
        fr = fr->parent)
     ;					/* find top of hidden children */
-  DEBUG(MSG_TRACE, if ( fr )
+  DEBUG(MSG_TRACE_REDO, if ( fr )
 	Sdprintf("REDO user frame of [%d] %s%s\n",
 		 (int)levelFrame(fr),
 		 predicateName(fr->predicate),
@@ -2249,16 +2271,18 @@ dbgRedoFrame(DECL_LD LocalFrame fr, choice_type cht)
 #define exception_hook(pqid, fr, catchfr_ref) \
 	LDFUNC(exception_hook, pqid, fr, catchfr_ref)
 
-static int
+static bool
 exception_hook(DECL_LD qid_t pqid, term_t fr, term_t catchfr_ref)
 { if ( PROCEDURE_exception_hook5->definition->impl.clauses.first_clause )
   { if ( !LD->exception.in_hook )
     { wakeup_state wstate;
       qid_t qid;
       term_t av, ex = 0;
-      int debug, trace, rc;
+      debug_type debug;
+      bool trace;
+      bool rc;
 
-      LD->exception.in_hook++;
+      LD->exception.in_hook = true;
       if ( !saveWakeup(&wstate, true) )
 	return false;
 
@@ -2295,7 +2319,7 @@ exception_hook(DECL_LD qid_t pqid, term_t fr, term_t catchfr_ref)
       trace = debugstatus.tracing;
       if ( rc )				/* pass user setting trace/debug */
       { PL_cut_query(qid);
-	if ( debug ) debugstatus.debugging = true;
+	if ( debug ) debugstatus.debugging = debug;
 	if ( trace ) debugstatus.tracing = true;
 	if ( !PL_is_variable(av+1) )
 	  ex = av+1;
@@ -2318,7 +2342,7 @@ exception_hook(DECL_LD qid_t pqid, term_t fr, term_t catchfr_ref)
 
     done:
       restoreWakeup(&wstate);
-      LD->exception.in_hook--;
+      LD->exception.in_hook = false;
 
       return rc;
     } else
@@ -2331,6 +2355,24 @@ exception_hook(DECL_LD qid_t pqid, term_t fr, term_t catchfr_ref)
 
 
 #endif /*O_CATCHTHROW*/
+
+
+		 /*******************************
+		 *         YIELD DEBUG          *
+		 *******************************/
+
+#define debug_yield(port) LDFUNC(debug_yield, port)
+
+static int
+debug_yield(DECL_LD int port)
+{ QueryFrame qf = LD->query;
+
+  LD->trace.yield.port = port;
+  saveWakeup(&qf->yield.wstate, true);
+  qf->yield.term = YIELD_TERM_DEBUG;
+
+  return PL_S_YIELD_DEBUG;
+}
 
 
 		 /*******************************
@@ -2411,12 +2453,16 @@ copyFrameArguments(DECL_LD LocalFrame from, LocalFrame to, size_t argc)
 #ifdef O_DEBUG_BACKTRACK
 int backtrack_from_line;
 choice_type last_choice;
-#define GO(helper) do { backtrack_from_line = __LINE__; VMH_GOTO(helper); } while(0)
+#define GO(...)					\
+  do						\
+  { backtrack_from_line = __LINE__;		\
+    VMH_GOTO(__VA_ARGS__);			\
+  } while(0)
 #else
-#define GO(helper) VMH_GOTO(helper)
+#define GO(...) VMH_GOTO(__VA_ARGS__)
 #endif
 
-#define FRAME_FAILED		GO(deep_backtrack)
+#define FRAME_FAILED		GO(deep_backtrack, PL_TRACE_ACTION_NONE)
 #define CLAUSE_FAILED		GO(unify_backtrack)
 #define BODY_FAILED		GO(shallow_backtrack)
 #ifdef O_DEBUGGER
@@ -2447,12 +2493,10 @@ choice_type last_choice;
      functions should be called again using FRG_CUTTED context.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-static void
+static inline void
 leaveFrame(LocalFrame fr)
-{ //Definition def = fr->predicate;
-
-  fr->clause = NULL;
-  leaveDefinition(def);
+{ fr->clause = NULL;
+  leaveDefinition(fr->predicate);
 }
 
 
@@ -2669,6 +2713,129 @@ dbg_discardChoicesAfter(DECL_LD LocalFrame fr, enum finished reason)
   }
 }
 
+/* Discard as much  as possible of the local stack  while unwinding an
+ * exception.   We need  to include  the current  environment and  the
+ * predicate arguments, but not the local variables (hence, we set the
+ * fr->clause to NULL).  We also  need the last choicepoint.  Finally,
+ * we can dispose of foreign environments above the new lTop.
+ */
+
+#define dbg_except_unwind_ltop(_) \
+	LDFUNC(dbg_except_unwind_ltop, _)
+
+static void
+dbg_except_unwind_ltop(DECL_LD)
+{ LocalFrame fr = LD->environment;
+  void *e_top = argFrameP(fr, fr->predicate->functor->arity);
+  void *c_top = LD->choicepoints+1;
+
+  fr->clause = NULL;	/* We do not care about the local variables */
+  DEBUG(MSG_UNWIND_EXCEPTION,
+	Sdprintf("e_top above [%u] %s: %p\n",
+		 fr->level, predicateName(fr->predicate), e_top));
+  if ( e_top < c_top )
+  { DEBUG(MSG_UNWIND_EXCEPTION,
+	  Sdprintf("Include choice points: %p -> %p\n",
+		   e_top, c_top));
+    e_top = c_top;
+  }
+  lTop = e_top;
+
+  while(fli_context > (FliFrame)lTop)
+    fli_context = fli_context->parent;
+
+  /* Verify we didn't mess up anything */
+  DEBUG(CHK_SECURE,
+	{ size_t clean = (char*)lMax - (char*)lTop;
+	  memset(lTop, 0xfb, clean);
+	  checkStacks(NULL);
+	});
+}
+
+/* Try to start the debugger while unwinding an exception.  We run GC,
+ * trying  to free  up space  and then  test whether  there is  enough
+ * space.   That is  also  the moment  when we  can  safely print  the
+ * exception message.
+ *
+ * If the exception is not caught, we try to print it and enable trace
+ * mode. However, we should be careful  about this if the exception is
+ * an out-of-stack exception  because the trace runs in  Prolog and is
+ * likely  to  run  fatally  out  of stack  if  we  start  the  tracer
+ * immediately. That is the role of trace_if_space(). As long as there
+ * is  no  space, the  exception  is  unwound  until there  is  space.
+ * Unfortunately, this means that some of the context of the exception
+ * is lost. Note that we need to run  GC if we ran out of global stack
+ * because the stack is frozen to preserve the exception ball.
+ *
+ * Overflow  exceptions  are supposed  to  be  rare,  but need  to  be
+ * processed with care  to avoid a fatal overflow  when processing the
+ * exception and its cleanup or debug actions.  We want two things:
+ *
+ *   - Get, before doing any calls to Prolog, a sensible amount of free
+ *     space.
+ *   - GC and trim before resuming normal execution to free up and
+ *     deallocate as much as possible space.
+ *
+ * On each unwind action, we must reset Stack->gced_size and increment
+ * the inference count to make sure that the time we run out of memory
+ * the system will actually consider GC. See considerGarbageCollect().
+ */
+
+#define	dbg_except_start_tracer(_) LDFUNC(dbg_except_start_tracer, _)
+
+static bool
+dbg_except_start_tracer(DECL_LD)
+{ exceptionUnwindGC();
+  DEBUG(MSG_STACK_OVERFLOW,
+	Sdprintf("Unwinding for exception. g+l+t used = %zd+%zd+%zd\n",
+		 usedStack(global),
+		 usedStack(local),
+		 usedStack(trail)));
+  if ( trace_if_space() )
+  { LD->critical++;		/* do not handle signals */
+    trimStacks(false);
+    if ( !printMessage(ATOM_error, PL_TERM, exception_term) )
+    { Sdprintf("Failed to print exception message\n");
+      // PL_clear_exception();		What to do here?
+    }
+    LD->critical--;
+    return true;
+  }
+
+  return false;
+}
+
+/* Discard the innermost frame during exception unwinding in debug
+ * mode.  Note that we need to use `LD->environment` explicitly as
+ * garbage collections and stack shifts may change the frame;
+ */
+
+#define dbg_except_discard_frame(_) LDFUNC(dbg_except_discard_frame, _)
+
+static void
+dbg_except_discard_frame(DECL_LD)
+{ if ( ison(LD->environment, FR_WATCHED) )
+  { dbg_discardChoicesAfter(LD->environment, FINISH_EXTERNAL_EXCEPT);
+    discardFrame(LD->environment);
+    frameFinished(LD->environment, FINISH_EXCEPT);
+  } else
+  { dbg_discardChoicesAfter(LD->environment, FINISH_EXTERNAL_EXCEPT_UNDO);
+    discardFrame(LD->environment);
+  }
+}
+
+#define is_yieled_exception(t) LDFUNC(is_yieled_exception, t)
+
+static bool
+is_yieled_exception(DECL_LD term_t ex)
+{ if ( LD->trace.yield.port == EXCEPTION_PORT )
+  { term_t yielded = wakeup_state_exception(&LD->query->yield.wstate);
+
+    return yielded && PL_same_term(yielded, ex);
+  }
+
+  return false;
+}
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 newChoice(CH_*, FR) Creates a new  choicepoint.   After  creation of the
@@ -2817,6 +2984,7 @@ PL_open_query(Module ctx, int flags, Procedure proc, term_t args)
   qf->solutions         = 0;
   qf->exception		= 0;
   qf->yield.term        = 0;
+  qf->yield.wstate.fid  = 0;
   qf->registers.fr      = NULL;		/* invalid */
   qf->next_environment  = NULL;		/* see D_BREAK */
 					/* fill frame arguments */
@@ -3196,13 +3364,6 @@ typedef struct register_file
 } register_file;
 
 
-/* Imperative code that gets executed just after entry to an instruction,
- * and just before exit from an instruction (i.e. before goto/return/etc).
- * For profiling/tracing purposes only, and not applied to VMH's.
- */
-#define VMI_ENTER(n)		(void)(n);
-#define VMI_EXIT		(void)0;
-
 /* Components of VMI/VMH macro expansion. The underscore-prefix macros
  * get defined per-implementation.
  */
@@ -3213,7 +3374,7 @@ typedef struct register_file
 #define assert_exists(var, message) (void)(var)
 #define VMI(Name,f,na,a)	_VMI_DECLARATION(Name,f,na,a) \
 				{ int __is_vmi = 1; \
-				  { _VMI_PROLOGUE(Name,f,na,a); VMI_ENTER(Name)
+				  { _VMI_PROLOGUE(Name,f,na,a);
 #define END_VMI			    _VMI_EPILOGUE \
 				  } \
 				  assert_exists(__is_vmi, "END_VMI used without VMI!"); \
@@ -3225,11 +3386,11 @@ typedef struct register_file
 				  } \
 				  assert_exists(__is_vmh, "END_VMH used without VMH!"); \
 				}
-#define NEXT_INSTRUCTION	do { VMI_EXIT; _NEXT_INSTRUCTION; } while(0)
-#define VMI_GOTO(n)		do { VMI_EXIT; _VMI_GOTO(n); } while(0)
+#define NEXT_INSTRUCTION	do { _NEXT_INSTRUCTION; } while(0)
+#define VMI_GOTO(n)		do { _VMI_GOTO(n); } while(0)
 #define VMH_GOTO(...)		do { _VMH_GOTO(__VA_ARGS__); } while(0)
-#define SOLUTION_RETURN(val)	do { VMI_EXIT; _SOLUTION_RETURN(val); } while(0)
-#define VMI_GOTO_CODE(c)	do { VMI_EXIT; _VMI_GOTO_CODE(c); } while(0)
+#define SOLUTION_RETURN(val)	do { _SOLUTION_RETURN(val); } while(0)
+#define VMI_GOTO_CODE(c)	do { _VMI_GOTO_CODE(c); } while(0)
 #define SEPARATE_VMI1		(void)0
 #define SEPARATE_VMI2		(void)0
 
@@ -3238,13 +3399,6 @@ typedef struct register_file
 #define _VMI_EPILOGUE			;
 #define _VMH_PROLOGUE(Name,na,at,an)	;
 #define _VMH_EPILOGUE			;
-
-/* Same syntax as VMH_GOTO, but handles profiling as if it were an instruction */
-#define VMH_GOTO_AS_VMI(n,...) do { VMI_EXIT; \
-				    VMI_ENTER(n); \
-				    VMH_GOTO(n, __VA_ARGS__); \
-				  } while(0)
-
 
 /* Helper macros for rendering VMH arguments */
 #define HEAD(h, ...) h
@@ -3519,22 +3673,45 @@ variables used in the B_THROW instruction.
   }
 
   DEF = FR->predicate;
-  if ( QF->solutions || QF->yield.term ) /* retry or resume */
+  if ( QF->yield.term )			/* resume after yield */
+  { DEBUG(MSG_YIELD, Sdprintf("Resume %zd\n", QF->yield.term));
+    if ( QF->yield.term == YIELD_TERM_FOREIGN ) /* PL_yield_address() */
+    { QF->yield.term = 0;
+      fid_t fid = QF->foreign_frame;
+      QF->foreign_frame = 0;
+      PL_close_foreign_frame(fid);
+      LOAD_REGISTERS(qid);
+      DEBUG(CHK_SECURE, checkStacks(NULL));
+      VMH_GOTO(foreign_resume);
+    } else if ( QF->yield.term == YIELD_TERM_DEBUG ) /* Debugger */
+    { QF->yield.term = 0;
+      restoreWakeup(&QF->yield.wstate);
+      LOAD_REGISTERS(qid);
+      DEF = FR->predicate;
+      DEBUG(CHK_SECURE, checkStacks(NULL));
+      if ( exception_term && !is_yieled_exception(exception_term) )
+      { LD->trace.yield.port = NO_PORT;
+	LD->trace.yield.resume_action = PL_TRACE_ACTION_NONE;
+	THROW_EXCEPTION;
+      }
+      VMH_GOTO(debug_resume);
+    } else				/* Engine yield using I_YIELD */
+    { QF->yield.term = 0;
+      fid_t fid = QF->foreign_frame;
+      QF->foreign_frame = 0;
+      PL_close_foreign_frame(fid);
+      LOAD_REGISTERS(qid);
+      DEF = FR->predicate;
+      DEBUG(CHK_SECURE, checkStacks(NULL));
+      NEXT_INSTRUCTION;
+    }
+  } else if ( QF->solutions )		/* retry */
   { fid_t fid = QF->foreign_frame;
     QF->foreign_frame = 0;
     PL_close_foreign_frame(fid);
-    if ( QF->yield.term )
-    { LOAD_REGISTERS(qid);
-      DEBUG(CHK_SECURE, checkStacks(NULL));
-      if ( exception_term )
-	THROW_EXCEPTION;
-      DEF = FR->predicate;
-      QF->yield.term = 0;
-      NEXT_INSTRUCTION;
-    } else
-      BODY_FAILED;
-  } else
-    VMH_GOTO(depart_or_retry_continue);		/* first call */
+    BODY_FAILED;
+  } else				/* first call */
+    VMH_GOTO(depart_or_retry_continue);
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Main entry of the virtual machine cycle.  A branch to `next instruction'

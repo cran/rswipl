@@ -1,3 +1,9 @@
+# rswipl 9.3.21
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-21/8879
+
+Fixes a problem reported for r-oldrel-windows
+
 # rswipl 9.3.20
 
 See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-20/8772

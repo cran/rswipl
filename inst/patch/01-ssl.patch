@@ -1,0 +1,13 @@
+--- ../src/swipl-devel/packages/ssl/ssl4pl.c	2025-03-17 14:01:04.910450514 +0100
++++ ../src/swipl-devel/packages/ssl/ssl4pl.c	2025-03-17 14:00:55.760439225 +0100
+@@ -47,6 +47,10 @@
+ #include <pthread.h>
+ #endif
+ 
++#if defined(__WINDOWS__) || defined (__CYGWIN__)
++#include <windows.h>
++#endif
++
+ #include <openssl/x509v3.h>
+ #include <openssl/ssl.h>
+ #include <openssl/bn.h>

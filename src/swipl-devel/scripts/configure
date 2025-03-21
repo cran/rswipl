@@ -178,6 +178,26 @@ case $config in
     ;;
 esac
 
+# qlf
+#
+# Compile entire library to qlf
+
+case $config in
+  *qlf*)
+    opts+=" -DINSTALL_QLF=ON"
+    ;;
+esac
+
+# nosrc
+#
+# Do NOT install the library .pl files (only the .qlf files)
+
+case $config in
+  *nosrc*)
+    opts+=" -DINSTALL_PROLOG_SRC=OFF"
+    ;;
+esac
+
 # native tuning
 #
 # Optimize for local CPU
@@ -212,9 +232,6 @@ case $config in
     build_type=PGO
     ;;
   *debug*)
-    if [ $os == wasm ]; then
-        LDFLAGS+=" -sASSERTIONS"
-    fi
     build_type=Debug
     ;;
   *asan*)

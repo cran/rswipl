@@ -1,5 +1,5 @@
---- ../src/swipl-devel/packages/cpp/test_cpp.cpp	2025-03-20 19:12:10.575847401 +0100
-+++ ../src/swipl-devel/packages/cpp/test_cpp.cpp	2025-03-20 20:52:33.052384566 +0100
+--- ../src/swipl/packages/cpp/test_cpp.cpp	2025-03-20 19:12:10.575847401 +0100
++++ ../src/swipl/packages/cpp/test_cpp.cpp	2025-03-20 20:52:33.052384566 +0100
 @@ -668,25 +668,25 @@
  // The eq_int64/2 and lt_int64/2 predicates test the deprecated PlTerm::operator==()
  

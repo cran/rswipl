@@ -959,7 +959,7 @@ RlQuery::RlQuery(RObject aquery)
     qid(NULL)
 {
   PlTerm pl = r2pl(aquery, names, vars) ;
-  qid = new PlQuery("call", PlTermv(PlTerm(pl))) ;
+  qid = new PlQuery("call", PlTermv(PlTerm(pl)), PL_Q_EXT_STATUS|PL_Q_PASS_EXCEPTION) ;
 }
 
 RlQuery::~RlQuery()
@@ -973,20 +973,7 @@ int RlQuery::next_solution()
   if(qid == NULL)
     stop("next_solution: no open query.") ;
     
-  int q ;
-  try
-  {
-    q = qid->next_solution() ;
-  }
-
-  catch(PlException& ex)
-  {
-    warning(ex.as_string(PlEncoding::Locale).c_str()) ;
-    PL_clear_exception() ;
-    stop("Query failed") ;
-  }
-
-  return q ;
+  return qid->next_solution() ;
 }
 
 List RlQuery::bindings()
@@ -1045,14 +1032,36 @@ RObject submit_()
     return wrap(false) ;
   }
 
-  if(!query_id->next_solution())
+  int r = query_id->next_solution() ;
+  if(r == PL_S_TRUE)
+    return query_id->bindings() ;
+
+  if(r == PL_S_FALSE)
   {
     delete query_id ;
     query_id = NULL ;
     return wrap(false) ;
   }
-  
-  return query_id->bindings() ;
+
+  if(r == PL_S_LAST)
+  {
+    RObject r = query_id->bindings() ;
+    delete query_id ;
+    query_id = NULL ;
+    return r ;
+  }
+
+  if(r == PL_S_EXCEPTION)
+  {
+    PlTerm ex(PL_exception(0)) ;
+    std::string s = ex.as_string() ;
+    PL_clear_exception() ;
+    delete query_id ;
+    query_id = NULL ;
+    stop(s) ;
+  }
+
+  stop("The program is in an undefined state.") ;
 }
 
 // The SWI system should not be initialized twice; therefore, we keep track of

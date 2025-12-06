@@ -1,5 +1,5 @@
---- ../src/swipl-devel/packages/clib/process.c	2025-03-17 13:25:06.993245104 +0100
-+++ ../src/swipl-devel/packages/clib/process.c	2025-03-17 15:00:06.758897819 +0100
+--- ../src/swipl/packages/clib/process.c	2025-03-17 13:25:06.993245104 +0100
++++ ../src/swipl/packages/clib/process.c	2025-03-17 15:00:06.758897819 +0100
 @@ -1809,15 +1809,15 @@
  
    blockSignal(SIGPROF, &set);

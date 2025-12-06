@@ -1,6 +1,60 @@
+# rswipl 10.0.0
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-10-0-0-stable/
+
+# rswipl 9.3.36
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-36/
+
+# rswipl 9.3.35
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-35/
+
+test\_installation is now part of the unit tests
+
+# rswipl 9.3.34
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-34/
+
+# rswipl 9.3.33
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-33/
+
+# rswipl 9.3.31
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-31/
+
+# rswipl 9.3.30
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-30/
+
+# rswipl 9.3.29
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-29/
+
+# rswipl 9.3.28
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-28/
+
+# rswipl 9.3.27
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-27/
+
+# rswipl 9.3.26
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-26/
+
+# rswipl 9.3.25
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-25/
+
+# rswipl 9.3.22
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-22/
+
 # rswipl 9.3.21
 
-See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-21/8879
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-9-3-21/
 
 Fixes a problem reported for r-oldrel-windows
 

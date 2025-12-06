@@ -1,5 +1,0 @@
-#!/bin/sh
-patch -N -p1 < inst/patch/01-ssl.patch || true
-patch -N -p1 < inst/patch/02-clib.patch || true
-patch -N -p1 < inst/patch/03-cpp.patch || true
-patch -N -p1 < inst/patch/04-cpp.patch || true

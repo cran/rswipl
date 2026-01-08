@@ -24,7 +24,7 @@ rswipl.o: ../build/done
 		-DMINGW_ROOT=$(R_TOOLS_SOFT)\
 		-DLibArchive_INCLUDE_DIRS="-I."\
 		-DLibArchive_LIBRARIES="-larchive -lnettle -lxml2 -liconv -lregex -lexpat -llzma -lzstd -llz4 -lbz2 -lz -lbcrypt -lws2_32"\
-		-DCMAKE_BUILD_TYPE=Release -S ../src/swipl )
+		-DCMAKE_BUILD_TYPE=Release -S ../src/swipl-devel )
 	# dos2unix all Makefiles
 	find ../build -name Makefile -exec sed -i 's/\r//' \{\} \;
 	make -C ../build install

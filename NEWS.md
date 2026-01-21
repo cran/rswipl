@@ -1,3 +1,7 @@
+# rswipl 10.1.1.2
+
+Maintainance release, fixes a few more ASAN and UBSAN issues.
+
 # rswipl 10.1.1
 
 See https://swi-prolog.discourse.group/t/ann-swi-prolog-10-1-1/

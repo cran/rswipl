@@ -2257,7 +2257,7 @@ copy_local_data(PL_local_data_t *ldnew, PL_local_data_t *ldold,
 
 #if defined(HAVE_PTHREAD_ATTR_SETAFFINITY_NP) || defined(HAVE_SCHED_SETAFFINITY)
 
-static int
+static bool
 get_cpuset(term_t affinity, cpu_set_t *set)
 { GET_LD
   term_t head, tail;
@@ -2279,7 +2279,7 @@ get_cpuset(term_t affinity, cpu_set_t *set)
     if ( i >= cpu_count )
       return PL_existence_error("cpu", head);
 
-    CPU_SET(i, set);
+    CPU_SET((size_t) i, set); /* safe cast */
 
     if ( n++ == 100 && !PL_is_acyclic(tail) )
       return PL_type_error("list", tail);
@@ -2961,7 +2961,7 @@ PRED_IMPL("set_thread", 2, set_thread, 0)
     if ( name == ATOM_debug )
     { int val;
       if ( PL_get_bool_ex(arg, &val) )
-      { info->debug = val;
+      { info->debug = (val == true);
 	return true;
       }
       return false;

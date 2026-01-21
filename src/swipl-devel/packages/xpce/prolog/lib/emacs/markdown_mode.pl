@@ -1,10 +1,9 @@
-/*  Part of SWI-Prolog
+/*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
-    Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
-    WWW:           http://www.swi-prolog.org
-    Copyright (c)  2013-2023, VU University Amsterdam
-			      SWI-Prolog Solutions b.v.
+    Author:        Jan Wielemaker and Anjo Anjewierden
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2026, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -33,41 +32,21 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef PL_PROF_H_INCLUDED
-#define PL_PROF_H_INCLUDED
+:- module(emacs_markdown_mode, []).
+:- use_module(library(pce)).
+:- use_module(library(emacs_extend), []).
+:- use_module(text_mode).
 
-typedef enum
-{ PROF_INACTIVE = 0,		/* Profiler is inactive */
-  PROF_CPU,			/* Profile CPU time */
-  PROF_WALL			/* Profile wall time */
-} prof_status;
+/** <module> PceEmacs markdown mode
 
-typedef enum
-{ PROFC_FALSE = 0,
-  PROFC_TRUE,
-  PROFC_CLASSIC
-} prof_control;
+Currently empty mode to edit markdown  files.   Will  be extended in due
+time.
+*/
 
-#if USE_LD_MACROS
-#define	activateProfiler(status)	LDFUNC(activateProfiler, status)
-#define	resetProfiler(_)		LDFUNC(resetProfiler, _)
-#define	profCall(def)			LDFUNC(profCall, def)
-#define	profResumeParent(node)		LDFUNC(profResumeParent, node)
-#define	profExit(node)			LDFUNC(profExit, node)
-#define	profFail(node)			LDFUNC(profRedo, node)
-#endif /*USE_LD_MACROS*/
+:- emacs_begin_mode(markdown, text,
+                    "Edit MarkDown text",
+        [],
+        []).
 
-#define LDFUNC_DECLARATIONS
+:- emacs_end_mode.
 
-void		stopItimer(void);
-bool		activateProfiler(prof_status status);
-bool		resetProfiler(void);
-struct call_node* profCall(Definition def);
-void		profResumeParent(struct call_node *node);
-void		profExit(struct call_node *node);
-void		profFail(struct call_node *node);
-void		profSetHandle(struct call_node *node, void *handle);
-
-#undef LDFUNC_DECLARATIONS
-
-#endif /*PL_PROF_H_INCLUDED*/

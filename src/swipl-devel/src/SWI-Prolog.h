@@ -1486,8 +1486,8 @@ typedef struct pl_context_t
   void *	reserved[10];		/* Reserved for extensions */
 } pl_context_t;
 
-PL_EXPORT(int)	PL_get_context(struct pl_context_t *c, int thead_id);
-PL_EXPORT(int)	PL_step_context(struct pl_context_t *c);
+PL_EXPORT(bool)	PL_get_context(struct pl_context_t *c, int thead_id);
+PL_EXPORT(bool)	PL_step_context(struct pl_context_t *c);
 PL_EXPORT(int)	PL_describe_context(struct pl_context_t *c,
 				    char *buf, size_t len);
 

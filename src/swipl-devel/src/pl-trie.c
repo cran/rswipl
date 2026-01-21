@@ -2971,7 +2971,7 @@ compile_trie_value(DECL_LD Word v, trie_compile_state *state)
   size_t voffset = state->maxvar;
   tmp_buffer varb;
   int rc = true;
-  int compounds = 0;
+  ssize_t compounds = 0;
   Word p;
 #if O_TRIE_ATTVAR
   tmp_buffer attvarb;
@@ -3355,7 +3355,7 @@ create_trie_clause(Definition def, Clause *cp, trie_compile_state *state)
   memset(cl, 0, sizeof(*cl));
   cl->predicate = def;
   cl->code_size = code_size;
-  cl->prolog_vars = TRIE_VAR_OFFSET + state->maxvar;
+  cl->prolog_vars = (clsize_t)(TRIE_VAR_OFFSET + state->maxvar);
   cl->variables = cl->prolog_vars;	/* 2: pseudo arity */
   set(cl, UNIT_CLAUSE);			/* no body */
   memcpy(cl->codes, baseBuffer(&state->codes, code),

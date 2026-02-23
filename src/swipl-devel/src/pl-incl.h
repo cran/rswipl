@@ -85,7 +85,7 @@
 #endif
 #endif
 
-#ifdef __SANITIZE_ADDRESS__
+#if defined(__SANITIZE_ADDRESS__) && defined(HAVE_SANITIZER_LSAN_INTERFACE_H)
 #include <sanitizer/lsan_interface.h>
 #endif
 
@@ -123,7 +123,21 @@
 #ifndef _MSC_VER
 #define static_assert(condition, message) _Static_assert(condition, message)
 #endif
+
+/* MSVC does not provide __PRETTY_FUNCTION__; use __FUNCSIG__ instead */
+#if defined(_MSC_VER) && !defined(__PRETTY_FUNCTION__)
+#define __PRETTY_FUNCTION__ __FUNCSIG__
+#endif
 #define static_assertion(condition) _Static_assert(condition, "Assertion failed: ("#condition") [expansion: " A_STRINGIFY(condition) "]")
+
+#if (defined(__GNUC__) && __GNUC__ >= 13) || \
+    (defined(__clang__) && __clang_major__ >= 17)
+#define ASSUME(expr) __attribute__((assume(expr)))
+#elif defined(_MSC_VER)
+#define ASSUME(expr) __assume(expr)
+#else
+#define ASSUME(expr) assert(expr)
+#endif
 
 #include "pl-builtin.h"
 
@@ -268,10 +282,16 @@ handy for it someone wants to add a data type to the system.
 
 #ifdef __EMSCRIPTEN__
 #define NOTTYCONTROL           true
-#define O_TIGHT_CSTACK 1
 #endif
 
-#ifdef __SANITIZE_ADDRESS__
+/* Some environments have rather tight C stacks or use a lot of
+ * C stack space.   Setting `O_TIGHT_CSTACK` limits the C-stack
+ * usage on such systems.
+ */
+#if !defined(O_TIGHT_CSTACK) && \
+    ( defined(_DEBUG) || \
+      defined(__SANITIZE_ADDRESS__) || \
+      defined(__EMSCRIPTEN__) )
 #define O_TIGHT_CSTACK 1
 #endif
 
@@ -996,7 +1016,8 @@ typedef enum
   CLN_FOREIGN,				/* Foreign hooks */
   CLN_IO,				/* Cleaning I/O */
   CLN_SHARED,				/* Unload shared objects */
-  CLN_DATA				/* Remaining data */
+  CLN_DATA,				/* Remaining data */
+  CLN_ATEXIT				/* Final cleanup handlers */
 } cleanup_status;
 
 
@@ -2842,7 +2863,7 @@ typedef struct
 #define prologFlagMaskInt(ld, flag) \
 	(ld->prolog_flag.mask.flags[(flag-1)/(sizeof(int)*8)])
 #define truePrologFlag(flag) \
-	(prologFlagMaskInt(LD, flag) & prologFlagMask(flag))
+	((prologFlagMaskInt(LD, flag) & prologFlagMask(flag)) != 0)
 #define setPrologFlagMask_LD(ld, flag) \
 	ATOMIC_OR(&prologFlagMaskInt(ld, flag), prologFlagMask(flag))
 #define clearPrologFlagMask(flag) \

@@ -254,7 +254,7 @@ PRED_IMPL("between", 3, between, PL_FA_NONDETERMINISTIC)
 		      state->low.type == V_INTEGER) )
 	  { if ( state->low.value.i == state->high.value.i )
 	      goto cleanup;
-	  } else if ( cmpNumbers(&state->low, &state->high) == CMP_EQUAL )
+	  } else if ( cmpNumbers(&state->low, &state->high) == CMPEX_EQUAL )
 	      goto cleanup;
 	}
 	ForeignRedoPtr(state);
@@ -3628,56 +3628,64 @@ ar_min(Number n1, Number n2, Number r)
 
 static bool
 ar_maxr(Number n1, Number n2, Number r)
-{ switch (cmpReals(n1, n2))
-  { case CMP_LESS:
+{ switch(cmpReals(n1, n2))
+  { case CMPEX_LESS:
       cpNumber(r,n2);
       break;
-    case CMP_EQUAL:
+    case CMPEX_EQUAL:
       if (n1->type != V_FLOAT)        // preference to rational
         cpNumber(r, n1);
       else if (n2->type != V_FLOAT)
         cpNumber(r, n2);
       else if ( is_min_zero(n1) )     // both floats, special case -0.0 < 0.0
         cpNumber(r, n2);
-      else cpNumber(r, n1);
+      else
+	cpNumber(r, n1);
       break;
-    case CMP_GREATER:
+    case CMPEX_GREATER:
       cpNumber(r,n1);
       break;
-    case CMP_NOTEQ:                   // one or both nan
+    case CMP_NOTEQ:                 // one or both nan
       if ( n1->type == V_FLOAT && isnan(n1->value.f) )
         cpNumber(r, n2);
       else
         cpNumber(r, n1);
       break;
+    default:
+      assert(0);
+      return false;
   }
   return true;
 }
 
 static bool
 ar_minr(Number n1, Number n2, Number r)
-{ switch (cmpReals(n1, n2))
-  { case CMP_LESS:
+{ switch(cmpReals(n1, n2))
+  { case CMPEX_LESS:
       cpNumber(r,n1);
       break;
-    case CMP_EQUAL:
+    case CMPEX_EQUAL:
       if (n1->type != V_FLOAT)        // preference to rational
         cpNumber(r, n1);
       else if (n2->type != V_FLOAT)
         cpNumber(r, n2);
       else if ( is_min_zero(n2) )     // both floats, special case -0.0 < 0.0
         cpNumber(r, n2);
-      else cpNumber(r, n1);
+      else
+	cpNumber(r, n1);
       break;
-    case CMP_GREATER:
+    case CMPEX_GREATER:
       cpNumber(r,n2);
       break;
-    case CMP_NOTEQ:                   // one or both nan
+    case CMP_NOTEQ:                 // one or both nan
       if ( n1->type == V_FLOAT && isnan(n1->value.f) )
         cpNumber(r, n2);
       else
         cpNumber(r, n1);
       break;
+    default:
+      assert(0);
+      return false;
   }
   return true;
 }

@@ -102,8 +102,8 @@ header(S, csv) :-
     !,
     format(S, 'program,time,gc~n', []).
 header(S, _) :-
-    format(S, '~p~t~18| ~t~w~25| ~t~w~32|~n', ['Program', 'Time', 'GC']),
-    format(S, '~`=t~32|~n', []).
+    format(S, '~w~t~18| ~t~w~25| ~t~w~32|~n', ['Program', 'Time', 'GC']),
+    format(S, '~`\u2015t~32|~n', []).
 
 footer(_, _AvgT, _AvgGC, csv) :-               % average is handled outside
     !.

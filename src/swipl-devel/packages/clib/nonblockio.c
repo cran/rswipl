@@ -968,8 +968,9 @@ nbio_setopt(nbio_sock_t socket, nbio_option opt, ...)
     { const char *dev = va_arg(args, char*);
 
 #ifdef SO_BINDTODEVICE
+      size_t len = strlen(dev); /* check length? */
       if ( setsockopt(socket->socket, SOL_SOCKET, SO_BINDTODEVICE,
-		      dev, strlen(dev)) == 0 )
+		      dev, (socklen_t) len) == 0 ) /* dubious cast */
       { rc = 0;
         break;
       }
@@ -1089,7 +1090,7 @@ nbio_get_flags(nbio_sock_t socket)
 Translate a host + port-number into a sockaddr structure.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-static int
+static bool
 nbio_get_port(term_t Port, int *port)
 { char *name;
 
@@ -1099,13 +1100,13 @@ nbio_get_port(term_t Port, int *port)
     if ( !(service = getservbyname(name, "tcp")) )
       return pl_error(NULL, 0, NULL, ERR_EXISTENCE, "service", Port);
 
-    *port = ntohs(service->s_port);
+    *port = ntohs((uint16_t) service->s_port); /* safe cast */
     DEBUG(1, Sdprintf("Service %s at port %d\n", name, *port));
-    return TRUE;
+    return true;
   }
 
   if ( PL_get_integer(Port, port) )
-    return TRUE;
+    return true;
 
   return pl_error(NULL, 0, NULL, ERR_ARGTYPE, -1, Port, "port");
 }
@@ -1461,7 +1462,7 @@ nbio_listen(nbio_sock_t socket, int backlog)
 
 ssize_t
 nbio_read(nbio_sock_t socket, char *buf, size_t bufSize)
-{ int n;
+{ ssize_t n;
 
   VALID_SOCKET(socket);
 
@@ -1505,7 +1506,7 @@ nbio_write(nbio_sock_t socket, char *buf, size_t bufSize)
   VALID_SOCKET(socket);
 
   while( len > 0 )
-  { int n;
+  { ssize_t n;
 
     n = send(socket->socket, str, (os_bufsize_t)len, 0);
     if ( n < 0 )
@@ -1522,8 +1523,7 @@ nbio_write(nbio_sock_t socket, char *buf, size_t bufSize)
       }
       nbio_error(GET_ERRNO, TCP_ERRNO);
       return -1;
-    }
-    if ( n < len )
+    } else if ( (size_t)n < len )		/* (else) n >= 0 */
     { if ( PL_handle_signals() < 0 )
       { errno = EPLEXCEPTION;
         return -1;
@@ -1630,7 +1630,7 @@ nbio_close_output(nbio_sock_t socket)
 ssize_t
 nbio_recvfrom(nbio_sock_t socket, void *buf, size_t bufSize, int flags,
 	     struct sockaddr *from, socklen_t *fromlen)
-{ int n;
+{ ssize_t n;
 
   VALID_SOCKET(socket);
 

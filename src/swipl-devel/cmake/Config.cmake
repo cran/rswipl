@@ -54,6 +54,7 @@ check_include_file(sys/stropts.h HAVE_SYS_STROPTS_H)
 check_include_file(zlib.h HAVE_ZLIB_H)
 check_include_file(crt_externs.h HAVE_CRT_EXTERNS_H)
 check_include_file(gperftools/malloc_extension_c.h HAVE_TCMALLOC_EXTENSION_C_H)
+check_include_file(sanitizer/lsan_interface.h HAVE_SANITIZER_LSAN_INTERFACE_H)
 
 check_c_source_compiles(
     "int val = 1;
@@ -262,6 +263,14 @@ check_function_exists(delay HAVE_DELAY)
 check_function_exists(dossleep HAVE_DOSSLEEP)
 # threads and scheduling
 if(CMAKE_USE_PTHREADS_INIT)
+# We may need additional libraries during these tests
+set(pthread_saved_libs ${CMAKE_REQUIRED_LIBRARIES})
+set(pthread_saved_incs ${CMAKE_REQUIRED_INCLUDES})
+if(TARGET PThreads4W::PThreads4W)
+  list(APPEND CMAKE_REQUIRED_INCLUDES ${PThreads4W_INCLUDE_DIR})
+  list(APPEND CMAKE_REQUIRED_LIBRARIES ${PThreads4W_LIBRARY_RELEASE})
+endif()
+
 check_c_source_compiles(
     "#include <sys/param.h>
      #include <sys/cpuset.h>
@@ -304,6 +313,7 @@ check_function_exists(pthread_timedjoin_np HAVE_PTHREAD_TIMEDJOIN_NP)
 check_function_exists(pthread_getcpuclockid HAVE_PTHREAD_GETCPUCLOCKID)
 check_function_exists(pthread_attr_setstacksize HAVE_PTHREAD_ATTR_SETSTACKSIZE)
 check_function_exists(pthread_getattr_np HAVE_PTHREAD_GETATTR_NP)
+check_function_exists(pthread_win32_process_detach_np HAVE_PTHREAD_WIN32_PROCESS_DETACH_NP)
 check_function_exists(sched_setaffinity HAVE_SCHED_SETAFFINITY)
 check_function_exists(sched_yield HAVE_SCHED_YIELD)
 check_function_exists(sema_init HAVE_SEMA_INIT)
@@ -367,7 +377,10 @@ if(NOT HAVE_GETTID_FUNCTION)
   endif()
 endif()
 
+set(CMAKE_REQUIRED_LIBRARIES ${pthread_saved_libs})
+set(CMAKE_REQUIRED_INCLUDES ${pthread_saved_incs})
 endif(CMAKE_USE_PTHREADS_INIT)
+
 # Windows
 check_function_exists(WSAPoll HAVE_WSAPOLL)
 check_function_exists(WinExec HAVE_WINEXEC)

@@ -95,6 +95,7 @@ static void pce_cairo_set_source_color(cairo_t *cr, Colour pce);
 static bool validate_cairo_text_consistency(cairo_t *draw_cr);
 #endif
 
+static bool r_set_fill_fgbg(Any fill, Name which);
 static void r_fill_fgbg(double x, double y, double w, double h,
 			Any fill, Name which);
 
@@ -731,14 +732,17 @@ r_translate(int x, int y, int *ox, int *oy)
 
 void
 my_cairo_rounded_rectangle(cairo_t *cr, double x, double y, double w, double h,
-			   double r)
+			   double r, bool sub)
 { double x0 = x,     y0 = y;
   double x1 = x + w, y1 = y + h;
 
   if (r > w / 2) r = w / 2;
   if (r > h / 2) r = h / 2;
 
-  cairo_new_sub_path(cr);
+  if ( sub )
+    cairo_new_sub_path(cr);
+  else
+    cairo_new_path(cr);
   cairo_arc(cr, x1 - r, y0 + r, r, -90 * M_PI/180.0,   0 * M_PI/180.0);
   cairo_arc(cr, x1 - r, y1 - r, r,   0 * M_PI/180.0,  90 * M_PI/180.0);
   cairo_arc(cr, x0 + r, y1 - r, r,  90 * M_PI/180.0, 180 * M_PI/180.0);
@@ -772,7 +776,7 @@ r_box(int x, int y, int w, int h, int r, Any fill)
   cairo_save(CR);
   cairo_set_antialias(CR, CAIRO_ANTIALIAS_NONE);
   if ( r )
-    my_cairo_rounded_rectangle(CR, fx, fy, fw, fh, r);
+    my_cairo_rounded_rectangle(CR, fx, fy, fw, fh, r, true);
   else
     cairo_rectangle(CR, fx, fy, fw, fh);
   if ( notNil(fill) )
@@ -806,9 +810,9 @@ r_shadow_box(int x, int y, int w, int h, int r, int shadow, Any fill)
   { if ( shadow > h ) shadow = h;
     if ( shadow > w ) shadow = w;
 
-    r_colour(BLACK_COLOUR);
+    Any old = r_colour(BLACK_COLOUR);
     r_box(x+shadow, y+shadow, w-shadow, h-shadow, r, BLACK_COLOUR);
-    r_colour(DEFAULT);
+    r_colour(old);
     r_box(x, y, w-shadow, h-shadow, r, isNil(fill) ? WHITE_COLOUR : fill);
   }
 }
@@ -936,25 +940,29 @@ r_3d_segments(int n, ISegment s, Elevation e, int light)
 #define MAX_SHADOW 10
 
 void
-r_3d_box(int x, int y, int w, int h, int radius, Elevation e, int up)
-{ int shadow = valInt(e->height);
+r_3d_box(double x, double y, double w, double h,
+	 double radius, Elevation e, bool up0)
+{ double shadow = valNum(e->height);
+  bool up = up0;
+
+  if ( shadow < 0.0 )
+  { shadow = -shadow;
+    up = !up;
+  }
+  radius = max(0.0,radius);
 
   DEBUG(NAME_draw,
-	Cprintf("r_3d_box(%d, %d, %d, %d, %d, %s, %d)\n",
+	Cprintf("r_3d_box(%f, %f, %f, %f, %f, %s, %d)\n",
 		x, y, w, h, radius, pp(e), up));
 
   NormaliseArea(x, y, w, h);
-  FloatArea(x, y, w, h);
-  if ( radius > 0 )
-  { int maxr = min(w,h)/2;
+  if ( w < 0.1 || h < 0.1 )
+    return;
 
-    if ( radius > maxr )
-      radius = maxr;
-  }
+  radius = min(radius, min(w,h)/2);
 
   if ( e->kind == NAME_shadow )
-  { shadow = abs(shadow);
-    shadow = min(shadow, min(w, h));
+  { shadow = min(shadow, min(w, h));
     if ( shadow > MAX_SHADOW )
       shadow = MAX_SHADOW;
     r_box(x, y, w-shadow, h-shadow, radius-shadow, e->colour);
@@ -978,56 +986,95 @@ r_3d_box(int x, int y, int w, int h, int radius, Elevation e, int up)
       }
     }
   } else
-  { bool fill = r_elevation_fillpattern(e, up);
+  { bool fill = r_elevation_fillpattern(e, up0);
 
-    if ( !up  )
-      shadow = -shadow;
-
-    if ( shadow )
+    if ( shadow != 0.0 )
     { Colour top_left_color;
       Colour bottom_right_color;
 
-      if ( shadow > 0 )
+      if ( up )
       { top_left_color     = r_elevation_relief(e);
 	bottom_right_color = r_elevation_shadow(e);
       } else
       { top_left_color     = r_elevation_shadow(e);
 	bottom_right_color = r_elevation_relief(e);
-	shadow             = -shadow;
       }
 
       if ( shadow > MAX_SHADOW )
 	shadow = MAX_SHADOW;
 
-      Translate(fx, fy);
+      Translate(x, y);
       if ( radius > 0 )			/* with rounded corners */
-      { Cprintf("r_3d_box(): with radius\n");
-      } else
-      { double fr = fx+fw;
-	double fb = fy+fh;
+      {	pce_cairo_set_source_color(CR, top_left_color);
+	cairo_new_path(CR);
+	cairo_move_to(CR, x, y);
+	cairo_line_to(CR, x+w, y);
+	cairo_line_to(CR, x, y+h);
+	cairo_close_path(CR);
+	cairo_clip(CR);
 
-	pce_cairo_set_source_color(CR, top_left_color);
-	cairo_set_line_width(CR, 1);
-	for(int os=0; os<shadow; os++)
-	{ cairo_move_to(CR, fr-os, fy+os);
-	  cairo_line_to(CR, fx+os, fy+os);
-	  cairo_line_to(CR, fx+os, fb-os);
-	  cairo_stroke(CR);
-	}
+	my_cairo_rounded_rectangle(CR, x, y, w, h, radius, false);
+	cairo_fill(CR);
+	cairo_reset_clip(CR);
+
 	pce_cairo_set_source_color(CR, bottom_right_color);
-	for(int os=0; os<shadow; os++)
-	{ cairo_move_to(CR, fr-os, fy-os);
-	  cairo_line_to(CR, fr-os, fb-os);
-	  cairo_line_to(CR, fx+os, fb-os);
-	  cairo_stroke(CR);
+	cairo_new_path(CR);
+	cairo_move_to(CR, x+w, y);
+	cairo_line_to(CR, x+w, y+h);
+	cairo_line_to(CR, x, y+h);
+	cairo_close_path(CR);
+	cairo_clip(CR);
+
+	my_cairo_rounded_rectangle(CR, x, y, w, h, radius, false);
+	cairo_fill(CR);
+	cairo_reset_clip(CR);
+
+	// Fill base
+	if ( r_set_fill_fgbg(NAME_current, NAME_background) )
+	{ double ix = x+shadow, iy = y+shadow, iw = w-2*shadow, ih = h-2*shadow;
+	  double ir = radius * ((w+h)-2*shadow)/(w+h);
+
+	  my_cairo_rounded_rectangle(CR, ix, iy, iw, ih, ir, true);
+	  cairo_fill(CR);
 	}
+      } else
+      { pce_cairo_set_source_color(CR, top_left_color);
+	// Top (light)
+	cairo_move_to(CR, x, y);
+	cairo_line_to(CR, x + w, y);
+	cairo_line_to(CR, x + w - shadow, y + shadow);
+	cairo_line_to(CR, x + shadow, y + shadow);
+	cairo_close_path(CR);
+	cairo_fill(CR);
+	// Left (light)
+	cairo_move_to(CR, x, y);
+	cairo_line_to(CR, x, y + h);
+	cairo_line_to(CR, x + shadow, y + h - shadow);
+	cairo_line_to(CR, x + shadow, y + shadow);
+	cairo_close_path(CR);
+	cairo_fill(CR);
+        // Bottom (dark)
+	pce_cairo_set_source_color(CR, bottom_right_color);
+	cairo_move_to(CR, x, y + h);
+	cairo_line_to(CR, x + w, y + h);
+	cairo_line_to(CR, x + w - shadow, y + h - shadow);
+	cairo_line_to(CR, x + shadow, y + h - shadow);
+	cairo_close_path(CR);
+	cairo_fill(CR);
+	// Right (dark)
+	cairo_move_to(CR, x + w, y);
+	cairo_line_to(CR, x + w, y + h);
+	cairo_line_to(CR, x + w - shadow, y + h - shadow);
+	cairo_line_to(CR, x + w - shadow, y + shadow);
+	cairo_close_path(CR);
+	cairo_fill(CR);
       }
-      InvTranslate(fx,fy);
+      InvTranslate(x,y);
     }
 
-    if ( fill )			/* r_fill_fgbg() uses floats  */
-      r_fill_fgbg(fx+shadow, fy+shadow, fw-2*shadow,
-		  fh-2*shadow, NAME_current, NAME_background);
+    if ( fill && radius == 0.0 ) /* r_fill_fgbg() uses floats  */
+      r_fill_fgbg(x+shadow, y+shadow, w-2*shadow,
+		  h-2*shadow, NAME_current, NAME_background);
   }
 }
 
@@ -1530,24 +1577,29 @@ r_image(Image image, int sx, int sy,
     cairo_surface_destroy(surface);
 }
 
+static bool
+r_set_fill_fgbg(Any fill, Name which)
+{ r_fillpattern(fill, which);
+  DEBUG(NAME_draw,
+	Cprintf("fill with %s->%s\n", pp(fill), pp(context.fill_pattern)));
+  if ( instanceOfObject(context.fill_pattern, ClassColour) )
+  { pce_cairo_set_source_color(CR, context.fill_pattern);
+    return true;
+  } else if ( isNil(context.fill_pattern) )
+  { cairo_set_source_rgba(CR, 0, 0, 0, 0);
+    return true;
+  }
+
+  return false;
+}
+
 static void
 r_fill_fgbg(double x, double y, double w, double h, Any fill, Name which)
 { NormaliseArea(x, y, w, h);
   if ( w > 0 && h > 0 )
-  { r_fillpattern(fill, which);
-    DEBUG(NAME_draw,
-	  Cprintf("r_fill(%.1f, %.1f, %.1f, %.1f, %s->%s)\n",
-		  x, y, w, h, pp(fill), pp(context.fill_pattern)));
+  { if ( r_set_fill_fgbg(fill, which) )
+    { Translate(x, y);
 
-    Translate(x, y);
-
-    if ( instanceOfObject(context.fill_pattern, ClassColour) )
-    { pce_cairo_set_source_color(CR, context.fill_pattern);
-      cairo_rectangle(CR, x, y, w, h);
-      cairo_fill(CR);
-    } else if ( isNil(context.fill_pattern) )
-    { //Cprintf("r_fill(): Transparent\n");
-      cairo_set_source_rgba(CR, 0, 0, 0, 0);
       cairo_rectangle(CR, x, y, w, h);
       cairo_fill(CR);
     } else

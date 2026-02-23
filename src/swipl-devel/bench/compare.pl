@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        jan@swi-prolog.org
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2023-2025, SWI-Prolog Solutions b.v.
+    Copyright (c)  2023-2026, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -49,6 +49,7 @@
 :- use_module(library(filesex)).
 :- use_module(library(readutil)).
 :- use_module(library(statistics)).
+:- use_module(library(exceptions)).
 
 :- meta_predicate
     progress(0, +, +, +).
@@ -121,6 +122,11 @@ opt_meta(ymax, 'MAX').
 known_system(_Options, System) :-
     system(System),
     !.
+known_system(Options, System) :-
+    option(cached(true), Options),
+    csv_file(System, CSVOut, Options),
+    exists_file(CSVOut),
+    !.
 known_system(_, System) :-
     existence_error(system, System).
 
@@ -156,14 +162,21 @@ system(swipl,
        "").
 system('swipl-no-pgo',
        'SWI-Prolog (-O,no PGO)',
-       '../linux/src/swipl',
+       '../build/src/swipl',
        Speedup,
        ['-O', 'run.pl', '--csv', '--speedup', Speedup],
        [],
        "").
-system('swipl-clang-15',
-       'SWI-Prolog (-O,Clang-15)',
-       '../build.clang-15/src/swipl',
+system('swipl-clang',
+       'SWI-Prolog (-O,Clang-21)',
+       '../build.clang/src/swipl',
+       Speedup,
+       ['-O', 'run.pl', '--csv', '--speedup', Speedup],
+       [],
+       "").
+system('swipl-clang-novmif',
+       'SWI-Prolog (-O,Clang-21,switch)',
+       '../build.clang-novmif/src/swipl',
        Speedup,
        ['-O', 'run.pl', '--csv', '--speedup', Speedup],
        [],
@@ -191,7 +204,7 @@ system('swipl-wasm',
        [],
        "").
 system('swipl-win64',
-       'SWI-Prolog (Win64,-O)',
+       'SWI-Prolog (Win64,-O,PGO)',
        '../build.win64/src/swipl.exe',
        Speedup,
        [ '-O', 'run.pl', '--csv', '--speedup', Speedup],
@@ -437,6 +450,11 @@ version(Version) -->
 		 *******************************/
 
 prepare_system(Options, System) :-
+    option(cached(true), Options),
+    csv_file(System, CSVOut, Options),
+    exists_file(CSVOut),
+    !.
+prepare_system(Options, System) :-
     directory_file_path('port/programs', System, Dir),
     directory_file_path(Dir, 'include_all.pl', InclFile),
     exists_file(InclFile),
@@ -502,7 +520,9 @@ program(Data, P) :-
     P \== program.
 
 system_label(System, Label) :-
-    system_property(System, vlabel(Label)).
+    system_property(System, vlabel(Label)),
+    !.
+system_label(System, System).
 
 make_row(Systems, Pairs, Program, Row) :-
     maplist(system_time(Program, Pairs), Systems, SysTimes),

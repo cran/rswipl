@@ -1,9 +1,9 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
-    WWW:           http://www.swi-prolog.org
-    Copyright (c)  2012-2024, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2012-2026, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -1918,7 +1918,11 @@ emergency:
     memset(&PL_local_data,  0, sizeof(PL_local_data));
   }
 
-#ifdef __SANITIZE_ADDRESS__
+#ifdef HAVE_PTHREAD_WIN32_PROCESS_DETACH_NP
+  pthread_win32_process_detach_np();
+#endif
+
+#if defined(__SANITIZE_ADDRESS__) && defined(HAVE_SANITIZER_LSAN_INTERFACE_H)
   char *s;
 
   if ( (s=getenv("ASAN_OPTIONS")) && strstr(s,"detect_leaks=1") )
@@ -1927,7 +1931,7 @@ emergency:
     if ( __lsan_do_recoverable_leak_check() )
     { fprintf(stderr, "Leaks detected; sleeping 60 sec.  Attach using\n"
 	     "   gdb -p %d\n", getpid());
-      sleep(60);
+      Pause(60.0);
     } else
     { fprintf(stderr, "No leaks detected\n");
     }

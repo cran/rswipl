@@ -16,6 +16,24 @@ test_that("swipl is working",
   expect_equal(q, list())
 })
 
+test_that("swipl:chr is working",
+{
+  query(call("test_installation", list(quote(package(chr)))))
+  q <- submit()
+  clear()
+
+  expect_equal(q, list())
+})
+
+test_that("swipl:cpp is working",
+{
+  query(call("test_installation", list(quote(package(sgml)))))
+  q <- submit()
+  clear()
+
+  expect_equal(q, list())
+})
+
 test_that("queries can be formed", 
 {
   q <- query(call("member", expression(X), list(quote(a), "b", 3L, 4, TRUE, expression(Y), NA, NaN, Inf, NULL)))

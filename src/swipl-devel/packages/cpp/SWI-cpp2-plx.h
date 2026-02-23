@@ -124,7 +124,7 @@ PLX_ASIS(PLX_BOOL                , can_yield                       , (), ())
 PLX_WRAP(PLX_BOOL                , call                            , (term_t t, module_t m), (t, m))
 // TODO: Needs special case - see PL_next_solution():
 //       [[nodiscard]] int PL_call_predicate(module_t m, int debug, predicate_t pred, term_t t0);
-PLX_ASIS(term_t                  , exception                       , (qid_t qid), (qid))
+PLX_ASIS(term_t                  , exception                       , (qid_t qid = 0), (qid))
 PLX_ASIS(PLX_BOOL                , raise_exception                 , (term_t exception), (exception))
 // Deprecated: int PL_throw(term_t exception);
 PLX_VOID(void                    , clear_exception                 , (), ())

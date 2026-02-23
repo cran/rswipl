@@ -67,7 +67,7 @@ bool ex_is_resource_error(PlTerm ex)
 _SWI_CPP2_CPP_inline
 void
 PlWrap_fail(qid_t qid)
-{ PlTerm ex(PL_exception(qid));
+{ PlTerm ex(Plx_exception(qid));
   if ( ex.not_null() )
   { // The error(resource_error(stack), _) exception is special because
     // nothing can be put on the stack, so all we can do is report failure
@@ -76,7 +76,7 @@ PlWrap_fail(qid_t qid)
     // this particular exception.
     if ( ex_is_resource_error(ex) )
       throw PlExceptionFail();
-    const PlException ex2(ex);
+    const PlExceptionFromTerm ex2(ex); // PL_clear_exception() clears ex.
     Plx_clear_exception(); // See https://swi-prolog.discourse.group/t/cpp2-exceptions/6040/66
     throw ex2;
   }
@@ -86,7 +86,7 @@ PlWrap_fail(qid_t qid)
 _SWI_CPP2_CPP_inline
 void
 PlEx_fail(qid_t qid)
-{ PlTerm ex(PL_exception(qid));
+{ PlTerm ex(Plx_exception(qid));
   if ( ex.not_null() )
   { // The error(resource_error(stack), _) exception is special because
     // nothing can be put on the stack, so all we can do is report failure
@@ -95,7 +95,7 @@ PlEx_fail(qid_t qid)
     // this particular exception.
     if ( ex_is_resource_error(ex) )
       throw PlExceptionFail();
-    const PlException ex2(ex);
+    const PlExceptionFromTerm ex2(ex); // PL_clear_exception() clears ex.
     Plx_clear_exception(); // See https://swi-prolog.discourse.group/t/cpp2-exceptions/6040/66
     throw ex2;
   } else
@@ -188,7 +188,7 @@ PlContext()
 _SWI_CPP2_CPP_inline
 PlException
 PlGeneralError(PlTerm inside)
-{ return PlException(PlCompound("error", PlTermv(inside, PlTerm_var())));
+{ return PlExceptionFromTerm(PlCompound("error", PlTermv(inside, PlTerm_var())));
 }
 
 _SWI_CPP2_CPP_inline
@@ -267,11 +267,15 @@ PlResourceError(const std::string& resource)
 _SWI_CPP2_CPP_inline
 PlException
 PlUnknownError(const std::string& description)
-{ // For PlWrap()
-  return PlGeneralError(PlCompound("unknown_error",
-                                   PlTermv(PlTerm_atom(description))));
+{ return PlUnknownError(PlTerm_atom(description));
 }
 
+_SWI_CPP2_CPP_inline
+PlException
+PlUnknownError(PlTerm description)
+{  return PlGeneralError(PlCompound("unknown_error",
+                                    PlTermv(description)));
+}
 
 
 
@@ -692,7 +696,7 @@ _SWI_CPP2_CPP_inline
 PlCompound::PlCompound(const wchar_t *text)
 { term_t t = Plx_new_term_ref();
   if ( !Plx_wchars_to_term(text, t) )
-    throw PlException(PlTerm(t));
+    throw PlGeneralError(PlTerm(t));
   Plx_put_term(unwrap(), t);
 }
 
@@ -713,7 +717,7 @@ PlCompound::PlCompound(const std::wstring& text)
 
   // TODO: what is wchar_t equivalent of PL_put_term_from_chars()?
   if ( !Plx_wchars_to_term(text.c_str(), t) ) // TODO: use text.size()
-    throw PlException(PlTerm(t));
+    throw PlGeneralError(PlTerm(t));
   Plx_put_term(unwrap(), t);
 }
 

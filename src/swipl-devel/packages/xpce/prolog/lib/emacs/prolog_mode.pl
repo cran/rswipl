@@ -50,6 +50,7 @@
 :- use_module(library(prolog_source)).
 :- autoload(library(prolog_codewalk), [prolog_walk_code/1]).
 :- autoload(library(prolog_xref), [ xref_defined/3, xref_module/2 ]).
+:- autoload(library(solution_sequences), [distinct/2]).
 :- require([ guitracer/0,
 	     auto_call/1,
 	     delete_breakpoint/1,
@@ -868,7 +869,7 @@ find_references(M, For:prolog_predicate) :->
                        trace_reference(Head),
                        on_edge(on_edge)
                      ]),
-    findall(Ref, retract(found_reference(Ref)), Refs),
+    findall(Ref, distinct(Ref, retract(found_reference(Ref))), Refs),
     report_references(M, PI, Refs).
 
 :- public on_edge/3.
@@ -2716,20 +2717,37 @@ edit(F, Where:[{here,tab,window}]) :->
 listing(F) :->
     "Generate a listing"::
     get(F, loaded_specifier, Spec),
-    new(Tmp, emacs_buffer(@nil, string('*Listing for %N*', F))),
+    (   get(F, debug_thread, Thread)
+    ->  Options = [thread(Thread)],
+        Title = string('*Listing for %N in thread %N*', F, Thread)
+    ;   Options = [],
+        Title = string('*Listing for %N*', F)
+    ),
+    new(Tmp, emacs_buffer(@nil, Title)),
     send(Tmp, mode, prolog),
     setup_call_cleanup(
         pce_open(Tmp, write, Out),
-        with_output_to(Out, listing(Spec)),
+        with_output_to(Out, listing(Spec, Options)),
         close(Out)),
     send(Tmp, modified, @off),
     send(Tmp, open, tab).
 
+debug_thread(F, ThreadId:'int|atom') :<-
+    "When embedded into the debugger"::
+    get(F, frame, Frame),
+    send(Frame, has_get_method, thread),
+    get(Frame, thread, ThreadId).
 
 has_listing(F) :->
     "Test if we can make a listing"::
     get(F, loaded_specifier, Spec),
-    predicate_property(Spec, number_of_clauses(N)),
+    (   predicate_property(Spec, thread_local),
+        get(F, debug_thread, Thread)
+    ->  call_in_thread(Thread, predicate_property(Spec, number_of_clauses(N)),
+                       [ timeout(0.1)
+                       ])
+    ;   predicate_property(Spec, number_of_clauses(N))
+    ),
     N > 0.
 
 info(F) :->

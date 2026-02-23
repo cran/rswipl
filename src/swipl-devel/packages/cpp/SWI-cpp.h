@@ -310,7 +310,7 @@ class PlException : public PlTerm
 {
 public:
   PlException()
-  { term_t ex = PL_exception(0);
+  { term_t ex = Plx_exception();
     if ( ex )
       ref = ex;
     else
@@ -583,7 +583,7 @@ public:
       return TRUE;
     }
 
-    if ( (ex = PL_exception(0)) )
+    if ( (ex = Plx_exception()) )
       throw PlResourceError(ex);
 
     return FALSE;
@@ -881,7 +881,7 @@ __inline int PlTerm::operator =(const PlTerm &t2)	/* term = term */
 { int rc = PL_unify(ref, t2.ref);
   term_t ex;
 
-  if ( !rc && (ex=PL_exception(0)) )
+  if ( !rc && (ex=Plx_exception()) )
     throw PlResourceError(ex);
   return rc;
 }
@@ -890,7 +890,7 @@ __inline int PlTerm::operator =(const PlAtom &a)	/* term = atom */
 { int rc = PL_unify_atom(ref, a.handle);
   term_t ex;
 
-  if ( !rc && (ex=PL_exception(0)) )
+  if ( !rc && (ex=Plx_exception()) )
     throw PlResourceError(ex);
   return rc;
 }
@@ -899,7 +899,7 @@ __inline int PlTerm::operator =(const char *v)		/* term = atom */
 { int rc = PL_unify_atom_chars(ref, v);
   term_t ex;
 
-  if ( !rc && (ex=PL_exception(0)) )
+  if ( !rc && (ex=Plx_exception()) )
     throw PlResourceError(ex);
   return rc;
 }
@@ -908,7 +908,7 @@ __inline int PlTerm::operator =(const wchar_t *v)	/* term = atom */
 { int rc = PL_unify_wchars(ref, PL_ATOM, static_cast<size_t>(-1), v);
   term_t ex;
 
-  if ( !rc && (ex=PL_exception(0)) )
+  if ( !rc && (ex=Plx_exception()) )
     throw PlResourceError(ex);
   return rc;
 }
@@ -917,7 +917,7 @@ __inline int PlTerm::operator =(long v)
 { int rc = PL_unify_integer(ref, v);
   term_t ex;
 
-  if ( !rc && (ex=PL_exception(0)) )
+  if ( !rc && (ex=Plx_exception()) )
     throw PlResourceError(ex);
   return rc;
 }
@@ -926,7 +926,7 @@ __inline int PlTerm::operator =(int v)
 { int rc = PL_unify_integer(ref, v);
   term_t ex;
 
-  if ( !rc && (ex=PL_exception(0)) )
+  if ( !rc && (ex=Plx_exception()) )
     throw PlResourceError(ex);
   return rc;
 }
@@ -935,7 +935,7 @@ __inline int PlTerm::operator =(double v)
 { int rc = PL_unify_float(ref, v);
   term_t ex;
 
-  if ( !rc && (ex=PL_exception(0)) )
+  if ( !rc && (ex=Plx_exception()) )
     throw PlResourceError(ex);
   return rc;
 }
@@ -944,7 +944,7 @@ __inline int PlTerm::operator =(const PlFunctor &f)
 { int rc = PL_unify_functor(ref, f.functor);
   term_t ex;
 
-  if ( !rc && (ex=PL_exception(0)) )
+  if ( !rc && (ex=Plx_exception()) )
     throw PlResourceError(ex);
   return rc;
 }
@@ -1227,7 +1227,7 @@ PlQuery::next_solution()
     PL_close_query(qid);
     qid = 0;
 
-    if ( (ex = PL_exception(0)) )
+    if ( (ex = Plx_exception()) )
       PlException(ex).cppThrow();
   }
   return rval;

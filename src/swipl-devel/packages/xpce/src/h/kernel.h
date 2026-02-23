@@ -925,11 +925,18 @@ typedef struct _classdecl
 #define RC(n, t, d, s)		{ n, t, d, s }
 #define IV(n, t, f, g, s)	{ n, t, f, NULL,        (Name) g, s }
 #define SV(n, t, f, c, g, s)	{ n, t, f, functionToPtr(c), (Name) g, s }
-#define IVEntries(l)		(sizeof(l) / sizeof(vardecl))
-#define SMEntries(l)		(sizeof(l) / sizeof(senddecl))
-#define GMEntries(l)		(sizeof(l) / sizeof(getdecl))
-#define RCEntries(l)		(sizeof(l) / sizeof(classvardecl))
-#define TNEntries(l)		(sizeof(l) / sizeof(Name))
+#define IVEntries(l)		AREntries(l, vardecl)
+#define SMEntries(l)		AREntries(l, senddecl)
+#define GMEntries(l)		AREntries(l, getdecl)
+#define RCEntries(l)		AREntries(l, classvardecl)
+#define TNEntries(l)		AREntries(l, Name)
+
+#ifdef _MSC_VER
+/* MSVC does not consider `(l) == NULL` a constant expression */
+#define AREntries(l, t)		(sizeof(l) / sizeof(t))
+#else
+#define AREntries(l, t)		((((l) == NULL) ? 0 : sizeof(l)) / sizeof(t))
+#endif
 
 #ifndef UXWIN
 #ifdef WIN32_GRAPHICS

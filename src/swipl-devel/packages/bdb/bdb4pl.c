@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2015-2025, University of Amsterdam
+    Copyright (c)  2015-2026, University of Amsterdam
                               VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -35,6 +35,10 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
+#ifdef _MSC_VER
+#define _CRT_SECURE_NO_WARNINGS 1
+#endif
+
 #include <config.h>
 #include <SWI-Stream.h>
 #include <pthread.h>
@@ -49,6 +53,10 @@
 #include <string.h>
 #include <assert.h>
 #include <signal.h>
+
+#ifdef _MSC_VER
+#define strdup _strdup
+#endif
 
 #ifdef O_DEBUG
 #define DEBUG(g) g
@@ -88,17 +96,17 @@ static atom_t ATOM_thread_count;
 static functor_t FUNCTOR_error2;
 static functor_t FUNCTOR_bdb3;
 
-#define F_ERROR       ((u_int32_t)-1)
-#define F_UNPROCESSED ((u_int32_t)-2)
+#define F_ERROR       ((uint32_t)-1)
+#define F_UNPROCESSED ((uint32_t)-2)
 
 typedef struct db_flag
 { char	   *name;
-  u_int32_t flag;			/* flag for name */
-  u_int32_t flags;			/* implied flags */
+  uint32_t flag;			/* flag for name */
+  uint32_t flags;			/* implied flags */
   atom_t    aname;
 } db_flag;
 
-static u_int32_t lookup_flag(db_flag *flags, atom_t name, term_t arg);
+static uint32_t lookup_flag(db_flag *flags, atom_t name, term_t arg);
 
 static dbenvh   default_env = {0};	/* default environment */
 
@@ -370,7 +378,7 @@ unify_dbt(term_t t, dtype type, DBT *dbt)
 }
 
 
-static int
+static bool
 get_dbt(term_t t, dtype type, DBT *dbt)
 { memset(dbt, 0, sizeof(*dbt));
 
@@ -379,8 +387,9 @@ get_dbt(term_t t, dtype type, DBT *dbt)
     { size_t len;
 
       dbt->data = PL_record_external(t, &len);
-      dbt->size = len;
-      return TRUE;
+      assert(len <= UINT32_MAX);
+      dbt->size = (uint32_t) len; /* dubious cast, added assertion */
+      return true;
     }
     case D_ATOM:
     { size_t len;
@@ -388,12 +397,13 @@ get_dbt(term_t t, dtype type, DBT *dbt)
 
       if ( PL_get_nchars(t, &len, &s,
 			 CVT_ATOM|CVT_EXCEPTION|REP_UTF8|BUF_MALLOC) )
-      { dbt->data = s;
-	dbt->size = len;
+      { assert(len <= UINT32_MAX);
+	dbt->data = s;
+	dbt->size = (uint32_t) len;
 
-	return TRUE;
+	return true;
       } else
-	return FALSE;
+	return false;
     }
     case D_CBLOB:
     { size_t len;
@@ -402,12 +412,13 @@ get_dbt(term_t t, dtype type, DBT *dbt)
       if ( PL_get_nchars(t, &len, &s,
 			 CVT_ATOM|CVT_STRING|CVT_EXCEPTION|
 			 REP_ISO_LATIN_1|BUF_MALLOC) )
-      { dbt->data = s;
-	dbt->size = len;
+      { assert(len <= UINT32_MAX);
+	dbt->data = s;
+	dbt->size = (uint32_t) len;
 
-	return TRUE;
+	return true;
       } else
-	return FALSE;
+	return false;
     }
     case D_CSTRING:
     { size_t len;
@@ -415,12 +426,13 @@ get_dbt(term_t t, dtype type, DBT *dbt)
 
       if ( PL_get_nchars(t, &len, &s,
 			 CVT_ATOM|CVT_STRING|CVT_EXCEPTION|REP_UTF8|BUF_MALLOC) )
-      { dbt->data = s;
-	dbt->size = len+1;		/* account for terminator */
+      { assert(len < UINT32_MAX);
+	dbt->data = s;
+	dbt->size = (uint32_t) (len+1); /* account for terminator */
 
-	return TRUE;
+	return true;
       } else
-	return FALSE;
+	return false;
     }
     case D_CLONG:
     { long v;
@@ -430,15 +442,15 @@ get_dbt(term_t t, dtype type, DBT *dbt)
 
 	*d = v;
 	dbt->data = d;
-	dbt->size = sizeof(long);
+	dbt->size = (uint32_t) sizeof(long);
 
-	return TRUE;
+	return true;
       } else
-	return FALSE;
+	return false;
     }
   }
   assert(0);
-  return FALSE;
+  return false;
 }
 
 
@@ -657,7 +669,7 @@ db_options(term_t t, dbh *dbh, char **subdb)
 	} else if ( name == ATOM_type || name == ATOM_environment )
 	{  ;  /* type(_) and environment() are handled by db_preoptions */
 	} else
-	{ u_int32_t fv = lookup_flag(db_flags, name, a0);
+	{ uint32_t fv = lookup_flag(db_flags, name, a0);
 
 	  switch(fv)
 	  { case F_ERROR:
@@ -1360,7 +1372,7 @@ out:
 
 static foreign_t
 pl_bdb_get(term_t handle, term_t key, term_t value, control_t ctx)
-{ int rval;
+{ foreign_t rval;
 
   NOSIG(rval = pl_bdb_getdel(handle, key, value, ctx, FALSE));
 
@@ -1370,9 +1382,9 @@ pl_bdb_get(term_t handle, term_t key, term_t value, control_t ctx)
 
 static foreign_t
 pl_bdb_del3(term_t handle, term_t key, term_t value, control_t ctx)
-{ int rval;
+{ foreign_t rval;
 
-  NOSIG(rval=pl_bdb_getdel(handle, key, value, ctx, TRUE));
+  NOSIG(rval = pl_bdb_getdel(handle, key, value, ctx, TRUE));
 
   return rval;
 }
@@ -1414,7 +1426,7 @@ typedef struct _server_info
 { char *host;
   long cl_timeout;
   long sv_timeout;
-  u_int32_t flags;
+  uint32_t flags;
 } server_info;
 
 
@@ -1517,10 +1529,10 @@ static db_flag dbenv_flags[] =
   { (char*)NULL,	0,		     0 }
 };
 
-#define F_ERROR       ((u_int32_t)-1)
-#define F_UNPROCESSED ((u_int32_t)-2)
+#define F_ERROR       ((uint32_t)-1)
+#define F_UNPROCESSED ((uint32_t)-2)
 
-static u_int32_t
+static uint32_t
 lookup_flag(db_flag *fp, atom_t name, term_t arg)
 { for(; fp->name; fp++)
   { if ( !fp->aname )
@@ -1547,7 +1559,7 @@ static foreign_t
 bdb_init(term_t newenv, term_t option_list)
 { int rval;
   term_t options = PL_copy_term_ref(option_list);
-  u_int32_t flags = 0;
+  uint32_t flags = 0;
   term_t head = PL_new_term_ref();
   term_t a    = PL_new_term_ref();
   char *home = NULL;
@@ -1626,14 +1638,14 @@ bdb_init(term_t newenv, term_t option_list)
 
 	if ( !PL_get_size_ex(a, &v) )
 	  return FALSE;
-	env->env->set_cachesize(env->env, 0, v, 0);
+	env->env->set_cachesize(env->env, 0, (uint32_t) v, 0); /* safe cast */
 	flags |= DB_INIT_MPOOL;
       } else if ( name == ATOM_thread_count )
       { size_t v;
 
 	if ( !PL_get_size_ex(a, &v) )
 	  return FALSE;
-	env->env->set_thread_count(env->env, v);
+	env->env->set_thread_count(env->env, (uint32_t) v); /* safe cast */
       } else if ( name == ATOM_home )	/* db_home */
       {	if ( !PL_get_file_name(a, &home,
 			       PL_FILE_OSPATH|PL_FILE_EXIST|PL_FILE_ABSOLUTE) )
@@ -1656,19 +1668,18 @@ bdb_init(term_t newenv, term_t option_list)
 	  if ( !PL_get_chars(a2, &v, CVT_ATOM|CVT_STRING|CVT_EXCEPTION) )
 	    goto pl_error;
 	  n = PL_atom_chars(nm);
-	  if ( !(config[nconf] = malloc(strlen(n)+strlen(v)+2)) )
+	  size_t bytes = strlen(n) + strlen(v) + 2; // space and 0
+	  if ( !(config[nconf] = malloc(bytes)) )
 	  { PL_resource_error("memory");
 	    goto pl_error;
 	  }
-	  strcpy(config[nconf], n);
-	  strcat(config[nconf], " ");
-	  strcat(config[nconf], v);
+	  snprintf(config[nconf], bytes, "%s %s", n, v);
 	  config[++nconf] = NULL;
 	}
 	if ( !PL_get_nil_ex(a) )
 	  goto pl_error;
       } else
-      { u_int32_t fv = lookup_flag(dbenv_flags, name, a);
+      { uint32_t fv = lookup_flag(dbenv_flags, name, a);
 
 	switch(fv)
 	{ case F_ERROR:
@@ -1763,7 +1774,7 @@ pl_bdb_env_property(term_t t, term_t prop)
 
     if ( PL_get_name_arity(prop, &name, &arity) && arity == 1 )
     { term_t a = PL_new_term_ref();
-      u_int32_t flag;
+      uint32_t flag;
 
       _PL_get_arg(1, prop, a);
       if ( name == ATOM_home && env->home )

@@ -366,10 +366,18 @@ add_custom_command(
     DEPENDS ${DEP_SWIPL_FOR_BOOT}
 )
 add_custom_target(bootfile DEPENDS ${SWIPL_BOOT_FILE} ${SWIPL_ABI_FILE})
+add_dependencies(bootfile prolog_home) # boot/tabling.pl needs library(debug)
+
+# Update library `INDEX.pl` files
 
 add_custom_target(library_index)
 
-library_index(${SWIPL_DATA_INDEXED_DIRS})
+foreach(d ${SWIPL_DATA_INDEXED_DIRS})
+    string(REGEX REPLACE "/" "_" filevar ${d})
+    library_dirindex(${d} ${SWIPL_DATA_${filevar}})
+endforeach()
+
+# Install .qlf files
 
 if(INSTALL_QLF)
   add_swipl_target(library_qlf
@@ -504,6 +512,9 @@ if(EPILOG)
     add_executable(${EPILOG_APP}${PGO_SUFFIX} ${SWIPL_SRC})
   endif()
 
+  if(SWIPL_C_STACK_SIZE)
+    target_c_stack(${EPILOG_APP}${PGO_SUFFIX} ${SWIPL_C_STACK_SIZE})
+  endif()
   target_compile_options(${EPILOG_APP}${PGO_SUFFIX} PRIVATE -DSWIPL_EPILOG)
   target_link_libraries(${EPILOG_APP}${PGO_SUFFIX} ${SWIPL_LIBRARIES} libswipl)
   if(MINGW)
@@ -536,6 +547,7 @@ endif()
 if(LIBSWIPL_TYPE STREQUAL "SHARED")
   set_property(TARGET swiplobjs${PGO_SUFFIX} PROPERTY POSITION_INDEPENDENT_CODE 1)
 endif()
+target_compile_definitions(swiplobjs${PGO_SUFFIX} PRIVATE BUILD_TYPE="$<CONFIG>")
 add_dependencies(swiplobjs${PGO_SUFFIX} vmi-metadata core-constants)
 target_include_directories(swiplobjs${PGO_SUFFIX} BEFORE PRIVATE
 			   ${CMAKE_CURRENT_BINARY_DIR}

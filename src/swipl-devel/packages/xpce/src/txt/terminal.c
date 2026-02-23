@@ -1671,13 +1671,16 @@ rlc_paint_text(RlcData b,
 	  Cprintf("No bold font\n");
       }
 
-      //Cprintf("Print \"%s\" at %d,%d using %s\n", t, *cx, ty, pp(ti->font));
       int x0 = *cx;
       *cx += tchar_width(b, t, ulen, segment, ti->font);
+#if 0
+      fprintf(stderr, "Print \"%s\"[%d] at %d[%d],%d using %s\n",
+	      t, ulen, x0, *cx-x0, ty, pp(ti->font));
+#endif
       r_clear(x0, ty-b->cb, *cx-x0, b->ch);
       s_print_utf8(t, ulen, x0, ty, font);
       if ( TF_UNDERLINE(flags) )
-	r_underline(font, x0, ty, *cx, DEFAULT);
+	r_underline(font, x0, ty, *cx-x0, DEFAULT);
       if ( TF_INVERSE(flags) )
 	r_swap_background_and_foreground();
       if ( notDefault(ofg) )
@@ -2674,8 +2677,8 @@ rlc_check_links(RlcTextLine tl)
       { Cprintf("CHECK: %03d could not find href for %d(%d); got: ",
 		tl->line_no, start, len);
 	for(hr = tl->links; hr; hr=hr->next)
-	  Dprintf(_T(" %d(%d)"), hr->start, hr->length);
-	Dprintf(_T("\n"));
+	  Cprintf(" %d(%d)", hr->start, hr->length);
+	Cprintf("\n");
       }
     }
   }
@@ -2684,7 +2687,7 @@ rlc_check_links(RlcTextLine tl)
   for(href *hr = tl->links; hr; hr=hr->next)
     refs++;
   if ( refs != links )
-  { Dprintf("CHECK: %03d found %d links; expected %d\n",
+  { Cprintf("CHECK: %03d found %d links; expected %d\n",
 	    tl->line_no, links, refs);
     Dprint_line(tl, true);
   }
@@ -2976,7 +2979,7 @@ rlc_put_link(RlcData b, const uchar_t *label, const uchar_t *link)
 }
 
 #ifdef _DEBUG
-#define CMD(c) do {cmd = _T(#c); c;} while(0)
+#define CMD(c) do {cmd = #c; c;} while(0)
 #else
 #define CMD(c) do {c;} while(0)
 #endif
@@ -2985,7 +2988,7 @@ static void
 rlc_putansi(RlcData b, int chr)
 {
 #ifdef _DEBUG
-  uchar_t *cmd;
+  const char *cmd;
 #endif
 
   switch(b->cmdstat)

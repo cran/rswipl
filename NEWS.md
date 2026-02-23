@@ -1,4 +1,20 @@
-# rswipl 10.1.1.2
+# rswipl 10.1.4
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-10-1-4/
+
+# rswipl 10.1.3
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-10-1-3/
+
+Added unit tests for chr, sgml
+
+# rswipl 10.1.2
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-10-1-2/
+
+Maintainance release, fixes -Wconversion warnings
+
+# rswipl 10.1.1.1
 
 Maintainance release, fixes a few more ASAN and UBSAN issues.
 

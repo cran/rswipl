@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1999-2025, University of Amsterdam,
+    Copyright (c)  1999-2026, University of Amsterdam,
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -56,6 +56,7 @@
 #include "pl-thread.h"
 #include "pl-tabling.h"
 #include "pl-undo.h"
+#include "pl-nt.h"
 #include "os/pl-cstack.h"
 #include "pl-prof.h"
 #include "pl-event.h"
@@ -235,6 +236,8 @@ get_windows_thread(PL_thread_info_t *info)
   __try
   { wt = pthread_getw32threadhandle_np(info->tid);
   } __except(EXCEPTION_EXECUTE_HANDLER)
+  {
+  }
   return wt;
 #else
   return OpenThread(THREAD_ALL_ACCESS, false, info->w32id);
@@ -1413,7 +1416,7 @@ fully reclaimed, we have several situations:
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static thread_handle *gced_threads = NULL;
-static int       thread_gc_running = false;
+static bool      thread_gc_running = false;
 
 static void
 discard_thread(thread_handle *h)
@@ -1422,7 +1425,7 @@ discard_thread(thread_handle *h)
     return;
   }
 
-  int alive = false;
+  bool alive = false;
   PL_thread_info_t *info;
 
   PL_LOCK(L_THREAD);
@@ -1634,7 +1637,8 @@ alloc_thread(void)
 
   do
   { info = GD->thread.free;
-  } while ( info && !COMPARE_AND_SWAP_PTR(&GD->thread.free, info, info->next_free) );
+  } while ( info &&
+	    !COMPARE_AND_SWAP_PTR(&GD->thread.free, info, info->next_free) );
 
   if ( info )
   { int i = info->pl_tid;
@@ -1769,7 +1773,7 @@ alertThread(PL_thread_info_t *info)
   PL_local_data_t *ld = info->thread_data;
 
   if ( ld->thread.alert.type )
-  { int done = false;
+  { bool done = false;
 
     PL_LOCK(L_ALERT);
     switch(ld->thread.alert.type)
@@ -1837,7 +1841,7 @@ system now crashes on any  alrm   from  library(time). We need something
 better though.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-int
+bool
 PL_thread_raise(int tid, int sig)
 { if ( tid >= 1 && tid <= GD->thread.highest_id )
   { PL_thread_info_t *info = GD->thread.threads[tid];
@@ -1847,7 +1851,7 @@ PL_thread_raise(int tid, int sig)
 	 info->status != PL_THREAD_RESERVED )
     { GET_LD
       PL_local_data_t *ld;
-      int rc;
+      bool rc;
 
       if ( LD )					/* See (*) */
 	ld = acquire_ldata(info);
@@ -2016,7 +2020,7 @@ set_system_thread_id(PL_thread_info_t *info)
 
 #ifdef O_PLMT
 
-static int
+static bool
 set_os_thread_name_from_charp(const char *s)
 {
 #ifdef HAVE_PTHREAD_SETNAME_NP
@@ -2040,7 +2044,7 @@ set_os_thread_name_from_charp(const char *s)
 }
 
 
-static int
+static bool
 set_os_thread_name(atom_t alias)
 {
 #ifdef HAVE_PTHREAD_SETNAME_NP
@@ -7811,9 +7815,8 @@ void
 destroyLocalDefinitions(Definition def)
 { GET_LD
   LocalDefinitions ldefs = def->impl.local.local;
-  int b;
 
-  for(b=0; b<MAX_BLOCKS; b++)
+  for(int b=0; b<MAX_BLOCKS; b++)
   { Definition *d0 = ldefs->blocks[b];
 
     if ( d0 )
@@ -8012,8 +8015,8 @@ PL_unify_thread_id(term_t t, int i)
 }
 
 
-int
-PL_thread_at_exit(void (*function)(void *), void *closure, int global)
+bool
+PL_thread_at_exit(void (*function)(void *), void *closure, bool global)
 { return false;
 }
 
@@ -8028,7 +8031,7 @@ PL_thread_destroy_engine()
 }
 
 #ifdef __WINDOWS__
-int
+bool
 PL_w32thread_raise(DWORD id, int sig)
 { return PL_raise(sig);
 }

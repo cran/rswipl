@@ -1217,13 +1217,11 @@ private:
 
 class PlException : public PlExceptionBase
 {
-public:
+protected:
   explicit PlException(PlTerm t)
     : term_rec_(t) { }
 
-  explicit PlException(PlAtom a)
-    : term_rec_(PlTerm_atom(a)) { }
-
+public:
   PlException(const PlException& e)
     : term_rec_(e.term_rec_.duplicate()),
       what_str_(e.what_str_)
@@ -1283,6 +1281,19 @@ protected:
   // PlTerm string_term() const; // TODO: revive this
 };
 
+class PlExceptionFromTerm : public PlException
+{
+public:
+  explicit PlExceptionFromTerm(PlTerm t)
+    : PlException(t) { }
+};
+
+class PlExceptionFromQid : public PlException
+{
+public:
+  explicit PlExceptionFromQid(qid_t qid = 0)
+    : PlException(Plx_exception(qid)) { }
+};
 
 PlException PlGeneralError(PlTerm inside);
 
@@ -1306,7 +1317,9 @@ PlException PlResourceError(const std::string& resource);
 
 PlException PlUnknownError(const std::string& description);
 
-void PlWrap_fail(qid_t qid);
+PlException PlUnknownError(PlTerm description);
+
+void PlWrap_fail(qid_t qid = 0);
 
 template<typename C_t> C_t
 PlWrap(C_t rc, qid_t qid)
@@ -1492,7 +1505,7 @@ public:
                                      av.termv())),
       flags_(flags)
   { }
-  PlQuery(qid_t qid)
+  PlQuery(qid_t qid = 0)
     : WrappedC<qid_t>(qid)
   { }
 

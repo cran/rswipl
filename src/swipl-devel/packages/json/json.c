@@ -67,7 +67,7 @@ free_text(text *t)
 static int
 put_byte(text *t, int c)
 { if ( t->o < t->e )
-  { *t->o++ = c;
+  { *t->o++ = (char)c;
   } else
   { size_t cnt = t->o - t->t;
 
@@ -85,7 +85,7 @@ put_byte(text *t, int c)
     }
     t->o = t->t + cnt;
     t->e = t->t + t->allocated;
-    *t->o++ = c;
+    *t->o++ = (char)c;
   }
 
   return 0;

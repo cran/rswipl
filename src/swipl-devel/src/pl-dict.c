@@ -1,9 +1,9 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
-    WWW:           http://www.swi-prolog.org
-    Copyright (c)  2013-2025, VU University Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2013-2026, VU University Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
@@ -208,32 +208,32 @@ dict_lookup_ptr(DECL_LD word dict, word name, size_t *arg)
 
 /* True if the keys are proper keys and ordered.  Return values:
 
-   true:  correctly ordered dict
-   false: not ordered
-   -1:    not a key
-   -2:    duplicate key
+   PL_DICT_TRUE:          correctly ordered dict
+   PL_DICT_FALSE:         not ordered
+   PL_DICT_KEY_INVALID:   not a key
+   PL_DICT_KEY_DUPLICATE: duplicate key
 */
 
 #define dict_ordered(data, count, dupl) LDFUNC(dict_ordered, data, count, dupl)
-static bool
+static _PL_dict_status_t
 dict_ordered(DECL_LD Word data, size_t count, Word dupl)
-{ bool ordered = true;
+{ _PL_dict_status_t ordered = PL_DICT_TRUE;
   Word n1, n2;
 
   if ( count > 0 )
   { data++;			/* skip to key */
     deRef2(data, n1);
     if ( !is_dict_key(*n1) )
-      return -1;
+      return PL_DICT_KEY_INVALID;
 
     for(; count > 1; count--, data += 2, n1=n2)
     { deRef2(data+2, n2);
       if ( !is_dict_key(*n2) )
-	return -1;
+	return PL_DICT_KEY_INVALID;
       if ( *n1 < *n2 )
 	continue;
       if ( *n1 > *n2 )
-	ordered = false;
+	ordered = PL_DICT_FALSE;
       if ( *n1 == *n2 )
       { if ( dupl )
 	{ *dupl = *n1;
@@ -242,7 +242,7 @@ dict_ordered(DECL_LD Word data, size_t count, Word dupl)
 	  *valTermRef(t) = linkValI(n1);
 	  PL_error(NULL, 0, NULL, ERR_DUPLICATE_KEY, t);
 	}
-	return -2;
+	return PL_DICT_KEY_DUPLICATE;
       }
     }
   }
@@ -251,7 +251,7 @@ dict_ordered(DECL_LD Word data, size_t count, Word dupl)
 }
 
 
-static cmp_t
+static int // cmp_t, but that does not satisty sort_r()
 compare_dict_entry(const void *a, const void *b, void *arg)
 { Word p = (Word)a+1;
   Word q = (Word)b+1;
@@ -263,7 +263,7 @@ compare_dict_entry(const void *a, const void *b, void *arg)
 }
 
 
-bool
+_PL_dict_status_t
 dict_order(DECL_LD Word dict, Word dupl)
 { Functor data = (Functor)dict;
   size_t arity = arityFunctor(data->definition);
@@ -288,16 +288,19 @@ typedef struct order_term_refs
 } order_term_refs;
 
 
-#define compare_term_refs(ip1, ip2, ctx) LDFUNC(compare_term_refs, ip1, ip2, ctx)
-static inline cmp_t compare_term_refs(DECL_LD const int *ip1, const int *ip2,
+// The compare functions are `int` typed for `sort_r()`.
+#define compare_term_refs(ip1, ip2, ctx) \
+	LDFUNC(compare_term_refs, ip1, ip2, ctx)
+
+static inline int compare_term_refs(DECL_LD const int *ip1, const int *ip2,
 				      order_term_refs *ctx);
 
-static cmp_t
+static int
 (compare_term_refs)(const void *a, const void *b, void *arg)
 { return compare_term_refs(PASS_AS_LD(((order_term_refs*)arg)->ld) a, b, arg);
 }
 
-static inline cmp_t
+static inline int
 compare_term_refs(DECL_LD const int *ip1, const int *ip2, order_term_refs *ctx)
 { Word p = valTermRef(ctx->av[*ip1*2]);
   Word q = valTermRef(ctx->av[*ip2*2]);
@@ -305,7 +308,7 @@ compare_term_refs(DECL_LD const int *ip1, const int *ip2, order_term_refs *ctx)
   assert(!isRef(*p));
   assert(!isRef(*q));
 
-  return (*p<*q ? -1 : *p>*q ? 1 : 0);
+  return SCALAR_TO_CMP(*p, *q);
 }
 
 
@@ -842,7 +845,7 @@ PL_is_dict(DECL_LD term_t t)
 
     if ( fd->name == ATOM_dict &&
 	 fd->arity%2 == 1 &&
-	 dict_ordered(f->arguments+1, fd->arity/2, &dupl) == true )
+	 dict_ordered(f->arguments+1, fd->arity/2, &dupl) == PL_DICT_TRUE )
       return true;
   }
 
@@ -862,7 +865,6 @@ API_STUB(bool)
 static bool
 PL_get_dict_ex(term_t data, term_t tag, term_t dict, int flags)
 { GET_LD
-  word dupl;
 
   if ( PL_is_dict(data) )
   { PL_put_term(dict, data);
@@ -873,7 +875,6 @@ PL_get_dict_ex(term_t data, term_t tag, term_t dict, int flags)
   { intptr_t len = lengthList(data, true);
     Word ap, dp, tail;
     mark m;
-    int rc;
 
     if ( len < 0 )
       return false;			/* not a proper list */
@@ -882,8 +883,8 @@ PL_get_dict_ex(term_t data, term_t tag, term_t dict, int flags)
     { if ( !makeMoreStackSpace(TRAIL_OVERFLOW, ALLOW_GC|ALLOW_SHIFT) )
 	return false;
     }
-    if ( (rc=ensureGlobalSpace(len*2+2, ALLOW_GC)) != true )
-      return raiseStackOverflow(rc);
+    if ( !ensureGlobalSpace(len*2+2, ALLOW_GC) )
+      return false;
     ap = gTop;
     Mark(m);
     dp = ap;
@@ -920,7 +921,10 @@ PL_get_dict_ex(term_t data, term_t tag, term_t dict, int flags)
       deRef(tail);
     }
 
-    if ( (rc=dict_order(dp, &dupl)) == true )
+
+    word dupl;
+    _PL_dict_status_t rc = dict_order(dp, &dupl);
+    if ( rc == PL_DICT_TRUE )
     { gTop = ap;
       *valTermRef(dict) = consPtr(dp, TAG_COMPOUND|STG_GLOBAL);
       DEBUG(CHK_SECURE, checkStacks(NULL));
@@ -928,7 +932,7 @@ PL_get_dict_ex(term_t data, term_t tag, term_t dict, int flags)
     } else
     { term_t ex;
 
-      assert(rc == -2);
+      assert(rc == PL_DICT_KEY_DUPLICATE);
       Undo(m);
       return ( (ex = PL_new_term_ref()) &&
 	       PL_unify_atomic(ex, dupl) &&
@@ -1266,7 +1270,7 @@ resortDictsInCodes(Code PC, Code end)
   return true;
 }
 
-int
+bool
 resortDictsInClause(Clause clause)
 { Code PC, end;
 
@@ -1295,7 +1299,7 @@ right_arg:
     word dupl;
 
     if ( fd->name == ATOM_dict && fd->arity > 1 && fd->arity%2 == 1 &&
-	 dict_ordered(&t->arguments[1], fd->arity/2, &dupl) == false )
+	 dict_ordered(&t->arguments[1], fd->arity/2, &dupl) == PL_DICT_FALSE )
     { DEBUG(MSG_DICT, Sdprintf("Re-ordering dict\n"));
       dict_order((Word)t, &dupl);
     }

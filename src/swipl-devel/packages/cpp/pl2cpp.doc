@@ -649,6 +649,10 @@ enclosing code doesn't intercept the exception, the \ctype{PlException}
 object is turned back into a Prolog error when control returns to Prolog
 from the PREDICATE() macros. This is a subclass of \ctype{PlExceptionBase},
 which is a subclass of \ctype{std::exception}.
+Note that the constructor is protected; in general, you should use
+PlTypeError(), PlDomainError(), etc. instead; or, if you wish to propagate
+and error, use
+\ctype{PlExceptionFromTerm} or \ctype{PlExceptionFromQid}.
     \classitem{PlFrame}
 This utility-class can be used to discard unused term-references as well
 as to do \jargon{data-backtracking}. It calls PL_open_foreign_frame()
@@ -1580,7 +1584,7 @@ Ths could fixed by adding \exam{delete data} before
 throwing the \const{runtime_error}; but this doesn't handle the
 situation of \exam{data->validate()} throwing an exception (which
 would require a catch/throw).
-Instead, it's easiser to use \ctype{std::unique_ptr}, which takes
+Instead, it's easier to use \ctype{std::unique_ptr}, which takes
 care of every return or exception path:
 \begin{code}
 MyData *foo(int some_value) {
@@ -4023,7 +4027,7 @@ _pl_hello__1(term_t t0, int arity, control_t ctx)
 { (void)arity; (void)ctx;
   try
   { return pl_hello__1(PlTermv(1, t0));
-  } catch( PlFail& )
+  } catch ( PlFail& )
   { return false;
   } catch ( PlException& ex )
   { return ex.plThrow();
@@ -4208,7 +4212,7 @@ appropriate error name. For example, the following code catches
 \begin{code}
 try
 { do_something(...);
-} catch (const PlException& e)
+} catch ( const PlException& e)
 { PlTerm e_t = e.term();
   PlAtom ATOM_type_error("type_error");
   // e_t.name() == PlAtom("error") && e_t.arity() == 2
@@ -4221,9 +4225,15 @@ try
 The convenience functions are PlTypeEror() and PlDomainError(),
 PlDomainError(), PlInstantiationError(), PlExistenceError(),
 PlUninstantiationError(), PlRepresentationError(),
-PlPermissionError(), PlResourceError(), PlUnknownError(). There is
-also a PlGeneralError(inside) that creates \exam{error(inside,_)}
-terms and is used by the other error convience functions.
+PlPermissionError(), PlResourceError(), PlUnknownError().
+
+There is also a PlGeneralError(inside_term) that creates
+\exam{error(Inside_term,_)} terms and is used by the other error
+convience functions.
+
+The easiest way to access the exception from PlCall() is
+by using \ctype{PlExceptionFromQid} - you can then check for
+an exception by using the PlException::is_null() method.
 
 To throw an exception, create an instance of \ctype{PlException} and
 use \exam{throw}. This is intercepted by the PREDICATE macro and
@@ -4232,7 +4242,21 @@ turned into a Prolog exception. See \secref{cpp2-exceptions-notes}.
 \begin{code}
   char *data = "users";
 
-  throw PlException(PlCompound("no_database", PlTerm(data)));
+  throw PlGeneralError(PlCompound("no_database", PlTerm(data)));
+\end{code}
+
+Sometimes, you may need to more control over the exception term or you
+may need to copy a term (e.g., PL_clear_exception() clears the error
+term, so it may need to be copied for a rethrow); for this, use
+PlExceptionFromTerm(). Note that unlike the other ways of creating
+exceptions, this does not create a term of the form
+\exam{error(Term,_)}; if you wish to create your own form of an error,
+you should use PlGeneralError(). But if you need to create a term that
+isn't the functor \exam{error}, you can do something like this:
+\begin{code}
+  throw PlExceptionFromTerm(
+           PlCompound("my_weird_error_term",
+                      PlTermv(t, PlTerm_var())));
 \end{code}
 
 \subsection{The class PlException}
@@ -4255,10 +4279,19 @@ or within the context of a \ctype{PlEngine} (and \ctype{PlFrame};
 see \secref{cpp2-embedding}).
 The term is copied so that it is available outside of the
 context of the frame that created it.
+
+You cannot create a \ctype{PlExceptionBase} or \ctype{PlException}
+because their constructors are protected.
+
+In this diagram, names with \exam{()} are functions; the others
+are classes.
+
 \begin{verbatim}
 std::exception
 *-- PlExceptionBase
     *-- PlException
+    |   *.. PlExceptionFromTerm
+    |   *.. PlExceptionFromQid
     |   *.. PlDomainError()
     |   *.. PlExistenceError()
     |   *.. PlGeneralError()
@@ -4298,6 +4331,8 @@ Currently defined methods are:
     \constructor{PlException}{const PlTerm \&t}
 Create an exception from a general Prolog term.  This provides the
 interface for throwing any Prolog terms as an exception.
+This constructor is protected; instead you should use
+\ctype{PlExceptionFromTerm} or \ctype{PlExceptionFromQid}.
     \cfunction{char*}{what}{}
     See ctype{std::exception::what()}. Note that if this is called
     outside the Prolog frame where the exception was created, there
@@ -4429,7 +4464,7 @@ variable, and behaviour of raising an exception that is an unbound
 term is undefined, including the possibility of causing a crash or
 corrupting data.
 
-The Prolog exception term error(Formal, _) is special.  If the 2nd
+The Prolog exception term \exam{error(Formal, _)} is special.  If the 2nd
 argument of error/2 is undefined, and the term is thrown, the system
 finds the catcher (if any), and calls the hooks in
 library(prolog_stack) to add the context and stack trace information

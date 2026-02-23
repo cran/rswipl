@@ -102,7 +102,7 @@
 
   Sys.setenv(SWI_HOME_DIR=options()$rswipl.home)
   if(commandArgs()[1] == "-e" & commandArgs()[2] == "rswipl::swipl()")
-    return(swipl())
+    return(swipl(12))
   
   argv <- "-q" # Suppress welcome message
   if(.Platform$OS.type == "unix")

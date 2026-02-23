@@ -1,9 +1,10 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
-    WWW:           http://www.swi-prolog.org
-    Copyright (c)  2000-2023, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2000-2026, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -49,6 +50,9 @@
 #include "form.h"
 #ifdef __WINDOWS__
 #include <io.h>
+#ifdef _MSC_VER
+typedef intptr_t ssize_t;
+#endif
 #define read _read
 #define fileno _fileno
 #endif
@@ -60,11 +64,9 @@ Breaks a string holding data from a WWW form into its values.  Outputs a
 sequence of NAME=VALUE commands for a shell.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-static int
-dehex(int chr)
-{ chr &= 0xff;
-
-  if ( chr >= '0' && chr <= '9' )
+static char /* simplified */
+dehex(char chr)
+{ if ( chr >= '0' && chr <= '9' )
     return chr - '0';
   if ( chr >= 'A' && chr <= 'F' )
     return chr - 'A' + 10;
@@ -88,8 +90,8 @@ form_argument_decode(const char *in, size_t inlen, char *out, size_t outlen)
         break;
       case '%':
 	if ( in+2 < ein )
-	{ int h1 = dehex(*(++in));
-	  int h2 = dehex(*(++in));
+	{ char h1 = dehex(*(++in));
+	  char h2 = dehex(*(++in));
 
 	  if ( h1 < 0 || h2 < 0 )
 	    return (size_t)-1;
@@ -115,7 +117,7 @@ form_argument_decode(const char *in, size_t inlen, char *out, size_t outlen)
 
 #define SHORTVALUE 512
 
-int
+int // bool or ERROR_*
 break_form_argument(const char *formdata,
 		    int (*func)(const char* name,
 				size_t namelen,
@@ -170,7 +172,7 @@ break_form_argument(const char *formdata,
     }
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -256,15 +258,15 @@ next_line(const char *in)
 }
 
 
-int
+bool
 break_multipart(char *formdata, size_t len,
 		const char *boundary,
-		int (*func)(const char *name,
-			    size_t namelen,
-			    const char *value,
-			    size_t valuelen,
-			    const char *filename,
-			    void *closure),
+		bool (*func)(const char *name,
+			     size_t namelen,
+			     const char *value,
+			     size_t valuelen,
+			     const char *filename,
+			     void *closure),
 		void *closure)
 { char *enddata = formdata+len;
 
@@ -309,10 +311,10 @@ break_multipart(char *formdata, size_t len,
     end[0] = '\0';
 
     if ( !(func)(name, strlen(name), data, end-data, filename, closure) )
-      return FALSE;
+      return false;
   }
 
-  return TRUE;
+  return true;
 }
 
 
@@ -322,8 +324,8 @@ provided, it is filled with the length  of the contents. The input value
 for lenp is the maximum acceptable content-length.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-int
-get_raw_form_data(char **data, size_t *lenp, int *must_free)
+bool
+get_raw_form_data(char **data, size_t *lenp, bool *must_free)
 { char *method;
   char *s;
 
@@ -331,7 +333,7 @@ get_raw_form_data(char **data, size_t *lenp, int *must_free)
        strcmp(method, "POST") == 0 )
   { char *lenvar = getenv("CONTENT_LENGTH");
     char *q;
-    long len;
+    ssize_t len;
 
     if ( !lenvar )
     { term_t env = PL_new_term_ref();
@@ -343,8 +345,8 @@ get_raw_form_data(char **data, size_t *lenp, int *must_free)
     if ( len < 0 )
     { term_t t = PL_new_term_ref();
 
-      if ( !PL_put_integer(t, len) )
-	return FALSE;
+      if ( !PL_put_int64(t, len) )
+	return false;
       return pl_error(NULL, 0, "< 0", ERR_DOMAIN, t, "content_length");
     }
     if ( lenp )
@@ -352,8 +354,8 @@ get_raw_form_data(char **data, size_t *lenp, int *must_free)
       { term_t t = PL_new_term_ref();
 	char msg[100];
 
-	if ( !PL_put_integer(t, len) )
-	  return FALSE;
+	if ( !PL_put_int64(t, len) )
+	  return false;
 	snprintf(msg, sizeof msg, "> %ld", (long)*lenp);
 
 	return pl_error(NULL, 0, msg, ERR_DOMAIN, t, "content_length");
@@ -365,9 +367,15 @@ get_raw_form_data(char **data, size_t *lenp, int *must_free)
     if ( !q )
       return pl_error(NULL, 0, NULL, ERR_RESOURCE, "memory");
     while(len > 0)
-    { int done;
+    { size_t done;
 
-      while( (done=read(fileno(stdin), q, len)) > 0 )
+#ifdef __WINDOWS__
+#define RDLEN(len) ((unsigned int)len)
+#else
+#define RDLEN(len) len
+#endif
+
+      while( (done=read(fileno(stdin), q, RDLEN(len))) > 0 )
       { q+=done;
 	len-=done;
       }
@@ -387,16 +395,16 @@ get_raw_form_data(char **data, size_t *lenp, int *must_free)
     if ( len == 0 )
     { *q = '\0';
       *data = s;
-      *must_free = TRUE;
-      return TRUE;
+      *must_free = true;
+      return true;
     } else
       goto no_data;
   } else if ( (s = getenv("QUERY_STRING")) )
   { if ( lenp )
       *lenp = strlen(s);
     *data = s;
-    *must_free = FALSE;
-    return TRUE;
+    *must_free = false;
+    return true;
   } else
   { term_t env = PL_new_term_ref();
     PL_put_atom_chars(env, "QUERY_STRING");

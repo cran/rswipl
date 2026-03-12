@@ -1,3 +1,9 @@
+# rswipl 10.1.5
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-10-1-5/
+
+Fixes UBSAN problems reported by BDR
+
 # rswipl 10.1.4
 
 See https://swi-prolog.discourse.group/t/ann-swi-prolog-10-1-4/

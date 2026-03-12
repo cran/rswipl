@@ -2,8 +2,8 @@
 
     Author:        Jan Wielemaker
     E-mail:        jan@swi-prolog.org
-    WWW:           http://www.swi-prolog.org
-    Copyright (c)  2025, SWI-Prolog Solutions b.v.
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2026, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -191,6 +191,7 @@ epilog_attach(Options) :-
     thread_property(Thread, id(TID)),
     fix_term,
     detach_context(RestoreContext),
+    set_thread(Thread, class(console)),
     set_prolog_flag(save_history, false),
     in_pce_thread(create_epilog(TID, Options)),
     thread_get_message('$epilog'(PT, PTY)),
@@ -210,13 +211,15 @@ create_epilog(TID, Options) :-
     new(Epilog, epilog_frame(Name, Title, Width, Height, @off, TID)),
     send(Epilog, open).
 
-detach_context(ctx(In,Out,Err)) :-
+detach_context(ctx(In,Out,Err,Class)) :-
     stream_property(In, alias(user_input)),
     stream_property(Out, alias(user_output)),
-    stream_property(Err, alias(user_error)).
+    stream_property(Err, alias(user_error)),
+    thread_self(Self),
+    ignore(thread_property(Self, class(Class))).
 
 
-restore_io(ctx(OIn,OOut,OErr)) :-
+restore_io(ctx(OIn,OOut,OErr,Class)) :-
     dbg_format("Calling restore_io~n", []),
     unwrap_editline,
     stream_property(CIn, alias(user_input)),
@@ -226,7 +229,12 @@ restore_io(ctx(OIn,OOut,OErr)) :-
     set_std_streams(OIn, OOut, OErr),
     close(CIn, [force(true)]),
     close(COut, [force(true)]),
-    close(CErr, [force(true)]).
+    close(CErr, [force(true)]),
+    (   atom(Class)
+    ->  thread_self(Self),
+        set_thread(Self, class(Class))
+    ;   true
+    ).
 
 dbg_format(Fmt, Args) :-
     setup_call_cleanup(
@@ -760,7 +768,8 @@ connect(PT, @default, Title) =>
                   [ inherit_from(Parent),
                     detached(true),
                     alias(Alias),
-                    at_exit(terminated)
+                    at_exit(terminated),
+                    class(console)
                   ]),
     asserta(current_prolog_terminal(Thread, PT)),
     thread_get_message(Msg),
@@ -1106,6 +1115,7 @@ close(T, Prolog:prolog=[bool]) :->
 save_history(Epilog) :->
     "Save pending history"::
     (   terminal_input(PT, _PTY, _In, _Out, _Err, true),
+        object(PT),
         get(PT, frame, Epilog),
         save_history(PT),
         fail
@@ -1323,6 +1333,7 @@ capture_messages :-
                  xpce_message(Term,Kind,Lines))).
 
 :- dynamic in_interrupt_handler/0.
+:- meta_predicate with_hyperlink_term(0).
 
 :- public xpce_message/3.
 xpce_message(interrupt(begin), _, _) =>
@@ -1335,7 +1346,17 @@ xpce_message(_Term, Kind, Lines) =>
     Kind \== silent,
     \+ in_interrupt_handler,
     xpce_epilog_console(_In,_Out,Error),
-    print_message_lines(Error, kind(Kind), Lines).
+    with_hyperlink_term(print_message_lines(Error, kind(Kind), Lines)).
+
+with_hyperlink_term(Goal) :-
+    current_prolog_flag(hyperlink_term, true),
+    !,
+    call(Goal).
+with_hyperlink_term(Goal) :-
+    setup_call_cleanup(
+        set_prolog_flag(hyperlink_term, true),
+        Goal,
+        set_prolog_flag(hyperlink_term, false)).
 
 %!  pce:xpce_console(-In,-Out,-Error) is semidet.
 %

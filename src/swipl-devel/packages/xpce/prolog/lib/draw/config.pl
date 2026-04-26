@@ -82,12 +82,6 @@ config(resources/colour_palette,
          comment('Set of colours available in attribute viewer'),
          default([red, green, blue, yellow, black, white])
        ]).
-config(resources/fill_palette,
-       [ type(setof(colour)),
-         comment('Colours used for filling'),
-         default([red, green, blue, yellow, black, white
-                 ])
-       ]).
 config(resources/arrows,
        [ type(setof(arrow)),
          comment('Arrow heads for lines'),
@@ -144,7 +138,7 @@ resource(fillpattern,   image, image('16x16/fillpattern.png')).
                                           term([ length,
                                                  wing,
                                                  style,
-                                                 fill_pattern
+                                                 fill
                                                ]+pen+colour),
                                           icon(arrows)
                                         ]).

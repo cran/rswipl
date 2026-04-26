@@ -103,7 +103,7 @@
 :- autoload(library(pldoc/doc_process), [comment_modes/2]).
 
 resource(mode_pl_icon, image, image('32x32/doc_pl.png')).
-resource(breakpoint,   image, image('16x16/stop.png')).
+resource(breakpoint,   image, library('trace/icons/stop.svg')).
 
 :- emacs_begin_mode(prolog, language,
                     "Mode for editing XPCE/Prolog sources",
@@ -143,7 +143,6 @@ resource(breakpoint,   image, image('16x16/stop.png')).
           setup_auto_indent            = button(prolog),
           insert_full_stop             = key(.),
           find_definition              = key('\\e.') + button(browse),
-          find_references              = key('\\e?') + button(browse),
           -                            = button(prolog),
           make                         = key('\\C-c\\C-m') + button(compile),
           compile_buffer               = key('\\C-c\\C-b') + button(compile),
@@ -882,7 +881,7 @@ report_references(M, PI, []) =>
 report_references(_M, PI, References) =>
     format(string(S), '~q', [PI]),
     functor_length(PI, Len),
-    new(BM, emacs_bookmark_editor(string('References to %s', S), @off)),
+    get(@emacs, reference_viewer, S, BM),
     length(References, Count),
     forall(member(Ref, References),
            add_reference(BM, Len, Ref)),

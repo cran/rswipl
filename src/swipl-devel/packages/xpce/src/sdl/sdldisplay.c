@@ -36,6 +36,7 @@
 #include <h/graphics.h>
 #include "sdldisplay.h"
 #include "sdluserevent.h"
+#include <math.h>
 
 static void	ws_open_display(DisplayObj d, SDL_DisplayID id);
 
@@ -224,15 +225,79 @@ sdl_display_event(SDL_Event *ev)
   fail;
 }
 
+		 /*******************************
+		 *	       BELL		*
+		 *******************************/
+
+#define BELL_FREQ    440	/* Hz */
+#define BELL_MS      200	/* duration in milliseconds */
+#define BELL_RATE    44100	/* sample rate */
+#define BELL_POLL_MS 50		/* cleanup poll interval */
+
+typedef struct
+{ SDL_AudioStream *stream;
+} BellData;
+
+static Uint32 SDLCALL
+bell_cleanup(void *userdata, SDL_TimerID id, Uint32 interval)
+{ BellData *bd = userdata;
+
+  if ( SDL_GetAudioStreamAvailable(bd->stream) > 0 )
+    return interval;		/* still playing, check again */
+
+  SDL_DestroyAudioStream(bd->stream);	/* also closes the device */
+  free(bd);
+  return 0;			/* cancel timer */
+}
+
 /**
  * Sound the system bell with the specified volume.
  *
  * @param d Pointer to the DisplayObj representing the display context.
- * @param volume The volume level for the bell sound.
+ * @param volume The volume level for the bell sound (0-100).
  */
 void
 ws_bell_display(DisplayObj d, int volume)
-{
+{ if ( !SDL_WasInit(SDL_INIT_AUDIO) &&
+       !SDL_InitSubSystem(SDL_INIT_AUDIO) )
+  { Cprintf("ws_bell_display: audio init: %s\n", SDL_GetError());
+    return;
+  }
+
+  SDL_AudioSpec spec = { SDL_AUDIO_S16, 1, BELL_RATE };
+  SDL_AudioStream *stream =
+    SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+			      &spec, NULL, NULL);
+  if ( !stream )
+  { Cprintf("ws_bell_display: %s\n", SDL_GetError());
+    return;
+  }
+
+  int nsamples = BELL_RATE * BELL_MS / 1000;
+  Sint16 *buf = malloc(nsamples * sizeof(Sint16));
+  if ( !buf )
+  { SDL_DestroyAudioStream(stream);
+    return;
+  }
+
+  double amplitude = (volume / 100.0) * 32767.0;
+  for ( int i = 0; i < nsamples; i++ )
+    buf[i] = (Sint16)(amplitude * sin(2.0 * M_PI * BELL_FREQ * i / BELL_RATE));
+
+  SDL_PutAudioStreamData(stream, buf, nsamples * (int)sizeof(Sint16));
+  free(buf);
+  SDL_ResumeAudioStreamDevice(stream);
+
+  BellData *bd = malloc(sizeof(*bd));
+  if ( !bd )
+  { SDL_DestroyAudioStream(stream);
+    return;
+  }
+  bd->stream = stream;
+  if ( !SDL_AddTimer(BELL_POLL_MS, bell_cleanup, bd) )
+  { SDL_DestroyAudioStream(stream);
+    free(bd);
+  }
 }
 
 /**
@@ -269,7 +334,7 @@ ws_resolution_display(DisplayObj d, int *rx, int *ry)
  */
 void
 ws_activate_screen_saver(DisplayObj d)
-{
+{ SDL_EnableScreenSaver();
 }
 
 /**
@@ -279,17 +344,7 @@ ws_activate_screen_saver(DisplayObj d)
  */
 void
 ws_deactivate_screen_saver(DisplayObj d)
-{
-}
-
-/**
- * Initialize the display, preparing it for graphical operations.
- *
- * @param d Pointer to the DisplayObj representing the display context.
- */
-void
-ws_init_display(DisplayObj d)
-{
+{ SDL_DisableScreenSaver();
 }
 
 /**
@@ -356,28 +411,6 @@ ws_pixel_density_display(Any obj)
 
 
 /**
- * Set the foreground color for the display.
- *
- * @param d Pointer to the DisplayObj representing the display context.
- * @param c Pointer to the Colour object representing the foreground color.
- */
-void
-ws_foreground_display(DisplayObj d, Colour c)
-{
-}
-
-/**
- * Set the background color for the display.
- *
- * @param d Pointer to the DisplayObj representing the display context.
- * @param c Pointer to the Colour object representing the background color.
- */
-void
-ws_background_display(DisplayObj d, Colour c)
-{
-}
-
-/**
  * Check if there are events queued on the display.
  *
  * @param d Pointer to the DisplayObj representing the display context.
@@ -419,7 +452,7 @@ Any
 ws_get_selection(DisplayObj d, Name which, Name target)
 { ASSERT_SDL_MAIN();
   if ( target == NAME_text || target == NAME_utf8_string )
-  { const char *text = NULL;
+  { char *text = NULL;
 
     if ( which == NAME_clipboard )
       text = SDL_GetClipboardText();
@@ -427,85 +460,29 @@ ws_get_selection(DisplayObj d, Name which, Name target)
       text = SDL_GetPrimarySelectionText();
 
     if ( text )
-      return UTF8ToString(text);
+    { StringObj rc;
+
+#ifdef __WINDOWS__	/* SDL3 returns lines separated by \r\n */
+      for(char *s = text, *o = text;; s++)
+      { char c = *s;
+
+	if ( c == '\r' && s[1] == '\n' )
+	  continue;
+	*o++ = c;
+	if ( !c )
+	  break;
+      }
+#endif
+
+      rc = UTF8ToString(text);
+      SDL_free(text);
+      answer(rc);
+    }
   }
 
   Cprintf("ws_get_selection(%s, %s, %s): not supported\n",
 	  pp(d), pp(which), pp(target));
   fail;
-}
-
-/**
- * Disown a previously owned X selection.
- *
- * @param d Pointer to the DisplayObj representing the display context.
- * @param selection The selection type to disown (e.g., PRIMARY, CLIPBOARD).
- */
-void
-ws_disown_selection(DisplayObj d, Name selection)
-{
-}
-
-/**
- * Claim ownership of an X selection.
- *
- * @param d Pointer to the DisplayObj representing the display context.
- * @param selection The selection to claim ownership of.
- * @param type The type of content provided for this selection.
- * @return SUCCEED on success; otherwise, FAIL.
- */
-status
-ws_own_selection(DisplayObj d, Name selection, Name type)
-{
-    return SUCCEED;
-}
-
-/**
- * Retrieve the name of the window manager in use.
- *
- * @param d Pointer to the DisplayObj representing the display context.
- * @return A Name object identifying the current window manager.
- */
-Name
-ws_window_manager(DisplayObj d)
-{
-    return NULL;
-}
-
-/**
- * Enable synchronous mode for display requests (useful for debugging).
- *
- * @param d Pointer to the DisplayObj representing the display context.
- */
-void
-ws_synchronous(DisplayObj d)
-{
-}
-
-/**
- * Revert to asynchronous mode for display requests (default behavior).
- *
- * @param d Pointer to the DisplayObj representing the display context.
- */
-void
-ws_asynchronous(DisplayObj d)
-{
-}
-
-/**
- * Capture a region of the screen as an Image object.
- *
- * @param d Pointer to the DisplayObj representing the display context.
- * @param x The x-coordinate of the region's top-left corner.
- * @param y The y-coordinate of the region's top-left corner.
- * @param width The width of the region to capture.
- * @param height The height of the region to capture.
- * @return An Image object containing the screen capture; NULL on failure.
- */
-Image
-ws_grab_image_display(DisplayObj d, int x, int y, int width, int height)
-{
-    return NULL;
 }
 
 Name

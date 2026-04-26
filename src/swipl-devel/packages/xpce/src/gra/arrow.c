@@ -1,9 +1,10 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        jan@swi.psy.uva.nl
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  1985-2002, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org/projects/xpce/
+    Copyright (c)  1985-2026, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -66,13 +67,13 @@ has no well-defined meaning.
 static status pointsArrow(Arrow a, Int tx, Int ty, Int rx, Int ry);
 
 static status
-initialiseArrow(Arrow a, Int length, Int wing, Name style, Any fill)
+initialiseArrow(Arrow a, Num length, Num wing, Name style, Any fill)
 { initialiseGraphical(a, ZERO, ZERO, ONE, ONE);
 
   if ( notDefault(length) )	assign(a, length, length);
   if ( notDefault(wing) )	assign(a, wing, wing);
   if ( notDefault(style) )	assign(a, style, style);
-  if ( notDefault(fill) )	assign(a, fill_pattern, fill);
+  if ( notDefault(fill) )	assign(a, fill, fill);
 
   assign(a, tip,       newObject(ClassPoint, toInt(10), toInt(10), EAV));
   assign(a, reference, newObject(ClassPoint, EAV));
@@ -81,7 +82,7 @@ initialiseArrow(Arrow a, Int length, Int wing, Name style, Any fill)
 
   obtainClassVariablesObject(a);
 
-  if ( notNil(a->fill_pattern) )
+  if ( notNil(a->fill) )
     assign(a, pen, ZERO);
 
   requestComputeGraphical(a, DEFAULT);
@@ -192,7 +193,7 @@ RedrawAreaArrow(Arrow a, Area area)
 { drawArrow(valNum(a->left->x),  valNum(a->left->y),
 	    valNum(a->tip->x),   valNum(a->tip->y),
 	    valNum(a->right->x), valNum(a->right->y),
-	    a->fill_pattern,
+	    a->fill,
 	    valNum(a->pen),
 	    a->texture,
 	    a->style);
@@ -346,8 +347,8 @@ pointsArrow(Arrow a, Int tx, Int ty, Int rx, Int ry)
 /* Type declaractions */
 
 static char *T_initialise[] =
-        { "length=[int]", "wing=[int]",
-	  "style=[{open,closed}]", "fill=[image|colour]*"
+        { "length=[num]", "wing=[num]",
+	  "style=[{open,closed}]", "fill=[colour]*"
 	};
 static char *T_points[] =
         { "tip_x=[int]", "tip_y=[int]",
@@ -364,11 +365,11 @@ static vardecl var_arrow[] =
      NAME_area, "Tip of the arrow"),
   SV(NAME_reference, "point", IV_GET|IV_STORE, referenceArrow,
      NAME_area, "Where arrow points to"),
-  SV(NAME_length, "int", IV_GET|IV_STORE, lengthArrow,
+  SV(NAME_length, "num", IV_GET|IV_STORE, lengthArrow,
      NAME_area, "Distance tip to base"),
-  SV(NAME_wing, "int", IV_GET|IV_STORE, wingArrow,
+  SV(NAME_wing, "num", IV_GET|IV_STORE, wingArrow,
      NAME_area, "Length of base"),
-  SV(NAME_fillPattern, TYPE_FILL, IV_GET|IV_STORE, fillPatternGraphical,
+  SV(NAME_fill, TYPE_FILL, IV_GET|IV_STORE, fillGraphical,
      NAME_appearance, "How it is filled"),
   SV(NAME_style, "{open,closed}", IV_GET|IV_STORE, styleArrow,
      NAME_appearance, "If `closed', the triangle is closed"),
@@ -415,16 +416,16 @@ static getdecl get_arrow[] =
 /* Resources */
 
 static classvardecl rc_arrow[] =
-{ RC(NAME_fillPattern, TYPE_FILL, "foreground",
+{ RC(NAME_fill, TYPE_FILL, "foreground",
      "Fill pattern for the triangle"),
-  RC(NAME_length, "int", "2.5mm",
-     "Distance tip to base (2.5mm)"),
+  RC(NAME_length, "num", "15",
+     "Distance tip to base"),
   RC(NAME_style, "{open,closed}", "closed",
      "Whether or not the wing is closed"),
   RC(NAME_selectionHandles, RC_REFINE, "sides",
      NULL),
-  RC(NAME_wing, "int", "1.75mm",
-     "Width of wing (1.75mm)")
+  RC(NAME_wing, "num", "10",
+     "Width of wing")
 };
 
 /* Class Declaration */
@@ -433,15 +434,14 @@ static Name arrow_termnames[] = { NAME_length, NAME_wing };
 
 ClassDecl(arrow_decls,
           var_arrow, send_arrow, get_arrow, rc_arrow,
-          2, arrow_termnames,
-          "$Rev$");
+          2, arrow_termnames);
 
 
 status
 makeClassArrow(Class class)
 { declareClass(class, &arrow_decls);
 
-  cloneStyleVariableClass(class, NAME_fillPattern, NAME_reference);
+  cloneStyleVariableClass(class, NAME_fill, NAME_reference);
   setRedrawFunctionClass(class, RedrawAreaArrow);
 
   succeed;

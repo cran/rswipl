@@ -1,9 +1,10 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        jan@swi.psy.uva.nl
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  1985-2002, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi.psy.uva.nl/projects/xpce/
+    Copyright (c)  1985-2026, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -181,34 +182,6 @@ static status
 loadFdBitmap(BitmapObj bm, IOSTREAM *fd, ClassDef def)
 { TRY(loadSlotsObject(bm, fd, def));
 
-  if ( restoreVersion < 7 )
-  { if ( restoreVersion == 1 )
-    { Image image = newObject(ClassImage, EAV);
-
-      ws_load_old_image(image, fd);
-      assign(bm, image, image);
-    } else if ( restoreVersion <= 5 )
-    { assign(bm, image, newObject(ClassImage, EAV));
-      assign(bm, pen, ZERO);
-      assign(bm, request_compute, NIL);
-
-      switch( Sgetc(fd) )
-      { case 'O':				/* no image */
-	  setSize(bm->image->size, ZERO, ZERO);
-	  break;
-	case 'X':
-	  loadXImage(bm->image, fd);
-      }
-    }
-
-    if ( isNil(bm->texture) )
-      assign(bm, texture, NAME_none);
-    if ( isNil(bm->colour) )
-      assign(bm, colour, DEFAULT);
-    if ( isNil(bm->inverted) )
-      assign(bm, inverted, OFF);
-  }
-
   updateSolidBitmap(bm);
 
   succeed;
@@ -280,8 +253,7 @@ static Name bitmap_termnames[] = { NAME_image };
 
 ClassDecl(bitmap_decls,
           var_bitmap, send_bitmap, get_bitmap, rc_bitmap,
-          1, bitmap_termnames,
-          "$Rev$");
+          1, bitmap_termnames);
 
 
 

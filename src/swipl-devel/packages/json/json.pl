@@ -874,7 +874,7 @@ json_print_length(True, Options, Max, Len0, Len) :-
 json_print_length(Number, _Options, Max, Len0, Len) :-
     number(Number),
     !,
-    write_length(Number, AL, []),
+    write_size(Number, AL, _H, []),
     Len is Len0 + AL,
     Len =< Max.
 json_print_length(@(Id), _Options, Max, Len0, Len) :-
@@ -888,7 +888,7 @@ json_print_length(String, _Options, Max, Len0, Len) :-
     !,
     Len =< Max.
 json_print_length(AnyTerm, _Options, Max, Len0, Len) :-
-    write_length(AnyTerm, AL, []),          % will be serialized
+    write_size(AnyTerm, AL, _H, []),          % will be serialized
     Len is Len0 + AL+2,
     Len =< Max.
 

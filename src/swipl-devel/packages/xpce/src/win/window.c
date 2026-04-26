@@ -139,14 +139,6 @@ grabPointerWindow(PceWindow sw, BoolObj val)
 }
 
 
-status
-grabKeyboardWindow(PceWindow sw, BoolObj val)
-{ ws_grab_keyboard_window(sw, val);
-
-  succeed;
-}
-
-
 		/********************************
 		*          DESTRUCTION		*
 		********************************/
@@ -313,8 +305,6 @@ decorateWindow(PceWindow sw, Name how, Int lb, Int tb, Int rb, Int bb,
 
   if ( isDefault(dw->colour) )     assign(dw, colour, sw->colour);
   if ( isDefault(dw->background) ) assign(dw, background, sw->background);
-
-  ws_reassociate_ws_window(sw, dw);
 
   assign(dw, tile, sw->tile);
   if ( instanceOfObject(dw->tile, ClassTile) )
@@ -1271,9 +1261,6 @@ scrollWindow(PceWindow sw, Int x, Int y, BoolObj ax, BoolObj ay)
     UpdateScrollbarValuesWindow(sw);
     updatePositionSubWindowsDevice((Device) sw);
 
-#ifdef WIN32_GRAPHICS
-    ws_scroll_window(sw, nx-ox, ny-oy);
-#else
   { int x, y, w, h;
     int p = valInt(sw->pen);
 
@@ -1286,7 +1273,6 @@ scrollWindow(PceWindow sw, Int x, Int y, BoolObj ax, BoolObj ay)
     changed_window(sw, x, y, w, h, TRUE);
     addChain(ChangedWindows, sw);
   }
-#endif
   }
 
   succeed;
@@ -1955,7 +1941,6 @@ backgroundWindow(PceWindow sw, Colour colour)
 
   if ( sw->background != colour )
   { assign(sw, background, colour);
-    ws_window_background(sw, colour);
     redrawWindow(sw, DEFAULT);
   }
 
@@ -1980,18 +1965,6 @@ selectionFeedbackWindow(PceWindow sw, Any feedback)
 static Colour
 getForegroundWindow(PceWindow sw)
 { answer(sw->colour);
-}
-
-
-static status
-sensitiveWindow(PceWindow sw, BoolObj sensitive)
-{ if ( sw->sensitive != sensitive )
-  { assign(sw, sensitive, sensitive);
-
-    ws_enable_window(sw, sensitive == ON ? TRUE : FALSE);
-  }
-
-  succeed;
 }
 
 
@@ -2054,8 +2027,6 @@ exposeWindow(PceWindow sw)
   if ( notNil(sw->frame) )
     return exposeFrame(sw->frame);
 
-  ws_raise_window(sw);
-
   succeed;
 }
 
@@ -2064,11 +2035,6 @@ static status
 hideWindow(PceWindow sw)
 { if ( notNil(sw->decoration) )
     return hideWindow(sw->decoration);
-
-  if ( notNil(sw->frame) )
-    return hideFrame(sw->frame);
-
-  ws_lower_window(sw);
 
   succeed;
 }
@@ -2124,15 +2090,6 @@ catchAllWindowv(PceWindow sw, Name selector, int argc, Any *argv)
   }
 
   return errorPce(sw, NAME_noBehaviour, CtoName("->"), selector);
-}
-
-		 /*******************************
-		 *	    THREADING		*
-		 *******************************/
-
-static Int
-getThreadWindow(PceWindow sw)
-{ return ws_window_thread(sw);
 }
 
 
@@ -2214,7 +2171,7 @@ static vardecl var_window[] =
      NAME_menu, "Popup-menu of the window"),
   IV(NAME_currentEvent, "event*", IV_GET,
      NAME_event, "Event being processed now"),
-  SV(NAME_sensitive, "bool", IV_GET|IV_STORE, sensitiveWindow,
+  IV(NAME_sensitive, "bool", IV_BOTH,
      NAME_event, "Window accepts events"),
   SV(NAME_background, "colour|pixmap", IV_GET|IV_STORE, backgroundWindow,
      NAME_appearance, "Background colour or pattern"),
@@ -2233,10 +2190,6 @@ static vardecl var_window[] =
 
 /* Send Methods */
 
-#ifdef WIN32_GRAPHICS
-extern status winHandleWindow(PceWindow sw, Int handle);
-extern Int    getWinHandleWindow(PceWindow sw);
-#endif
 
 static senddecl send_window[] =
 { SM(NAME_destroy, 0, NULL, destroyWindow,
@@ -2285,8 +2238,6 @@ static senddecl send_window[] =
      NAME_delegate, "Handle frame methods when no frame is present"),
   SM(NAME_postEvent, 1, "event", postEventWindow,
      NAME_event, "Handle event"),
-  SM(NAME_grabKeyboard, 1, "bool", grabKeyboardWindow,
-     NAME_event, "Grab keyboard events"),
   SM(NAME_grabPointer, 1, "bool", grabPointerWindow,
      NAME_event, "Grab pointer (mouse) events"),
   SM(NAME_focus, 4, T_focus, focusWindow,
@@ -2335,10 +2286,6 @@ static senddecl send_window[] =
      NAME_stacking, "Expose (raise) related frame"),
   SM(NAME_hide, 0, NULL, hideWindow,
      NAME_stacking, "Hide (lower) related frame"),
-#ifdef WIN32_GRAPHICS
-  SM(NAME_winHandle, 1, "hwnd=int", winHandleWindow,
-     NAME_windows, "Associate this XPCE window with the given MS-Window"),
-#endif
   SM(NAME_compute, 0, NULL, computeWindow,
      NAME_update, "Recompute window")
 };
@@ -2366,15 +2313,9 @@ static getdecl get_window[] =
      NAME_cursor, "Currently displayed cursor"),
   GM(NAME_confirm, 2, "any", T_confirm, getConfirmWindow,
      NAME_modal, "Run sub event-loop until ->return"),
-#ifdef WIN32_GRAPHICS
-  GM(NAME_winHandle, 0, "int", NULL, getWinHandleWindow,
-     NAME_windows, "Fetch the MS-Windows HWND of the window (if any)"),
-#endif
   GM(NAME_confirmCentered, 3, "any", T_confirmCentered,
      getConfirmCenteredWindow,
-     NAME_modal, "->confirm with frame centered around point"),
-  GM(NAME_thread, 0, "int", NULL, getThreadWindow,
-     NAME_thread, "Return system thread-id that owns the window")
+     NAME_modal, "->confirm with frame centered around point")
 };
 
 /* Resources */
@@ -2394,8 +2335,7 @@ static Name window_termnames[] = { NAME_name };
 
 ClassDecl(window_decls,
           var_window, send_window, get_window, rc_window,
-          1, window_termnames,
-          "$Rev$");
+          1, window_termnames);
 
 
 status

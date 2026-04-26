@@ -36,35 +36,12 @@
 #include <config.h>
 #include <string.h>
 
-#if defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER >= 0x3050000fL
+#ifdef LIBRESSL_VERSION_NUMBER
 #include <pthread.h>
 #endif
 
 #include "cryptolib.h"
 
-/* OPENSSL_zalloc is only used in the EVP_MD_CTX_new defined below */
-#if !defined(HAVE_OPENSSL_ZALLOC) && !defined(OPENSSL_zalloc) && !defined(HAVE_EVP_MD_CTX_FREE)
-static void *
-OPENSSL_zalloc(size_t num)
-{ void *ret = OPENSSL_malloc(num);
-  if (ret != NULL)
-    memset(ret, 0, num);
-  return ret;
-}
-#endif
-
-#ifndef HAVE_EVP_MD_CTX_FREE
-static inline void
-EVP_MD_CTX_free(EVP_MD_CTX *ctx)
-{ EVP_MD_CTX_cleanup(ctx);
-  OPENSSL_free(ctx);
-}
-
-static inline EVP_MD_CTX *
-EVP_MD_CTX_new(void)
-{ return OPENSSL_zalloc(sizeof(EVP_MD_CTX));
-}
-#endif
 
 static int
 unify_bytes_hex(term_t t, size_t len, const unsigned char *data)
@@ -342,17 +319,8 @@ bio_control(BIO* bio, int cmd, long num, void* ptr)
 static int
 bio_create(BIO* bio)
 {
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || (defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x3050000fL)
-   bio->shutdown = 1;
-   bio->init = 1;
-   bio->num = -1;
-   bio->ptr = NULL;
-#else
    BIO_set_shutdown(bio, 1);
    BIO_set_init(bio, 1);
-   /* bio->num = -1;  (what to do in OpenSSL >= 1.1.0?)
-      bio->ptr = NULL; */
-#endif
    return 1;
 }
 
@@ -370,67 +338,9 @@ bio_destroy(BIO* bio)
    return 1;
 }
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || (defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x3050000fL)
 /*
- * Specify the BIO read and write function structures
- */
-
-static BIO_METHOD bio_read_functions = { BIO_TYPE_MEM,
-                                         "read",
-					 NULL,
-					 &bio_read,
-					 NULL,
-					 &bio_gets,
-					 &bio_control,
-					 &bio_create,
-					 &bio_destroy
-				       };
-
-static BIO_METHOD bio_write_functions = { BIO_TYPE_MEM,
-					  "write",
-					  &bio_write,
-					  NULL,
-					  NULL,
-					  NULL,
-					  &bio_control,
-					  &bio_create,
-					  &bio_destroy
-					};
-
-static BIO_METHOD bio_write_text_functions = { BIO_TYPE_MEM,
-                                               "write",
-                                               &bio_write_text,
-                                               NULL,
-                                               NULL,
-                                               NULL,
-                                               &bio_control,
-                                               &bio_create,
-                                               &bio_destroy
-                                             };
-
-
-static BIO_METHOD *
-bio_read_method(void)
-{
-  return &bio_read_functions;
-}
-
-static BIO_METHOD *
-bio_write_method(void)
-{
-  return &bio_write_functions;
-}
-
-static BIO_METHOD *
-bio_write_text_method(void)
-{
-  return &bio_write_text_functions;
-}
-
-#else
-/*
- * In OpenSSL >= 1.1.0, the BIO methods are constructed
- * using functions. We initialize them exactly once.
+ * The BIO methods are constructed using functions. We initialize them
+ * exactly once.
  */
 
 #ifdef LIBRESSL_VERSION_NUMBER
@@ -526,7 +436,5 @@ bio_write_text_method(void)
 
   return write_text_method;
 }
-
-#endif
 
 #endif /*NEED_BIO*/

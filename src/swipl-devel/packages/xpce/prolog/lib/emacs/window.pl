@@ -51,9 +51,6 @@
            ]).
 :- encoding(utf8).
 
-resource(mode_x_icon,   image, image('32x32/doc_x.png')).
-
-
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 @current_emacs_mode is a variable  pointing   to  the current emacs-mode
 object.  Pushed by `emacs_key_binding  ->fill_arguments_and_execute' and
@@ -113,7 +110,6 @@ class_variable(prompt_style, {mini_window,dialog}, dialog, "How to prompt").
 initialise(F, For:'emacs_buffer|emacs_view') :->
     "Create window for buffer"::
     send(F, send_super, initialise, 'PceEmacs', application := @emacs),
-    send(F, icon, image(resource(mode_x_icon))),
     send(F, done_message, message(F, close)),
     send(F, append, new(MBD, emacs_mode_dialog)),
 
@@ -255,11 +251,6 @@ mode(F, Mode:emacs_mode) :<-
 
 setup_mode(F, V:emacs_view) :->
     "Setup the mode for indicated view"::
-    get(V, mode, Mode),
-    (   get(Mode, icon, Icon)
-    ->  send(F, icon, Icon)
-    ;   true
-    ),
     get(F, menu_bar, MB),
     ignore(send(V, fill_menu_bar, MB)),
     (   get(V, label, Label)
@@ -1067,6 +1058,16 @@ font(E, Font:font) :->
     FW1 is FW+W1-W0,
     FH1 is FH+H1-H0,
     send(Frame, size, size(FW1, FH1)).
+
+margin_width(E, Width:int) :->
+    "Set margin width"::
+    send_super(E, margin_width, Width),
+    get(E, margin, Margin),
+    (   Margin == @nil
+    ->  true
+    ;   IconW is Width - 6,  % margin using 3 pixels padding
+        send(Margin, icon_size, size(IconW,IconW))
+    ).
 
 looking_at(E, Re:regex, Where:[int], End:[int]) :->
     "Test if regex macthes from the caret"::

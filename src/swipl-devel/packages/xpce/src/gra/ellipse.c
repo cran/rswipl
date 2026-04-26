@@ -1,9 +1,9 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        jan@swi.psy.uva.nl
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  1985-2002, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi.prolog.org/projects/xpce/
+    Copyright (c)  1985-2026, University of Amsterdam
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -39,7 +39,7 @@ static status
 initialiseEllipse(EllipseObj e, Int w, Int h)
 { initialiseGraphical(e, ZERO, ZERO, w, h);
   assign(e, shadow, ZERO);
-  assign(e, fill_pattern, NIL);
+  assign(e, fill, NIL);
 
   succeed;
 }
@@ -51,23 +51,27 @@ RedrawAreaEllipse(EllipseObj e, Area a)
 
   initialiseDeviceGraphical(e, &x, &y, &w, &h);
   NormaliseArea(x, y, w, h);
-  r_thickness(valInt(e->pen));
   r_dash(e->texture);
 
   if ( e->shadow != ZERO )
   { int shadow = valInt(e->shadow);
-    Image fill = e->fill_pattern;
+    Any fill = e->fill;
+
+    if ( isNil(fill) )
+      fill = NAME_background;
 
     if ( shadow > w ) shadow = w;
     if ( shadow > h ) shadow = h;
 
-    r_colour(BLACK_COLOUR);
+    r_thickness(0.0);
     r_ellipse(x+shadow, y+shadow, w-shadow, h-shadow, BLACK_COLOUR);
+    r_thickness(valNum(e->pen));
     r_colour(DEFAULT);
     r_ellipse(x, y, w-shadow, h-shadow, fill);
-
   } else
-    r_ellipse(x, y, w, h, e->fill_pattern);
+  { r_thickness(valNum(e->pen));
+    r_ellipse(x, y, w, h, e->fill);
+  }
 
   return RedrawAreaGraphical(e, a);
 }
@@ -87,7 +91,7 @@ static char *T_initialise[] =
 static vardecl var_ellipse[] =
 { SV(NAME_shadow, "int", IV_GET|IV_STORE, shadowGraphical,
      NAME_appearance, "Shadow painted below/right"),
-  SV(NAME_fillPattern, TYPE_FILL, IV_GET|IV_STORE, fillPatternGraphical,
+  SV(NAME_fill, TYPE_FILL, IV_GET|IV_STORE, fillGraphical,
      NAME_appearance, "Fill pattern for internals")
 };
 
@@ -120,15 +124,14 @@ static Name ellipse_termnames[] = { NAME_width, NAME_height };
 
 ClassDecl(ellipse_decls,
           var_ellipse, send_ellipse, get_ellipse, rc_ellipse,
-          2, ellipse_termnames,
-          "$Rev$");
+          2, ellipse_termnames);
 
 
 status
 makeClassEllipse(Class class)
 { declareClass(class, &ellipse_decls);
 
-  cloneStyleVariableClass(class, NAME_fillPattern, NAME_reference);
+  cloneStyleVariableClass(class, NAME_fill, NAME_reference);
   setRedrawFunctionClass(class, RedrawAreaEllipse);
 
   succeed;

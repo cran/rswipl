@@ -550,7 +550,7 @@ content([CDATA], Out, Element, State) :-
     (   get_state(State, dialect, sgml),
         get_state(State, net, true),
         \+ sub_atom(CDATA, _, _, _, /),
-        write_length(CDATA, Len, []),
+        write_size(CDATA, Len, _H, []),
         Len < 20
     ->  write(Out, /),
         sgml_write_content(Out, CDATA, State),

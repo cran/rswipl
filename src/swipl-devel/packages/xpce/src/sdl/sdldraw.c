@@ -72,7 +72,7 @@ typedef struct
   Any		background;		/* Background colour */
   Any		default_colour;
   Any		default_background;
-  Any		fill_pattern;		/* Default for fill operations */
+  Any		fill;		/* Default for fill operations */
   Name		dash;			/* Dash pattern */
   double	pen;			/* Drawing thickness */
 } sdl_draw_context;
@@ -222,14 +222,6 @@ d_ensure_display(void)
 }
 
 /**
- * Flush all pending drawing operations to the display.
- */
-void
-d_flush(void)
-{
-}
-
-/**
  * Start  drawing in  a window.   The x,y,w,h  describe the  region to
  * paint in  window client  coordinates.  The drawing  code translates
  * this  to  window coordinates  using  Translate(x,y),  based on  the
@@ -309,11 +301,6 @@ d_image(Image i, int x, int y, int w, int h)
   ws_open_image(i);
   Any colour = d->foreground;
   Any background = d->background;
-
-  if ( isDefault(colour) )
-    colour = d->foreground;
-  if ( isDefault(background) || isNil(background) )
-    background = d->background;
 
   push_context();
   context.open = 1;
@@ -419,7 +406,20 @@ d_clip_done(void)
  */
 void
 intersection_iarea(IArea a, IArea b)
-{
+{ int x, y, w, h;
+
+  x = (a->x > b->x ? a->x : b->x);
+  y = (a->y > b->y ? a->y : b->y);
+  w = (a->x + a->w < b->x + b->w ? a->x + a->w : b->x + b->w) - x;
+  h = (a->y + a->h < b->y + b->h ? a->y + a->h : b->y + b->h) - y;
+
+  if ( w < 0 ) w = 0;
+  if ( h < 0 ) h = 0;
+
+  a->x = x;
+  a->y = y;
+  a->w = w;
+  a->h = h;
 }
 
 		 /*******************************
@@ -458,20 +458,6 @@ pce_cairo_set_font(cairo_t *cr, FontObj pce)
  */
 void
 r_complement(int x, int y, int w, int h)
-{
-}
-
-/**
- * Perform a bitwise AND operation with a pattern over a rectangular area.
- *
- * @param x The x-coordinate of the top-left corner of the rectangle.
- * @param y The y-coordinate of the top-left corner of the rectangle.
- * @param w The width of the rectangle.
- * @param h The height of the rectangle.
- * @param pattern The image pattern to use for the operation.
- */
-void
-r_and(int x, int y, int w, int h, Image pattern)
 {
 }
 
@@ -536,16 +522,6 @@ r_dash(Name name)
 }
 
 /**
- * Set the current pen for drawing operations.
- *
- * @param pen The pen object defining drawing attributes.
- */
-void
-d_pen(Pen pen)
-{
-}
-
-/**
  * Set the fill pattern for subsequent drawing operations.
  *
  * @param fill The fill pattern to use.
@@ -566,17 +542,7 @@ r_fillpattern(Any fill, Name which)
   else if ( fill == NAME_current )
     return;
 
-  context.fill_pattern = fill;
-}
-
-/**
- * Set the arc drawing mode (e.g., pie slice, chord).
- *
- * @param mode The name of the arc mode to set.
- */
-void
-r_arcmode(Name mode)
-{
+  context.fill = fill;
 }
 
 /**
@@ -781,8 +747,11 @@ r_box(int x, int y, int w, int h, int r, Any fill)
     cairo_rectangle(CR, fx, fy, fw, fh);
   if ( notNil(fill) )
   { r_fillpattern(fill, NAME_background);
-    pce_cairo_set_source_color(CR, context.fill_pattern);
-    cairo_fill_preserve(CR);
+    pce_cairo_set_source_color(CR, context.fill);
+    if ( context.pen )
+      cairo_fill_preserve(CR);
+    else
+      cairo_fill(CR);
   }
   if ( context.pen )
   { pce_cairo_set_source_color(CR, context.colour);
@@ -1089,8 +1058,8 @@ r_3d_box(double x, double y, double w, double h,
  * @param up Boolean indicating if the line appears raised.
  */
 void
-r_3d_line(int x1, int y1, int x2, int y2, Elevation e, int up)
-{ int z = valInt(e->height);
+r_3d_line(int x1, int y1, int x2, int y2, Elevation e, bool up)
+{ double z = valNum(e->height);
   Colour up_color, down_color;
 
   Translate(x1, y1);
@@ -1132,65 +1101,110 @@ r_3d_line(int x1, int y1, int x2, int y2, Elevation e, int up)
  * @param up Boolean indicating if the triangle appears raised.
  * @param map Bitmap of up/down edges
  */
+/* Find the intersection point of two lines, each given as point + direction. */
 static inline void
-step_to(int *x1, int *y1, int tx, int ty)
-{ if ( tx > *x1 )
-    (*x1)++;
-  else if ( tx < *x1 )
-    (*x1)--;
+line_intersect(double px, double py, double pdx, double pdy,
+	       double qx, double qy, double qdx, double qdy,
+	       double *rx, double *ry)
+{ double denom = pdx*qdy - pdy*qdx;
 
-  if ( ty > *y1 )
-    (*y1)++;
-  else if ( ty < *y1 )
-    (*y1)--;
+  if ( fabs(denom) > 1e-10 )
+  { double t = ((qx-px)*qdy - (qy-py)*qdx) / denom;
+    *rx = px + t*pdx;
+    *ry = py + t*pdy;
+  } else			/* parallel — fall back to midpoint */
+  { *rx = (px+qx)/2.0;
+    *ry = (py+qy)/2.0;
+  }
 }
 
 void
-r_3d_triangle(int x1, int y1, int x2, int y2, int x3, int y3,
-	      Elevation e, int up, int map)
-{ int shadow = valInt(e->height);
-  Colour up_color, down_color;
+r_3d_triangle(double x1, double y1, double x2, double y2, double x3, double y3,
+	      Elevation e, bool up, unsigned int map)
+{ double shadow = valNum(e->height);
 
   DEBUG(NAME_draw,
-	Cprintf("r_3d_triangle(%d,%d, %d,%d, %d,%d %s, %d)\n",
+	Cprintf("r_3d_triangle(%1f,%1f, %1f,%1f, %1f,%1f %s, %d)\n",
 		x1,y1, x2,y2, x3,y3, pp(e), up));
 
-  if ( !up  )
-    shadow = -shadow;
-  if ( shadow > 0 )
-  { up_color   = r_elevation_relief(e);
-    down_color = r_elevation_shadow(e);
-  } else
-  { down_color = r_elevation_shadow(e);
-    up_color   = r_elevation_relief(e);
+  if ( shadow < 0.0 )
+  { shadow = -shadow;
+    up = !up;
   }
 
-  int cx = (x1 + x2 + x3)/3;
-  int cy = (y1 + y2 + y3)/3;
+  double ix1 = x1, iy1 = y1;
+  double ix2 = x2, iy2 = y2;
+  double ix3 = x3, iy3 = y3;
 
-  cairo_set_line_width(CR, 1);
-  for(int os=0; os<shadow; os++)
-  { if ( map == 0x3 )		/* line 1 and 3 up */
-    { pce_cairo_set_source_color(CR, up_color);
-      cairo_move_to(CR, X(x1), Y(y1));
-      cairo_line_to(CR, X(x2), Y(y2));
-      cairo_line_to(CR, X(x3), Y(y3));
-      cairo_stroke(CR);
-      pce_cairo_set_source_color(CR, down_color);
-      cairo_move_to(CR, X(x3), Y(y3));
-      cairo_line_to(CR, X(x1), Y(y1));
-      cairo_stroke(CR);
+  if ( shadow > 0.1 )
+  { Colour up_color, down_color;
+
+    if ( up )
+    { up_color   = r_elevation_relief(e);
+      down_color = r_elevation_shadow(e);
     } else
-    { Cprintf("stub: r_3d_triangle(): map=0x%x\n", map);
+    { up_color   = r_elevation_shadow(e);
+      down_color = r_elevation_relief(e);
     }
 
-    step_to(&x1, &y1, cx, cy);
-    step_to(&x2, &y2, cx, cy);
-    step_to(&x3, &y3, cx, cy);
+    /* Compute the inner (inset) triangle such that every edge is exactly
+     * shadow pixels wide (perpendicular distance).  For each edge compute
+     * its inward unit normal, offset the edge line by shadow along that
+     * normal, then intersect adjacent offset lines to get inner vertices.
+     */
+    // Edge directions
+    double d1x = x2-x1, d1y = y2-y1, l1 = sqrt(d1x*d1x + d1y*d1y);
+    double d2x = x3-x2, d2y = y3-y2, l2 = sqrt(d2x*d2x + d2y*d2y);
+    double d3x = x1-x3, d3y = y1-y3, l3 = sqrt(d3x*d3x + d3y*d3y);
+    // Inward unit normals (rotate edge 90°, then flip if pointing outward)
+    double cx = (x1+x2+x3)/3.0, cy = (y1+y2+y3)/3.0;
+    double n1x = -d1y/l1, n1y =  d1x/l1;
+    if ( (cx-(x1+x2)/2)*n1x + (cy-(y1+y2)/2)*n1y < 0 ) { n1x=-n1x; n1y=-n1y; }
+    double n2x = -d2y/l2, n2y =  d2x/l2;
+    if ( (cx-(x2+x3)/2)*n2x + (cy-(y2+y3)/2)*n2y < 0 ) { n2x=-n2x; n2y=-n2y; }
+    double n3x = -d3y/l3, n3y =  d3x/l3;
+    if ( (cx-(x3+x1)/2)*n3x + (cy-(y3+y1)/2)*n3y < 0 ) { n3x=-n3x; n3y=-n3y; }
+    // Inner vertices: intersect pairs of adjacent offset edge lines
+    line_intersect(x3+shadow*n3x, y3+shadow*n3y, d3x, d3y,
+		   x1+shadow*n1x, y1+shadow*n1y, d1x, d1y, &ix1, &iy1);
+    line_intersect(x1+shadow*n1x, y1+shadow*n1y, d1x, d1y,
+		   x2+shadow*n2x, y2+shadow*n2y, d2x, d2y, &ix2, &iy2);
+    line_intersect(x2+shadow*n2x, y2+shadow*n2y, d2x, d2y,
+		   x3+shadow*n3x, y3+shadow*n3y, d3x, d3y, &ix3, &iy3);
+
+    /* Draw each edge as a filled quadrilateral with the correct colour.
+     * Adjacent quads share the edge outer_Vn → inner_Vn so they connect
+     * without gaps regardless of which colour each edge has.
+     * map bit 0: edge (x1,y1)→(x2,y2); bit 1: (x2,y2)→(x3,y3);
+     * bit 2: (x3,y3)→(x1,y1).  Set bit = up_color, clear bit = down_color.
+     */
+    pce_cairo_set_source_color(CR, (map & 0x1) ? up_color : down_color);
+    cairo_move_to(CR, X(x1), Y(y1));
+    cairo_line_to(CR, X(x2), Y(y2));
+    cairo_line_to(CR, X(ix2), Y(iy2));
+    cairo_line_to(CR, X(ix1), Y(iy1));
+    cairo_close_path(CR);
+    cairo_fill(CR);
+
+    pce_cairo_set_source_color(CR, (map & 0x2) ? up_color : down_color);
+    cairo_move_to(CR, X(x2), Y(y2));
+    cairo_line_to(CR, X(x3), Y(y3));
+    cairo_line_to(CR, X(ix3), Y(iy3));
+    cairo_line_to(CR, X(ix2), Y(iy2));
+    cairo_close_path(CR);
+    cairo_fill(CR);
+
+    pce_cairo_set_source_color(CR, (map & 0x4) ? up_color : down_color);
+    cairo_move_to(CR, X(x3), Y(y3));
+    cairo_line_to(CR, X(x1), Y(y1));
+    cairo_line_to(CR, X(ix1), Y(iy1));
+    cairo_line_to(CR, X(ix3), Y(iy3));
+    cairo_close_path(CR);
+    cairo_fill(CR);
   }
 
   if ( r_elevation_fillpattern(e, up) )
-    r_fill_triangle(x1, y1, x2, y2, x3, y3);
+    r_fill_triangle(ix1, iy1, ix2, iy2, ix3, iy3);
 }
 
 /**
@@ -1228,24 +1242,28 @@ r_arc(int x, int y, int w, int h, int s, int e, Name close, Any fill)
   double fs = s * M_PI / 180.0;
   double fe = e * M_PI / 180.0;
 
+  cairo_new_path(CR);
   cairo_save(CR);
   cairo_translate(CR, fx + fw / 2.0, fy + fh / 2.0);  // Move to center
   cairo_scale(CR, fw / 2.0, fh / 2.0);              // Scale unit circle
-  if (close == NAME_pieSlice)
-  { cairo_move_to(CR, 0, 0);
-  }
+  if ( close == NAME_pieSlice )
+    cairo_move_to(CR, 0, 0);
   cairo_arc(CR, 0, 0, 1.0, fs, fe);
   cairo_restore(CR);
-  if (close == NAME_pieSlice || close == NAME_chord)
+  if ( close == NAME_pieSlice || close == NAME_chord )
   { cairo_close_path(CR);
   }
   if ( notNil(fill) )
   { r_fillpattern(fill, NAME_foreground);
-    pce_cairo_set_source_color(CR, context.fill_pattern);
-    cairo_fill_preserve(CR);
+    pce_cairo_set_source_color(CR, context.fill);
+    if ( context.pen )
+      cairo_fill_preserve(CR);
+    else
+      cairo_fill(CR);
   }
   if ( context.pen )
-  { pce_cairo_set_source_color(CR, context.colour);
+  { cairo_set_line_width(CR, context.pen);
+    pce_cairo_set_source_color(CR, context.colour);
     cairo_stroke(CR);
   }
 }
@@ -1423,7 +1441,7 @@ r_path(Chain points, int ox, int oy, int radius, int closed, Image fill)
 
   if ( notNil(fill) )
   { r_fillpattern(fill, NAME_foreground);
-    pce_cairo_set_source_color(CR, context.fill_pattern);
+    pce_cairo_set_source_color(CR, context.fill);
     cairo_fill_preserve(CR);
   }
 
@@ -1581,11 +1599,11 @@ static bool
 r_set_fill_fgbg(Any fill, Name which)
 { r_fillpattern(fill, which);
   DEBUG(NAME_draw,
-	Cprintf("fill with %s->%s\n", pp(fill), pp(context.fill_pattern)));
-  if ( instanceOfObject(context.fill_pattern, ClassColour) )
-  { pce_cairo_set_source_color(CR, context.fill_pattern);
+	Cprintf("fill with %s->%s\n", pp(fill), pp(context.fill)));
+  if ( instanceOfObject(context.fill, ClassColour) )
+  { pce_cairo_set_source_color(CR, context.fill);
     return true;
-  } else if ( isNil(context.fill_pattern) )
+  } else if ( isNil(context.fill) )
   { cairo_set_source_rgba(CR, 0, 0, 0, 0);
     return true;
   }
@@ -1599,11 +1617,19 @@ r_fill_fgbg(double x, double y, double w, double h, Any fill, Name which)
   if ( w > 0 && h > 0 )
   { if ( r_set_fill_fgbg(fill, which) )
     { Translate(x, y);
+      bool transparent = isNil(context.fill);
+      cairo_operator_t saved_op;
 
+      if ( transparent )
+      { saved_op = cairo_get_operator(CR);
+	cairo_set_operator(CR, CAIRO_OPERATOR_SOURCE);
+      }
       cairo_rectangle(CR, x, y, w, h);
       cairo_fill(CR);
+      if ( transparent )
+	cairo_set_operator(CR, saved_op);
     } else
-    { Cprintf("stub: r_fill(%s)\n", pp(context.fill_pattern));
+    { Cprintf("stub: r_fill(%s)\n", pp(context.fill));
     }
   }
 }
@@ -1654,7 +1680,7 @@ r_fill_polygon(FPoint pts, int n)
   cairo_set_source_rgba(CR, 0, 0, 0, 0);
   cairo_paint(CR);
 
-  pce_cairo_set_source_color(CR, context.fill_pattern);
+  pce_cairo_set_source_color(CR, context.fill);
   double x = pts[0].x;
   double y = pts[0].y;
   Translate(x, y);
@@ -1779,26 +1805,13 @@ d_modify(void)
 }
 
 /**
- * Retrieve the monochrome value of a specific pixel.
- *
- * @param x The x-coordinate of the pixel.
- * @param y The y-coordinate of the pixel.
- * @return The monochrome value of the pixel.
- */
-int
-r_get_mono_pixel(int x, int y)
-{
-    return 0;
-}
-
-/**
  * Retrieve the color value of a specific pixel.
  *
  * @param x The x-coordinate of the pixel.
  * @param y The y-coordinate of the pixel.
  * @return The color value of the pixel.
  */
-unsigned long
+COLORRGBA
 r_get_pixel(int x, int y)
 { int width  = cairo_image_surface_get_width(context.target);
   int height = cairo_image_surface_get_height(context.target);
@@ -2068,9 +2081,15 @@ s_print_utf8(const char *u, size_t len, int x, int y, FontObj font)
   Translate(x, y);
   cairo_new_path(CR);
   PangoLayout *layout = pce_cairo_set_font(CR, font);
-  int baseline = pango_layout_get_baseline(layout);
   pce_cairo_set_source_color(CR, context.colour);
+  /* pango_layout_get_baseline reports the baseline of whatever text
+   * is currently in the layout, so set the text first — otherwise a
+   * previous call that rendered an emoji (whose glyph font has a
+   * different baseline than the roman font) makes the next plain-text
+   * call draw a few pixels off.  Visible as the "see😀aap" selection
+   * shifting the unselected tail. */
   pango_layout_set_text(layout, u, len);
+  int baseline = pango_layout_get_baseline(layout);
   cairo_move_to(CR, x, y-P2D(baseline));
   pango_cairo_show_layout(CR, layout);
 }

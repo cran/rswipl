@@ -32,7 +32,6 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-#define SDL_GRAPHICS 1		/* Use SDL graphics API */
 #define _REENTRANT 1			/* Only multi-threading support */
 #define UXWIN(unx, win) win
 
@@ -97,17 +96,11 @@
 /* Define if you can safely include both <sys/time.h> and <time.h>.  */
 #undef TIME_WITH_SYS_TIME
 
-/* Define if you have BSD signals (i.e. signal handler does *not* reset */
-#undef BSD_SIGNALS
-
 /* Define if you have the nsl library (-lnsl).  */
 #undef HAVE_LIBNSL
 
 /* Define if you have the socket library (-lsocket).  */
 #undef HAVE_LIBSOCKET
-
-/* Define if wait() uses union wait* for the 2nd argument. */
-#undef UNION_WAIT
 
 /* Define if (type)pointer = value is allowed */
 #undef TAGGED_LVALUE

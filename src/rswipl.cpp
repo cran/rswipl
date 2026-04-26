@@ -743,7 +743,7 @@ PlTerm r2pl_var(ExpressionVector r, CharacterVector& names, PlTerm& vars)
   for(R_xlen_t i=0 ; i<names.length() ; i++)
   {
     PlCheckFail(tail.next(v)) ;
-    if(n == names(i))
+    if(names(i) == n.c_str())
       return v ;
   }
 

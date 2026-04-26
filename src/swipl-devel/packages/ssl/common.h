@@ -42,11 +42,6 @@ understandable  name.   Ideally, all  these  should  be CMake  feature
 tests.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-/* TBD: Should be checked by Cmake */
-#if defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x3080000fL
-#undef HAVE_X509_CHECK_HOST		/* seems broken. must investigate */
-#endif
-
 #if defined HAVE_EVP_PKEY_NEW && \
     defined HAVE_EVP_PKEY_FREE && \
     defined HAVE_EVP_PKEY_GET_BN_PARAM && \
@@ -62,12 +57,7 @@ tests.
 #define USE_EVP_API 1
 #endif
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || \
-    (defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x3050000fL)
-#define SSL_API_0 1
-#endif
-
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
+#if defined(LIBRESSL_VERSION_NUMBER)
 #define SSL_API_0_OR_LIBRESSL 1
 #endif
 

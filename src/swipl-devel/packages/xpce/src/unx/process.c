@@ -204,95 +204,14 @@ static Name signames[] =
 #define SA_SIGINFO 0
 #endif
 
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-Catching childs that have changed status. There   appear to be many ways
-for doing this. Posix doesn't  provide   signal  context, so by default,
-waitpid() is used to find out  what   child  changed status. On Solaris,
-this appears to lead to a loop. Therefore we use the context information
-passed to the handler. I've tried to  configure all this without testing
-for Solaris itself to exploit these features automatically in compatible
-operating system. Be careful.
-
-Note this function is called asynchronously, and is therefore dangerous.
-It would be better to merge  it   into  the event-queue, but X11 doesn't
-provide an interface for this, as far as  I know. Maybe posting an event
-to myself?
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-
 static void
-syncSend(Any rec, Name sel, int argc, const Any *argv)
-{ ArgVector(av, argc+2);
-  int i, ac = 0;
-  Timer t;
-
-  av[ac++] = rec;
-  av[ac++] = sel;
-  for(i=0; i<argc; i++)
-    av[ac++] = argv[i];
-
-  t = newObject(ClassTimer, ZERO,
-		newObject(ClassAnd,
-			  newObjectv(ClassMessage, ac, av),
-			  newObject(ClassMessage, RECEIVER, NAME_free, EAV),
-			  EAV), EAV);
-
-  statusTimer(t, NAME_once);
-}
-
-
-
-static void
-#if USE_SIGINFO
-child_changed(int sig, siginfo_t *info, void *uctx)
-#else
 child_changed(int sig)
-#endif
 { Any rstat = NIL;
   Any sel   = NIL;
   Process p = NIL;
 
-#ifdef UNION_WAIT
-#define wait_t union wait
-#else
 #define wait_t int
-#endif
 
-#if USE_SIGINFO
-  DEBUG(NAME_process, Cprintf("child %d changed called\n", info->si_pid));
-
-  for_chain(ProcessChain, p,
-	    { int pid = valInt(p->pid);
-
-	      if ( pid == info->si_pid )
-	      { switch( info->si_code )
-		{ case CLD_EXITED:
-		    sel   = NAME_exited;
-		    rstat = toInt(info->si_status);
-		    break;
-		  case CLD_KILLED:
-		  case CLD_STOPPED:
-		    sel   = NAME_killed;
-		    rstat = signames[info->si_status];
-		    break;
-		  case CLD_DUMPED:
-		    sel   = NAME_exited;
-		    rstat = toInt(-1);
-		    break;
-		  case CLD_CONTINUED:
-		    break;
-		}
-
-		break;
-	      }
-	    });
-
-  if ( notNil(rstat) )
-  { DEBUG(NAME_process, Cprintf("Posting %s->%s: %s\n",
-				pp(p), pp(sel), pp(rstat)));
-    syncSend(p, sel, 1, &rstat);
-  }
-
-#else /*USE_SIGINFO*/
 
   DEBUG(NAME_process, Cprintf("child_changed() called\n"));
 
@@ -315,16 +234,12 @@ child_changed(int sig)
 		if ( notNil(rstat) )
 		{ DEBUG(NAME_process, Cprintf("Posting %s->%s: %s\n",
 				pp(p), pp(sel), pp(rstat)));
-		  syncSend(p, sel, 1, &rstat);
+		  sdl_send(p, sel, false, rstat, EAV);
 		}
 	      }
 	    });
 
-#endif /*USE_SIGINFO*/
 
-#if !defined(BSD_SIGNALS) && !defined(HAVE_SIGACTION)
-  signal(sig, child_changed);
-#endif
 }
 
 #endif /*USE_SIGCHLD*/
@@ -344,25 +259,17 @@ killAllProcesses(int status)
 
 
 static void
-setupProcesses()
+setupProcesses(void)
 { if ( !initialised )
   {
 #if defined(SIGCHLD) && defined(HAVE_WAIT)
-#ifdef HAVE_SIGACTION
     struct sigaction action, oaction;
 
     memset((char *) &action, 0, sizeof(action));
-#if USE_SIGINFO
-    action.sa_sigaction = child_changed;
-#else
     action.sa_handler   = child_changed;
-#endif
     action.sa_flags     = SA_SIGINFO|SA_NOMASK|SA_RESTART;
 
     sigaction(SIGCHLD, &action, &oaction);
-#else
-    hostAction(HOST_SIGNAL, SIGCHLD, child_changed);
-#endif
 #endif
     at_pce_exit(killAllProcesses, ATEXIT_FIFO);
     initialised++;
@@ -935,8 +842,7 @@ static Name process_termnames[] = { NAME_name };
 
 ClassDecl(process_decls,
           var_process, send_process, get_process, rc_process,
-          1, process_termnames,
-          "$Rev$");
+          1, process_termnames);
 
 status
 makeClassProcess(Class class)

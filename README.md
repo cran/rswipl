@@ -4,12 +4,12 @@ _Matthias Gondan, Department of Psychology, Universität Innsbruck, Austria_
 
 Supported by the Erasmus+ programme of the European Commission, 2019-1-EE01-KA203-051708
 
-The purpose of this package is to embed SWI-Prolog into an R library,
-such that other packages can link to the SWI-Prolog runtime without the need
-to install the program on their computer. This R package is *not* meant to
-be used directly. Please use the R package `rolog` instead. Install this
-package if you do not have the administrative privilege to install SWI-Prolog
-on your computer.
+The purpose of this package is to embed SWI-Prolog (https://www.swi-prolog.org,
+https://github.com/SWI-Prolog/swipl-devel/) into an R library, such that other packages
+can link to the SWI-Prolog runtime without the need to install the program on their
+computer. This R package is *not* meant to be used directly. Please use the
+R\ package `rolog` instead. Install this package if you do not have the administrative
+privilege to install SWI-Prolog on your computer.
 
 ## License
 

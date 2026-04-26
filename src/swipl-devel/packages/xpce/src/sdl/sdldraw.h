@@ -46,7 +46,6 @@ void r_filloffset(Point offset, int x0, int y0, fill_state *state);
 void r_fillrestore(fill_state *state);
 DisplayObj d_display(DisplayObj d);
 void d_ensure_display(void);
-void d_flush(void);
 status d_window(PceWindow sw, int x, int y, int w, int h, int clear, int limit);
 status d_image(Image i, int x, int y, int w, int h);
 status d_pdf(const char *file, int w, int h, double scale);
@@ -56,13 +55,10 @@ void d_clip_done(void);
 void intersection_iarea(IArea a, IArea b);
 void r_clear(int x, int y, int w, int h);
 void r_complement(int x, int y, int w, int h);
-void r_and(int x, int y, int w, int h, Image pattern);
 double r_thickness(double pen);
 int r_transformed(int val);
 void r_dash(Name name);
-void d_pen(Pen pen);
 void r_fillpattern(Any fill, Name which);
-void r_arcmode(Name mode);
 void r_fix_colours(Any fg, Any bg, ColourContext ctx);
 void r_unfix_colours(ColourContext ctx);
 Any r_default_colour(Any c);
@@ -79,8 +75,11 @@ Any r_elevation_shadow(Elevation e);
 void r_3d_segments(int n, ISegment s, Elevation e, int light);
 void r_3d_box(double x, double y, double w, double h,
 	      double radius, Elevation e, bool up);
-void r_3d_line(int x1, int y1, int x2, int y2, Elevation e, int up);
-void r_3d_triangle(int x1, int y1, int x2, int y2, int x3, int y3, Elevation e, int up, int map);
+void r_3d_line(int x1, int y1, int x2, int y2, Elevation e, bool up);
+void r_3d_triangle(double x1, double y1,
+		   double x2, double y2,
+		   double x3, double y3,
+		   Elevation e, bool up, unsigned int map);
 void r_3d_diamond(int x, int y, int w, int h, Elevation e, int up);
 void r_arc(int x, int y, int w, int h, int s, int e, Name close, Any fill);
 void r_ellipse(int x, int y, int w, int h, Any fill);
@@ -100,8 +99,7 @@ void r_triangle(int x1, int y1, int x2, int y2, int x3, int y3, Any fill);
 bool r_pixel(int x, int y, Any val);
 void r_complement_pixel(int x, int y);
 void d_modify(void);
-int r_get_mono_pixel(int x, int y);
-unsigned long r_get_pixel(int x, int y);
+COLORRGBA r_get_pixel(int x, int y);
 bool s_has_char(FontObj f, unsigned int c);
 void f_domain(FontObj f, Name which, int *x, int *y);
 int s_default_char(FontObj font);

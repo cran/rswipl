@@ -36,9 +36,6 @@
 #include <h/graphics.h>
 					/* generated from Makefile */
 
-static status	backgroundDisplay(DisplayObj, Colour);
-static status	foregroundDisplay(DisplayObj d, Colour c);
-
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Create a display.  The display is not yet opened.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
@@ -101,39 +98,6 @@ pollDimensionsDisplay(DisplayObj d)
 { return ws_poll_dimensions_display(d);
 }
 
-/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-Open a display.  If necessary, the X toolkit is initialised first and
-a context for the application is created.
-
-As PCE  normally manages a  collection of main  windows an application
-shell  widget is created to  serve as root for  all  the other (popup)
-shells.  This widget is never realised (page 35 of Xt manual).
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
-
-status
-openDisplay(DisplayObj d)
-{ succeed;
-}
-
-
-static status
-foregroundDisplay(DisplayObj d, Colour c)
-{ assign(d, foreground, c);
-  ws_foreground_display(d, c);
-
-  succeed;
-}
-
-
-static status
-backgroundDisplay(DisplayObj d, Colour c)
-{ assign(d, background, c);
-  ws_background_display(d, c);
-
-  succeed;
-}
-
-
 static status
 eventQueuedDisplay(DisplayObj d)
 { RedrawDisplayManager(d->display_manager);
@@ -150,9 +114,7 @@ dispatchDisplay(DisplayObj d)
 
 static status
 screenSaverDisplay(DisplayObj d, BoolObj val)
-{ openDisplay(d);
-
-  if ( val == ON )
+{ if ( val == ON )
     ws_activate_screen_saver(d);
   else
     ws_deactivate_screen_saver(d);
@@ -163,35 +125,14 @@ screenSaverDisplay(DisplayObj d, BoolObj val)
 
 status
 bellDisplay(DisplayObj d, Int vol)
-{ openDisplay(d);
-
-  if ( isDefault(vol) )
-    vol = (Int) getClassVariableValueObject(d, NAME_volume);
+{ if ( isDefault(vol) )
+    vol = getClassVariableValueObject(d, NAME_volume);
 
   ws_bell_display(d, valInt(vol));
 
   succeed;
 }
 
-
-/* See whether we can open graphics.  We try to avoid this if not
- * really necessary for compiling xpce sources to .qlf
- */
-static int
-hasDisplay(void)
-{
-#if defined(__WINDOWS__) || defined(__APPLE__)
-  return TRUE;
-#else
-  char *dsp = getenv("DISPLAY");
-  if ( dsp && dsp[0] )
-    return TRUE;
-  dsp = getenv("WAYLAND_DISPLAY");
-  if ( dsp && dsp[0] )
-    return TRUE;
-#endif
-  return FALSE;
-}
 
 Size
 getSizeDisplay(DisplayObj d)
@@ -218,9 +159,7 @@ getDepthDisplay(DisplayObj d)
 
 static Name
 getSystemThemeDisplay(DisplayObj d)
-{ TRY(openDisplay(d));
-
-  answer(ws_get_system_theme_display(d));
+{ answer(ws_get_system_theme_display(d));
 }
 
 static Name
@@ -254,8 +193,6 @@ getDPIDisplay(DisplayObj d)
     answer(d->dpi);
   }
 
-  if ( hasDisplay() )
-    TRY(openDisplay(d));
   if ( instanceOfObject(d->dpi, ClassSize) )
     answer(d->dpi);
   if ( ws_resolution_display(d, &rx, &ry) )
@@ -322,8 +259,6 @@ static Any
 getSelectionDisplay(DisplayObj d, Name which, Name target, Type type)
 { Any sel;
 
-  TRY(openDisplay(d));
-
   if ( isDefault(which) )  which  = NAME_primary;
   if ( isDefault(target) ) target = NAME_text;
   if ( isDefault(type) )   type   = nameToType(NAME_string);
@@ -346,11 +281,9 @@ selectionDisplay(DisplayObj d, Name which, StringObj data)
 
 static status
 copyDisplay(DisplayObj d, StringObj data)
-{ int rval = (send(d, NAME_selection, NAME_primary, data, EAV) |
-	      send(d, NAME_selection, NAME_clipboard, data, EAV));
-
-
-  return rval ? SUCCEED : FAIL;
+{ return ( send(d, NAME_selection, NAME_primary, data, EAV) ||
+	   send(d, NAME_selection, NAME_clipboard, data, EAV)
+	 );
 }
 
 
@@ -656,34 +589,6 @@ static char *T_getSelection[] =
         { "which=[name]", "target=[name]", "type=[type]" };
 static char *T_selection[] =
         { "which=[name]", "value=char_array" };
-#ifdef WIN32_GRAPHICS
-extern Name getWinFileNameDisplay(DisplayObj obj,
-				  Name mode,
-				  Chain filters,
-				  CharArray title,
-				  CharArray file,
-				  Directory dir,
-				  Any owner,
-				  Chain flags);
-static char *T_win_file_name[] =
-	{ "mode={open,save}",
-	  "filters=[chain]",
-	  "title=[char_array]",
-	  "default=[char_array]",
-	  "directory=[directory]",
-	  "owner=[frame|int]",
-	  "options=[chain]"
-	};
-extern Name getWinDirectoryDisplay(DisplayObj d,
-				   CharArray title,
-				   Directory dir,
-				   Any owner);
-static char *T_win_directory[] =
-	{ "title=[char_array]",
-	  "directory=[directory]",
-	  "owner=[frame|int]"
-	};
-#endif
 
 /* Instance Variables */
 
@@ -706,9 +611,9 @@ static vardecl var_display[] =
      NAME_organisation, "Frames displayed on this display"),
   IV(NAME_inspectHandlers, "chain", IV_GET,
      NAME_event, "Chain of handlers to support inspector tools"),
-  SV(NAME_foreground, "colour", IV_GET|IV_STORE, foregroundDisplay,
+  IV(NAME_foreground, "colour", IV_BOTH,
      NAME_appearance, "Windows default foreground colour"),
-  SV(NAME_background, "colour", IV_GET|IV_STORE, backgroundDisplay,
+  IV(NAME_background, "colour", IV_BOTH,
      NAME_appearance, "Windows default background colour"),
   IV(NAME_displayManager, "display_manager", IV_GET,
      NAME_organisation, "The global display manager (@display_manager)"),
@@ -739,9 +644,7 @@ static senddecl send_display[] =
      NAME_event, "Register handler for inspect tool"),
   SM(NAME_ConfirmPressed, 1, "event", ConfirmPressedDisplay,
      NAME_internal, "Handle confirmer events"),
-  SM(NAME_open, 0, NULL, openDisplay,
-     NAME_open, "Prepare display for graphics operations"),
-  SM(NAME_bell, 1, "volume=[int]", bellDisplay,
+  SM(NAME_bell, 1, "volume=[0..100]", bellDisplay,
      NAME_report, "Ring the bell at volume"),
   SM(NAME_confirm, 4, T_inform, confirmDisplay,
      NAME_report, "Test if the user confirms string"),
@@ -754,7 +657,7 @@ static senddecl send_display[] =
   SM(NAME_copy, 1, "char_array", copyDisplay,
      NAME_selection, "Copy to selection and cut_buffer"),
   SM(NAME_screenSaver, 1, "bool", screenSaverDisplay,
-     NAME_x, "Activate (@on) or deactivate (@off) screensaver"),
+     NAME_power, "Activate (@on) or deactivate (@off) screensaver"),
   SM(NAME_dpi, 1, "size|int", DPIDisplay,
      NAME_dimension, "Resolution in dots per inch"),
   SM(NAME_hasVisibleFrames, 0, NULL, hasVisibleFramesDisplay,
@@ -789,12 +692,6 @@ static getdecl get_display[] =
      NAME_selection, "Query value of the X-window selection"),
   GM(NAME_paste, 1, "string", "which=[{primary,clipboard}]", getPasteDisplay,
      NAME_selection, "Simple interface to get clipboard value"),
-#ifdef WIN32_GRAPHICS
-  GM(NAME_winFileName, 7, "name", T_win_file_name, getWinFileNameDisplay,
-     NAME_prompt, "Ask for a filename using Windows standard dialog"),
-  GM(NAME_winDirectory, 3, "name", T_win_directory, getWinDirectoryDisplay,
-     NAME_prompt, "Ask for a directory (folder) using Windows standard dialog"),
-#endif
 };
 
 /* Resources */
@@ -812,7 +709,7 @@ static classvardecl rc_display[] =
      "Label font for confirm/inform"),
   RC(NAME_valueFont, "font", "normal",
      "Text font for confirm/inform"),
-  RC(NAME_volume, "int", "0",
+  RC(NAME_volume, "0..100", "0",
      "Default volume of ->bell"),
   RC(NAME_windowManager, "[name]", "@default",
      "Window manager running on this display")
@@ -824,8 +721,7 @@ static Name display_termnames[] = { NAME_name };
 
 ClassDecl(display_decls,
           var_display, send_display, get_display, rc_display,
-          1, display_termnames,
-          "$Rev$");
+          1, display_termnames);
 
 status
 makeClassDisplay(Class class)

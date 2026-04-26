@@ -40,7 +40,7 @@ initialiseBox(Box b, Int w, Int h)
 { initialiseGraphical(b, ZERO, ZERO, w, h);
   assign(b, radius,	  ZERO);
   assign(b, shadow,	  ZERO);
-/*assign(b, fill_pattern, NIL);
+/*assign(b, fill, NIL);
   assign(b, fill_offset,  NIL);
 */
 
@@ -59,7 +59,7 @@ RedrawAreaBox(Box b, Area a)
   r_thickness(valInt(b->pen));
   r_dash(b->texture);
   r_shadow_box(x, y, w, h,
-	       valInt(b->radius), valInt(b->shadow), b->fill_pattern);
+	       valInt(b->radius), valInt(b->shadow), b->fill);
   r_fillrestore(&state);
 
   return RedrawAreaGraphical(b, a);
@@ -93,10 +93,10 @@ static vardecl var_box[] =
      NAME_appearance, "Rounding radius for corners"),
   SV(NAME_shadow, "int", IV_GET|IV_STORE, shadowGraphical,
      NAME_appearance, "Shadow at bottom-right of box"),
-  SV(NAME_fillPattern, TYPE_FILL, IV_GET|IV_STORE, fillPatternGraphical,
+  SV(NAME_fill, TYPE_FILL, IV_GET|IV_STORE, fillGraphical,
      NAME_appearance, "Fill pattern for internals"),
   SV(NAME_fillOffset, "point*", IV_GET|IV_STORE, fillOffsetGraphical,
-     NAME_appearance, "Offset for using <-fill_pattern")
+     NAME_appearance, "Offset for using <-fill")
 };
 
 /* Send Methods */
@@ -130,15 +130,14 @@ static Name box_termnames[] = { NAME_width, NAME_height };
 
 ClassDecl(box_decls,
           var_box, send_box, get_box, rc_box,
-          2, box_termnames,
-          "$Rev$");
+          2, box_termnames);
 
 
 status
 makeClassBox(Class class)
 { declareClass(class, &box_decls);
 
-  cloneStyleVariableClass(class, NAME_fillPattern, NAME_reference);
+  cloneStyleVariableClass(class, NAME_fill, NAME_reference);
   setRedrawFunctionClass(class, RedrawAreaBox);
 
   succeed;

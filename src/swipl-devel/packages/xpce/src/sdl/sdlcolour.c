@@ -44,7 +44,7 @@
 static HashTable ColourNames;		/* name --> rgb (packed in Int) */
 static Chain	 CSSColourList;		/* name (for preserved ordering) */
 
-#include "csscolours.c"			/* get X11/CSS colour names */
+#include "csscolours.c"			/* get CSS colour names */
 
 static Name	canonical_colour_name(Name in);
 
@@ -119,9 +119,17 @@ canonical_colour_name(Name in)
  * Convert a pixel value to its corresponding Colour object
  *
  * @param pixel The pixel value to be converted.
- * @return Pointer to the corresponding Colour object; NULL if conversion fails.
+ * @return Pointer to the corresponding Colour object;
  */
 Colour
-ws_pixel_to_colour(unsigned long pixel)
-{ return NULL;
+ws_pixel_to_colour(COLORRGBA pixel)
+{ Colour c;
+
+  if ( RevColourTable && (c=getMemberHashTable(RevColourTable, toInt(pixel))) )
+    return c;
+
+  SDL_Color sdlc = rgba2SDL_Color(pixel);
+  return answerObject(ClassColour, DEFAULT,
+		      toInt(sdlc.r), toInt(sdlc.g), toInt(sdlc.b),
+		      toInt(sdlc.a), EAV);
 }

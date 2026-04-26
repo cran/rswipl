@@ -1,9 +1,10 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        jan@swi.psy.uva.nl
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  1985-2002, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org/projects/xpce/
+    Copyright (c)  1985-2026, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -43,7 +44,8 @@ static status	kindMenu(Menu m, Name kind);
 static status	ensureSingleSelectionMenu(Menu m);
 static status	multipleSelectionMenu(Menu m, BoolObj val);
 static status	restoreMenu(Menu m);
-static status	compute_popup_indicator(Menu m, MenuItem mi, int *w, int *h);
+static status	compute_popup_indicator(Menu m, MenuItem mi,
+					double *w, double *h);
 static status	modifiedMenu(Menu m, BoolObj val);
 static MenuItem getMemberMenu(Menu m, Any obj);
 
@@ -253,7 +255,7 @@ computeItemsMenu(Menu m)
     h = max(h, ih);
 
     if ( notNil(mi->popup) && !popup++ )
-    { int iw, ih;
+    { double iw, ih;
 
       compute_popup_indicator(m, mi, &iw, &ih);
       rm = max(rm, iw+border);
@@ -469,15 +471,16 @@ item_mark_y(Menu m, int y, int h, int mh)
 
 
 static status
-compute_popup_indicator(Menu m, MenuItem mi, int *w, int *h)
+compute_popup_indicator(Menu m, MenuItem mi, double *w, double *h)
 { if ( notNil(mi->popup) )
   { if ( notNil(m->popup_image) )
     { Image pi = m->popup_image;
       *w = valInt(pi->size->w);
       *h = valInt(pi->size->h);
     } else
-    { *w = 8;
-      *h = 7;
+    { double ex = valNum(getExFont(m->label_font));
+      *w = ex+4;
+      *h = *w;
     }
 
     succeed;
@@ -490,9 +493,11 @@ compute_popup_indicator(Menu m, MenuItem mi, int *w, int *h)
 
 
 static void
-draw_popup_indicator(Menu m, MenuItem mi, int x, int y, int w, int h, int b)
+draw_popup_indicator(Menu m, MenuItem mi,
+		     int x, int y, int w, int h, /* Menu item area */
+		     int b)			 /* Border */
 { Elevation z;
-  int iw, ih, ix, iy;
+  double iw, ih, ix, iy;
 
   if ( !instanceOfObject(m, ClassPopup) )
     return;
@@ -593,23 +598,22 @@ RedrawMenuItem(Menu m, MenuItem mi, int x, int y, int w, int h, Elevation iz)
     leftmark = m->off_image;
 
   if ( elevated_items(m, z) )
-  { int up = TRUE;
+  { bool up = true;
 
     if ( m->preview == mi )
     { z = getClassVariableValueObject(m, NAME_previewElevation);
     } else if ( mi->selected == ON )
-      up = FALSE;
+      up = false;
 
-    if ( !ws_draw_button_face((DialogItem)m, x, y, w, h, up, FALSE, FALSE) )
-      r_3d_box(x, y, w, h, 0, z, up);
+    r_3d_box(x, y, w, h, 0, z, up);
 
     if ( mi->end_group == ON )
     { Elevation mz = getClassVariableValueObject(m, NAME_elevation);
 
       if ( m->layout == NAME_vertical )
-	r_3d_line(x, y+h, x+w, y+h, mz, FALSE);
+	r_3d_line(x, y+h, x+w, y+h, mz, false);
       else
-	r_3d_line(x+w, y, x+w, y+h, mz, FALSE);
+	r_3d_line(x+w, y, x+w, y+h, mz, false);
     }
 
     if ( notNil(mi->popup) )
@@ -786,11 +790,6 @@ RedrawMenuItem(Menu m, MenuItem mi, int x, int y, int w, int h, Elevation iz)
 
   if ( notNil(fill) )
     r_swap_background_and_foreground();
-
-  if ( (mi->selected == ON && m->feedback == NAME_invert) )
-    r_complement(ix, iy, iw, ih);
-  if ( (m->preview == mi && m->preview_feedback == NAME_invert) )
-    r_complement(x, y, w, h);
 
   if ( notDefault(colour) )
     r_colour(DEFAULT);
@@ -1793,7 +1792,7 @@ kindMenu(Menu m, Name kind)
     } else if ( kind == NAME_choice )
     { assign(m, on_image, NIL);
       assign(m, off_image, NIL);
-      assign(m, feedback, NAME_invert);
+      assign(m, feedback, NAME_box);
       multipleSelectionMenu(m, OFF);
     } else if ( kind == NAME_toggle )
     { assign(m, on_image, MARK_IMAGE);
@@ -2156,7 +2155,7 @@ static vardecl var_menu[] =
      NAME_event, "Item in `preview' state"),
   IV(NAME_previewFeedback, "feedback={box,rounded_box,inverted_rounded_box,invert,colour}", IV_BOTH,
      NAME_appearance, "Feedback given to item in preview state"),
-  SV(NAME_feedback, "feedback={box,invert,image,show_selection_only}", IV_GET|IV_STORE, feedbackMenu,
+  SV(NAME_feedback, "feedback={box,image,show_selection_only}", IV_GET|IV_STORE, feedbackMenu,
      NAME_appearance, "Type of feedback for selection"),
   SV(NAME_multipleSelection, "multiple=bool", IV_GET|IV_STORE, multipleSelectionMenu,
      NAME_selection, "If @on, more than one item may be selected"),
@@ -2376,8 +2375,7 @@ static Name menu_termnames[] = { NAME_label, NAME_kind, NAME_message };
 
 ClassDecl(menu_decls,
           var_menu, send_menu, get_menu, rc_menu,
-          3, menu_termnames,
-          "$Rev$");
+          3, menu_termnames);
 
 status
 makeClassMenu(Class class)

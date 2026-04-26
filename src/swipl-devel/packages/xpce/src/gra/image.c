@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker and Anjo Anjewierden
     E-mail:        jan@swi-prolog.org
     WWW:           https://www.swi-prolog.org/projects/xpce/
-    Copyright (c)  1985-2025, University of Amsterdam
+    Copyright (c)  1985-2026, University of Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
@@ -51,6 +51,7 @@ static status drawInImage(Image image, Graphical gr, Point pos);
 status
 initialiseImage(Image image, SourceSink data, Int w, Int h, Name kind)
 { Name name = FAIL;
+  Name access;
 
   if ( isDefault(data) )
     data = (SourceSink) NIL;
@@ -60,26 +61,28 @@ initialiseImage(Image image, SourceSink data, Int w, Int h, Name kind)
     name = get(data, NAME_name, EAV);
   if ( !name )
     name = NIL;
+  assign(image, name, name);
 
-  assign(image, name,       name);
-  ws_init_image(image);
+  if ( isDefault(kind) )
+    kind = NAME_pixmap;
 
-  if ( isNil(data) || notDefault(w) || notDefault(h) || notDefault(kind) )
-  { if ( isDefault(w) )    w = toInt(16);
-    if ( isDefault(h) )    h = toInt(16);
-    if ( isDefault(kind) ) kind = NAME_pixmap;
-
-    assign(image, kind,   kind);
-    assign(image, file,   NIL);
-    assign(image, size,	  newObject(ClassSize, w, h, EAV));
-    assign(image, access, NAME_both);
+  if ( isNil(data) )
+  { if ( isDefault(w) ) w = toInt(16);
+    if ( isDefault(h) ) h = toInt(16);
+    access = NAME_both;
   } else
-  { assign(image, kind,	  NAME_pixmap);
-    assign(image, file,	  data);
-    assign(image, size,	  newObject(ClassSize, EAV));
-    TRY(loadImage(image, DEFAULT, DEFAULT));
-    assign(image, access, NAME_read);
+  { if ( isDefault(w) ) w = toInt(0);	/* Use viewport for SVG */
+    if ( isDefault(h) ) h = toInt(0);
+    access = NAME_read;
   }
+
+  assign(image, kind,   kind);
+  assign(image, file,   data);
+  assign(image, size,	newObject(ClassSize, w, h, EAV));
+  assign(image, access, access);
+
+  if ( notNil(data) )
+    TRY(loadImage(image, DEFAULT, DEFAULT));
 
   if ( notNil(name) )
   { protectObject(image);
@@ -214,7 +217,7 @@ hasAlphaImage(Image image)
 Store/load images to/form file. Format:
 
 <image>	::= <pce-slots>
-	    'X' <image> | 'O'
+	    'P' <image> | 'O'
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static status
@@ -222,8 +225,8 @@ storeImage(Image image, FileObj file)
 { TRY( storeSlotsObject(image, file) );
 
   if ( isNil(image->file) )
-    return ws_store_image(image, file);
-  else
+  { return ws_store_image(image, file);
+  } else
   { Sputc('O', file->fd);
     succeed;
   }
@@ -235,8 +238,6 @@ loadFdImage(Image image, IOSTREAM *fd, ClassDef def)
 { FileObj file;
 
   TRY( loadSlotsObject(image, fd, def) );
-  ws_init_image(image);
-
 					/* convert old path-representation */
   if ( instanceOfObject((file=(FileObj)image->file), ClassFile) &&
        isAbsoluteFile(file) &&
@@ -249,7 +250,8 @@ loadFdImage(Image image, IOSTREAM *fd, ClassDef def)
   { case 'O':				/* no image */
       break;
     case 'X':
-      return loadXImage(image, fd);
+      Cprintf("%s: old X image format no longer supported\n", pp(image));
+      fail;
     case 'P':
       return loadPNMImage(image, fd);
   }
@@ -267,20 +269,15 @@ status
 XopenImage(Image image, DisplayObj d)
 { if ( image->bits )			/* built-in.  See stdImage() */
   { switch(image->bits->type)
-    { case XBM_DATA:
-	if ( image->bits->bits.xbm )	/* NULL image has no data */
-	  Cprintf("XopenImage(%s)\n", pp(image));
-        break;
-      case XPM_DATA:
-	ws_create_image_from_xpm_data(image,
-				      image->bits->bits.xpm,
-				      d);
+    { case XPM_DATA:
+	if ( image->bits->bits.xpm )
+	  ws_create_image_from_xpm_data(image,
+					image->bits->bits.xpm,
+					d);
 	break;
       default:
 	assert(0);
     }
-    if ( getExistingXrefObject(image, d) )
-      succeed;
   }
 
   return ws_open_image(image);
@@ -327,7 +324,7 @@ saveImage(Image image, SourceSink file, Name fmt)
 { if ( isDefault(file) )
     file = image->file;
   if ( isDefault(fmt) )
-    fmt = NAME_xbm;
+    fmt = NAME_png;
 
   if ( isNil(file) )
     return errorPce(image, NAME_noFile);
@@ -617,19 +614,15 @@ static Any
 getPixelImage(Image image, Int x, Int y)
 { if ( inImage(image, x, y) )
   { Any result;
+
+    pceImage2CairoSurface(image);
     d_image(image, 0, 0, valInt(image->size->w), valInt(image->size->h));
+    COLORRGBA pixel = r_get_pixel(valInt(x), valInt(y));
 
     if ( image->kind == NAME_bitmap )
-      result = (r_get_mono_pixel(valInt(x), valInt(y)) ? ON : OFF);
+      result = (pixel == RGBA(0,0,0,255) ? ON : OFF);
     else
-    { unsigned long pixel;
-
-      pixel = r_get_pixel(valInt(x), valInt(y));
-      if ( pixel == NoPixel )
-	result = FAIL;
-      else
-	result = ws_pixel_to_colour(pixel);
-    }
+      result = ws_pixel_to_colour(pixel);
     d_done();
 
     answer(result);
@@ -715,20 +708,12 @@ getClipImage(Image image, Area area)
   CHANGING_IMAGE(i2,
     d_image(i2, 0, 0, w, h);
     d_modify();
+    r_fill(0, 0, w, h, NIL);
     r_image(image, x, y, 0, 0, w, h);
     d_done();
     changedEntireImageImage(i2););
 
   answer(i2);
-}
-
-
-Image
-getMonochromeImage(Image image)
-{ if ( image->kind == NAME_bitmap )
-    answer(image);
-
-  answer(ws_monochrome_image(image));
 }
 
 
@@ -808,55 +793,36 @@ getRotateImage(Image image, Num degrees)
 		*       PREDEFINED IMAGES	*
 		********************************/
 
-#if __WINDOWS__ || HAVE_LIBXPM || SDL_GRAPHICS
-#define XPM_PCEIMAGE 1			/* use an XPM image */
-#endif
-
-#include "bitmaps/mark_handle_bm"
-#include "bitmaps/ms_left_arrow.bm"
-#include "bitmaps/ol_pulldown.bm"
-#include "bitmaps/ol_pullright.bm"
-#include "bitmaps/ol_cycle.bm"
-
-static Image
-stdImage(Name name, Image *global, unsigned char *bits, int w, int h)
-{ Image image = globalObject(name, ClassImage, name, toInt(w), toInt(h), EAV);
-
-  assign(image, access, NAME_read);
-  assign(image, kind,   NAME_bitmap);
-  image->bits = alloc(sizeof(*image->bits));
-  image->bits->type = XBM_DATA;
-  image->bits->bits.xbm = bits;
-  if ( global )
-    *global = image;
-
-  return image;
-}
-
-#ifdef XPM_PCEIMAGE
 static void
 stdXPMImage(Name name, Name kind, Image *global, char **bits)
 { int w, h, colours;
 
-  if ( sscanf(bits[0], "%d %d %d", &w, &h, &colours) == 3 )
-  { Image image = globalObject(name, ClassImage, name, toInt(w), toInt(h), EAV);
+  if ( bits )
+  { if ( sscanf(bits[0], "%d %d %d", &w, &h, &colours) != 3 )
+      Cprintf("Failed to initialise built-in image %s\n", pp(name));
+  } else
+  { w = h = 0;
+    colours = 2;
+  }
 
-    if ( colours == 2 )
-    { assign(image, kind, kind);
-    } else
-    { assign(image, kind, NAME_pixmap);
-    }
+  Image image = globalObject(name, ClassImage, NIL, toInt(w), toInt(h), EAV);
 
-    assign(image, access, NAME_read);
-    setSize(image->size, toInt(w), toInt(h));
-    image->bits = alloc(sizeof(*image->bits));
+  if ( colours == 2 )
+  { assign(image, kind, kind);
+  } else
+  { assign(image, kind, NAME_pixmap);
+  }
+
+  assign(image, access, NAME_read);
+  setSize(image->size, toInt(w), toInt(h));
+  if ( bits )
+  { image->bits = alloc(sizeof(*image->bits));
     image->bits->type = XPM_DATA;
     image->bits->bits.xpm = bits;
+  }
 
-    if ( global )
-      *global = image;
-  } else
-    Cprintf("Failed to initialise image %s\n", pp(name));
+  if ( global )
+    *global = image;
 }
 
 
@@ -870,21 +836,12 @@ stdXPMImage(Name name, Name kind, Image *global, char **bits)
 #include "bitmaps/enode.xpm"
 #include "bitmaps/mark.xpm"
 #include "bitmaps/nomark.xpm"
-#endif
+#include "bitmaps/mark_handle.xpm"
+#include "bitmaps/ms_left_arrow.xpm"
 
 static void
 standardImages(void)
-{ stdImage(NAME_msLeftArrowImage, NULL,
-	   ms_left_arrow_bits, ms_left_arrow_width, ms_left_arrow_height);
-  stdImage(NAME_markHandleImage, &MARK_HANDLE_IMAGE,
-	   mark_handle_bm_bits, mark_handle_bm_width, mark_handle_bm_height);
-  stdImage(NAME_olPullrightImage, NULL,
-	   ol_pullright_bits, ol_pullright_width, ol_pullright_height);
-  stdImage(NAME_olPulldownImage, NULL,
-	   ol_pulldown_bits, ol_pulldown_width, ol_pulldown_height);
-  stdImage(NAME_olCycleImage, NULL,
-	   ol_cycle_bits, ol_cycle_width, ol_cycle_height);
-#ifdef XPM_PCEIMAGE
+{
 #define P NAME_pixmap
 #define B NAME_bitmap
   stdXPMImage(NAME_pceImage,	       P, NULL,		       swipl48_xpm);
@@ -897,12 +854,12 @@ standardImages(void)
   stdXPMImage(NAME_treeCollapsedImage, B, NULL,		       cnode_xpm);
   stdXPMImage(NAME_markImage,          P, &MARK_IMAGE,	       mark_xpm);
   stdXPMImage(NAME_nomarkImage,        P, &NOMARK_IMAGE,       nomark_xpm);
+  stdXPMImage(NAME_msLeftArrowImage,   B, NULL,                ms_left_arrow_xpm);
+  stdXPMImage(NAME_markHandleImage,    B, &MARK_HANDLE_IMAGE,  mark_handle_xpm);
+  stdXPMImage(NAME_nullImage,          B, &NULL_IMAGE,         NULL);
 #undef P
 #undef B
-#endif
 
-  stdImage(NAME_nullImage, &NULL_IMAGE,
-	   NULL, 0, 0);
 }
 
 
@@ -1005,8 +962,6 @@ static getdecl get_image[] =
      DEFAULT, "Convert bitmap or (file-)name"),
   GM(NAME_clip, 1, "image", "[area]", getClipImage,
      NAME_copy, "Get a subimage"),
-  GM(NAME_monochrome, 0, "image", NULL, getMonochromeImage,
-     NAME_copy, "Get monochrome version of pixmap image"),
   GM(NAME_grayscale, 0, "image", NULL, getGrayscaleImage,
      NAME_copy, "Get grayscale version of image"),
   GM(NAME_scale, 1, "image", "size", getScaleImage,
@@ -1023,8 +978,7 @@ static getdecl get_image[] =
 
 static classvardecl rc_image[] =
 { RC(NAME_path, "string",
-     "\".:bitmaps:~/lib/bitmaps:$PCEHOME/bitmaps:" /* concat */
-     "/usr/include/X11/bitmaps\"",
+     "\".:bitmaps:~/.local/share/swi-prolog/bitmaps:$PCEHOME/bitmaps\"",
      "Search path for loading images")
 };
 
@@ -1034,8 +988,7 @@ static Name image_termnames[] = { NAME_name };
 
 ClassDecl(image_decls,
 	  var_image, send_image, get_image, rc_image,
-	  1, image_termnames,
-	  "$Rev$");
+	  1, image_termnames);
 
 
 status

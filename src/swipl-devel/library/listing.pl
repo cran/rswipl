@@ -68,6 +68,7 @@
 
 :- predicate_options(listing/2, 2,
                      [ thread(atom),
+                       source(boolean),
                        pass_to(portray_clause/3, 3)
                      ]).
 :- predicate_options(portray_clause/3, 3,
@@ -1177,7 +1178,7 @@ pprint(Out, Term, Pri, Options) :-
     \+ nowrap_term(Term),
     line_width(Width),
     Width > 0,
-    (   write_length(Term, Len, [max_length(Width)|Options])
+    (   write_size(Term, Len, _Height, [max_width(Width)|Options])
     ->  true
     ;   Len = Width
     ),

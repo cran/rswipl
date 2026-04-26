@@ -49,7 +49,6 @@ static status	setFrame(FrameObj fr, Int x, Int y, Int w, Int h, DisplayObj mon);
 static status	kindFrame(FrameObj fr, Name kind);
 static status	informTransientsFramev(FrameObj fr, Name selector,
 				       int argc, Any *argv);
-static status	grabPointerFrame(FrameObj fr, BoolObj grab, CursorObj cursor);
 static status	cursorFrame(FrameObj fr, CursorObj cursor);
 static status   statusFrame(FrameObj fr, Name stat);
 
@@ -70,7 +69,6 @@ initialiseFrame(FrameObj fr, Name label, Name kind,
   assign(fr, name,		    getClassNameObject(fr));
   assign(fr, label,		    label);
   assign(fr, display,		    display);
-  assign(fr, border,		    DEFAULT);
   assign(fr, area,		    newObject(ClassArea, EAV));
   assign(fr, placed,		    OFF);
   assign(fr, members,		    newObject(ClassChain, EAV));
@@ -81,7 +79,6 @@ initialiseFrame(FrameObj fr, Name label, Name kind,
   assign(fr, sensitive,		    ON);
   assign(fr, fitting,		    OFF);
   assign(fr, wm_protocols,	    newObject(ClassSheet, EAV));
-  assign(fr, wm_protocols_attached, OFF);
   obtainClassVariablesObject(fr);
 
   doneMessageFrame(fr, newObject(ClassMessage, RECEIVER, NAME_wmDelete, EAV));
@@ -119,7 +116,6 @@ unlinkFrame(FrameObj fr)
       assign(sw, displayed, OFF);
     }
 
-    ws_enable_modal(fr, ON);
     if ( notNil(fr->transients) )
       for_chain(fr->transients, sfr, destroyTransientFrame(sfr));
     if ( notNil(fr->transient_for) && notNil(fr->transient_for->transients) )
@@ -127,7 +123,6 @@ unlinkFrame(FrameObj fr)
 
     ws_uncreate_frame(fr);
     deleteChain(fr->display->frames, fr);
-    deleteChain(MappedFrames, fr);
     if ( notNil(fr->application) )
       send(fr->application, NAME_delete, fr, EAV);
 
@@ -174,7 +169,6 @@ storeFrame(FrameObj fr, FileObj file)
 static status
 loadFrame(FrameObj fr, IOSTREAM *fd, ClassDef def)
 { TRY(loadSlotsObject(fr, fd, def));
-  assign(fr, wm_protocols_attached, OFF);
   assign(fr, input_focus, OFF);
 
   if ( isOpenFrameStatus(fr->status) )
@@ -360,30 +354,14 @@ resizeFrame(FrameObj fr)
 		********************************/
 
 static status
-attachWmProtocolsFrame(FrameObj fr)
-{ ws_attach_wm_prototols_frame(fr);
-
-  succeed;
-}
-
-
-static status
 wmProtocolFrame(FrameObj fr, Name name, Code msg)
-{ valueSheet(fr->wm_protocols, name, msg);
-  if ( fr->wm_protocols_attached == ON )
-    attachWmProtocolsFrame(fr);
-
-  succeed;
+{ return valueSheet(fr->wm_protocols, name, msg);
 }
 
 
 static status
 deleteWmProtocolFrame(FrameObj fr, Name name)
-{ if ( isAttributeSheet(fr->wm_protocols, name) == SUCCEED )
-  { deleteSheet(fr->wm_protocols, name);
-    if ( fr->wm_protocols_attached == ON )
-      attachWmProtocolsFrame(fr);
-  }
+{ deleteSheet(fr->wm_protocols, name);
 
   succeed;
 }
@@ -446,7 +424,6 @@ createFrame(FrameObj fr)
     succeed;
 
   obtainClassVariablesObject(fr);
-  TRY(openDisplay(fr->display));
   appendChain(fr->display->frames, fr);
 
   TRY(send(fr, NAME_fit, EAV));
@@ -454,8 +431,6 @@ createFrame(FrameObj fr)
   assign(fr, status, NAME_hidden);
   for_cell(cell, fr->members)
     send(cell->value, NAME_create, EAV);
-
-  attachWmProtocolsFrame(fr);
 
   if ( isName(fr->geometry) )
     geometryFrame(fr, fr->geometry, DEFAULT);
@@ -621,14 +596,6 @@ SdlExposeFrame(FrameObj fr)
 
   succeed;
 }
-
-status
-hideFrame(FrameObj fr)
-{ ws_lower_frame(fr);
-
-  succeed;
-}
-
 
 static status
 exposedFrame(FrameObj fr)
@@ -877,25 +844,12 @@ showLabelFrame(FrameObj fr, BoolObj val)
 
 
 static status
-borderFrame(FrameObj fr, Int width)
-{ if ( fr->border != width )
-  { assign(fr, border, width);
-
-    if ( ws_created_frame(fr) )
-      ws_border_frame(fr, valInt(width));
-  }
-
-  succeed;
-}
-
-
-static status
 backgroundFrame(FrameObj fr, Any bg)
 { if ( fr->background != bg )
   { assign(fr, background, bg);
 
-    if ( ws_created_frame(fr) )
-      ws_frame_background(fr, bg);
+    if ( ws_created_frame(fr) && ChangedFrames )
+      addChain(ChangedFrames, fr);
   }
 
   succeed;
@@ -927,54 +881,6 @@ resetFrame(FrameObj fr)
 		/********************************
 		*             ICONS		*
 		********************************/
-
-static status
-iconFrame(FrameObj fr, Image image, Name label)
-{ assign(fr, icon_image, image);
-  if ( notDefault(label) )
-    assign(fr, icon_label, label);
-  ws_set_icon_frame(fr);
-
-  succeed;
-}
-
-
-Name
-getIconLabelFrame(FrameObj fr)
-{ answer(notNil(fr->icon_label) ? fr->icon_label : fr->label);
-}
-
-
-static status
-iconLabelFrame(FrameObj fr, Name label)
-{ assign(fr, icon_label, label);
-  ws_set_icon_label_frame(fr);
-
-  succeed;
-}
-
-
-static status
-iconPositionFrame(FrameObj fr, Point pos)
-{ assign(fr, icon_position, pos);
-
-  if ( notNil(pos) )
-    ws_set_icon_position_frame(fr, valInt(pos->x), valInt(pos->y));
-
-  succeed;
-}
-
-
-static Point
-getIconPositionFrame(FrameObj fr)
-{ int x, y;
-
-  if ( ws_get_icon_position_frame(fr, &x, &y) )
-    answerObject(ClassPoint, toInt(x), toInt(y));
-
-  answer(fr->icon_position);
-}
-
 
 static status
 closedFrame(FrameObj fr, BoolObj val)
@@ -1017,14 +923,11 @@ getTileFrame(FrameObj fr)
 
 
 static status
-labelFrame(FrameObj fr, Name label, Name icon)
+labelFrame(FrameObj fr, Name label)
 { assign(fr, label, label);
 
   if ( ws_created_frame(fr) )
     sdl_send(fr, NAME_SdlSetLabel, false, EAV);
-
-  if ( notDefault(icon) )
-    iconLabelFrame(fr, icon);
 
   succeed;
 }
@@ -1068,8 +971,6 @@ AppendFrame(FrameObj fr, PceWindow sw)
   if ( createdFrame(fr) )
   { TRY(send(sw, NAME_create, EAV));
 
-    ws_manage_window(sw);
-
     if ( getClassVariableValueObject(fr, NAME_fitAfterAppend) == ON )
       send(fr, NAME_fit, EAV);
     else
@@ -1096,8 +997,7 @@ DeleteFrame(FrameObj fr, PceWindow sw)
   assign(sw, frame, NIL);		/* may kill the frame */
 
   if ( !isFreedObj(fr) && createdFrame(fr) )
-  { ws_unmanage_window(sw);
-    send(sw, NAME_uncreate, EAV);
+  { send(sw, NAME_uncreate, EAV);
     unrelateTile(sw->tile);
     if ( getClassVariableValueObject(fr, NAME_fitAfterAppend) == ON )
       send(fr, NAME_fit, EAV);
@@ -1272,26 +1172,13 @@ inputFocusFrame(FrameObj fr, BoolObj val)
 
     assign(fr, input_focus, val);
     if ( val == ON )
-    { if ( (iw = getKeyboardFocusFrame(fr)) ||
-	   (iw = ws_window_holding_point_frame(fr)) )
+    { if ( (iw = getKeyboardFocusFrame(fr)) )
 	inputWindowFrame(fr, iw);
     } else
     { Cell cell;
       for_cell(cell, fr->members)
 	send(cell->value, NAME_inputFocus, OFF, EAV);
     }
-  }
-
-  succeed;
-}
-
-
-static status
-sensitiveFrame(FrameObj fr, BoolObj sensitive)
-{ if ( fr->sensitive != sensitive )
-  { assign(fr, sensitive, sensitive);
-
-    ws_enable_frame(fr, sensitive == ON ? TRUE : FALSE);
   }
 
   succeed;
@@ -1492,14 +1379,6 @@ cursorFrame(FrameObj fr, CursorObj cursor)
 
 
 static status
-grabPointerFrame(FrameObj fr, BoolObj grab, CursorObj cursor)
-{ ws_grab_frame_pointer(fr, grab, cursor);
-
-  succeed;
-}
-
-
-static status
 modalFrame(FrameObj fr, Name how)
 { assign(fr, modal, how);
 
@@ -1539,9 +1418,7 @@ kindFrame(FrameObj fr, Name kind)
       return errorPce(fr, NAME_noChangeAfterOpen);
 
     if ( kind == NAME_transient )
-    { assign(fr, icon_image, NIL);
       assign(fr, can_resize, OFF);
-    }
 
     assign(fr, kind, kind);
   }
@@ -1562,11 +1439,7 @@ transientForFrame(FrameObj fr, FrameObj fr2)
     assign(fr, transient_for, fr2);
 
     if ( notNil(fr2) )
-    { send(fr2, NAME_attachTransient, fr, EAV);
-
-      if ( fr->kind == NAME_transient )
-	ws_transient_frame(fr, fr2);
-    }
+      send(fr2, NAME_attachTransient, fr, EAV);
   }
 
   succeed;
@@ -1664,15 +1537,6 @@ getContainsFrame(FrameObj fr)
 }
 
 		 /*******************************
-		 *	     THREADS		*
-		 *******************************/
-
-static Int
-getThreadFrame(FrameObj fr)
-{ return ws_frame_thread(fr);
-}
-
-		 /*******************************
 		 *       SDL FILE DIALOGUE        *
 		 *******************************/
 
@@ -1763,7 +1627,21 @@ open_file_callback(void *udata, const char * const *filelist, int filter)
   FrameObj fr = ctx->frame;
 
   if ( !filelist )
-  { assign(fr, return_value, CtoString(SDL_GetError())); /* error */
+  { const char *err = SDL_GetError();
+#ifdef __WINDOWS__
+    /* SDL 3.4 introduced IFileDialog (modern Windows file dialog). When
+       it fails before showing (e.g., unable to set up COM), SDL calls this
+       callback with NULL and then falls back to the legacy GetOpenFileName/
+       GetSaveFileName dialog, which calls this callback a second time with
+       the actual result.  The pre-Show failure is identified by the
+       "dialogg: " prefix (a typo present in SDL 3.4.x).  Ignore it to let
+       the fallback dialog's callback come through.  The caller is still
+       blocked in getWaitConfirmFrame() so ctx remains valid.
+       See https://github.com/libsdl-org/SDL/issues/15194 and PR #15195. */
+    if ( err && strncmp(err, "dialogg:", 8) == 0 )
+      return;				/* wait for legacy dialog callback */
+#endif
+    assign(fr, return_value, CtoString(err)); /* error */
   } else if ( !filelist[0] )
   { assign(fr, return_value, OFF); /* cancelled */
   } else if ( !ctx->allow_many )
@@ -1881,15 +1759,11 @@ static char *T_openCentered[] =
         { "center=[point|frame]", "display=[display]", "grab=[bool]" };
 static char *T_busyCursor[] =
         { "cursor=[cursor]*", "block_input=[bool]" };
-static char *T_icon[] =
-        { "image=image", "icon_label=[name]" };
 static char *T_initialise[] =
         { "label=[name]",
 	  "kind=[{toplevel,transient,popup}]",
 	  "display=[display]",
 	  "application=[application]"};
-static char *T_label[] =
-        { "label=name", "icon_label=[name]" };
 static char *T_open[] =
         { "position=[point]", "display=[display]", "grab=[bool]" };
 static char *T_wmProtocol[] =
@@ -1899,8 +1773,6 @@ static char *T_convertOldSlot[] =
 static char *T_set[] =
         { "x=[int]", "y=[int]", "width=[int]", "height=[int]",
 	  "display=[display]" };
-static char *T_grab_pointer[] =
-	{ "grab=bool", "cursor=[cursor]" };
 static char *T_center[] =
 	{ "center=[point]", "display=[display]" };
 static char *T_geometry[] =
@@ -1917,18 +1789,10 @@ static vardecl var_frame[] =
      NAME_name, "Name of the frame"),
   IV(NAME_label, "name", IV_GET,
      NAME_label, "Label of the frame"),
-  SV(NAME_iconLabel, "name*", IV_NONE|IV_STORE, iconLabelFrame,
-     NAME_icon, "Label in the iconic representation"),
-  IV(NAME_iconImage, "image*", IV_GET,
-     NAME_icon, "Image used for the iconic representation"),
-  SV(NAME_iconPosition, "point*", IV_GET|IV_STORE, iconPositionFrame,
-     NAME_icon, "Position of the iconic image"),
   SV(NAME_application, "application*", IV_GET|IV_STORE, applicationFrame,
      NAME_organisation, "Application the frame belongs too"),
   IV(NAME_display, "display", IV_BOTH,
      NAME_organisation, "Display the frame resides on"),
-  IV(NAME_border, "[int]", IV_GET,
-     NAME_appearance, "Width of border"),
   SV(NAME_background, "colour|pixmap", IV_GET|IV_STORE, backgroundFrame,
      NAME_appearance, "Background of the frame"),
   SV(NAME_area, "area", IV_GET|IV_STORE, areaFrame,
@@ -1951,7 +1815,7 @@ static vardecl var_frame[] =
      NAME_modal, "Bin for value of ->return"),
   SV(NAME_inputFocus, "bool", IV_GET|IV_STORE, inputFocusFrame,
      NAME_event, "Frame has focus for keyboard events"),
-  SV(NAME_sensitive, "bool", IV_GET|IV_STORE, sensitiveFrame,
+  IV(NAME_sensitive, "bool", IV_BOTH,
      NAME_event, "@on: window accepts user input"),
   IV(NAME_status, "{unlinking,unmapped,hidden,iconic,window,full_screen}", IV_GET,
      NAME_visibility, "Current visibility of the frame"),
@@ -1965,8 +1829,6 @@ static vardecl var_frame[] =
      NAME_internal, "We are running ->fit"),
   IV(NAME_wmProtocols, "sheet", IV_GET,
      NAME_windowManager, "Protocol-name --> message"),
-  IV(NAME_wmProtocolsAttached, "bool", IV_GET,
-     NAME_internal, "Have we registered the protocols"),
   IV(NAME_wsRef, "alien:WsRef", IV_NONE,
      NAME_windowSystem, "Window-System reference")
 };
@@ -1990,8 +1852,6 @@ static senddecl send_frame[] =
      statusFrame, DEFAULT, "Current visibility of the frame"),
   SM(NAME_typed, 1, "event|event_id", typedFrame,
      NAME_accelerator, "Dispatch over available windows"),
-  SM(NAME_border, 1, "thickness=int", borderFrame,
-     NAME_appearance, "X-border width"),
   SM(NAME_showLabel, 1, "show=bool", showLabelFrame,
      NAME_appearance, "If @off, sets <->kind to `transient'"),
   SM(NAME_center, 2, T_center, centerFrame,
@@ -2024,9 +1884,7 @@ static senddecl send_frame[] =
      NAME_focus, "Redirect (default) keyboard input here"),
   SM(NAME_closed, 1, "open=bool", closedFrame,
      NAME_icon, "Open/iconify frame"),
-  SM(NAME_icon, 2, T_icon, iconFrame,
-     NAME_icon, "Set image and icon_label"),
-  SM(NAME_label, 2, T_label, labelFrame,
+  SM(NAME_label, 1, "label=name", labelFrame,
      NAME_label, "Set label of the frame"),
   SM(NAME_SdlSetLabel, 0, NULL, SdlSetLabelFrame,
      NAME_thread, "Update the label of an open frame"),
@@ -2070,8 +1928,6 @@ static senddecl send_frame[] =
      NAME_stacking, "Inform transient windows to expose"),
   SM(NAME_hidden, 0, NULL, hiddenFrame,
      NAME_stacking, "Inform transient windows to hide"),
-  SM(NAME_hide, 0, NULL, hideFrame,
-     NAME_stacking, "Put frame below all others on the display"),
   SM(NAME_show, 1, "show=bool", showFrame,
      NAME_visibility, "(Un)show the frame on the display"),
   SM(NAME_deleteWmProtocol, 1, "protocol=name", deleteWmProtocolFrame,
@@ -2090,8 +1946,6 @@ static senddecl send_frame[] =
      NAME_event, "Handle keyboard event on frame-background (fail)"),
   SM(NAME_cursor, 1, "[cursor]", cursorFrame,
      NAME_event, "Define the cursor for the frame-background"),
-  SM(NAME_grabPointer, 2, T_grab_pointer, grabPointerFrame,
-     NAME_event, "Grap all pointer-events"),
   SM(NAME_redraw, 1, "[area]", redrawFrame,
      NAME_redraw, "Redraw subwindow adjust buttons"),
 
@@ -2125,10 +1979,6 @@ static getdecl get_frame[] =
      NAME_focus, "Window for default keyboard input"),
   GM(NAME_closed, 0, "bool", NULL, getClosedFrame,
      NAME_icon, "Open (@off) or iconic (@on)"),
-  GM(NAME_iconLabel, 0, "name", NULL, getIconLabelFrame,
-     NAME_icon, "Name of the icon"),
-  GM(NAME_iconPosition, 0, "point*", NULL, getIconPositionFrame,
-     NAME_icon, "(Current) position of the icon"),
   GM(NAME_tile, 0, "tile", NULL, getTileFrame,
      NAME_layout, "Find tile managing object"),
   GM(NAME_confirm, 2, "return_value=any", T_open, getConfirmFrame,
@@ -2146,8 +1996,6 @@ static getdecl get_frame[] =
      NAME_organisation, "New chain holding all member windows"),
   GM(NAME_show, 0, "bool", NULL, getShowFrame,
      NAME_visibility, "@on iff <-status = open; @off otherwise"),
-  GM(NAME_thread, 0, "int", NULL, getThreadFrame,
-     NAME_thread, "Return system thread-id that owns the frame"),
   GM(NAME_openFile, 3, "name|chain", T_openFile, getOpenFileFrame,
      NAME_dialog, "Use OS dialog to prompt for a file for reading"),
   GM(NAME_saveFile, 2, "name", T_saveFile, getSaveFileFrame,
@@ -2165,8 +2013,6 @@ static classvardecl rc_frame[] =
      "Show confirmer on `Delete'"),
   RC(NAME_geometry, "name*", "@nil",
      "Position/size of the frame"),
-  RC(NAME_iconImage, "image*", "@pce_image",
-     "Image displayed for an icon"),
   RC(NAME_iconLabel, "name*", "@nil",
      "Label displayed in the icon"),
   RC(NAME_canResize, "bool", "@on",
@@ -2187,8 +2033,7 @@ static Name frame_termnames[] = { NAME_label, NAME_kind, NAME_display };
 
 ClassDecl(frame_decls,
           var_frame, send_frame, get_frame, rc_frame,
-          3, frame_termnames,
-          "$Rev$");
+          3, frame_termnames);
 
 
 status
@@ -2200,8 +2045,6 @@ makeClassFrame(Class class)
 				     NAME_NotReturned,
 				     CtoString("Used for `frame <-confirm'"),
 				     EAV);
-
-  MappedFrames = globalObject(NAME_mappedFrames, ClassChain, EAV);
 
   succeed;
 }

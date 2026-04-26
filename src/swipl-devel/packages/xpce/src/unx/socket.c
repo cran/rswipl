@@ -612,7 +612,6 @@ listenSocket(Socket s, Code accept_message, Int backlog, BoolObj reuse)
     TRY(closeFile(s->authority));
   }
 
-  openDisplay(CurrentDisplay(NIL));
   ws_listen_socket(s);
 
   succeed;
@@ -652,7 +651,6 @@ connectSocket(Socket s)
   assign(s, status, NAME_connected);
   registerSocket(s);
 
-  openDisplay(CurrentDisplay(NIL));
   inputStream((Stream)s, DEFAULT);
 
   succeed;
@@ -823,8 +821,7 @@ static Name socket_termnames[] = { NAME_address };
 
 ClassDecl(socket_decls,
           var_socket, send_socket, get_socket, rc_socket,
-          1, socket_termnames,
-          "$Rev$");
+          1, socket_termnames);
 
 status
 makeClassSocket(Class class)

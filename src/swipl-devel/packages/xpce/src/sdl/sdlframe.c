@@ -39,13 +39,14 @@
 #include "sdlwindow.h"
 #include "sdlcolour.h"
 #include "sdlevent.h"
+#include "sdluserevent.h"
 #include "sdlcursor.h"
 #include <math.h>
 
 #define MainWindow(fr)	     ( isNil(fr->members->head) ? (Any) fr : \
 			       fr->members->head->value )
 
-static bool	ws_draw_frame(FrameObj fr);
+bool		ws_draw_frame(FrameObj fr);
 
 
 WsFrame
@@ -492,6 +493,20 @@ ws_draw_window(FrameObj fr, PceWindow sw, foffset *off)
     SDL_UpdateTexture(wsw->texture, NULL, data, stride);
     SDL_RenderTexture(wfr->ws_renderer, wsw->texture, NULL, &dstrect);
     SDL_DestroySurface(sdl_surf);
+    if ( wfr->flash_end_ms && SDL_GetTicks() < wfr->flash_end_ms )
+    { int lum = (int)(0.299f*bg.r + 0.587f*bg.g + 0.114f*bg.b);
+      Uint8 v = lum > 128 ? 0 : 255;		/* dark on light, light on dark */
+      SDL_SetRenderDrawBlendMode(wfr->ws_renderer, SDL_BLENDMODE_BLEND);
+      SDL_SetRenderDrawColor(wfr->ws_renderer, v, v, v, 128);
+      if ( wfr->flash_rect.w > 0.0f )
+      { SDL_FRect isect;
+	if ( SDL_GetRectIntersectionFloat(&dstrect, &wfr->flash_rect, &isect) )
+	  SDL_RenderFillRect(wfr->ws_renderer, &isect);
+      } else
+      { SDL_RenderFillRect(wfr->ws_renderer, &dstrect);
+      }
+      SDL_SetRenderDrawBlendMode(wfr->ws_renderer, SDL_BLENDMODE_NONE);
+    }
 
     if ( instanceOfObject(sw, ClassWindowDecorator) )
     { foffset off2;
@@ -523,7 +538,7 @@ ws_draw_window(FrameObj fr, PceWindow sw, foffset *off)
   }
 }
 
-static bool
+bool
 ws_draw_frame(FrameObj fr)
 { if ( !ws_created_frame(fr) )
     false;
@@ -550,6 +565,17 @@ ws_draw_frame(FrameObj fr)
   return true;
 }
 
+
+Uint32 SDLCALL
+flash_end_callback(void *userdata, SDL_TimerID id, Uint32 interval)
+{ FrameObj fr = userdata;
+  SDL_Event ev;
+  SDL_zero(ev);
+  ev.type       = MY_EVENT_FLASH_END;
+  ev.user.data1 = fr;
+  SDL_PushEvent(&ev);
+  return 0;				/* one-shot */
+}
 
 void
 ws_redraw_changed_frames(void)
@@ -691,28 +717,6 @@ sdl_frame_event(SDL_Event *ev)
 }
 
 /**
- * Realize the specified frame, making it visible on the display.
- *
- * @param fr Pointer to the FrameObj to realize.
- */
-void
-ws_realise_frame(FrameObj fr)
-{
-}
-
-/**
- * Determine which window within the frame holds a specific point.
- *
- * @param fr Pointer to the FrameObj to examine.
- * @return The PceWindow holding the point, or NULL if none.
- */
-PceWindow
-ws_window_holding_point_frame(FrameObj fr)
-{
-    return NULL;
-}
-
-/**
  * Raise the specified frame above other windows.
  *
  * @param fr Pointer to the FrameObj to raise.
@@ -724,40 +728,6 @@ ws_raise_frame(FrameObj fr)
   { ASSERT_SDL_MAIN();
     SDL_RaiseWindow(wfr->ws_window);
   }
-}
-
-/**
- * Lower the specified frame below other windows.
- *
- * @param fr Pointer to the FrameObj to lower.
- */
-void
-ws_lower_frame(FrameObj fr)
-{
-}
-
-/**
- * Attach window manager protocols to the specified frame.
- *
- * @param fr Pointer to the FrameObj to attach protocols to.
- * @return SUCCEED on successful attachment; otherwise, FAIL.
- */
-status
-ws_attach_wm_prototols_frame(FrameObj fr)
-{
-    return SUCCEED;
-}
-
-/**
- * Set the frame to be aware of drag-and-drop operations.
- *
- * @param fr Pointer to the FrameObj to set.
- * @return SUCCEED on success; otherwise, FAIL.
- */
-status
-setDndAwareFrame(FrameObj fr)
-{
-    return SUCCEED;
 }
 
 /**
@@ -774,19 +744,6 @@ ws_frame_cursor(FrameObj fr, CursorObj cursor)
   { ASSERT_SDL_MAIN();
     SDL_SetCursor(c);
   }
-}
-
-/**
- * Grab or release the pointer for the specified frame.
- *
- * @param fr Pointer to the FrameObj.
- * @param grab Boolean indicating whether to grab (ON) or release (OFF)
- *        the pointer.
- * @param cursor Pointer to the CursorObj to use during the grab.
- */
-void
-ws_grab_frame_pointer(FrameObj fr, BoolObj grab, CursorObj cursor)
-{
 }
 
 /**
@@ -1022,17 +979,6 @@ ws_geometry_frame(FrameObj fr, Int x, Int y, Int w, Int h, DisplayObj dsp)
 }
 
 /**
- * Set the border width for the specified frame.
- *
- * @param fr Pointer to the FrameObj.
- * @param b Border width in pixels.
- */
-void
-ws_border_frame(FrameObj fr, int b)
-{
-}
-
-/**
  * Set a busy cursor for the specified frame.
  *
  * @param fr Pointer to the FrameObj.
@@ -1040,74 +986,6 @@ ws_border_frame(FrameObj fr, int b)
  */
 void
 ws_busy_cursor_frame(FrameObj fr, CursorObj c)
-{
-}
-
-/**
- * Set the background color or pattern for the specified frame.
- *
- * @param fr Pointer to the FrameObj.
- * @param c Any object representing the background (e.g., color or pattern).
- */
-void
-ws_frame_background(FrameObj fr, Any c)
-{
-}
-
-/**
- * Set the icon for the specified frame.
- *
- * @param fr Pointer to the FrameObj.
- */
-void
-ws_set_icon_frame(FrameObj fr)
-{
-}
-
-/**
- * Set the icon label for the specified frame.
- *
- * @param fr Pointer to the FrameObj.
- */
-void
-ws_set_icon_label_frame(FrameObj fr)
-{
-}
-
-/**
- * Set the position of the frame's icon.
- *
- * @param fr Pointer to the FrameObj.
- * @param x X-coordinate position.
- * @param y Y-coordinate position.
- */
-void
-ws_set_icon_position_frame(FrameObj fr, int x, int y)
-{
-}
-
-/**
- * Retrieve the position of the frame's icon.
- *
- * @param fr Pointer to the FrameObj.
- * @param x Pointer to store the x-coordinate.
- * @param y Pointer to store the y-coordinate.
- * @return SUCCEED on success; otherwise, FAIL.
- */
-status
-ws_get_icon_position_frame(FrameObj fr, int *x, int *y)
-{
-    return SUCCEED;
-}
-
-/**
- * Enable or disable modal behavior for the specified frame.
- *
- * @param fr Pointer to the FrameObj.
- * @param val Boolean indicating whether to enable (TRUE) or disable (FALSE) modal behavior.
- */
-void
-ws_enable_modal(FrameObj fr, BoolObj val)
 {
 }
 
@@ -1136,17 +1014,6 @@ ws_status_frame(FrameObj fr, Name status)
 }
 
 /**
- * Set the specified frame to be topmost or not.
- *
- * @param fr Pointer to the FrameObj.
- * @param topmost Boolean indicating whether to set the frame as topmost (TRUE) or not (FALSE).
- */
-void
-ws_topmost_frame(FrameObj fr, BoolObj topmost)
-{
-}
-
-/**
  * Set the label for the specified frame.
  *
  * @param fr Pointer to the FrameObj.
@@ -1161,49 +1028,92 @@ ws_set_label_frame(FrameObj fr)
 }
 
 /**
+ * Recursively composite a window's cairo backing onto a target cairo context.
+ * Mirrors the layout logic of ws_draw_window(), handling WindowDecorator and
+ * subwindows.
+ *
+ * @param cr    Target cairo context (frame-size surface).
+ * @param sw    The window to composite.
+ * @param ox    Accumulated x offset in logical coords (from parent).
+ * @param oy    Accumulated y offset in logical coords (from parent).
+ * @param scale Pixel density multiplier.
+ */
+static void
+composite_window_to_cairo(cairo_t *cr, PceWindow sw,
+			   float ox, float oy, float scale)
+{ WsWindow wsw = sw->ws_ref;
+  if ( !wsw || !wsw->backing )
+    return;
+
+  float wx = (ox + valInt(sw->area->x)) * scale;
+  float wy = (oy + valInt(sw->area->y)) * scale;
+  cairo_surface_flush(wsw->backing);
+  cairo_set_source_surface(cr, wsw->backing, wx, wy);
+  cairo_paint(cr);
+
+  if ( instanceOfObject(sw, ClassWindowDecorator) )
+  { WindowDecorator dw = (WindowDecorator)sw;
+    composite_window_to_cairo(cr, dw->window,
+			      ox + valNum(sw->area->x),
+			      oy + valNum(sw->area->y),
+			      scale);
+  }
+  if ( notNil(sw->subwindows) && !emptyChain(sw->subwindows) )
+  { Cell cell;
+    for_cell(cell, sw->subwindows)
+    { PceWindow sub = cell->value;
+      PceWindow me  = DEFAULT;
+      Int x, y;
+      get_absolute_xy_graphical((Graphical)sub, (Device *)&me, &x, &y);
+      assert(me == sw);
+      composite_window_to_cairo(cr, sub,
+				ox + valNum(sw->area->x) + valNum(x),
+				oy + valNum(sw->area->y) + valNum(y),
+				scale);
+    }
+  }
+}
+
+
+/**
  * Retrieve the image representation of the specified frame.
+ * Composites all window backing cairo surfaces onto a new frame-size
+ * cairo surface and wraps it in an xpce Image object.
  *
  * @param fr Pointer to the FrameObj.
- * @return Pointer to the Image object representing the frame.
+ * @return Pointer to the Image object representing the frame, or NULL on failure.
  */
 Image
 ws_image_of_frame(FrameObj fr)
-{
+{ if ( !ws_created_frame(fr) )
     return NULL;
-}
 
-/**
- * Set the specified frame as transient for another frame.
- *
- * @param fr Pointer to the FrameObj to set as transient.
- * @param fr2 Pointer to the FrameObj that owns the transient frame.
- */
-void
-ws_transient_frame(FrameObj fr, FrameObj fr2)
-{
-}
+  WsFrame wfr   = fr->ws_ref;
+  float   scale = SDL_GetWindowPixelDensity(wfr->ws_window);
+  int     fw    = (int)(valInt(fr->area->w) * scale);
+  int     fh    = (int)(valInt(fr->area->h) * scale);
 
-/**
- * Retrieve the thread identifier associated with the specified frame.
- *
- * @param fr Pointer to the FrameObj.
- * @return Integer representing the thread identifier.
- */
-Int
-ws_frame_thread(FrameObj fr)
-{
-    return 0;
-}
+  cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, fw, fh);
+  if ( !surf )
+    return NULL;
 
-/**
- * Enable or disable the specified frame.
- *
- * @param fr Pointer to the FrameObj.
- * @param enable Integer indicating whether to enable (non-zero) or disable (zero) the frame.
- * @return Integer status code.
- */
-int
-ws_enable_frame(FrameObj fr, int enable)
-{
-    return 0;
+  d_init_surface(surf, fr->background);
+
+  cairo_t *cr = cairo_create(surf);
+  Cell cell;
+  for_cell(cell, fr->members)
+    composite_window_to_cairo(cr, cell->value, 0.0f, 0.0f, scale);
+  cairo_destroy(cr);
+
+  Image image = newObject(ClassImage, NIL, EAV);
+  if ( !image )
+  { cairo_surface_destroy(surf);
+    return NULL;
+  }
+  assign(image, kind,    NAME_pixmap);
+  assign(image->size, w, toInt(fw));
+  assign(image->size, h, toInt(fh));
+  image->ws_ref = surf;
+
+  return image;
 }

@@ -35,6 +35,7 @@
 #define SWIPL_WINDOWS_NATIVE_ACCESS 1 /* get Swinhandle() */
 #include <h/kernel.h>
 #include <h/graphics.h>
+#include <math.h>
 #include "../../swipl/pcecall.h"
 #include "sdlevent.h"
 #include "sdlinput.h"
@@ -328,6 +329,19 @@ CtoEvent(SDL_Event *event)
     fail;
   if ( sdl_stream_event(event) ) /* I/O stream event */
     fail;
+  if ( event->type == MY_EVENT_FLASH_END )
+  { FrameObj fr = event->user.data1;
+    if ( !onFlag(fr, F_FREED|F_FREEING) && instanceOfObject(fr, ClassFrame) )
+    { WsFrame wfr = fr->ws_ref;
+      if ( wfr )
+      { wfr->flash_end_ms = 0;
+	pceMTLock();
+	ws_draw_frame(fr);
+	pceMTUnlock();
+      }
+    }
+    fail;
+  }
   mouse_flags = SDL_GetMouseState(&fx, &fy);
 
   switch (event->type)
@@ -371,11 +385,21 @@ CtoEvent(SDL_Event *event)
       time = event->wheel.timestamp/1000000;
       name = NAME_wheel;
       ctx_name = NAME_rotation;
-      int dy = event->wheel.integer_y;
+      int dy = 0;
+#if SDL_VERSION_ATLEAST(3, 2, 12)
+      dy = event->wheel.integer_y;
+#else
+      static double dyf = 0.0;
+      dyf += event->wheel.y;
+      if ( dyf >= 1.0 || dyf <= -1.0 )
+      { dy = trunc(dyf);
+	dyf -= dy;
+      }
+#endif
 
       DEBUG(NAME_wheel,
 	    Cprintf("Mouse wheel event.  fy=%.6f, iy=%d, dt=%dms%s\n",
-		    event->wheel.y, event->wheel.integer_y, time-last_time,
+		    event->wheel.y, dy, time-last_time,
 		    event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED
 		    ? " (flipped)" : ""));
       if ( dy )

@@ -1,9 +1,10 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        jan@swi.psy.uva.nl
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  1985-2002, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi.psy.uva.nl/projects/xpce/
+    Copyright (c)  1985-2026, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -45,7 +46,6 @@ static status	widthSlider(Slider s, Int val);
 
 #define SLIDER_HEIGHT 20
 #define VALUE_GAP 20
-#define BAR_WIDTH 5
 
 #define OL_BAR_HEIGHT 5
 #define OL_BOX_WIDTH 10
@@ -96,7 +96,7 @@ RedrawAreaSlider(Slider s, Area a)
 { int x, y, w, h;
   int ny, vx, vy, lx, ly, sx, sy, hx, hy;
   int vv;
-  int bw = (s->look == NAME_x ? BAR_WIDTH : OL_BOX_WIDTH);
+  int bw   = s->look == NAME_motif ? OL_BOX_WIDTH : SLIDER_HEIGHT;
   float lv = convert_value(s->low);
   float hv = convert_value(s->high);
   float dv = convert_value(s->displayed_value);
@@ -138,21 +138,16 @@ RedrawAreaSlider(Slider s, Area a)
     r_3d_box(x+sx, by, vv, OL_BAR_HEIGHT, 0, z, FALSE);
     r_3d_box(x+sx+vv+bw, by, ex-(x+sx+vv+bw), OL_BAR_HEIGHT, 0, z, FALSE);
     r_3d_box(x+sx+vv, y+sy, bw, SLIDER_HEIGHT, 0, z, TRUE);
-  } else if ( s->look == NAME_openLook )
+  } else				/* Gtk based */
   { int by = y+sy+(SLIDER_HEIGHT-OL_BAR_HEIGHT)/2;
-    int ly2 = by+OL_BAR_HEIGHT-1;
-    int ex  = x + sx + valInt(s->width);
+    int wx  = valInt(s->width)-vv-bw;
 
-    r_fill(x+sx, by+1, 1, OL_BAR_HEIGHT-2, BLACK_COLOUR);
-    r_fill(x+sx+1, by, vv-2, OL_BAR_HEIGHT, BLACK_COLOUR);
-    r_line(x+sx+1+vv+bw, by, ex-2, by);
-    r_line(x+sx+1+vv+bw, ly2, ex-2, ly2);
-    r_line(ex-1, by+1, ex-1, ly2-1);
-    r_shadow_box(x+sx+vv, y+sy, bw, SLIDER_HEIGHT, 0, 1, NIL);
-  } else
-  { r_fill(x+sx, y+sy, vv, SLIDER_HEIGHT, GREY50_COLOUR);
-    r_box(x+sx, y+sy, valInt(s->width), SLIDER_HEIGHT, 0, NIL);
-    r_fill(x+sx+vv, y+sy, bw, SLIDER_HEIGHT, BLACK_COLOUR);
+    r_thickness(0);
+    r_box(x+sx,            by, vv+bw/2, OL_BAR_HEIGHT, 10, BLUE_COLOUR);
+    r_box(x+sx+vv+bw-bw/2, by, wx+bw/2, OL_BAR_HEIGHT, 10, GREY50_COLOUR);
+    r_dash(NAME_none);
+    r_thickness(1);
+    r_arc(x+sx+vv, y+sy, bw, bw, 0, 360, NAME_chord, WHITE_COLOUR);
   }
 
   if ( s->show_value == ON )
@@ -629,8 +624,7 @@ static getdecl get_slider[] =
 /* Resources */
 
 static classvardecl rc_slider[] =
-{ RC(NAME_look, RC_REFINE, "when(@colour_display, motif, open_look)", NULL)
-
+{ RC(NAME_look, RC_REFINE, "gtk", NULL)
 };
 
 /* Class Declaration */
@@ -639,8 +633,7 @@ static Name slider_termnames[] = { NAME_label, NAME_low, NAME_high, NAME_selecti
 
 ClassDecl(slider_decls,
           var_slider, send_slider, get_slider, rc_slider,
-          5, slider_termnames,
-          "$Rev$");
+          5, slider_termnames);
 
 status
 makeClassSlider(Class class)

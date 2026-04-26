@@ -64,35 +64,15 @@ createPopupWindow(DisplayObj d)
 { PceWindow sw;
   Any frame;
 
-#if !SDL_GRAPHICS
-  static Chain windows = NIL;
-  if ( isNil(windows) )
-    windows = globalObject(NAME_PopupWindows, ClassChain, EAV);
-
-  Cell cell;
-  for_cell(cell, windows)
-  { sw = cell->value;
-
-    if ( emptyChain(sw->graphicals) && sw->frame->display == d )
-      return sw;
-  }
-#endif
 
   sw = newObject(ClassDialog, NAME_popup, DEFAULT, d, EAV);
 
   send(sw, NAME_kind, NAME_popup, EAV);
   send(sw, NAME_pen, ZERO, EAV);
   send(sw, NAME_gap, newObject(ClassSize, ZERO, ZERO, EAV), EAV);
-#if !SDL_GRAPHICS
-  send(sw, NAME_create, EAV);
-#endif
   frame = get(sw, NAME_frame, EAV);
-  send(frame, NAME_border, ONE, EAV);
   send(getTileFrame(frame), NAME_border, ZERO, EAV);
 
-#if !SDL_GRAPHICS
-  appendChain(windows, sw);
-#endif
 
   return sw;
 }
@@ -243,7 +223,6 @@ openPopup(PopupObj p, Graphical gr, Point pos,
   }
   send(swfr, NAME_set, toInt(px), toInt(py), toInt(pw), toInt(ph), EAV);
   send(swfr, NAME_show, ON, EAV);
-  ws_topmost_frame(swfr, ON);
   if ( moved && warp_pointer == ON )
   { Point pos = tempObject(ClassPoint, toInt(dx), toInt(dy), EAV);
     send(sw, NAME_pointer, pos, EAV);
@@ -782,10 +761,10 @@ static Name popup_termnames[] = { NAME_name, NAME_message };
 
 ClassDecl(popup_decls,
           var_popup, send_popup, get_popup, rc_popup,
-          2, popup_termnames,
-          "$Rev$");
+          2, popup_termnames);
 
 status
 makeClassPopup(Class class)
-{ return declareClass(class, &popup_decls);
+{ realiseClass(ClassImage);
+  return declareClass(class, &popup_decls);
 }

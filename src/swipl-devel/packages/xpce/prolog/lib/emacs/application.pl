@@ -3,9 +3,10 @@
     Author:        Jan Wielemaker and Anjo Anjewierden
     E-mail:        J.Wielemaker@cs.vu.nl
     WWW:           http://www.swi-prolog.org/packages/xpce/
-    Copyright (c)  1996-2018, University of Amsterdam
+    Copyright (c)  1996-2026, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -37,14 +38,16 @@
 :- module(emacs_application, []).
 :- use_module(library(pce)).
 :- use_module(library(pce_history)).
-:- if(current_prolog_flag(windows, true)).
-:- use_module(dde_server).
 :- use_module(library(broadcast)).
 :- use_module(library(edit)).
 :- use_module(library(lists)).
 :- use_module(library(pce_help_file)).
+:- autoload(bookmarks, [find_references_editor/2]).
 
+:- if(current_prolog_flag(windows, true)).
+:- use_module(dde_server).
 :- endif.
+
 :- require([ ignore/1
            , pce_help_file/2
            , member/2
@@ -56,8 +59,6 @@
 
 :- pce_begin_class(emacs, application,
                    "PceEmacs main object").
-
-class_variable(icon_image, image*, @pce_image).
 
 variable(buffer_list,   dict,    get, "List of buffers maintained").
 variable(history,       history, get, "History of visited places").
@@ -261,6 +262,10 @@ open_object(_Emacs, Object:prolog, _NewWindow:new_window=[bool]) :->
 show_bookmarks(_) :->
     "Show PceEmacs bookmarks window"::
     send(@emacs_mark_list, expose).
+
+reference_viewer(_, Title:string, BM:emacs_bookmark_editor) :<-
+    "Find a view window to show references"::
+    find_references_editor(Title, BM).
 
 
                  /*******************************

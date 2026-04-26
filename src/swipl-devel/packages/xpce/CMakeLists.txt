@@ -16,7 +16,6 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
 pkg_check_modules(PANGO REQUIRED IMPORTED_TARGET pango)
 pkg_check_modules(PANGOCAIRO REQUIRED IMPORTED_TARGET pangocairo)
-set(SDL_GRAPHICS 1)
 set(GUI_LIBRARIES
     SDL3::SDL3
     SDL3_image::SDL3_image
@@ -37,7 +36,7 @@ include(XPCESources)
 
 set(PCE_MACHINE ${SWIPL_ARCH})
 set(PCE_OS ${CMAKE_HOST_SYSTEM_NAME})
-set(PCE_VERSION 7.0.0)
+set(PCE_VERSION 7.2.0)
 
 configure_file(config.h.cmake config.h)
 

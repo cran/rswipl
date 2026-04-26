@@ -1,4 +1,3 @@
-#cmakedefine SDL_GRAPHICS @SDL_GRAPHICS@
 #cmakedefine PCE_OS "@PCE_OS@"
 #cmakedefine PCE_MACHINE "@PCE_MACHINE@"
 #cmakedefine PCE_VERSION "@PCE_VERSION@"
@@ -48,7 +47,6 @@
 #cmakedefine HAVE_SELECT @HAVE_SELECT@
 #cmakedefine HAVE_SETSID @HAVE_SETSID@
 #cmakedefine HAVE_SHUTDOWN @HAVE_SHUTDOWN@
-#cmakedefine HAVE_SIGACTION @HAVE_SIGACTION@
 #cmakedefine HAVE_SIGINFO_H @HAVE_SIGINFO_H@
 #cmakedefine HAVE_SOCKET @HAVE_SOCKET@
 #cmakedefine HAVE_SOCKLEN_T @HAVE_SOCKLEN_T@
@@ -110,7 +108,6 @@
 #cmakedefine TERMIOS_HAS_C_LINE @TERMIOS_HAS_C_LINE@
 #cmakedefine TIME_WITH_SYS_TIME @TIME_WITH_SYS_TIME@
 #cmakedefine UNION_WAIT @UNION_WAIT@
-#cmakedefine USE_SIGINFO @USE_SIGINFO@
 #cmakedefine USE_WINSOCK @USE_WINSOCK@2
 #cmakedefine WORDS_BIGENDIAN @WORDS_BIGENDIAN@
 #cmakedefine _REENTRANT @_REENTRANT@

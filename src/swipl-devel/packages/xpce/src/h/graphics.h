@@ -39,7 +39,7 @@
 		 *        REUSABLE TYPES        *
 		 *******************************/
 
-#define TYPE_FILL "image|colour|{foreground,background}*"
+#define TYPE_FILL "colour|{foreground,background}*"
 
 		 /*******************************
 		 *     STRETCHABLE OBJECTS	*
@@ -271,18 +271,18 @@ NewClass(arc)
   Real		start_angle;		/* Start angle */
   Real		size_angle;		/* Size angle */
   Name		close;			/* {none,chord,pie_slice} */
-  Image		fill_pattern;		/* Filled with this pattern */
+  Image		fill;		/* Filled with this pattern */
 End;
 
 NewClass(circle)
   ABSTRACT_GRAPHICAL
-  Image		fill_pattern;		/* image to fill the circle */
+  Image		fill;		/* image to fill the circle */
 End;
 
 NewClass(ellipse)
   ABSTRACT_GRAPHICAL
   Int		shadow;			/* shadow displayed around ellipse */
-  Image		fill_pattern;		/* fill pattern  */
+  Image		fill;		/* fill pattern  */
 End;
 
 NewClass(bezier)
@@ -297,7 +297,7 @@ NewClass(box)
   ABSTRACT_GRAPHICAL
   Int        radius;			/* if displayed as a rounded box */
   Int	     shadow;			/* shadow displayed around box */
-  Image	     fill_pattern;		/* fill box with this */
+  Image	     fill;		/* fill box with this */
   Point	     fill_offset;		/* Offset for filling */
 End;
 
@@ -307,7 +307,7 @@ NewClass(arrow)
   Point      reference;		/* reference point for the arrow */
   Int        length;		/* length of the arrow head */
   Int        wing;		/* wing (width) of the arrow head */
-  Image	     fill_pattern;	/* bitmap used to fill the arrow head */
+  Image	     fill;	/* bitmap used to fill the arrow head */
   Name       style;		/* open or closed arrow */
   Point      left;
   Point      right;		/* together with tip make up the arrow head */
@@ -347,7 +347,7 @@ NewClass(path)
   Int	     radius;			/* Round corners of poly-line */
   Int	     intervals;			/* Number of iteration intervals */
   Chain	     points;			/* Points of the poly-line */
-  Image	     fill_pattern;		/* Fill the path with this pattern */
+  Image	     fill;		/* Fill the path with this pattern */
   Image	     mark;			/* Mark used for points */
   BoolObj    closed;			/* Line from end back to start */
   Chain	     interpolation;		/* interpolated points */
@@ -388,6 +388,7 @@ End;
   ABSTRACT_DIALOGITEM \
   Any	     selection;			/* Current selection */ \
   Any	     default_value;		/* The default (initial) value */ \
+  CharArray  placeholder;		/* Placeholder string */ \
   StringObj  print_name;		/* Print-name of selection */ \
   Type	     type;			/* Type of the value */ \
   Any	     value_set;			/* Set of possible values */ \
@@ -512,7 +513,7 @@ NewClass(scrollbar)
   Int		length;			/* Total length of object */
   Int		bubble_start;		/* Start of bubble in pixels */
   Int		bubble_length;		/* Length of bubble in pixels */
-  Name		look;			/* NAME_mac or NAME_sun or NAME_x */
+  Name		look;			/* Look and feel */
   BoolObj	drag;			/* Issue dragging updates? */
   Int		amount;			/* Amount to scroll */
   Name		direction;		/* Direction in which to scroll */
@@ -696,12 +697,10 @@ End;
 
 typedef struct
 { enum
-  { XBM_DATA,
-    XPM_DATA
+  { XPM_DATA
   } type;
   union
-  { unsigned char *xbm;
-    char **xpm;
+  { char **xpm;
   } bits;
 } builtin_image_data;
 
@@ -804,7 +803,6 @@ NewClass(application)
   Chain		members;		/* its member frames */
   Name		kind;			/* {user,service} */
   Chain		modal;			/* Stack of modal frames */
-  Image		icon_image;		/* Image of the icon */
 End;
 
 
@@ -812,12 +810,8 @@ NewClass(frameobj)
   ABSTRACT_VISUAL
   Name		name;			/* Name of the frame */
   Name		label;			/* Label of the frame */
-  Name		icon_label;		/* Label of the icon */
-  Image		icon_image;		/* Image of the icon */
-  Point		icon_position;		/* Position of the icon */
   Application	application;		/* Application it belongs too */
   DisplayObj	display;		/* Display it is displayed on */
-  Int		border;			/* Border width */
   Any		background;		/* Frames background */
   Area		area;			/* Area of the frame */
   Name		geometry;		/* X-Window geometry spec */
@@ -836,7 +830,6 @@ NewClass(frameobj)
   BoolObj	confirm_done;		/* User must confirm delete */
   BoolObj	fitting;		/* We are running ->fit */
   Sheet		wm_protocols;		/* WM protocols understood */
-  BoolObj	wm_protocols_attached;	/* Have the protocols been attached */
 					/* start private data */
   WsRef		ws_ref;			/* Window-System reference */
 End;
@@ -851,7 +844,7 @@ NewClass(eventobj)
   Int		x;			/* X coordinate relative to window */
   Int		y;			/* Y coordinate relative to window */
   Point		position;		/* Computed Position */
-  unsigned long time;			/* Time of event in milliseconds */
+  uintptr_t	time;			/* Time of event in milliseconds */
 End;
 
 
@@ -1052,6 +1045,7 @@ GLOBAL Colour WHITE_COLOUR;
 GLOBAL Colour GREY25_COLOUR;
 GLOBAL Colour GREY50_COLOUR;
 GLOBAL Colour BLACK_COLOUR;
+GLOBAL Colour BLUE_COLOUR;
 
 GLOBAL Image MARK_IMAGE;		/* images for toggle and marked */
 GLOBAL Image NOMARK_IMAGE;
@@ -1074,20 +1068,16 @@ GLOBAL ClickGesture GESTURE_button;	/* Gesture for handling buttons */
 GLOBAL Recogniser   GESTURE_wheelMouse;	/* Wheelmouse translation */
 
 GLOBAL Chain ChangedWindows;		/* Windows that have changed */
-GLOBAL Chain MappedFrames;		/* Mapped frame that need geometry */
-#if SDL_GRAPHICS
 GLOBAL Chain ChangedFrames;		/* Frames that have changed */
-#endif
 
-GLOBAL  int XrefsResolved;		/* succesful getXrefObject()'s */
 GLOBAL	HashTable ColourTable;		/* ColourName --> Colour */
+GLOBAL	HashTable RevColourTable;	/* RGBA --> Colour */
 GLOBAL  HashTable CursorTable;		/* CursorName --> Cursor */
 GLOBAL	HashTable FontTable;		/* FontName --> Font */
 GLOBAL  HashTable FontAliasTable;	/* Alias -> font */
 GLOBAL  HashTable FontFamilyTable;	/* Family -> Pango family */
 GLOBAL	HashTable ImageTable;		/* ImageName --> Image */
 GLOBAL  HashTable WindowTable;		/* X-Window --> PceWindow|FrameObj */
-GLOBAL  Class ClassImage;		/* @image_class */
 
 GLOBAL  EventTreeObj  EventTree;	/* @event_tree */
 GLOBAL  Chain grabbedWindows;		/* @grabbed_windows */
@@ -1116,24 +1106,6 @@ GLOBAL  Chain grabbedWindows;		/* @grabbed_windows */
 #define MBX_NOTHANDLED		0x0	/* not handled by virtual controller */
 #define MBX_OK			0x1	/* user confirmed */
 #define MBX_CANCEL		0x2	/* user canceled */
-
-
-		 /*******************************
-		 *	    IMAGE TYPES		*
-		 *******************************/
-
-COMMON(int) image_type_from_data(char *data, int size);
-
-#define IMG_IS_UNKNOWN	0
-#define IMG_IS_JPEG	1
-#define IMG_IS_XBM	2		/* Old monochrome X11 icons */
-#define IMG_IS_SUNICON	3		/* Very old: SunView icons */
-#define IMG_IS_XPM	4
-#define IMG_IS_GIF	5
-#define IMG_IS_PNM	6		/* PBMPLUS image formats */
-#define IMG_IS_PNG	7
-#define IMG_IS_BMP	8		/* MS-Windows .BMP */
-#define IMG_IS_ICO	9		/* MS-Windows .ICO */
 
 
 		/********************************

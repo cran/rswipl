@@ -1,9 +1,10 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        jan@swi.psy.uva.nl
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  1985-2002, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi.psy.uva.nl/projects/xpce/
+    Copyright (c)  1985-2026, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -34,6 +35,7 @@
 
 #include <h/kernel.h>
 #include <h/dialog.h>
+#include <math.h>
 
 static status
 initialiseButton(Button b, Name name, Message msg, Name acc)
@@ -62,47 +64,6 @@ accelerator_code(Name a)
   }
 
   return 0;
-}
-
-
-static status
-RedrawMenuBarButton(Button b, Area a)
-{ int x, y, w, h;
-  Any ofg = NIL;
-  int flags = 0;
-
-  initialiseDeviceGraphical(b, &x, &y, &w, &h);
-  NormaliseArea(x, y, w, h);
-
-  if ( b->status == NAME_preview )
-  { Elevation e;
-
-    if ( b->look == NAME_gtkMenuBar &&
-	 (e = getClassVariableValueObject(b, NAME_previewElevation)) &&
-	 notNil(e) )
-    { r_3d_box(x, y, w, h, 0, e, TRUE);
-    } else /* if ( b->look == NAME_winMenuBar ) */
-    { Any fg = getClassVariableValueObject(b, NAME_selectedForeground);
-      Any bg = getClassVariableValueObject(b, NAME_selectedBackground);
-
-      if ( !fg ) fg = WHITE_COLOUR;
-      if ( !bg ) bg = BLACK_COLOUR;
-      r_fill(x, y, w, h, bg);
-      ofg = r_colour(fg);
-    }
-  }
-
-  if ( b->active == OFF )
-    flags |= LABEL_INACTIVE;
-
-  RedrawLabelDialogItem(b, accelerator_code(b->accelerator),
-			x, y, w, h,
-			NAME_center, NAME_center, flags);
-
-  if ( notNil(ofg) )
-    r_colour(ofg);
-
-  succeed;
 }
 
 
@@ -215,34 +176,35 @@ draw_generic_button_face(Button b,
 
 
 static int
-draw_button_popup_indicator(Button b, int x, int y, int w, int h, int up)
+draw_button_popup_indicator(Button b, int x, int y, int w, int h, bool up)
 { int rm;				/* required right margin */
+  double ex = valNum(getExFont(b->label_font));
 
   if ( notNil(b->popup_image) )
   { int iw = valInt(b->popup_image->size->w);
     int ih = valInt(b->popup_image->size->h);
 
-    rm = iw+8;
+    rm = iw+ex;
     r_image(b->popup_image, 0, 0, x+w-rm, y + (h-ih)/2, iw, ih);
   } else
   { Elevation z = getClassVariableValueObject(b, NAME_elevation);
 
     if ( b->look == NAME_motif || b->look == NAME_gtk )
-    { int bw = 12;
-      int bh = 8;
+    { double bw = ex*1.2;
+      double bh = bw*0.6;
 
-      rm = bw+8;
-      r_3d_box(x+w-bw-8, y+(h-bh)/2, bw, bh, 0, z, TRUE);
+      rm = bw+8.0;
+      r_3d_box(x+w-bw-8.0, y+(h-bh)/2.0, bw, bh, 0, z, true);
     } else
-    { int th = 8;
-      int tw = 9;
-      int tx, ty;
+    { double th = ex+4;
+      double tw = th;
+      double tx, ty;
 
-      rm = tw+8;
+      rm = tw+ex;
       tx = x+w-rm;
-      ty = y + (h-th)/2;
+      ty = round(y + (h-th)/2.0);
 
-      r_3d_triangle(tx+tw/2, ty+th, tx, ty, tx+tw, ty, z, up, 0x3);
+      r_3d_triangle(tx, ty, tx+tw, ty, tx+tw/2, ty+th, z, up, 0x5);
       rm = tw;
     }
   }
@@ -257,17 +219,13 @@ RedrawAreaButton(Button b, Area a)
   int defb;
   int rm = 0;				/* right-margin */
   PceWindow sw;
-  int kbf;				/* Button has keyboard focus */
-  int obhf;				/* Other button has focus */
-  int focus;
-  int swapbg = FALSE;
-  int up;
+  bool kbf;				/* Button has keyboard focus */
+  bool obhf;				/* Other button has focus */
+  bool focus;
+  bool swapbg = false;
+  bool up;
   int flags = 0;
   Elevation z;
-
-  if ( b->look == NAME_winMenuBar ||
-       b->look == NAME_gtkMenuBar )
-    return RedrawMenuBarButton(b, a);
 
   if ( b->active == OFF )
     flags |= LABEL_INACTIVE;
@@ -282,12 +240,9 @@ RedrawAreaButton(Button b, Area a)
     obhf  = (!kbf && instanceOfObject(sw->keyboard_focus, ClassButton));
     focus = (sw->input_focus == ON);
   } else
-    kbf = obhf = focus = FALSE;		/* should not happen */
+    kbf = obhf = focus = false;		/* should not happen */
 
-  if ( !ws_draw_button_face((DialogItem)b,
-			    x, y, w, h,
-			    up, defb, kbf && focus) )
-    draw_generic_button_face(b, x, y, w, h, up, defb, kbf && focus);
+  draw_generic_button_face(b, x, y, w, h, up, defb, kbf && focus);
 
   if ( b->look == NAME_openLook && b->status == NAME_preview &&
        !((z = getClassVariableValueObject(b, NAME_elevation)) && notNil(z)) )
@@ -318,36 +273,22 @@ computeButton(Button b)
 
     dia_label_size(b, &w, &h, &isimage);
 
-    if ( b->look == NAME_winMenuBar ||
-         b->look == NAME_gtkMenuBar )
-    { if ( !isimage )
-      { w += valInt(getAvgCharWidthFont(b->label_font)) * 2;
+    if ( isimage )
+    { w += 4;
+      h += 4;
+    } else		/* sync with draw_button_popup_indicator() */
+    { Size size = getClassVariableValueObject(b, NAME_size);
+      int ex = valInt(getExFont(b->label_font));
 
-	if ( b->look == NAME_gtkMenuBar )
-	  h += 4;
-      } else
-      { w += 4;
-	h += 4;
+      h += 6; w += 10 + valInt(b->radius);
+      if ( notNil(b->popup) )
+      { if ( notNil(b->popup->popup_image) )
+	  w += valInt(b->popup->popup_image->size->w) + ex;
+	else
+	  w += 3*ex;
       }
-    } else
-    { if ( isimage )
-      { w += 4;
-	h += 4;
-      } else
-      { Size size = getClassVariableValueObject(b, NAME_size);
-
-	h += 6; w += 10 + valInt(b->radius);
-	if ( notNil(b->popup) )
-	{ if ( notNil(b->popup->popup_image) )
-	    w += valInt(b->popup->popup_image->size->w) + 5;
-	  else if ( b->look == NAME_motif || b->look == NAME_gtk )
-	    w += 12 + 5;
-	  else
-	    w += 9 + 5;
-	}
-	w = max(valInt(size->w), w);
-	h = max(valInt(size->h), h);
-      }
+      w = max(valInt(size->w), w);
+      h = max(valInt(size->h), h);
     }
 
     CHANGING_GRAPHICAL(b,
@@ -373,10 +314,6 @@ getReferenceButton(Button b)
     fh     = valInt(getHeightFont(b->label_font));
     ascent = valInt(getAscentFont(b->label_font));
     h      = valInt(b->area->h);
-
-    if ( b->look == NAME_winMenuBar ||
-	 b->look == NAME_gtkMenuBar )
-      rx = valInt(getAvgCharWidthFont(b->label_font));
 
     ref = answerObject(ClassPoint, toInt(rx), toInt((h - fh)/2 + ascent), EAV);
   }
@@ -717,8 +654,7 @@ static classvardecl rc_button[] =
      "elevation(preview, 1, hilited)",
      "Elevation of item in preview mode"),
   RC(NAME_elevation, RC_REFINE,
-     UXWIN("when(@colour_display, button, @nil)",
-	   "elevation(@nil, 2, @_dialog_bg)"),
+     UXWIN("button", "elevation(@nil, 2, @_dialog_bg)"),
      NULL)
 };
 
@@ -728,8 +664,7 @@ static Name button_termnames[] = { NAME_label, NAME_message, NAME_accelerator };
 
 ClassDecl(button_decls,
           var_button, send_button, get_button, rc_button,
-          3, button_termnames,
-          "$Rev$");
+          3, button_termnames);
 
 
 status

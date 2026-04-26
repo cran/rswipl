@@ -50,13 +50,7 @@
 #ifdef __WINDOWS__
 #include <msw/mswin.h>
 #undef PCE_MACHINE
-#ifdef WIN64
 #define PCE_MACHINE "x86_64"
-#else
-#define PCE_MACHINE "i386"
-#endif
-#undef OS
-#define OS ws_os()
 #endif
 
 #if (defined(__sun__) && !STDC_HEADERS)
@@ -125,15 +119,7 @@ initialisePce(Pce pce)
   assign(pce, version,                CtoName(PCE_VERSION));
   assign(pce, machine,                CtoName(PCE_MACHINE));
   assign(pce, operating_system,       CtoName(PCE_OS));
-#ifdef WIN32_GRAPHICS
-  assign(pce, window_system,	      NAME_windows);
-#elif X11_GRAPHICS
-  assign(pce, window_system,	      NAME_x11);
-#elif SDL_GRAPHICS
   assign(pce, window_system,	      NAME_sdl);
-#else
-  assign(pce, window_system,	      NAME_unknown);
-#endif
   assign(pce, features,		      newObject(ClassChain, EAV));
 
   at_pce_exit(exit_pce, ATEXIT_FIFO);
@@ -193,36 +179,6 @@ formatPcev(Pce pce, CharArray fmt, int argc, Any *argv)
 
   succeed;
 }
-
-		 /*******************************
-		 *      CONSOLE OPERATIONS	*
-		 *******************************/
-
-static status
-showConsolePce(Pce pce, Name how)
-{ return ws_show_console(how);
-}
-
-
-static status
-exposeConsolePce(Pce pce)
-{ return showConsolePce(pce, NAME_open);
-}
-
-
-static status
-iconifyConsolePce(Pce pce)
-{ return showConsolePce(pce, NAME_iconic);
-}
-
-
-static status
-consoleLabelPce(Pce pce, CharArray title)
-{ ws_console_label(title);
-
-  succeed;
-}
-
 
 		 /*******************************
 		 *	  ERROR HANDLING	*
@@ -608,25 +564,13 @@ static status
 bannerPce(Pce pce)
 { Name host = get(HostObject(), NAME_system, EAV);
 
-#if WIN32_GRAPHICS
-#ifdef WIN64
-  writef("XPCE %s for %I%IWin64: XP 64-bit edition%I%I\n",
-#else
-  writef("XPCE %s for %I%IWin32: NT,2000,XP%I%I\n",
-#endif
-#elif SDL_GRAPHICS
   writef("XPCE %s for %s-%s and SDL%d.%d on %s\n",
-#else
-  writef("XPCE %s for %s-%s and X%dR%d\n",
-#endif
 	 pce->version,
 	 pce->machine,
 	 pce->operating_system,
 	 pce->window_system_version,
 	 pce->window_system_revision
-#if SDL_GRAPHICS
 	,pce->window_system_driver
-#endif
     );
   writef("Copyright (C) 1993-2025 University of Amsterdam, SWI-Prolog Solutions b.v.\n"
 	 "XPCE comes with ABSOLUTELY NO WARRANTY. "
@@ -655,29 +599,17 @@ count_subclasses(Class class)
 
 static status
 infoPce(Pce pce)
-{ int classes;
-
-  classes = valInt(count_subclasses(ClassObject));
+{ Int classes = count_subclasses(ClassObject);
 
   writef("Version:\n");
   writef("	Release:            %s\n", pce->version);
   writef("	System:             %s\n", pce->machine);
   writef("	Operating System:   %s\n", pce->operating_system);
-#if WIN32_GRAPHICS
-  writef("	Window System:      windows %s.%s\n",
-	 pce->window_system_version,
-	 pce->window_system_revision);
-#elif X11_GRAPHICS
-  writef("	Window System:      X%sR%s\n",
-	 pce->window_system_version,
-	 pce->window_system_revision);
-#else
-  writef("	Window System:      SDL%s.%s\n",
+  writef("	Graphics library:   SDL%s.%s\n",
 	 pce->window_system_version,
 	 pce->window_system_revision);
   writef("	SDL driver:         %s\n",
 	 pce->window_system_driver),
-#endif
   writef("\n");
   writef("Memory allocation:\n");
   writef("	Core in use:        %d Bytes\n", getCoreUsagePce(pce));
@@ -688,7 +620,7 @@ infoPce(Pce pce)
 						     getNoFreedPce(pce)));
   writef("\n");
   writef("Other info:\n");
-  writef("	Classes:            %d\n", toInt(classes));
+  writef("	Classes:            %d\n", classes);
   writef("\n");
   writef("Designed and implemented by:\n");
   writef("	Anjo Anjewierden\n");
@@ -820,17 +752,10 @@ _emu_gethostname(char *buf, int len)
 
 static Name
 getUserPce(Pce pce)
-{ char *s;
+{ Name user;
 
-  if ( (s = ws_user()) )
-    answer(CtoName(s));
-#if HAVE_PWD_H
-  { struct passwd *pwd;
-
-    if ( (pwd = getpwuid(getuid())) )
-      answer(CtoName(pwd->pw_name));
-  }
-#endif
+  if ( (user = ws_user()) )
+    answer(user);
 
   answer(NAME_unknown);
 }
@@ -1305,14 +1230,6 @@ static senddecl send_pce[] =
      NAME_host, "Specify language compatible syntax"),
   SM(NAME_defineClass, 4, T_defineClass, defineClassPce,
      NAME_class, "Declare a class without details"),
-  SM(NAME_consoleLabel, 1, "char_array", consoleLabelPce,
-     NAME_console, "Set the label for the console window"),
-  SM(NAME_exposeConsole, 0, NULL, exposeConsolePce,
-     NAME_console, "Expose the PCE/host console window"),
-  SM(NAME_iconifyConsole, 0, NULL, iconifyConsolePce,
-     NAME_console, "Make PCE/host console window an icon"),
-  SM(NAME_showConsole, 1, "{open,full_screen,iconic,hidden}", showConsolePce,
-     NAME_console, "Control visibility of the console window"),
   SM(NAME_fail, 0, NULL, failPce,
      NAME_control, "Simply fails"),
   SM(NAME_succeed, 0, NULL, succeedPce,
@@ -1446,23 +1363,23 @@ static classvardecl rc_pce[] =
 { RC(NAME_initialise, "code*",
      UXWIN(/*UNIX*/
 	   "and(_dialog_bg        @= colour(grey80),\n"
-	   "    _button_elevation @= elevation(button, 1, grey80,\n"
+	   "    _button_elevation @= elevation(button, 2, grey80,\n"
 	   "				       grey95, grey50,\n"
-	   "				      '3d', grey70),\n"
+	   "				       '3d', grey70),\n"
 	   "    _mark_elevation   @= elevation(mark, 0),\n"
-	   "    _win_pen	      @= number(0))",
+	   "    _win_pen	  @= number(0))",
 	   /*__WINDOWS__*/
-           "and(_dialog_bg       @= colour(win_btnface),\n"
+           "and(_dialog_bg        @= colour(win_btnface),\n"
 	   "    _button_elevation @= elevation(button, 1, grey80,\n"
 	   "				       grey95, grey50,\n"
 	   "				      '3d', grey70),\n"
 	   "    _mark_elevation   @= elevation(mark, 0),\n"
-	   "    _graph_bg      @= colour(win_window),\n"
-	   "    _win_pen       @= number(1),\n"
-	   "    _isearch_style @= style(background := green),\n"
-	   "    _select_style  @= style(background := win_highlight,\n"
-	   "                            colour     := win_highlighttext),\n"
-	   "    _txt_height    @= elevation(@nil, 2, win_window))"),
+	   "    _graph_bg         @= colour(win_window),\n"
+	   "    _win_pen          @= number(1),\n"
+	   "    _isearch_style    @= style(background := green),\n"
+	   "    _select_style	  @= style(background := win_highlight,\n"
+	   "                               colour     := win_highlighttext),\n"
+	   "    _txt_height       @= elevation(@nil, 2, win_window))"),
      "Code object to run when initialising defaults")
 };
 
@@ -1472,8 +1389,7 @@ static Name pce_termnames[] = { NAME_version };
 
 ClassDecl(pce_decls,
           var_pce, send_pce, get_pce, rc_pce,
-          1, pce_termnames,
-          "$Rev$");
+          1, pce_termnames);
 
 status
 makeClassPce(Class class)
@@ -1526,7 +1442,6 @@ pceInitialise(int handles, const char *home, const char *appdata,
   PCEargv = argv;
 
   MaxGoalDepth = NO_MAX_GOAL_DEPTH;
-  initMClock();
 
 #ifndef O_RUNTIME
   PCEdebugging = FALSE;

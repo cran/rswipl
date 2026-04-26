@@ -117,7 +117,6 @@ displayError(Error e, int argc, Any *argv)
       { Cprintf("Use `?- send(error(%s), feedback, backtrace).` "
 		"to force a backtrace\n", pp(e->id));
       }
-      send(PCE, NAME_exposeConsole, EAV);
       Cputchar('\007');			/* ^G: ASCII bell */
       debuggingPce(PCE, ON);
     }
@@ -207,8 +206,7 @@ static Name error_termnames[] = { NAME_id, NAME_format,
 
 ClassDecl(error_decls,
           var_error, send_error, get_error, rc_error,
-          2, error_termnames,
-          "$Rev$");
+          2, error_termnames);
 
 
 status
@@ -250,8 +248,6 @@ static const error_def errors[] =
 {					/* Files */
   { NAME_badFile,		EF_REPORT,
     "%N: Not an %s file" },
-  { NAME_badFileName,		EF_REPORT,
-    "%N: Bad file name: %s" },
   { NAME_cannotStat,		EF_REPORT,
     "%N: Cannot get file attributes: %s" },
   { NAME_cannotSeekNonFile,	0,
@@ -274,10 +270,6 @@ static const error_def errors[] =
     "%N: Cannot rename to %s: %s" },
   { NAME_ioError,		EF_REPORT,
     "%N: IO error: %s" },
-  { NAME_incompleteLine,	EF_REPORT,
-    "%N: Incomplete line" },
-  { NAME_noLimit,		0,
-    "%I%N: Failed to get system limit: %s" },
   { NAME_seekFile,		EF_REPORT,
     "%N: Cannot seek to %d from %s: %s" },
   { NAME_cannotFindFile,	EF_REPORT,
@@ -288,8 +280,6 @@ static const error_def errors[] =
     "%I: Cannot create temporary file: %s" },
   { NAME_notOpenFile,		0,
     "%N: Not open in mode %s" },
-  { NAME_cannotStartProcess,	EF_REPORT,
-    "%N: Cannot start: %s" },
   { NAME_noPipe,		EF_REPORT,
     "%N: Cannot create pipe: %s" },
 					/* frame<-open_file */
@@ -309,14 +299,10 @@ static const error_def errors[] =
     "%O: Failed to fetch parameters of %s: %s" },
   { NAME_ioctlSet,		EF_REPORT,
     "%O: Failed to set parameters of %s: %s" },
-  { NAME_setControllingTty,	EF_REPORT,
-    "%O: Failed to set controlling terminal" },
   { NAME_killedOnExit,		ET_STATUS,
     "%N: Process killed on exit" },
   { NAME_processExitStatus,	EF_REPORT,
     "%N: Process exit status %d" },
-  { NAME_brokenPipe,		ET_IGNORED,
-    "%N: Broken pipe" },
   { NAME_ptyError,		EF_REPORT,
     "%N: Could not get pseudo terminal" },
   { NAME_execError,		EF_REPORT,
@@ -325,8 +311,6 @@ static const error_def errors[] =
 					/* C-symbols */
   { NAME_notEnoughMemory,	ET_WARNING|EF_REPORT,
     "%N: Not enough memory" },
-  { NAME_stackOverflow,		ET_ERROR,
-    "%N: Stack overflow (@pce <-max_goal_depth: %d)" },
   { NAME_representation,	0,
     "%O: cannot represent due to %s" },
 					/* Sockets  */
@@ -352,11 +336,6 @@ static const error_def errors[] =
     "%N: old fashioned default syntax: %s" },
   { NAME_classVariablesNotObtained, ET_WARNING|EF_PRINT,
     "%O: class-variables have not been obtained" },
-
-  { NAME_noNamedColour,		ET_WARNING,
-    "%N: No colour named %s; using black" },
-  { NAME_replacedByColour,	ET_IGNORED,
-    "%O: replaced by colour(%N)" },
 
 					/* Fonts */
   { NAME_noDefaultFont,		ET_FATAL,
@@ -411,8 +390,6 @@ static const error_def errors[] =
     "%N: No argument named %s" },
   { NAME_unboundAfterBoundArgument, EF_BACKTRACE|ET_WARNING,
     "%N: un-named arguments cannot appear after named arguments" },
-  { NAME_inconsistentArguments, EF_BACKTRACE|ET_WARNING,
-    "%N: Inconsistent arguments" },
   { NAME_typeLoop,		EF_BACKTRACE|ET_WARNING,
     "%N: Type translation loop for %O" },
   { NAME_noTypeKind,		EF_BACKTRACE|ET_WARNING,
@@ -448,8 +425,6 @@ static const error_def errors[] =
     "%O: Graphicals may only be rotated with multiples of 90 degrees" },
   { NAME_alreadyShown,		0,
     "%O: %O is already shown in %O" },
-  { NAME_nodeNotInTree,		0,
-    "%O: Node is not part of a tree" },
   { NAME_alreadyHasParent,	0,
     "%O: Already has a parent" },
   { NAME_wouldBeCyclic,		0,
@@ -465,9 +440,6 @@ static const error_def errors[] =
     "%N: No default label for %s" },
   { NAME_graphicalNotDisplayed,	0,
     "%N: Cannot open popup on not-displayed graphical: %s" },
-					/* Windows, Frames and Tiles */
-  { NAME_noSubTile, 0,
-    "%O: tile %O has no <-super" },
 					/* Arithmetic */
   { NAME_noVar,			0,
     "%N: Cannot find variable %N" },
@@ -476,8 +448,6 @@ static const error_def errors[] =
   { NAME_domainError,		0,
     "%N: Domain error: %s" },
 					/* Message passing */
-  { NAME_badSelector,		0,
-    "%N: Illegal selector: %O" },
   { NAME_freedObject,		0,
     "%N: Freed object: %O" },
   { NAME_noBehaviour,		EF_BACKTRACE|ET_WARNING,
@@ -488,12 +458,8 @@ static const error_def errors[] =
     "%N: Unknown class" },
   { NAME_noSuperClassOf,	EF_BACKTRACE|ET_WARNING,
     "%N: \"%s\" is not a super-class of my class" },
-  { NAME_noImplementation,	0,
-    "%N: Not implemented" },
   { NAME_badReturnValue,	EF_BACKTRACE|ET_WARNING,
     "%N: Return of incompatible value: %O; return_type is %N" },
-  { NAME_convertedReturnValue,	ET_STATUS,
-    "%N: Converted return value: %O to %O" },
   { NAME_mustBeToReceiver,	EF_BACKTRACE|ET_WARNING,
     "%O: Is not @receiver (= %O)" },
   { NAME_redefinedAssoc,	0,
@@ -526,8 +492,6 @@ static const error_def errors[] =
     "%IReference-count of %O drops below zero" },
   { NAME_stringTooLong,		ET_FATAL,
     "%O: string too long (%d; max = 134217727)" },
-  { NAME_typeNameTooLong,	ET_FATAL,
-    "%O: type name too long (max = %d)" },
   { NAME_maxRecordSize,		0,
     "%O: max record-size is %d" },
 
@@ -549,18 +513,12 @@ static const error_def errors[] =
     "%O: Creating flag set" },
   { NAME_badSlotValue,		ET_WARNING|EF_PRINT,
     "%O: Illegal value in slot %N: %s" },
-  { NAME_badCellValue,		ET_WARNING|EF_PRINT,
-    "%O: Illegal cell %d: %s" },
   { NAME_badElementValue,	ET_WARNING|EF_PRINT,
     "%O: Illegal element %d: %s" },
   { NAME_badKeyValue,		ET_WARNING|EF_PRINT,
     "%O: Illegal key in %s --> %s" },
   { NAME_badValueValue,		ET_WARNING|EF_PRINT,
     "%O: Illegal value in %s --> %s" },
-  { NAME_failedToConvert,	ET_WARNING|EF_PRINT,
-    "%O: Failed to convert %s for slot %N" },
-  { NAME_badSlotValue,		ET_WARNING|EF_PRINT,
-    "%O: Illegal value in slot %N: %s" },
   { NAME_freedSlotValue,	ET_WARNING|EF_PRINT,
     "%O: Freed object in slot %N: %s" },
   { NAME_freedCellValue,	ET_WARNING|EF_PRINT,
@@ -598,8 +556,6 @@ static const error_def errors[] =
   { NAME_noCallBack,		0,
     "%N: Host does not support call-back" },
 					/* Images */
-  { NAME_noImageFormat,		EF_REPORT,
-    "%N: Image format %s is not supported by this version" },
   { NAME_pixelMismatch,		0,
     "%O: Incompatible pixel-type: %O" },
 
@@ -608,12 +564,6 @@ static const error_def errors[] =
     "%N: Read only" },
   { NAME_stackEmpty,		0,
     "%N: Stack empty: %s" },
-  { NAME_notPart,		0,
-    "%N: %s is not a part" },
-  { NAME_unknownEscape,		0,
-    "%N: Unknown escape sequence: %s%c" },
-  { NAME_notImplemented,	0,
-    "%N: Not implemented: %s" },
   { NAME_alreadyPartOf,		0,
     "%N: %s is already part of %s" },
   { NAME_tooManyArguments,	0,
@@ -626,8 +576,6 @@ static const error_def errors[] =
     "%N: Syntax error: %s" },
   { NAME_sourceError,		EF_REPORT,
     "%I%N:%d: %s" },
-  { NAME_internalError,		0,
-    "%N: Internal error" },
   { NAME_needImageAndHotSpot,	0,
     "%N: Style image needs <-image and <-hot_spot" },
   { NAME_noFetchFunction,	0,
@@ -642,8 +590,6 @@ static const error_def errors[] =
     "%O: No event named %s" },
   { NAME_signal,		ET_FATAL,
     "%O: Signal trapped: %s" },
-  { NAME_createFailed,		0,
-    "%O: Failed to ->create" },
   { NAME_noCharacter,		ET_WARNING|EF_REPORT,
     "%O: No character and @event is not printable" },
   { NAME_noKeyBinding,		0,
@@ -662,8 +608,6 @@ static const error_def errors[] =
     "%O: No member %O" },
   { NAME_notSupportedForChar16, 0,
     "%O: operation not supported on 16-bit strings" },
-  { NAME_formatBufferOverFlow,  0,
-    "%O: format buffer overflow (buffer size = %d)" },
   { NAME_runtimeVersion,	0,
     "%N: operation not supported in runtime system"
   },
@@ -681,9 +625,8 @@ static const error_def errors[] =
     "%O: cannot change layout-interface"
   },
 
-  { NAME_threadsInitialised,		0,
-    "%N: Cannot change threading after initialisation" },
-
+  { NAME_SDL_Error,		0,
+    "%O: SDL Error: %N" },
 					/* List closer */
   { NULL,			0,
     NULL }
@@ -734,9 +677,6 @@ initErrorDatabase(HashTable db)
 static void
 _errorPce(Any obj, Name id, va_list args)
 { Error e;
-
-  if ( id == NAME_stackOverflow )
-    MaxGoalDepth += 100;
 
   if ( (e = getConvertError(ClassError, id)) )
   { int argc, i;

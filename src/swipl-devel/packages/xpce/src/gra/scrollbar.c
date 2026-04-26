@@ -36,10 +36,6 @@
 #include <h/kernel.h>
 #include <h/graphics.h>
 
-#ifdef __WINDOWS__			/* timer broken in Win95 */
-#define SCROLLTIMER_USE_SLEEP 1
-#endif
-
 #define swap(x, y)	{ int z; z=x; x=y; y=z; }
 #define swapInt(x, y)	{ Int z; z=x; x=y; y=z; }
 #define BOUNDS(n, l, h) ((n) > (h) ? (h) : (n) < (l) ? (l) : (n))
@@ -343,6 +339,8 @@ draw_arrow(ScrollBar s, int x, int y, int w, int h, Name which, int up)
   else
     r_box(x, y, w, h, 0, isDefault(z->colour) ? NIL : (Any) z->colour);
 
+  realiseClass(ClassImage);
+
        if ( which == NAME_up )       img = SCROLL_UP_IMAGE;
   else if ( which == NAME_down )     img = SCROLL_DOWN_IMAGE;
   else if ( which == NAME_left )     img = SCROLL_LEFT_IMAGE;
@@ -528,7 +526,7 @@ repeatScrollBar(ScrollBar s)
   }
 
   if ( Repeating(s) )
-  { unsigned long clk = mclock();
+  { int64_t clk = mclock();
 
     if ( s->unit == NAME_page )
     { if ( s->direction == NAME_backwards )
@@ -549,16 +547,10 @@ repeatScrollBar(ScrollBar s)
       assign(s, status, NAME_repeat);
 
       if ( ct > 5 )
-      {
-#ifdef SCROLLTIMER_USE_SLEEP
-	msleep(ct);
-	goto again;
-#else
-        Timer tmr = scrollBarRepeatTimer();
+      { Timer tmr = scrollBarRepeatTimer();
 
 	intervalTimer(tmr, CtoReal((float)ct / 1000.0));
 	statusTimer(tmr, NAME_once);
-#endif
       } else
 	goto again;
     }
@@ -1025,8 +1017,7 @@ static Name scrollBar_termnames[] =
 
 ClassDecl(scrollBar_decls,
           var_scrollBar, send_scrollBar, get_scrollBar, rc_scrollBar,
-          3, scrollBar_termnames,
-          "$Rev$");
+          3, scrollBar_termnames);
 
 
 status

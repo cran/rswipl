@@ -1794,8 +1794,8 @@ shadowGraphical(Graphical gr, Int s)
 
 
 status
-fillPatternGraphical(Graphical gr, Any pattern)
-{ return assignGraphical(gr, NAME_fillPattern, pattern);
+fillGraphical(Graphical gr, Any pattern)
+{ return assignGraphical(gr, NAME_fill, pattern);
 }
 
 
@@ -3644,8 +3644,7 @@ static Name graphical_termnames[] = { NAME_x, NAME_y, NAME_width, NAME_height };
 
 ClassDecl(graphical_decls,
           var_graphical, send_graphical, get_graphical, rc_graphical,
-          4, graphical_termnames,
-          "$Rev$");
+          4, graphical_termnames);
 
 status
 makeClassGraphical(Class class)

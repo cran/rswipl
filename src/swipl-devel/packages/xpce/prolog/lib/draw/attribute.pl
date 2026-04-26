@@ -66,7 +66,7 @@ variable(client,        chain*,         get,
 variable(blocked,       int := 0,       get,
          "Blocked count to avoid quadratic behaviour").
 
-%       attributes(?Label, ?Selector)
+%!      attribute(?Label, ?Selector)
 %
 %       Label is the label of the menu is the dialog.  Selector is the
 %       name of the method to be activated to change the value.   Used
@@ -80,7 +80,7 @@ attribute(dash,         texture).
 attribute(arrow_1,      first_arrow).
 attribute(arrow_2,      second_arrow).
 %attribute(arrows,      arrows).
-attribute(fill,         fill_pattern).
+attribute(fill,         fill).
 attribute(colour,       colour).
 attribute(font,         font).
 attribute(transparent,  transparent).
@@ -167,8 +167,8 @@ fill_dialog(A) :->
     make_line_menu(Texture, texture, [none, dotted, dashed, dashdot]),
     make_arrow_menu(Arrows1, Draw, first_arrow),
     make_arrow_menu(Arrows2, Draw, second_arrow),
-    make_fill_pattern_menu(Draw, FillPattern),
     make_colour_menu(Draw, Colour),
+    make_fill_pattern_menu(Draw, Fill),
     make_font_menu(Font),
     make_transparent_menu(Transparent),
     make_coordinate_menu(X, x),
@@ -191,7 +191,7 @@ fill_dialog(A) :->
     ;   send(Arrows2, alignment, left),
         send(D, append, Arrows2, right)
     ),
-    send_list(D, append, [FillPattern, Colour, Radius]),
+    send_list(D, append, [Colour, Fill, Radius]),
     send(D, append, Shadow, right),
     send(D, append, Closed),
     send(D, append, Interpolation, right),
@@ -238,7 +238,7 @@ equal_arrows(A1, A2) :-
     equal_attributes([ class_name,
                        length, wing,
                        pen, texture, style,
-                       fill_pattern, colour
+                       fill, colour
                      ],
                      A1, A2).
 
@@ -248,7 +248,7 @@ close_arrows(A1, A2) :-
     send(A2, instance_of, arrow),
     equal_attributes([ class_name,
                        pen, texture, style,
-                       fill_pattern, colour
+                       fill, colour
                      ],
                      A1, A2).
 
@@ -262,15 +262,11 @@ equal_attributes([A|T], O1, O2) :-
     ),
     equal_attributes(T, O1, O2).
 
-make_fill_pattern_menu(_Draw, Menu) :-
-    get_config(draw_config:resources/fill_palette, ColoursChain),
-    chain_list(ColoursChain, ColourNames),
-    maplist(colour_term, ColourNames, Colours),
+make_fill_pattern_menu(Draw, Menu) :-
+    findall(Colour, colour(Draw, Colour), Colours),
     new(Proto, box(30, 16)),
-    make_proto_menu(Menu, Proto, fill_pattern, [foreground|Colours]),
+    make_proto_menu(Menu, Proto, fill, [foreground|Colours]),
     send(Proto, done).
-
-colour_term(Name, colour(Name)).
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 The colour menu.
@@ -284,7 +280,7 @@ colour(_Draw, Colour) :-
 
 make_colour_menu(Draw, Menu) :-
     new(Proto, box(30, 16)),
-    send(Proto, fill_pattern, foreground),
+    send(Proto, fill, foreground),
     findall(Colour, colour(Draw, Colour), Colours),
     make_proto_menu(Menu, Proto, colour, [@default|Colours]),
     send(Proto, done).
@@ -299,7 +295,7 @@ is often used to mark lines or display on top of filled areas.
 make_transparent_menu(Menu) :-
     new(Proto, figure),
     send(Proto, display, new(B, box(30,16))),
-    send(B, fill_pattern, colour(grey70)),
+    send(B, fill, colour(grey70)),
     send(Proto, display, new(T, text('T', left,
                                       font(screen, roman, 10)))),
     send(T, center, B?center),
@@ -325,7 +321,7 @@ Create  a menu for  some prototype attribute.   Each menu_item   has a
 make_proto_menu(Menu, Proto, Attribute, Values) :-
     new(Menu, draw_proto_menu(Attribute)),
     (   (   Attribute == colour
-        ;   Attribute == fill_pattern
+        ;   Attribute == fill
         ;   Attribute == transparent
         )
     ->  Kind = pixmap
@@ -565,5 +561,9 @@ initialise(Menu, Attribute:name) :->
     send(Menu, off_image, @nil),
     send(Menu, border, 2),
     send(Menu, layout, horizontal).
+
+value_width(_Menu, _Width:int) :->
+    "Ignore value alignment"::
+    true.
 
 :- pce_end_class.

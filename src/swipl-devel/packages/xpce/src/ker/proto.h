@@ -64,7 +64,7 @@ COMMON(status)	setCloneFunctionClass(Class class, SendFunc function);
 COMMON(status)	setRedrawFunctionClass(Class class, SendFunc function);
 COMMON(status)	setLoadStoreFunctionClass(Class class, SendFunc load, SendFunc store);
 COMMON(status)	solidClass(Class class, BoolObj val);
-COMMON(status)	sourceClass(Class class, SendFunc f, char *file, char *rcs);
+COMMON(status)	sourceClass(Class class, SendFunc f, char *file);
 COMMON(void)	localClass(Class class, Name name, Name group, char *type, Name access, char *doc);
 COMMON(status)	declareClass(Class class, const classdecl *decls);
 COMMON(status)	delegateClass(Class class, Name name);
@@ -152,13 +152,7 @@ COMMON(void)	writef(char *fm, ...);
 COMMON(status)	str_writefv(PceString s, CharArray format, int argc, const Any *argv);
 COMMON(Int)	scanstr(char *str, char *fmt, Any *r);
 COMMON(status)	sysPce(char *fm, ...);
-COMMON(void)	initMClock(void);
-COMMON(unsigned long) mclock(void);
-COMMON(void)	initMClock(void);
-COMMON(unsigned long) mclock(void);
-COMMON(void)	msleep(int time);
-COMMON(void)	msleep(int time);
-COMMON(void)	msleep(int time);
+COMMON(int64_t) mclock(void);
 COMMON(int)	pceAssert(int expr, char *text, char *file, int line);
 COMMON(void)	at_pce_exit(atexit_function f, int flags);
 COMMON(int)	run_pce_exit_hooks(int rval);
@@ -381,13 +375,6 @@ COMMON(status)	sendVariable(Variable var, Any rec, Any val);
 COMMON(Any)	getGetVariable(Variable var, Any rec);
 COMMON(Name)	getGroupVariable(Variable v);
 COMMON(status)	makeClassVariable(Class class);
-
-/* /home/jan/src/pl/packages/xpce/src/ker/xref.c */
-COMMON(WsRef)	getXrefObject(Any obj, DisplayObj d);
-COMMON(WsRef)	getExistingXrefObject(Any obj, DisplayObj d);
-COMMON(status)	registerXrefObject(Any obj, DisplayObj d, WsRef xref);
-COMMON(Xref)	unregisterXrefObject(Any obj, DisplayObj d);
-COMMON(void)	closeAllXrefs(void);
 
 /* /home/jan/src/pl/packages/xpce/src/ker/classvar.c */
 COMMON(Any)	getValueClassVariable(ClassVariable cv);

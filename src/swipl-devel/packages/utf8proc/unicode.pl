@@ -3,8 +3,9 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2010-2020, University of Amsterdam
+    Copyright (c)  2010-2026, University of Amsterdam
                               CWI, Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -39,20 +40,41 @@
             unicode_nfd/2,              % +In, -Out
             unicode_nfc/2,              % +In, -Out
             unicode_nfkd/2,             % +In, -Out
-            unicode_nfkc/2              % +In, -Out
+            unicode_nfkc/2,             % +In, -Out
+            unicode_nfkc_casefold/2,    % +In, -Out
+            unicode_casefold/2,         % +In, -Out
+            unicode_version/1,          % -Version
+            unicode_codepoint_valid/1,  % +Code
+            atom_graphemes/2,           % ?Atom, ?Graphemes
+            string_graphemes/2          % ?String, ?Graphemes
           ]).
 :- use_foreign_library(foreign(unicode4pl)).
 
 /** <module> Unicode string handling
 
-This       library       is       a       wrapper       around       the
-[[utf8proc][http://www.public-software-group.org/utf8proc]]     library,
-providing  information  about   Unicode    code-points   and  performing
-operations  (mappings)  on  Unicode  atoms.  The  central  predicate  is
-unicode_map/3, mapping a Unicode atom to   another  Unicode atom using a
-sequence of operations.  The   predicates  unicode_nfd/2, unicode_nfc/2,
-unicode_nfkd/2 and unicode_nfkc/2 implement the   four  standard Unicode
-normalization forms.
+This library wraps the [utf8proc](https://github.com/JuliaStrings/utf8proc)
+library, giving Prolog code access to Unicode character properties,
+string normalization, case folding, and grapheme-cluster iteration.
+
+Three levels of API are provided:
+
+1. **Normalization**: unicode_nfd/2, unicode_nfc/2, unicode_nfkd/2,
+   unicode_nfkc/2 implement the four standard Unicode normalization
+   forms (NFD, NFC, NFKD, NFKC; see UAX#15).  unicode_nfkc_casefold/2
+   combines NFKC with case folding for caseless identifier matching
+   (see UAX#31).
+2. **Per-codepoint properties**: unicode_property/2 queries the
+   Unicode property database (general category, bidi class,
+   decomposition type, display width, case mappings, grapheme
+   boundary class, ...).
+3. **Mixed string-level transformations**: unicode_map/3 is the
+   workhorse; it accepts a list of flags chosen from a fixed set and
+   performs the corresponding composition of decompose / compose /
+   strip / lump / case-fold / grapheme-boundary-mark operations in a
+   single pass.  unicode_casefold/2 is a convenience wrapper.
+
+Grapheme clusters (user-perceived characters) can be iterated with
+atom_graphemes/2 and string_graphemes/2.
 
 Lump handling:
 
@@ -84,7 +106,10 @@ U+007C  |   <-- divides U+2223
 U+007E  ~   <-- tilde operator U+223C
 ==
 
-@see http://www.public-software-group.org/utf8proc
+@see http://www.unicode.org/reports/tr15/  (UAX#15 Normalization)
+@see http://www.unicode.org/reports/tr29/  (UAX#29 Grapheme Clusters)
+@see http://www.unicode.org/reports/tr31/  (UAX#31 Identifiers)
+@see https://github.com/JuliaStrings/utf8proc
 */
 
 system:goal_expansion(unicode_map(In, Out, Options),
@@ -94,67 +119,70 @@ system:goal_expansion(unicode_map(In, Out, Options),
 
 %!  unicode_map(+In, -Out, +Options) is det.
 %
-%   Perform unicode normalization operations.  Options is a list
-%   of operations.  Defined operations are:
+%   Perform a Unicode mapping on In, returning Out.  Options is a list
+%   that may contain any combination of the flags below; a call is
+%   roughly equivalent to `utf8proc_map(In, Options)` in the C API.
 %
 %       * stable
-%       Unicode Versioning Stability has to be respected.
+%       Respect Unicode versioning stability --- the result does not
+%       depend on which (recent) version of Unicode is in use.
 %       * compat
-%       Compatiblity decomposition (i.e. formatting information is lost)
+%       Use compatibility decomposition (i.e. formatting information is
+%       lost).
 %       * compose
-%       Return a result with composed characters.
+%       Produce a composed result (e.g. NFC or NFKC, depending on the
+%       presence of `compat`).
 %       * decompose
-%       Return a result with decomposed characters.
+%       Produce a decomposed result (NFD/NFKD).
 %       * ignore
-%       Strip "default ignorable characters"
+%       Strip "default ignorable" characters (e.g. soft hyphen, zero-width
+%       space).
 %       * rejectna
-%       Return an error, if the input contains unassigned code
-%       points.
+%       Raise an error instead of returning output when the input contains
+%       unassigned code points.
 %       * nlf2ls
-%       Indicating that NLF-sequences (LF, CRLF, CR, NEL) are
-%       representing a line break, and should be converted to the
-%       unicode character for line separation (LS).
+%       Convert all NLF-sequences (LF, CRLF, CR, NEL) to U+2028 LINE
+%       SEPARATOR.
 %       * nlf2ps
-%       Indicating that NLF-sequences are representing a paragraph
-%       break, and should be converted to the unicode character for
-%       paragraph separation (PS).
+%       Convert all NLF-sequences to U+2029 PARAGRAPH SEPARATOR.
 %       * nlf2lf
-%       Indicating that the meaning of NLF-sequences is unknown.
+%       Convert all NLF-sequences to U+000A LINE FEED.
 %       * stripcc
-%       Strips and/or convers control characters.
-%       NLF-sequences are transformed into space, except if one of
-%       the NLF2LS/PS/LF options is given.
-%       HorizontalTab (HT) and FormFeed (FF) are treated as a
-%       NLF-sequence in this case.
-%       All other control characters are simply removed.
+%       Strip or convert control characters.  NLF-sequences become a
+%       space, except if one of the NLF-conversion flags is set; HT and
+%       FF are treated as NLF in this case.  All other control
+%       characters are removed.
 %       * casefold
-%       Performs unicode case folding, to be able to do a
-%       case-insensitive string comparison.
+%       Apply Unicode case folding (for caseless comparison).
 %       * charbound
-%       Inserts 0xFF bytes at the beginning of each sequence which
-%       is representing a single grapheme cluster (see UAX#29).
+%       Insert a U+00FF byte at the beginning of every grapheme cluster
+%       (UAX#29).  The result can be split on 0xFF to recover individual
+%       graphemes; atom_graphemes/2 wraps this pattern.
 %       * lump
-%       (e.g. HYPHEN U+2010 and MINUS U+2212 to ASCII "-").
-%       (See module header for details.)
-%       If NLF2LF is set, this includes a transformation of
-%       paragraph and line separators to ASCII line-feed (LF).
+%       Normalise typographic variants to their ASCII equivalents
+%       (see module header for the full list).  Combined with
+%       `nlf2lf`, paragraph and line separators become U+000A as well.
 %       * stripmark
-%       Strips all character markings
-%       (non-spacing, spacing and enclosing) (i.e. accents)
-%       NOTE: this option works only with =compose= or =decompose=.
+%       Strip all combining marks (non-spacing, spacing, enclosing).
+%       Must be combined with `compose` or `decompose`.
 
 %!  unicode_nfd(+In, -Out) is det.
 %
-%   Characters are decomposed by canonical equivalence.
+%   Characters in In are decomposed by canonical equivalence (NFD).
+%   Precomposed characters expand into base + combining marks.  For
+%   example U+00C5 (LATIN CAPITAL LETTER A WITH RING ABOVE) becomes
+%   the two-code sequence `A` + U+030A.
+%
+%   @see http://www.unicode.org/reports/tr15/
 
 unicode_nfd(In, Out) :-
     unicode_map(In, Out, [stable,decompose]).
 
 %!  unicode_nfc(+In, -Out) is det.
 %
-%   Characters are decomposed  and  then   recomposed  by  canonical
-%   equivalence. It is possible for  the   result  to be a different
-%   sequence of characters  than  the  original.
+%   Characters in In are decomposed and then recomposed by canonical
+%   equivalence (NFC).  Precomposed code points are preferred; for
+%   example `A` + U+030A becomes the single code point U+00C5.
 %
 %   @see http://en.wikipedia.org/wiki/Unicode_equivalence#Normal_forms
 
@@ -163,83 +191,212 @@ unicode_nfc(In, Out) :-
 
 %!  unicode_nfkd(+In, -Out) is det.
 %
-%   Characters are decomposed by compatibility equivalence.
+%   Characters in In are decomposed by compatibility equivalence
+%   (NFKD).  Compatibility decomposition expands presentation forms
+%   (ligatures, subscripts, fullwidth letters) into their base forms;
+%   for example U+FB03 (LATIN SMALL LIGATURE FFI) becomes `f f i`.
 
 unicode_nfkd(In, Out) :-
     unicode_map(In, Out, [stable,decompose,compat]).
 
 %!  unicode_nfkc(+In, -Out) is det.
 %
-%   Characters are decomposed  by   compatibility  equivalence, then
-%   recomposed by canonical equivalence.
+%   Characters in In are decomposed by compatibility equivalence, then
+%   recomposed by canonical equivalence (NFKC).
 
 unicode_nfkc(In, Out) :-
     unicode_map(In, Out, [stable,compose,compat]).
 
+%!  unicode_nfkc_casefold(+In, -Out) is det.
+%
+%   Equivalent to unicode_nfkc/2 followed by unicode_casefold/2 done
+%   in a single pass.  This is the normalisation form recommended by
+%   UAX#31 for caseless identifier matching.  For example German
+%   `'Strasse'` written with U+00DF (LATIN SMALL LETTER SHARP S)
+%   maps to `'strasse'`, and U+FB03 (LATIN SMALL LIGATURE FFI) maps
+%   to `'ffi'`.
 
-%!  unicode_property(?Char, ?Property) is nondet.
+unicode_nfkc_casefold(In, Out) :-
+    unicode_map(In, Out, [stable,compose,compat,casefold]).
+
+%!  unicode_casefold(+In, -Out) is det.
 %
-%   True if Property is defined for Char.  Property is a term
-%   Name(Value).  Defined property-names are:
+%   Out is the case-folded form of In.  Use this for caseless
+%   comparison that does not require NFKC; otherwise prefer
+%   unicode_nfkc_casefold/2.
+
+unicode_casefold(In, Out) :-
+    unicode_map(In, Out, [stable,casefold]).
+
+
+%!  unicode_property(?Code, ?Property) is nondet.
 %
-%       * category(atom)
-%       Unicode code category of Char. This is   one  of Cc, Cf, Cn,
-%       Co, Cs, Ll, Lm, Lo, Lt, Lu, Mc,  Me, Mn, Nd, Nl, No, Pc, Pd,
-%       Pe, Pf, Pi, Po, Ps, Sc, Sk, Sm, So, Zl, Zp, Zs. When
-%       testing, a single letter stands for all its subcategories.
-%       E.g. to test form a letter, you can use
+%   Query the Unicode character database for Code.  Code is an integer
+%   code point (0 .. 0x10FFFF) or a single-character atom; Property is
+%   a term of the form Name(Value) drawn from the list below.
+%
+%   This predicate is a thin wrapper over utf8proc's property struct,
+%   so its vocabulary matches the utf8proc documentation.  In the
+%   modes (+,?) and (-,?) the predicate enumerates properties for
+%   the given code (or the code for the given property); in (+,+) it
+%   is a deterministic test.
+%
+%   Supported properties:
+%
+%       * category(Atom)
+%       Unicode general category.  Atom is one of `cc`, `cf`, `cn`,
+%       `co`, `cs`, `ll`, `lm`, `lo`, `lt`, `lu`, `mc`, `me`, `mn`,
+%       `nd`, `nl`, `no`, `pc`, `pd`, `pe`, `pf`, `pi`, `po`, `ps`,
+%       `sc`, `sk`, `sm`, `so`, `zl`, `zp`, `zs`.  When querying, the
+%       single capital letter of a subcategory stands for all its
+%       subcategories; e.g.
 %
 %           ==
-%           unicode_property(C, category('L'))
+%           ?- unicode_property(0'A, category('L')).
+%           true.
 %           ==
 %
-%       * combining_class(integer)
-%       * bidi_class(atom)
-%       * decomp_type(atom)
-%       * decomp_mapping(list(code))
-%       * bidi_mirrored(bool)
-%       * uppercase_mapping(code)
-%       * lowercase_mapping(code)
-%       * titlecase_mapping(code)
-%       * comb1st_index(code)
-%       * comb2nd_index(code)
-%       * comp_exclusion(bool)
-%       * ignorable(bool)
-%       * control_boundary(bool)
-%       * extend(bool)
-%       * casefold_mapping(list(code))
+%       * combining_class(Integer)
+%       Canonical combining class (0 for base characters, 230 for
+%       accents above, etc.).
+%       * bidi_class(Atom)
+%       Bidirectional class.  One of `l`, `lre`, `lro`, `r`, `al`,
+%       `rle`, `rlo`, `pdf`, `en`, `es`, `et`, `an`, `cs`, `nsm`,
+%       `bn`, `b`, `s`, `ws`, `on`.
+%       * bidi_mirrored(Bool)
+%       `true` if the character is mirrored for bidi (parentheses,
+%       brackets, math operators, ...).
+%       * decomp_type(Atom)
+%       Compatibility decomposition type.  One of `font`, `nobreak`,
+%       `initial`, `medial`, `final`, `isolated`, `circle`, `super`,
+%       `sub`, `vertical`, `wide`, `narrow`, `small`, `square`,
+%       `fraction`, `compat`.  Fails when there is no decomposition.
+%       * ignorable(Bool)
+%       `true` if the character is a "default ignorable" code point.
+%       * boundclass(Atom)
+%       UAX#29 grapheme-cluster break class.  One of `start`,
+%       `other`, `cr`, `lf`, `control`, `extend`, `l`, `v`, `t`,
+%       `lv`, `lvt`, `regional_indicator`, `spacingmark`, `prepend`,
+%       `zwj`, `extended_pictographic`, `e_zwg`.
+%       * width(Integer)
+%       Display width in fixed-width cells, 0..3.  Zero for combining
+%       marks and control characters, 1 for most, 2 for "wide"
+%       characters (CJK, emoji).
+%       * ambiguous_width(Bool)
+%       `true` if the character has East-Asian Ambiguous width ---
+%       normally one column, but two in a legacy CJK context.
+%       * uppercase(Code)
+%       * lowercase(Code)
+%       * titlecase(Code)
+%       Single-code-point case mapping.  Fails when the code point
+%       has no mapping of that kind (e.g. `unicode_property(0'A,
+%       uppercase(_))` fails because `'A'` is already upper-case).
+%       For characters whose case mapping produces more than one code
+%       point (e.g. U+00DF LATIN SMALL LETTER SHARP S maps to "SS"),
+%       use unicode_map/3 with the `[casefold]` option or
+%       unicode_casefold/2 for a full string-level transformation.
+%       * indic_conjunct_break(Atom)
+%       Indic_Conjunct_Break property (Unicode 15+; UAX#44).  One of
+%       `none`, `linker`, `consonant`, `extend`.  Used by the
+%       grapheme-cluster-break algorithm for Devanagari, Bengali,
+%       etc.
 %
-%   @tbd Complete documentation
+%   @see http://www.unicode.org/reports/tr44/ (Unicode property database)
 
 unicode_property(Code, Property) :-
     nonvar(Code), nonvar(Property),
     !,
-    '$unicode_property'(Code, Property).
+    '$unicode_property'(Code, Property, false).
 unicode_property(Code, Property) :-
     nonvar(Code),
     !,
     property(Property),
-    '$unicode_property'(Code, Property).
+    '$unicode_property'(Code, Property, true).
 unicode_property(Code, Property) :-
     var(Code),
     !,
     between(0, 0x10ffff, Code),
     property(Property),
-    '$unicode_property'(Code, Property).
+    '$unicode_property'(Code, Property, true).
+
+%   The third argument of `$unicode_property/3` is a `Silent` flag.
+%   When `true`, the C layer returns `false` instead of raising
+%   `domain_error(unicode_property, ...)` for a property name the
+%   binding was compiled without (older libutf8proc versions lack
+%   some fields).  Enumeration modes set it to `true` so
+%   property/1 clauses for absent features are silently skipped.
 
 property(category(_)).
 property(combining_class(_)).
 property(bidi_class(_)).
-property(decomp_type(_)).
-property(decomp_mapping(_)).
 property(bidi_mirrored(_)).
-property(uppercase_mapping(_)).
-property(lowercase_mapping(_)).
-property(titlecase_mapping(_)).
-property(comb1st_index(_)).
-property(comb2nd_index(_)).
-property(comp_exclusion(_)).
+property(decomp_type(_)).
 property(ignorable(_)).
-property(control_boundary(_)).
-property(extend(_)).
-property(casefold_mapping(_)).
+property(boundclass(_)).
+property(width(_)).
+property(ambiguous_width(_)).
+property(uppercase(_)).
+property(lowercase(_)).
+property(titlecase(_)).
+property(indic_conjunct_break(_)).
+
+
+%!  atom_graphemes(?Atom, ?Graphemes) is det.
+%
+%   Relate Atom to a list of its grapheme clusters.  Grapheme clusters
+%   are "user-perceived characters" as defined by UAX#29 --- e.g. the
+%   precomposed U+00E9 (LATIN SMALL LETTER E WITH ACUTE) and the
+%   decomposed sequence `e` + U+0301 are both one grapheme, an emoji
+%   ZWJ sequence such as `MAN + ZWJ + WOMAN + ZWJ + GIRL` is one
+%   grapheme, and a regional-indicator pair (e.g. U+1F1F3 U+1F1F1,
+%   rendered as the Dutch flag) is one grapheme.
+%
+%   In the forward mode (+Atom, ?Graphemes), Atom is decomposed into
+%   a list of atoms, each covering one cluster.  In the reverse mode
+%   (?Atom, +Graphemes), the elements of Graphemes are concatenated
+%   into Atom.  Both arguments instantiated means both modes run and
+%   the result must agree.
+%
+%   ```
+%   ?- atom_codes(A, [0'c, 0'a, 0'f, 0'e, 0x0301]),
+%      atom_graphemes(A, Gs).
+%   Gs = [c, a, f, G],
+%   atom_codes(G, [0'e, 0x0301]).
+%
+%   ?- atom_graphemes(A, [a, b, c]).
+%   A = abc.
+%   ```
+%
+%   @see string_graphemes/2 for the string analogue.
+
+%!  string_graphemes(?String, ?Graphemes) is det.
+%
+%   As atom_graphemes/2, but the elements of Graphemes are strings.
+
+%!  unicode_version(-Version) is det.
+%
+%   Version is an atom describing the Unicode version implemented by
+%   the linked utf8proc library, e.g. `'15.1.0'`.
+
+%!  unicode_codepoint_valid(+Code) is semidet.
+%
+%   True when Code is a non-negative integer that is a valid and
+%   _assigned_ Unicode code point.  Unassigned code points (general
+%   category `Cn`), surrogate halves (`Cs`), and integers outside
+%   `0..0x10FFFF` all fail.
+
+
+                /*******************************
+                *           SANDBOX            *
+                *******************************/
+
+:- multifile
+    sandbox:safe_primitive/1.
+
+sandbox:safe_primitive(unicode:unicode_property(_,_)).
+sandbox:safe_primitive(unicode:unicode_map(_,_,_)).
+sandbox:safe_primitive(unicode:unicode_property(_,_)).
+sandbox:safe_primitive(unicode:unicode_version(_)).
+sandbox:safe_primitive(unicode:unicode_codepoint_valid(_)).
+sandbox:safe_primitive(unicode:atom_graphemes(_,_)).
+sandbox:safe_primitive(unicode:string_graphemes(_,_)).

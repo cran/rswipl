@@ -36,6 +36,9 @@
 #include <h/graphics.h>
 #include "sdl.h"
 #include "sdlinput.h"
+#ifndef __WINDOWS__
+#include <pwd.h>
+#endif
 
 /**
  * Initialize the Raylib backend with the given command-line arguments.
@@ -45,7 +48,7 @@
  */
 void
 ws_initialise(int argc, char **argv)
-{
+{ realiseClass(ClassImage);
 }
 
 static int sdl_main_thread = 0;
@@ -132,30 +135,6 @@ ws_driver(void)
 }
 
 /**
- * Show or hide the XPCE console window.
- *
- * @param how Name indicating how to show the console (e.g., open, iconify).
- * @return SUCCEED on success; otherwise, FAIL.
- */
-status
-ws_show_console(Name how)
-{
-    return SUCCEED;
-}
-
-/**
- * Set the label of the console window.
- *
- * @param label The CharArray containing the new label.
- * @return SUCCEED on success; otherwise, FAIL.
- */
-status
-ws_console_label(CharArray label)
-{
-    return SUCCEED;
-}
-
-/**
  * Get the default width of scrollbars.
  *
  * @return The default scrollbar width as an Int.
@@ -170,12 +149,25 @@ ws_default_scrollbar_width(void)
 /**
  * Retrieve the current username.
  *
- * @return A pointer to a string containing the username.
+ * @return A Name object containing the username, or NULL on failure.
  */
-char *
+Name
 ws_user(void)
 {
-    return "user";
+#ifdef __WINDOWS__
+  wchar_t buf[256];
+  DWORD len = sizeof(buf)/sizeof(wchar_t);
+  if ( GetUserNameW(buf, &len) )
+    return WCToName(buf, len-1);
+  const char *s = getenv("USERNAME");
+  return s ? CtoName(s) : NULL;
+#else
+  struct passwd *pw = getpwuid(getuid());
+  if ( pw )
+    return MBToName(pw->pw_name);
+  const char *s = getenv("USER");
+  return s ? MBToName(s) : NULL;
+#endif
 }
 
 status

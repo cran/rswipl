@@ -52,12 +52,12 @@ static unsigned long last_time	  = 0L;
 static Int		 last_down_bts    = ZERO;
 static int		 last_down_x      = -1000; /* multiclick detection */
 static int		 last_down_y	  = -1000;
-static unsigned long     last_down_time   = 0;
+static int64_t		 last_down_time   = 0;
 static unsigned int	 multi_click_time = 400;
 static int		 multi_click_diff = 4;
 static int		 last_click_type  = CLICK_TYPE_triple;
 static int		 loc_still_posted = TRUE;
-static unsigned long	 host_last_time   = 0;
+static int64_t		 host_last_time   = 0;
 static int		 loc_still_time	  = 400;
 
 static status
@@ -173,9 +173,9 @@ initialiseEvent(EventObj e, Name id, Any window,
 void
 considerLocStillEvent()
 { if ( !loc_still_posted )
-  { unsigned long now = mclock();
+  { int64_t now = mclock();
 
-    if ( now - host_last_time < (unsigned long)loc_still_time )
+    if ( now - host_last_time < (int64_t)loc_still_time )
     { DEBUG(NAME_locStill, Cprintf("TimeDiff = %d (ignored)\n", now - host_last_time));
       return;
     }
@@ -916,10 +916,13 @@ getDisplayEvent(EventObj ev)
 		 *******************************/
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-Deal with scroll-mice in X11. Such  mice   normally  report the wheel as
-Z-axis motion events. As very  few   applications  know  about this, the
-X-server normally maps  these  to  the   pointer-buttons  4  and  5. The
-function below is called from editor, list_browser and window.
+Deal with scroll-mice and trackpads, mapping   events  with a `rotation`
+attribute to vertical scroll events.  Normally  a mouse scroll wheel has
+tick that are reported as 15 degrees rotations.
+
+@tbd We should also handle horizontal   scrolling  and smooth scrolling.
+As  is,  sdlevent.c  accumulates  fast  precise  scrolling  events  from
+trackpads into 15 degree motion events.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 status
@@ -1075,8 +1078,7 @@ static Name event_termnames[] = { NAME_receiver, NAME_name, NAME_position, NAME_
 
 ClassDecl(event_decls,
           var_event, send_event, get_event, rc_event,
-          3, event_termnames,
-          "$Rev$");
+          3, event_termnames);
 
 
 status

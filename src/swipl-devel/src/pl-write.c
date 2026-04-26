@@ -53,6 +53,7 @@
 #include "os/pl-utf8.h"
 #include "os/pl-prologflag.h"
 #include "os/pl-fmt.h"
+#include "os/pl-stream.h"
 #include "pl-termset.h"
 #include <stdio.h>			/* sprintf() */
 #include <errno.h>
@@ -2180,7 +2181,7 @@ static const PL_option_t write_term_options[] =
   { NULL_ATOM,			    0 }
 };
 
-foreign_t
+bool
 pl_write_term3(term_t stream, term_t term, term_t opts)
 { GET_LD
   int quoted      = false;
@@ -2341,11 +2342,15 @@ out:
 }
 
 
-foreign_t
-pl_write_term(term_t term, term_t options)
-{ return pl_write_term3(0, term, options);
+static
+PRED_IMPL("write_term", 2, write_term2, PL_FA_TRANSPARENT|PL_FA_ISO)
+{ return pl_write_term3(0, A1, A2);
 }
 
+static
+PRED_IMPL("write_term", 3, write_term3, PL_FA_TRANSPARENT|PL_FA_ISO)
+{ return pl_write_term3(A1, A2, A3);
+}
 
 bool
 PL_write_term(IOSTREAM *s, term_t term, int precedence, int flags)
@@ -2427,7 +2432,7 @@ pl_print2(term_t stream, term_t term)
 { GET_LD
   fid_t fid = PL_open_foreign_frame();
   term_t opts = PL_new_term_ref();
-  foreign_t rc;
+  bool rc;
 
   if ( PL_current_prolog_flag(ATOM_print_write_options, PL_TERM, &opts) )
     rc = pl_write_term3(stream, term, opts);
@@ -2562,15 +2567,61 @@ PRED_IMPL("$put_quoted", 4, put_quoted_codes, 0)
 
 typedef struct limit_size_stream
 { IOSTREAM	*stream;		/* Limited stream */
-  int64_t	 length;		/* Max size */
+  int64_t	 max_width;		/* Max line pos */
+  int64_t	 max_height;		/* Max line count */
+  int64_t	 width;			/* Max width reached */
+  IOPOS		 position;		/* Current position */
+#if SIZEOF_WCHAR_T == 2
+  wchar_t	 lead;
+#endif
 } limit_size_stream;
 
 static ssize_t
 Swrite_lss(void *handle, char *buf, size_t size)
 { limit_size_stream *lss = handle;
-  (void)buf;
+  wchar_t *wbuf = (wchar_t*)buf;
+  const wchar_t *data = (const wchar_t*)wbuf;
+  const wchar_t *end  = &data[size/sizeof(wchar_t)];
 
-  if ( lss->stream->position->charno > lss->length )
+  assert(size % sizeof(wchar_t) == 0);
+
+#if SIZEOF_WCHAR_T == 2
+  if ( lss->lead )   /* Note that buf has space for one wchar_t before it */
+  { wbuf[-1] = lss->lead;
+    data--;
+    lss->lead = 0;
+  }
+#endif
+
+  while(data < end)
+  { int chr = *data++;
+
+#if SIZEOF_WCHAR_T == 2
+    if ( IS_UTF16_LEAD(chr) )
+    { if ( data == end )
+      { lss->lead = chr;
+	break;
+      } else
+      { data = get_wchar(data-1, &chr);
+      }
+    }
+#endif
+
+    Supdatepos(&lss->position, chr);
+    if ( lss->position.linepos > lss->width )
+      lss->width = lss->position.linepos;
+  }
+
+  /* Height is 0 when nothing was written, otherwise lineno + 1
+   * (newlines seen plus the current line).  Normal write_term output
+   * advances either width (via any printable char) or lineno (via a
+   * newline), so `width > 0 || lineno > 0` reliably detects "any
+   * output was produced". */
+  int64_t height = (lss->width > 0 || lss->position.lineno > 0)
+                 ? lss->position.lineno + 1
+                 : 0;
+  if ( lss->width > lss->max_width ||
+       height > lss->max_height )
   { errno = EINVAL;
     return -1;
   }
@@ -2592,65 +2643,63 @@ static const IOFUNCTIONS lss_functions =
   Sclose_lss
 };
 
-/** write_length(+Term, -Len, +Options) is det.
-
-(*) Avoid error on max_length in iso mode.  It might be nicer to get the
-option processing out of pl_write_term3(), so we can take control of the
-whole lot here more easily.
+/** write_size(+Term, -Width, -Height, +Options) is det.
 */
 
+static const PL_option_t write_length_options[] =
+{ { ATOM_max_width,  OPT_INT64 },
+  { ATOM_max_height, OPT_INT64 },
+  { NULL_ATOM,       0 }
+};
+
+
 static
-PRED_IMPL("write_length", 3, write_length, 0)
+PRED_IMPL("write_size", 4, write_size, 0)
 { PRED_LD
-  limit_size_stream lss;
+  limit_size_stream lss = {0};
   int sflags = SIO_NBUF|SIO_RECORDPOS|SIO_OUTPUT|SIO_TEXT;
   IOSTREAM *s;
-  term_t options = PL_copy_term_ref(A3);
-  term_t head = PL_new_term_ref();
-  char buf[100];
+  /* Room for 100 wchar_t entries, plus one extra wchar_t slot at the
+   * front that Swrite_lss uses to stash a pending UTF-16 lead surrogate
+   * across buffer boundaries on platforms with sizeof(wchar_t)==2
+   * (Windows). */
+  char buf[(100+1)*sizeof(wchar_t)];
 
-  lss.length = PLMAXINT;
-  while(PL_get_list(options, head, options))
-  { atom_t name;
-    size_t arity;
-
-    if ( PL_get_name_arity(head, &name, &arity) &&
-	 name == ATOM_max_length && arity == 1 )
-    { term_t a = PL_new_term_ref();
-
-      _PL_get_arg(1, head, a);
-      if ( !PL_get_int64_ex(a, &lss.length) )
-	return false;
-    }
-  }
+  lss.max_width  = PLMAXINT;
+  lss.max_height = PLMAXINT;
+  if ( !PL_scan_options(A4, 0, "write_length_option", write_length_options,
+			&lss.max_width, &lss.max_height) )
+    return false;
 
   if ( (s = Snew(&lss, sflags, (IOFUNCTIONS *)&lss_functions)) )
-  { int64_t len;
-    size_t rc;
-    pl_features_t oldmask = LD->prolog_flag.mask; /* (*) */
+  { pl_features_t oldmask = LD->prolog_flag.mask; /* (*) */
 
     lss.stream = s;
-    s->encoding = ENC_UTF8;
-    Ssetbuffer(s, buf, sizeof(buf));
+    s->encoding = ENC_WCHAR;
+    Ssetbuffer(s, buf+sizeof(wchar_t), 100*sizeof(wchar_t));
     s->flags |= SIO_USERBUF;
 
     clearPrologFlagMask(PLFLAG_ISO);
     pushOutputContext(s);
-    rc = pl_write_term3(0, A1, A3);
+    bool rc = pl_write_term3(0, A1, A4);
     popOutputContext();
     LD->prolog_flag.mask = oldmask;
-
-    if ( rc && s->position->charno <= lss.length )
-    { len = s->position->charno;
-    } else
-    { len = -1;
-      if ( s->position->charno > lss.length )
-	PL_clear_exception();
-    }
-
     Sclose(s);
-    if ( len >= 0 )
-      return PL_unify_int64(A2, len);
+
+    int64_t height = (lss.width > 0 || lss.position.lineno > 0)
+                   ? lss.position.lineno + 1
+                   : 0;
+    if ( rc &&
+	 lss.width <= lss.max_width &&
+	 height <= lss.max_height )
+      return ( PL_unify_int64(A2, lss.width) &&
+	       PL_unify_int64(A3, height) );
+    /* Swrite_lss returned -1 when it hit our limit; that surfaces as
+     * an I/O-error exception from pl_write_term3.  Clear it so callers
+     * get a clean fail instead of an exception — but only when the
+     * failure really is our abort, not some unrelated write error. */
+    if ( lss.width > lss.max_width || height > lss.max_height )
+      PL_clear_exception();
   }
 
   return false;
@@ -2661,10 +2710,15 @@ PRED_IMPL("write_length", 3, write_length, 0)
 		 *      PUBLISH PREDICATES	*
 		 *******************************/
 
+#define META    PL_FA_TRANSPARENT
+#define ISO	PL_FA_ISO
+
 BeginPredDefs(write)
-  PRED_DEF("nl", 0, nl, PL_FA_ISO)
-  PRED_DEF("nl", 1, nl, PL_FA_ISO)
-  PRED_DEF("$put_token", 2, put_token, 0)
-  PRED_DEF("$put_quoted", 4, put_quoted_codes, 0)
-  PRED_DEF("write_length", 3, write_length, 0)
+  PRED_DEF("write_term",   2, write_term2,	META|ISO)
+  PRED_DEF("write_term",   3, write_term3,	META|ISO)
+  PRED_DEF("nl",	   0, nl,		ISO)
+  PRED_DEF("nl",	   1, nl,		ISO)
+  PRED_DEF("$put_token",   2, put_token,	0)
+  PRED_DEF("$put_quoted",  4, put_quoted_codes,	0)
+  PRED_DEF("write_size",   4, write_size,	META)
 EndPredDefs

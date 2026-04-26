@@ -195,6 +195,7 @@ check_function_exists(mbcasescoll HAVE_MBCASESCOLL)
 check_function_exists(localeconv HAVE_LOCALECONV)
 check_function_exists(wcsdup HAVE_WCSDUP)
 check_function_exists(wcsxfrm HAVE_WCSXFRM)
+check_function_exists(wcwidth HAVE_WCWIDTH)
 # processes
 check_function_exists(getuid HAVE_GETUID)
 check_function_exists(getpid HAVE_GETPID)
@@ -219,7 +220,6 @@ check_function_exists(signal HAVE_SIGNAL)
 check_function_exists(sigprocmask HAVE_SIGPROCMASK)
 check_function_exists(sigsetmask HAVE_SIGSETMASK)
 check_function_exists(siggetmask HAVE_SIGGETMASK)
-check_function_exists(sigaction HAVE_SIGACTION)
 check_function_exists(sigset HAVE_SIGSET)
 check_function_exists(sigblock HAVE_SIGBLOCK)
 check_function_exists(sigaltstack HAVE_SIGALTSTACK)
@@ -409,12 +409,6 @@ check_c_source_compiles(
 if(HAVE_QSORT_R)
   include(TestGNUQsortR)
 endif()
-
-# Don't test BSD signals on EMSCRIPTEN - hangs the process.
-if(HAVE_SIGNAL AND NOT HAVE_SIGACTION AND NOT EMSCRIPTEN)
-  include(TestBSDSignals)
-endif()
-
 
 check_c_source_compiles(
     "int main()

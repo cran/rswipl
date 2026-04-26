@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        jan@swi-prolog.org
     WWW:           https://www.swi-prolog.org
-    Copyright (c)  2025, SWI-Prolog Solutions b.v.
+    Copyright (c)  2025-2026, SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -37,7 +37,11 @@
 #include <h/unix.h>
 #include "sdlimage.h"
 #include "sdlcolour.h"
+#include "sdlstream.h"
 #include <SDL3_image/SDL_image.h>
+#include <math.h>
+
+static status sdl_surface_to_image(Image image, SDL_Surface *surf0);
 
 cairo_surface_t *
 pceImage2CairoSurface(Image image)
@@ -46,16 +50,6 @@ pceImage2CairoSurface(Image image)
       return NULL;
   }
   return image->ws_ref;
-}
-
-/**
- * Initialize internal state for a new Image object.
- *
- * @param image Pointer to the Image object.
- */
-void
-ws_init_image(Image image)
-{
 }
 
 /**
@@ -73,28 +67,36 @@ ws_destroy_image(Image image)
 }
 
 /**
- * Store an image to a file.
+ * Add image to a file for creating a saved object.  Note this is _not_
+ * for saving images to a file.  ws_save_image_file() does that.
  *
  * @param image Pointer to the Image object.
- * @param file File object representing the target file.
- * @return SUCCEED if the image is stored successfully; otherwise, FAIL.
+ * @param file File object representing the target file.  This file
+ * is open for writing through `file->fd`.
  */
 status
 ws_store_image(Image image, FileObj file)
-{ succeed;
-}
+{ SDL_Surface *surf = pceImage2SDL_Surface(image);
+  status rc = FAIL;
 
-/**
- * Load an image in XImage format.
- *
- * @param image Pointer to the Image object.
- * @param fd IOSTREAM to read from.
- * @return SUCCEED if loading succeeds; otherwise, FAIL.
- */
-status
-loadXImage(Image image, IOSTREAM *fd)
-{
-    return SUCCEED;
+  if ( surf )
+  { SDL_IOStream *io = IOSTREAM_to_SDL_IOStream(file->fd);
+
+    if ( io )
+    { Sputc('P', file->fd);
+      rc = IMG_SavePNG_IO(surf, io, true);
+      if ( !rc )
+	errorPce(image, NAME_SDL_Error, CtoString(SDL_GetError()));
+    } else
+    { Sputc('O', file->fd);
+    }
+
+    SDL_DestroySurface(surf);
+  } else
+  { Sputc('O', file->fd);
+  }
+
+  return rc;
 }
 
 /**
@@ -106,21 +108,19 @@ loadXImage(Image image, IOSTREAM *fd)
  */
 status
 loadPNMImage(Image image, IOSTREAM *fd)
-{
-    return SUCCEED;
-}
+{ assert(image->ws_ref == NULL);
 
-/**
- * Load an image in the legacy XPCE format.
- *
- * @param image Pointer to the Image object.
- * @param fd IOSTREAM to read from.
- * @return SUCCEED if loading succeeds; otherwise, FAIL.
- */
-status
-ws_load_old_image(Image image, IOSTREAM *fd)
-{
-    return SUCCEED;
+  SDL_IOStream *io = IOSTREAM_to_SDL_IOStream(fd);
+  if ( !io )
+    fail;
+
+  SDL_Surface *surf0 = IMG_Load_IO(io, true);  /* closes io */
+  if ( !surf0 )
+  { Cprintf("loadPNMImage(%s): %s\n", pp(image), SDL_GetError());
+    fail;
+  }
+
+  return sdl_surface_to_image(image, surf0);
 }
 
 static void
@@ -191,58 +191,20 @@ my_cairo_check_surface(Any ctx, cairo_surface_t *s)
 }
 
 /**
- * Load an image from its associated file path.
+ * Convert an SDL_Surface to a cairo-backed Image, consuming surf0.
  *
- * @param image Pointer to the Image object.
- * @return SUCCEED if loading succeeds; otherwise, FAIL.
+ * Converts to ARGB8888, premultiplies alpha, wraps in a cairo surface,
+ * copies to a cairo-owned buffer, then sets image->kind, size, ws_ref.
  */
-status
-ws_load_image_file(Image image)
-{ assert(image->ws_ref == NULL);
-  SDL_Surface *surf0 = NULL;
-
-  if ( instanceOfObject(image->file, ClassFile) )
-  { FileObj f = (FileObj)image->file;
-    char *fname = charArrayToFN((CharArray)getOsNameFile(f));
-    surf0 = IMG_Load(fname);
-    if ( !surf0 )
-    { Cprintf("Failed to load %s: %s\n", fname, SDL_GetError());
-      fail;
-    }
-  } else
-  { IOSTREAM *fd;
-    if ( !(fd = Sopen_object(image->file, "rbr")) )
-      fail;
-    int64_t size = Ssize(fd);
-    if ( size != -1 )
-    { char *data = malloc(size);
-      if ( data )
-      { fd->encoding = ENC_OCTET;
-	Sfread(data, 1, size, fd);
-	Sclose(fd);
-	SDL_IOStream *io = SDL_IOFromConstMem(data, size);
-	surf0 = IMG_Load_IO(io, true);
-	if ( !surf0 )
-	{ Cprintf("Failed to load image from %s: %s\n",
-		  pp(image->file), SDL_GetError());
-	  fail;
-	}
-      } else
-      { assert(0);
-      }
-    } else
-    { Cprintf("Cannot load images from %s yet\n", pp(image->file));
-      fail;
-    }
-  }
-
-  SDL_Surface *surf1 = SDL_ConvertSurface(surf0,
-					  SDL_PIXELFORMAT_ARGB8888);
+static status
+sdl_surface_to_image(Image image, SDL_Surface *surf0)
+{ SDL_Surface *surf1 = SDL_ConvertSurface(surf0, SDL_PIXELFORMAT_ARGB8888);
   SDL_DestroySurface(surf0);
   if ( !surf1 )
   { Cprintf("Failed to convert %s: %s\n", pp(image), SDL_GetError());
     fail;
   }
+
   bool isbitmap = false;
   premultiply_alpha(surf1, &isbitmap);
   cairo_surface_t *surf = cairo_image_surface_create_for_data(
@@ -252,19 +214,91 @@ ws_load_image_file(Image image)
     surf1->h,
     surf1->pitch);
   if ( !my_cairo_check_surface(image, surf) )
+  { SDL_DestroySurface(surf1);
     fail;
+  }
   cairo_surface_t *final = my_cairo_copy_surface(surf);
   cairo_surface_destroy(surf);
+  SDL_DestroySurface(surf1);
   if ( !my_cairo_check_surface(image, final) )
     fail;
 
   if ( isbitmap )
     DEBUG(NAME_bitmap, Cprintf("%s: bitmap\n", pp(image)));
   assign(image, kind, isbitmap ? NAME_bitmap : NAME_pixmap);
-  assign(image->size, w, toInt(surf1->w));
-  assign(image->size, h, toInt(surf1->h));
+  assign(image->size, w, toInt(cairo_image_surface_get_width(final)));
+  assign(image->size, h, toInt(cairo_image_surface_get_height(final)));
   image->ws_ref = final;
   succeed;
+}
+
+/**
+ * Load an image from its associated file path.
+ *
+ * @param image Pointer to the Image object.
+ * @return SUCCEED if loading succeeds; otherwise, FAIL.
+ */
+status
+ws_load_image_file(Image image)
+{ IOSTREAM *fd;
+
+  assert(image->ws_ref == NULL);
+
+  int req_w = valInt(image->size->w);
+  int req_h = valInt(image->size->h);
+
+  if ( instanceOfObject(image->file, ClassFile) )
+  { FileObj f = (FileObj)image->file;
+    char *fname = charArrayToFN((CharArray)getOsNameFile(f));
+    /* Detect SVG by extension and use the size-aware loader so that
+     * aspect ratio is preserved when only one dimension is specified.
+     * SDL auto-computes the missing dimension when it receives 0.
+     */
+    size_t len = strlen(fname);
+    bool is_svg = ( len > 4 &&
+		    strcasecmp(fname + len - 4, ".svg") == 0 );
+    if ( is_svg )
+    { SDL_IOStream *io = SDL_IOFromFile(fname, "rb");
+      if ( !io )
+      { Cprintf("Failed to open %s: %s\n", fname, SDL_GetError());
+	fail;
+      }
+      SDL_Surface *surf0 = IMG_LoadSizedSVG_IO(io, req_w, req_h);
+      SDL_CloseIO(io);
+      if ( !surf0 )
+      { Cprintf("Failed to load SVG %s: %s\n", fname, SDL_GetError());
+	fail;
+      }
+      return sdl_surface_to_image(image, surf0);
+    }
+    SDL_Surface *surf0 = IMG_Load(fname);
+    if ( !surf0 )
+    { Cprintf("Failed to load %s: %s\n", fname, SDL_GetError());
+      fail;
+    }
+    return sdl_surface_to_image(image, surf0);
+  } else if ( (fd = Sopen_object(image->file, "rbr")) )
+  { SDL_IOStream *io = IOSTREAM_to_SDL_IOStream(fd);
+    status rc;
+    if ( io && IMG_isSVG(io) )
+    { SDL_Surface *surf0 = IMG_LoadSizedSVG_IO(io, req_w, req_h);
+      SDL_CloseIO(io);
+      Sclose(fd);
+      if ( !surf0 )
+      { Cprintf("Failed to load SVG %s: %s\n", pp(image), SDL_GetError());
+	fail;
+      }
+      return sdl_surface_to_image(image, surf0);
+    }
+    if ( io )
+      SDL_CloseIO(io);
+    Sseek(fd, 0, SIO_SEEK_SET);
+    rc = loadPNMImage(image, fd);
+    Sclose(fd);
+    return rc;
+  } else
+  { fail;
+  }
 }
 
 /**
@@ -451,8 +485,33 @@ pceImage2SDL_Surface(Image image)
  */
 status
 ws_save_image_file(Image image, SourceSink into, Name fmt)
-{
-    return SUCCEED;
+{ SDL_Surface *surf = pceImage2SDL_Surface(image);
+  status rc = FAIL;
+
+  if ( surf )
+  { if ( instanceOfObject(into, ClassFile) )
+    { FileObj file = (FileObj)into;
+      if ( file->fd == NULL )
+      { if ( fmt == NAME_png )
+	{ rc = IMG_SavePNG(surf, nameToFN(file->name));
+	} else
+	{ Cprintf("Cannot save %s: format %s is not supported\n",
+		  pp(image), pp(fmt));
+	}
+      } else
+      { Cprintf("Cannot save %s to %s: file is open\n",
+		pp(image), pp(file));
+      }
+    } else
+    { Cprintf("Cannot save %s to %s: Can only save to a file\n",
+	      pp(image), pp(into));
+    }
+
+    SDL_DestroySurface(surf);
+    return rc;
+  }
+
+  fail;
 }
 
 /**
@@ -505,8 +564,24 @@ ws_close_image(Image image)
  */
 Image
 ws_scale_image(Image image, int w, int h)
-{ Cprintf("STUB: ws_scale_image(%s, %d, %d)\n", pp(image), w, h);
-  return NULL;
+{ if ( !image->ws_ref && !XopenImage(image, CurrentDisplay(NIL)) )
+    return NULL;
+
+  int src_w = cairo_image_surface_get_width(image->ws_ref);
+  int src_h = cairo_image_surface_get_height(image->ws_ref);
+
+  cairo_surface_t *dst = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+  cairo_t *cr = cairo_create(dst);
+  cairo_scale(cr, (double)w / src_w, (double)h / src_h);
+  cairo_set_source_surface(cr, image->ws_ref, 0, 0);
+  cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+  cairo_paint(cr);
+  cairo_destroy(cr);
+
+  Image scaled = answerObject(ClassImage, NIL, toInt(w), toInt(h),
+			      NAME_pixmap, EAV);
+  scaled->ws_ref = dst;
+  answer(scaled);
 }
 
 /**
@@ -518,20 +593,40 @@ ws_scale_image(Image image, int w, int h)
  */
 Image
 ws_rotate_image(Image image, float angle)
-{ Cprintf("STUB: ws_rotate_image(%s, %f)\n", pp(image), angle);
-  return NULL;
-}
+{ if ( !image->ws_ref && !XopenImage(image, CurrentDisplay(NIL)) )
+    return NULL;
 
-/**
- * Create a monochrome version of the image.
- *
- * @param image Pointer to the source Image.
- * @return A new monochrome Image; NULL on failure.
- */
-Image
-ws_monochrome_image(Image image)
-{ Cprintf("STUB: ws_monochrome_image(%s)\n", pp(image));
-  return NULL;
+  double rad = angle * M_PI / 180.0;
+  double cosA = fabs(cos(rad));
+  double sinA = fabs(sin(rad));
+  int src_w = cairo_image_surface_get_width(image->ws_ref);
+  int src_h = cairo_image_surface_get_height(image->ws_ref);
+  int dst_w = (int)ceil(src_w * cosA + src_h * sinA);
+  int dst_h = (int)ceil(src_w * sinA + src_h * cosA);
+
+  cairo_surface_t *dst =
+    cairo_image_surface_create(CAIRO_FORMAT_ARGB32, dst_w, dst_h);
+  cairo_t *cr = cairo_create(dst);
+
+  /* Transparent background */
+  cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+  cairo_paint(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+  /* Rotate around the centre of the destination, painting the source
+   * centred there.
+   */
+  cairo_translate(cr, dst_w / 2.0, dst_h / 2.0);
+  cairo_rotate(cr, rad);
+  cairo_set_source_surface(cr, image->ws_ref, -src_w / 2.0, -src_h / 2.0);
+  cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+  cairo_paint(cr);
+  cairo_destroy(cr);
+
+  Image rotated = answerObject(ClassImage, NIL, toInt(dst_w), toInt(dst_h),
+			       NAME_pixmap, EAV);
+  rotated->ws_ref = dst;
+  answer(rotated);
 }
 
 /**
@@ -588,5 +683,25 @@ ws_grayscale_image(Image image)
 
 status
 ws_has_alpha_image(Image image)
-{ succeed;			/* TODO: really verify */
+{ if ( !image->ws_ref && !XopenImage(image, CurrentDisplay(NIL)) )
+    fail;
+
+  cairo_surface_t *surf = image->ws_ref;
+  if ( cairo_image_surface_get_format(surf) != CAIRO_FORMAT_ARGB32 )
+    fail;
+
+  int w      = cairo_image_surface_get_width(surf);
+  int h      = cairo_image_surface_get_height(surf);
+  int stride = cairo_image_surface_get_stride(surf);
+  unsigned char *data = cairo_image_surface_get_data(surf);
+
+  for(int y = 0; y < h; y++)
+  { unsigned char *row = data + y * stride;
+    for(int x = 0; x < w; x++)
+    { if ( row[x*4 + 3] != 255 )
+	succeed;
+    }
+  }
+
+  fail;
 }

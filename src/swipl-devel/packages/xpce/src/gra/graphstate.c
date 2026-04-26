@@ -51,21 +51,6 @@ g_save(void)
 { GraphicsState gs = alloc(sizeof(struct graphics_state));
 
   gs->level	 = (statelist ? statelist->level+1 : 1);
-#if SDL_GRAPHICS
-#elif RAY_GRAPHICS
-#elif WIN32_GRAPHICS
-  gs->thickness  = context.thickness;
-  gs->texture    = context.texture;
-  gs->foreground = context.colour;
-  gs->background = context.background;
-#elif X11_GRAPHICS
-  gs->thickness  = context.gcs->pen;
-  gs->texture    = context.gcs->dash;
-  gs->foreground = context.gcs->colour;
-  gs->background = context.gcs->background;
-#else
-#error "No GUI library"
-#endif
 
   gs->savedstate = statelist;
   statelist = gs;

@@ -47,8 +47,6 @@
 
 #include <md.h>
 
-#define O_NOX11RESOURCES 1		/* use own resource parser */
-
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -898,14 +896,13 @@ typedef struct _classdecl
   int		term_arity;		/* Arity of term description */
   Name	       *term_names;		/* Array of term-names */
   char	       *source_file;		/* Name of the source-file */
-  char	       *rcs_revision;		/* RCS version info */
 } classdecl;
 
-#define ClassDecl(name, vs, ss, gs, rs, ta, tn, rcs) \
+#define ClassDecl(name, vs, ss, gs, rs, ta, tn) \
 	static classdecl name = \
 	{ vs, ss, gs, rs, \
 	  IVEntries(vs), SMEntries(ss), GMEntries(gs), RCEntries(rs), \
-	  ta, tn, __FILE__, rcs \
+	  ta, tn, __FILE__ \
 	}
 
 					/* Dont change IV_GET and IV_SEND */
@@ -938,12 +935,14 @@ typedef struct _classdecl
 #define AREntries(l, t)		((((l) == NULL) ? 0 : sizeof(l)) / sizeof(t))
 #endif
 
+/* UXWIN(ux, win) evaluates to the first or second argument and is
+   used in resource declarations to adjust look-and-feel.  Some of the
+   use is probably outdated.  The Windows version is in
+   `src/md/md-windows.h`
+ */
+
 #ifndef UXWIN
-#ifdef WIN32_GRAPHICS
-#define UXWIN(unx, win) win
-#else
 #define UXWIN(unx, win) unx
-#endif
 #endif
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -971,17 +970,16 @@ NewClass(class)
   Sheet		features;		/* installed features */
   Int		no_created;		/* how many were created */
   Int		no_freed;		/* how many were freed */
-  BoolObj		solid;			/* graphicals: OFF by default */
+  BoolObj	solid;			/* graphicals: OFF by default */
   Name		selection_style;	/* graphicals: feedback selected */
   Chain		handles;		/* graphicals only: connection pts */
   Int		instance_size;		/* Instance size in bytes */
   Int		slots;			/* # instance variables */
   SourceLocation source;		/* Source location */
-  Name		rcs_revision;		/* Current rcs-revision of source */
   Chain		changed_messages;	/* Trap instance changes */
   Chain		created_messages;	/* Trap instance creation */
   Chain		freed_messages;		/* Trap instance destruction */
-  BoolObj		un_answer;		/* Decide on slot assignment */
+  BoolObj	un_answer;		/* Decide on slot assignment */
 
   Code		make_class_message;	/* Message to build the class */
 
@@ -999,7 +997,7 @@ NewClass(class)
   HashTable	class_variable_table;	/* hash-table of class-variables */
   HashTable	instances;		/* hash-table holding the instances */
 
-  BoolObj		realised;		/* Class has been realised? */
+  BoolObj	realised;		/* Class has been realised? */
   Name		init_variables;		/* How to initialise slots */
 
   InstanceProto	proto;			/* Prototype instance */

@@ -1,3 +1,9 @@
+# rswipl 10.1.7
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-10-1-7/
+
+Improved unicode support for swipl pack cpp
+
 # rswipl 10.1.6
 
 See https://swi-prolog.discourse.group/t/ann-swi-prolog-10-1-6/

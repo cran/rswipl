@@ -61,7 +61,7 @@ extern "C" {
 /* PLVERSION_TAG: a string, normally "", but for example "rc1" */
 
 #ifndef PLVERSION
-#define PLVERSION 100106
+#define PLVERSION 100107
 #endif
 #ifndef PLVERSION_TAG
 #define PLVERSION_TAG ""
@@ -680,6 +680,12 @@ PL_EXPORT(bool)		PL_get_wchars(term_t l,
 				      size_t *length, pl_wchar_t **s,
 				      unsigned flags) WUNUSED;
 PL_EXPORT(size_t)	PL_utf8_strlen(const char *s, size_t len) WUNUSED;
+PL_EXPORT(int)		PL_wcwidth(int chr);
+PL_EXPORT(bool)		PL_is_id_start(int chr);
+PL_EXPORT(bool)		PL_is_id_continue(int chr);
+PL_EXPORT(bool)		PL_is_uppercase(int chr);
+PL_EXPORT(bool)		PL_is_decimal(int chr);
+PL_EXPORT(bool)		PL_is_layout(int chr);
 
 
 		 /*******************************
@@ -1168,12 +1174,23 @@ typedef void (*PL_abort_hook_t)(void);
 typedef void (*PL_initialise_hook_t)(int argc, char **argv);
 typedef int  (*PL_agc_hook_t)(atom_t a);
 
+/* Normalise a UTF-8 byte sequence to a canonical form in place.
+ * The result for the supported form (NFC, as registered by
+ * library(unicode)) is always shorter than or equal to the input,
+ * so the hook is allowed to write back into the input buffer.
+ * `in` points to a writable buffer of length `*len`.  On return
+ * `*len` carries the length of the normalised text in `in`.
+ * Returns 0 on success, -1 on error.
+ */
+typedef int (*PL_atom_normalize_t)(unsigned char *in, size_t *len);
+
 PL_EXPORT(bool)			PL_dispatch(IOSTREAM *fd, int wait);
 PL_EXPORT(PL_dispatch_hook_t)	PL_dispatch_hook(PL_dispatch_hook_t);
 PL_EXPORT(void)			PL_abort_hook(PL_abort_hook_t);
 PL_EXPORT(void)			PL_initialise_hook(PL_initialise_hook_t);
 PL_EXPORT(bool)			PL_abort_unhook(PL_abort_hook_t);
 PL_EXPORT(PL_agc_hook_t)	PL_agc_hook(PL_agc_hook_t);
+PL_EXPORT(PL_atom_normalize_t)	PL_atom_normalize_hook(PL_atom_normalize_t);
 
 
 		 /*******************************

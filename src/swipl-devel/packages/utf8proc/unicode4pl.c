@@ -95,6 +95,9 @@ typedef struct pmap
   atom_t	atom;
 } pmap;
 
+#define UNIFY_SYMBOL(t, c, map) \
+	unify_symbol(t, c, map ## _map, sizeof(map ## _map)/sizeof(pmap))
+
 #define CAT(n) { UTF8PROC_CATEGORY_ ## n, #n, 0 }
 static pmap category_map[] =
 { CAT(LU),
@@ -193,6 +196,12 @@ static pmap boundclass_map[] =
   BOUNDCLASS(SPACINGMARK),
   BOUNDCLASS(PREPEND),
   BOUNDCLASS(ZWJ),
+#ifdef HAVE_UTF8PROC_BOUNDCLASS_E_BASE
+  BOUNDCLASS(E_BASE),
+  BOUNDCLASS(E_MODIFIER),
+  BOUNDCLASS(GLUE_AFTER_ZWJ),
+  BOUNDCLASS(E_BASE_GAZ),
+#endif
 #ifdef HAVE_UTF8PROC_BOUNDCLASS_EXTENDED_PICTOGRAPHIC
   BOUNDCLASS(EXTENDED_PICTOGRAPHIC),
   BOUNDCLASS(E_ZWG),
@@ -221,7 +230,7 @@ static pmap indic_conjunct_break_map[] =
  * capital initial.
  */
 static bool
-unify_symbol(term_t arg, int code, pmap *map)
+unify_symbol(term_t arg, int code, pmap *map, size_t size)
 { pmap *m;
 
   /* `indic_conjunct_break_map` maps zero to `none`, so do not reject
@@ -233,11 +242,14 @@ unify_symbol(term_t arg, int code, pmap *map)
      )
     return false;
 
-  m = &map[code];
-  if ( m->code != code )
-  { for(m=map; m->name && m->code != code; m++)
+  if ( code < size && map[code].code == code )
+  { m = &map[code];
+  } else
+  { m = map;
+    pmap *end = &m[size];
+    for(; map < end && m->code != code; m++)
       ;
-    if ( !m->name )
+    if ( map == end || !m->name )
       return false;
   }
 
@@ -311,21 +323,21 @@ unicode_property(term_t code, term_t property, term_t silent)
   _PL_get_arg(1, property, arg);
 
   if ( pname == ATOM_category )
-    return unify_symbol(arg, p->category, category_map);
+    return UNIFY_SYMBOL(arg, p->category, category);
   else if ( pname == ATOM_combining_class )
     return PL_unify_integer(arg, p->combining_class);
   else if ( pname == ATOM_bidi_class )
-    return unify_symbol(arg, p->bidi_class, bidi_map);
+    return UNIFY_SYMBOL(arg, p->bidi_class, bidi);
 #ifdef HAVE_UTF8PROC_BIDI_MIRRORED
   else if ( pname == ATOM_bidi_mirrored )
     return PL_unify_bool(arg, p->bidi_mirrored);
 #endif
   else if ( pname == ATOM_decomp_type )
-    return unify_symbol(arg, p->decomp_type, decomp_map);
+    return UNIFY_SYMBOL(arg, p->decomp_type, decomp);
   else if ( pname == ATOM_ignorable )
     return PL_unify_bool(arg, p->ignorable);
   else if ( pname == ATOM_boundclass )
-    return unify_symbol(arg, p->boundclass, boundclass_map);
+    return UNIFY_SYMBOL(arg, p->boundclass, boundclass);
 #ifdef HAVE_UTF8PROC_CHARWIDTH
   else if ( pname == ATOM_width )
     return PL_unify_integer(arg, p->charwidth);
@@ -336,8 +348,8 @@ unicode_property(term_t code, term_t property, term_t silent)
 #endif
 #ifdef HAVE_UTF8PROC_INDIC_CONJUNCT_BREAK
   else if ( pname == ATOM_indic_conjunct_break )
-    return unify_symbol(arg, p->indic_conjunct_break,
-			indic_conjunct_break_map);
+    return UNIFY_SYMBOL(arg, p->indic_conjunct_break,
+			indic_conjunct_break);
 #endif
 #ifdef HAVE_UTF8PROC_TOUPPER
   else if ( pname == ATOM_uppercase )
@@ -431,7 +443,7 @@ static foreign_t
 unicode_map(term_t in, term_t out, term_t options)
 { int mask;
   size_t len_in;
-  ssize_t len_out;
+  utf8proc_ssize_t len_out;
   char *utf8_in;
   uint8_t *utf8_out;
 
@@ -660,8 +672,38 @@ unicode_codepoint_valid(term_t code)
 #define MKATOM(n) \
 	ATOM_ ## n = PL_new_atom(#n)
 
+/* Kernel atom-normalisation callback.  Registered with
+ * PL_atom_normalize_hook in install_unicode4pl().  Performs NFC
+ * normalisation on UTF-8 in place: the NFC result is always shorter
+ * than or equal to the input, so the result fits in the original
+ * buffer.  On return *len holds the new byte length.  Returns 0 on
+ * success, -1 on error.
+ */
+static int
+utf8proc_normalize_cb(unsigned char *in, size_t *len)
+{ utf8proc_uint8_t *result;
+  utf8proc_ssize_t out_len;
+
+  out_len = utf8proc_map((uint8_t*)in, *len, &result,
+			 UTF8PROC_STABLE | UTF8PROC_COMPOSE);
+  if ( out_len < 0 )
+    return -1;
+
+  if ( (size_t)out_len != *len ||
+       memcmp(result, in, (size_t)out_len) != 0 )
+  { assert((size_t)out_len <= *len);
+    memcpy(in, result, (size_t)out_len);
+    *len = (size_t)out_len;
+  }
+  free(result);
+  return 0;
+}
+
+
+static PL_atom_normalize_t old_hook = NULL;
+
 install_t
-install_unicode4pl()
+install_unicode4pl(void)
 { MKATOM(category);
   MKATOM(combining_class);
   MKATOM(bidi_class);
@@ -720,4 +762,11 @@ install_unicode4pl()
 #ifdef HAVE_UTF8PROC_CODEPOINT_VALID
   PL_register_foreign("unicode_codepoint_valid", 1, unicode_codepoint_valid,  0);
 #endif
+
+  old_hook = PL_atom_normalize_hook(utf8proc_normalize_cb);
+}
+
+install_t
+uninstall_unicode4pl(void)
+{ PL_atom_normalize_hook(old_hook);
 }

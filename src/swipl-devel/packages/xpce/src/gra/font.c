@@ -2,8 +2,8 @@
 
     Author:        Jan Wielemaker and Anjo Anjewierden
     E-mail:        jan@swi-prolog.org
-    WWW:           http://www.swi-prolog.org/packages/xpce/
-    Copyright (c)  1985-2025, University of Amsterdam
+    WWW:           https://www.swi-prolog.org/packages/xpce/
+    Copyright (c)  1985-2026, University of Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
@@ -301,11 +301,13 @@ getFixedWidthFont(FontObj f)
 
 
 static status
-memberFont(FontObj f, Int chr)
-{ if ( s_has_char(f, valInt(chr)) )
-    succeed;
+memberFont(FontObj f, Int chr, BoolObj family)
+{ unsigned int c = valInt(chr);
 
-  fail;
+  if ( family == OFF )
+    return s_has_char(f, c);
+  else
+    return s_has_char_family(f, c);
 }
 
 
@@ -316,13 +318,10 @@ getDefaultCharacterFont(FontObj f)
 
 
 static Tuple
-getDomainFont(FontObj f, Name which)
+getDomainFont(FontObj f, BoolObj family)
 { int a, z;
 
-  if ( isDefault(which) )
-    which = NAME_x;
-
-  f_domain(f, which, &a, &z);
+  f_domain(f, family != OFF, &a, &z);
   return answerObject(ClassTuple, toInt(a), toInt(z), EAV);
 }
 
@@ -456,6 +455,8 @@ getFontFamilies(Class class, BoolObj mono)
 static char *T_initialise[] =
         { "family=name", "style=name", "points=[int]",
 	  "weight=["WEIGHT_TYPE"]" };
+static char *T_member[] =
+        { "char=char", "family=[bool]" };
 
 /* Instance Variables */
 
@@ -489,8 +490,8 @@ static senddecl send_font[] =
      DEFAULT, "Create from fam, style, points, weigth"),
   SM(NAME_unlink, 0, NULL, unlinkFont,
      DEFAULT, "Destroy the font"),
-  SM(NAME_member, 1, "char", memberFont,
-     NAME_set, "Test if font defines character")
+  SM(NAME_member, 2, T_member, memberFont,
+     NAME_set, "Test if font (or family fallbacks) defines character")
 };
 
 /* Get Methods */
@@ -522,8 +523,8 @@ static getdecl get_font[] =
      NAME_oms, "Lookup in @fonts table"),
   GM(NAME_defaultCharacter, 0, "char", NULL, getDefaultCharacterFont,
      NAME_property, "Character painted for non-existing entries"),
-  GM(NAME_domain, 1, "tuple", "[{x,y}]", getDomainFont,
-     NAME_property, "Range of valid characters"),
+  GM(NAME_domain, 1, "tuple", "family=[bool]", getDomainFont,
+     NAME_property, "Range of valid characters (over family fallbacks by default)"),
   GM(NAME_fixedWidth, 0, "bool", NULL, getFixedWidthFont,
      NAME_property, "Boolean to indicate font is fixed-width"),
   GM(NAME_pangoProperty, 1, "{description,family,style,weight,size}",

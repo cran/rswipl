@@ -38,9 +38,11 @@
 #include <h/graphics.h>
 #include <h/text.h>
 #include <h/unix.h>
+#include <h/charwidth.h>
 
 static Int		getMarginWidthEditor(Editor);
 static Int		getColumnEditor(Editor, Int);
+static Int		getVisualColumnEditor(Editor);
 static Int		getLineNumberEditor(Editor, Int);
 static Int		getLengthEditor(Editor);
 static Int		normalise_index(Editor, Int);
@@ -57,6 +59,7 @@ static status		centerWindowEditor(Editor, Int);
 static status		columnEditor(Editor, Int);
 static status		ChangedRegionEditor(Editor, Int, Int);
 static status		ChangedEditor(Editor);
+static status		nfdStyleEditor(Editor, Style);
 static status		appendKill(CharArray);
 static status		prependKill(CharArray);
 static status		geometryEditor(Editor, Int, Int, Int, Int);
@@ -598,6 +601,14 @@ selectedFragmentEditor(Editor e, Fragment fr)
 
 
 static status
+nfdStyleEditor(Editor e, Style style)
+{ assign(e, nfd_style, style);
+  ChangedEditor(e);
+
+  succeed;
+}
+
+static status
 selectedFragmentStyleEditor(Editor e, Style style)
 { if ( e->selected_fragment_style != style )
   { assign(e, selected_fragment_style, style);
@@ -1135,6 +1146,26 @@ fetch_editor(Any obj, TextChar tc)
     }
   }
 
+  if ( notNil(e->nfd_style) && !isDefault(e->nfd_style) )
+  { Style s = e->nfd_style;
+    uchar_t c = (uchar_t)tc->value.c;
+    bool nfd = false;
+
+    if ( uchar_display_width(c) == 0 )           /* this char is a combining mark */
+      nfd = true;
+    else if ( index+1 < e->text_buffer->size &&  /* next char is a combining mark */
+	      uchar_display_width((uchar_t)Fetch(e, index+1)) == 0 )
+      nfd = true;
+
+    if ( nfd )
+    { if ( notDefault(s->background) )
+	tc->background = s->background;
+      if ( notDefault(s->colour) )
+	tc->colour = s->colour;
+      tc->attributes |= s->attributes;
+    }
+  }
+
   if ( notNil(e->selected_fragment) )
   { Fragment fr = e->selected_fragment;
     Style s = e->selected_fragment_style;
@@ -1618,7 +1649,7 @@ verify_editable_editor(Editor e)
 
 static status
 insert_editor(Editor e, Int times, Int chr, int fill)
-{ wint_t c;
+{ uchar_t c;
   LocalString(s, TRUE, 1);		/* wide-character string! */
 
   MustBeEditable(e);
@@ -1771,15 +1802,52 @@ markStatusEditor(Editor e, Name status)
 }
 
 
+/* Return the buffer index just past the grapheme cluster starting at pos.
+ * A cluster is one base code point plus any immediately following
+ * zero-display-width combining marks. */
+static intptr_t
+grapheme_cluster_end(TextBuffer tb, intptr_t pos)
+{ intptr_t size = tb->size;
+  if ( pos >= size )
+    return pos;
+  pos++;					/* skip base code point */
+  while ( pos < size &&
+	  uchar_display_width((uchar_t)fetch_textbuffer(tb, pos)) == 0 )
+    pos++;
+  return pos;
+}
+
+/* Return the buffer index of the start of the grapheme cluster whose
+ * last code point is at pos-1 (i.e. the cluster ending just before pos). */
+static intptr_t
+grapheme_cluster_start(TextBuffer tb, intptr_t pos)
+{ if ( pos <= 0 )
+    return 0;
+  pos--;					/* step onto last code point */
+  while ( pos > 0 &&
+	  uchar_display_width((uchar_t)fetch_textbuffer(tb, pos)) == 0 )
+    pos--;					/* skip back over combining marks */
+  return pos;
+}
+
+
 static status
 forwardCharEditor(Editor e, Int arg)
-{ return CaretEditor(e, toInt(Caret(e) + UArg(arg)));
+{ intptr_t pos = Caret(e);
+  intptr_t n   = UArg(arg);
+  while ( n-- > 0 )
+    pos = grapheme_cluster_end(e->text_buffer, pos);
+  return CaretEditor(e, toInt(pos));
 }
 
 
 static status
 backwardCharEditor(Editor e, Int arg)
-{ return CaretEditor(e, toInt(Caret(e) - UArg(arg)));
+{ intptr_t pos = Caret(e);
+  intptr_t n   = UArg(arg);
+  while ( n-- > 0 )
+    pos = grapheme_cluster_start(e->text_buffer, pos);
+  return CaretEditor(e, toInt(pos));
 }
 
 
@@ -1971,15 +2039,24 @@ previousLineEditor(Editor e, Int arg, Int column)
 static status
 deleteCharEditor(Editor e, Int arg)
 { MustBeEditable(e);
-
-  return delete_textbuffer(e->text_buffer, Caret(e), UArg(arg));
+  intptr_t from = Caret(e);
+  intptr_t to   = from;
+  intptr_t n    = UArg(arg);
+  while ( n-- > 0 )
+    to = grapheme_cluster_end(e->text_buffer, to);
+  return delete_textbuffer(e->text_buffer, from, to - from);
 }
 
 
 static status
 backwardDeleteCharEditor(Editor e, Int arg)
 { MustBeEditable(e);
-  return delete_textbuffer(e->text_buffer, Caret(e), -UArg(arg));
+  intptr_t to   = Caret(e);
+  intptr_t from = to;
+  intptr_t n    = UArg(arg);
+  while ( n-- > 0 )
+    from = grapheme_cluster_start(e->text_buffer, from);
+  return delete_textbuffer(e->text_buffer, from, to - from);
 }
 
 
@@ -2698,7 +2775,7 @@ transposeCharsEditor(Editor e)
 
   MustBeEditable(e);
   if ( caret >= 1 && caret < e->text_buffer->size )
-  { wint_t c1, c2;
+  { int c1, c2;
 
     c1 = Fetch(e, caret-1);
     c2 = Fetch(e, caret);
@@ -3336,7 +3413,7 @@ static status
 insertSelfFillEditor(Editor e, Int times, Int chr)
 { TextBuffer tb = e->text_buffer;
   LocalString(s, TRUE, 1);
-  wint_t c;
+  uchar_t c;
   Int le;
 
   MustBeEditable(e);
@@ -3861,7 +3938,7 @@ get_dabbrev_hit_editor(Editor e, int start)
   string s;
 
   for(end = start; end < size; end++)
-  { wint_t c = fetch_textbuffer(tb, end);
+  { int c = fetch_textbuffer(tb, end);
     if ( !tisalnum(tb->syntax, c) )
       break;
   }
@@ -4259,6 +4336,23 @@ selectionExtendEditor(Editor e, Int where)
 #undef WordKind
 #undef LineKind
 
+  /* Snap endpoints to grapheme-cluster boundaries so that a base
+   * character and its following combining mark(s) are never split
+   * between selected and unselected.  A combining mark has zero
+   * display width (uchar_display_width() == 0).
+   *
+   *  - from: retract while the character AT from is a combiner
+   *    (we would be starting the selection mid-cluster).
+   *  - to: advance while the character AT to is a combiner
+   *    (we would be ending the selection mid-cluster).
+   */
+  { int size = e->text_buffer->size;
+    while ( from > 0 && uchar_display_width(Fetch(e, from)) == 0 )
+      from--;
+    while ( to < size && uchar_display_width(Fetch(e, to)) == 0 )
+      to++;
+  }
+
   if ( valInt(where) < valInt(e->selection_origin) ) /* swap */
   { int tmp = from;
     from = to;
@@ -4610,14 +4704,21 @@ getColumnEditor(Editor e, Int where)
 
   sol = valInt(getScanTextBuffer(tb, where, NAME_line, 0, NAME_start));
   for(col = 0; sol < valInt(where); sol++ )
-  { if ( fetch_textbuffer(tb, sol) == '\t' )
+  { int c = fetch_textbuffer(tb, sol);
+    if ( c == '\t' )
     { col++;
       col = Round(col, valInt(e->tab_distance));
     } else
-      col++;
+      col += uchar_display_width(c);
   }
 
   answer(toInt(col));
+}
+
+
+static Int
+getVisualColumnEditor(Editor e)
+{ return getColumnEditor(e, DEFAULT);
 }
 
 
@@ -4633,19 +4734,26 @@ getColumnLocationEditor(Editor e, Int c, Int from)
     from = e->caret;
   pos = valInt(getScanTextBuffer(tb, from, NAME_line, 0, NAME_start));
 
-  for(col = 0; col < dcol && pos < size; pos++)
-  { switch( fetch_textbuffer(tb, pos) )
+  for(col = 0; col < dcol && pos < size; )
+  { int ch = fetch_textbuffer(tb, pos);
+    switch(ch)
     { case '\n':
 	return toInt(pos);
       case '\t':
 	col++;
 	col = Round(col, valInt(e->tab_distance));
+	pos++;
 	break;
       default:
-	col++;
+      { int w = uchar_display_width(ch);
+	if ( col + w > dcol )		/* would overshoot wide char boundary */
+	  goto done;
+	col += w;
+	pos++;
+      }
     }
   }
-
+done:
   answer(toInt(pos));
 }
 
@@ -5027,6 +5135,8 @@ static vardecl var_editor[] =
      NAME_appearance, "Distance between tabs"),
   IV(NAME_selectionStyle, "[style]", IV_GET,
      NAME_appearance, "Feedback for the <-selection"),
+  SV(NAME_nfdStyle, "style*", IV_GET|IV_STORE, nfdStyleEditor,
+     NAME_appearance, "Style for NFD grapheme clusters (@nil to disable)"),
   SV(NAME_selectedFragment, "fragment*", IV_GET|IV_STORE,
      selectedFragmentEditor,
      NAME_selection, "The current fragment"),
@@ -5460,6 +5570,8 @@ static getdecl get_editor[] =
      NAME_area, "Width in character units"),
   GM(NAME_column, 1, "column=0..", "index=[int]", getColumnEditor,
      NAME_caret, "Column point is at"),
+  GM(NAME_visualColumn, 0, "column=0..", NULL, getVisualColumnEditor,
+     NAME_caret, "Visual column of caret (0-based; CJK=2, combining=0)"),
   GM(NAME_upDownColumn, 0, "column=int", NULL, getUpDownColumnEditor,
      NAME_caret, "Saved X-infor for ->cursor_up/->cursor_down"),
   GM(NAME_indentation, 2, "column=int", T_indentation, getIndentationEditor,
@@ -5556,11 +5668,13 @@ static classvardecl rc_editor[] =
      UXWIN("style(background := yellow)",
 	   "@_select_style"),
      "Style for <-selection"),
+  RC(NAME_nfdStyle, "style*", "@nil",
+     "Style for NFD grapheme clusters (default off)"),
   RC(NAME_insertDeletesSelection, "bool", "@on",
      "->insert_self and ->paste delete the selection"),
   RC(NAME_caretMovesOnSelect, "bool", "@on",
      "The caret is moved if a selection is made"),
-  RC(NAME_autoCopy, "bool", "@on",
+  RC(NAME_autoCopy, "bool", UXWINMAC("@on", "@off", "@off"),
      "Automatically copy selected text to the clipboard"),
   RC(NAME_showOpenBracket, "bool", "@on",
      "Show open-bracket when inserting close-bracket"),

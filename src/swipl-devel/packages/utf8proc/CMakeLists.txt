@@ -13,8 +13,11 @@ include(CheckCSourceCompiles)
 
 # Propagate include directories and linker flags from the pkg-config
 # target so the feature probes below see the right headers/libs.
+# Use the imported target so library search paths (-L) are included;
+# bare ${UTF8PROC_LIBRARIES} only carries the -l name and fails to link
+# against an out-of-tree install (e.g. WASM/emscripten cross-build).
 set(CMAKE_REQUIRED_INCLUDES ${UTF8PROC_INCLUDE_DIRS})
-set(CMAKE_REQUIRED_LIBRARIES ${UTF8PROC_LIBRARIES})
+set(CMAKE_REQUIRED_LIBRARIES PkgConfig::UTF8PROC)
 
 # Fields of utf8proc_property_t.  Older distro builds (Ubuntu LTS)
 # ship a utf8proc that predates `charwidth`, `ambiguous_width`, and
@@ -41,6 +44,10 @@ utf8proc_has_field(indic_conjunct_break HAVE_UTF8PROC_INDIC_CONJUNCT_BREAK)
 # Enum value — can't use check_symbol_exists (it's not a macro).
 check_c_source_compiles("
 #include <utf8proc.h>
+int main(void) { return UTF8PROC_BOUNDCLASS_E_BASE; }
+" HAVE_UTF8PROC_BOUNDCLASS_E_BASE)
+check_c_source_compiles("
+#include <utf8proc.h>
 int main(void) { return UTF8PROC_BOUNDCLASS_EXTENDED_PICTOGRAPHIC; }
 " HAVE_UTF8PROC_BOUNDCLASS_EXTENDED_PICTOGRAPHIC)
 
@@ -65,16 +72,38 @@ swipl_plugin(
     C_LIBS PkgConfig::UTF8PROC
     PL_LIBS unicode.pl)
 
+swipl_plugin(
+    unicode_security
+    MODULE unicode_security4pl
+    C_SOURCES unicode_security4pl.c uts39_data.c
+    C_LIBS PkgConfig::UTF8PROC
+    PL_LIBS unicode_security.pl)
+
+# Regenerate uts39_data.{c,h} from the vendored UCD files under data/.
+# Not in the default build; the generated files are checked in.  Run as
+# `ninja regen-uts39` after a UCD version bump.  Listing BYPRODUCTS
+# would make every default build re-run this, which we don't want.
+add_custom_target(regen-uts39
+    COMMAND ${PROG_SWIPL} ${CMAKE_CURRENT_SOURCE_DIR}/etc/gen_uts39.pl
+            -- --ucd-dir ${CMAKE_CURRENT_SOURCE_DIR}/data
+               --out     ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Regenerating UTS #39 / UAX #24 tables"
+    VERBATIM)
+
 if(MINGW_ROOT)
 get_target_mingw_dlls(DirectDLLS plugin_unicode4pl)
 add_mingw_indirect_deps(DLLS ${DirectDLLS})
 install_dll(${DLLS})
+get_target_mingw_dlls(DirectDLLS_SEC plugin_unicode_security4pl)
+add_mingw_indirect_deps(DLLS_SEC ${DirectDLLS_SEC})
+install_dll(${DLLS_SEC})
 endif()
 
 pkg_doc(utf8proc
 	SECTION
-	    unicode.pl)
+	    unicode.pl
+	    unicode_security.pl)
 
-test_libs(utf8proc)
+test_libs(utf8proc uts39)
 
 endif()

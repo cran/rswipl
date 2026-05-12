@@ -942,9 +942,20 @@ typedef struct _classdecl
  */
 
 #ifndef UXWIN
+#ifdef __WINDOWS__
+#define UXWIN(unx, win) win
+#else
 #define UXWIN(unx, win) unx
 #endif
+#endif
 
+#ifndef UXWINMAC
+#ifdef __APPLE__
+#define UXWINMAC(unx, win, mac) mac
+#else
+#define UXWINMAC(unx, win, mac) UXWIN(unx, win)
+#endif
+#endif
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
       NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE
 
@@ -1869,6 +1880,7 @@ extern char *T_report[];		/* ->report: kind, format, args... */
 
 #include <h/syntax.h>
 #include <h/utf8.h>
+#include <h/charW.h>
 
 		 /*******************************
 		 *	 SPEEDUP MACROS		*

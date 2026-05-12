@@ -43,7 +43,6 @@
 #include <ctype.h>
 #include <errno.h>
 #ifndef HAVE_WCWIDTH
-#include "../mk_wcwidth.h"
 #endif
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -101,13 +100,20 @@ iseof(int chr)
 }
 
 static int
-iseol(int chr)
-{ return chr >= 10 && chr <= 13;
-}
-
-static int
 isnl(int chr)
 { return chr == '\n';
+}
+
+/* Original ISO/POSIX `end_of_line': the four ASCII control codes
+ * recognised as line-ending in C string literals (\n \v \f \r).
+ * The locale-independent superset that adds U+0085, U+2028 and
+ * U+2029 is exposed under \term{prolog_end_of_line}{} (driven by
+ * is_eol_char from pl-read.c).
+ */
+
+static int
+iseol(int chr)
+{ return chr >= 10 && chr <= 13;
 }
 
 static int
@@ -189,39 +195,28 @@ flower(int chr)
   return iswupper(chr) ? (int)towlower(chr) : -1;
 }
 
+/* paren/1 and quote/1 dispatch through the f_paren_close / f_paren_open
+ * and f_quote_close / f_quote_open helpers exported by pl-read.c, which
+ * back paren(Close) with the full Unicode Ps/Pe bracket set
+ * (pl_pair_table in src/pl-umap.c) and quote(Close) with both the
+ * ASCII quotes ('"`) and the Unicode Pi/Pf quote pairs.
+ */
+
 static int
 fparen(int chr)
-{ switch(chr)
-  { case '(':
-      return ')';
-    case '{':
-      return '}';
-    case '[':
-      return ']';
-    default:
-      return -1;
-  }
+{ return f_paren_close(chr);
 }
 
 
 static int
 rparen(int chr)
-{ switch(chr)
-  { case ')':
-      return '(';
-    case '}':
-      return '{';
-    case ']':
-      return '[';
-    default:
-      return -1;
-  }
+{ return f_paren_open(chr);
 }
 
 
 static int
 fwidth(int chr)
-{ return wcwidth(chr);
+{ return PL_wcwidth(chr);
 }
 
 static int
@@ -303,7 +298,7 @@ static const char_type char_types[] =
   { ATOM_decimal,		     f_is_decimal },
   { ATOM_decimal,		     ff_decimal, NULL, 1, CTX_CODE },
   { ATOM_prolog_symbol,		     f_is_prolog_symbol },
-  { ATOM_csymf,			     fiscsymf },
+  { ATOM_prolog_solo,		     f_is_prolog_solo },
   { ATOM_ascii,			     fisascii },
   { ATOM_white,			     iswhite },
   { ATOM_cntrl,			     fiswcntrl },
@@ -316,6 +311,8 @@ static const char_type char_types[] =
   { ATOM_space,			     fiswspace },
   { ATOM_end_of_file,		     iseof },
   { ATOM_end_of_line,		     iseol },
+  { ATOM_prolog_end_of_line,	     is_eol_char },
+  { ATOM_prolog_layout,		     unicode_separator },
   { ATOM_newline,		     isnl },
   { ATOM_period,		     isperiod },
   { ATOM_quote,			     isquote },
@@ -324,6 +321,7 @@ static const char_type char_types[] =
   { ATOM_to_lower,		     ftoupper,	ftolower, 1, CTX_CHAR },
   { ATOM_to_upper,		     ftolower,	ftoupper, 1, CTX_CHAR },
   { ATOM_paren,			     fparen,	rparen,   1, CTX_CHAR },
+  { ATOM_quote,			     f_quote_close, f_quote_open, 1, CTX_CHAR },
   { ATOM_digit,			     fdigit,	rdigit,   1, CTX_CODE },
   { ATOM_xdigit,		     fxdigit,	rxdigit,  1, CTX_CODE },
   { ATOM_width,		             fwidth,	NULL,     1, CTX_CODE },
@@ -896,10 +894,16 @@ init_locale(void)
 { int rc = ENC_UNKNOWN;
 
 #ifdef __WINDOWS__
-  UINT cp = GetACP();
-
-  if ( cp == 65001 )
-    rc = ENC_UTF8;
+  /* Force the C runtime's CTYPE locale to UTF-8 so mbrtowc / wcrtomb
+   * etc. round-trip non-ASCII bytes from streams that were marked
+   * ENC_UTF8 below.  The ".UTF-8" suffix is supported by the Universal
+   * CRT on Windows 10 1803 and later (April 2018); MinGW links against
+   * UCRT.  Falling back to setlocale(LC_CTYPE, "") on older systems
+   * picks the legacy ANSI codepage, which means atoms that round-trip
+   * through mbrtowc lose anything outside that codepage. */
+  if ( !setlocale(LC_CTYPE, ".UTF-8") )
+    setlocale(LC_CTYPE, "");
+  rc = ENC_UTF8;
 #endif
 
   if ( rc == ENC_UNKNOWN && setlocale(LC_CTYPE, "") )
@@ -1013,7 +1017,17 @@ EndPredDefs
 		 *	PROLOG CHARACTERS	*
 		 *******************************/
 
-const char _PL_char_types[] = {
+/* ASCII (0..127) classification table.
+ *
+ * Code points >= 0x80 are classified through the Unicode flag table
+ * (uflagsW / src/pl-umap.c) instead. The parser macros in src/pl-read.c
+ * and the is*-style macros in pl-ctype.h dispatch on the 0x80 boundary;
+ * the legacy ISO Latin-1 entries that used to live at indices 128..255
+ * have been removed because they duplicated (and occasionally disagreed
+ * with) the Unicode flags in uflags_map[0]. See
+ * doc/pip/Unicode-boundary-inventory.md.
+ */
+const char _PL_char_types[128] = {
 /* ^@  ^A  ^B  ^C  ^D  ^E  ^F  ^G  ^H  ^I  ^J  ^K  ^L  ^M  ^N  ^O    0-15 */
    CT, CT, CT, CT, CT, CT, CT, CT, CT, SP, SP, SP, SP, SP, CT, CT,
 /* ^P  ^Q  ^R  ^S  ^T  ^U  ^V  ^W  ^X  ^Y  ^Z  ^[  ^\  ^]  ^^  ^_   16-31 */
@@ -1029,19 +1043,7 @@ const char _PL_char_types[] = {
 /*  `   a   b   c   d   e   f   g   h   i   j   k   l   m   n   o   96-111 */
    BQ, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC,
 /*  p   q   r   s   t   u   v   w   x   y   z   {   |   }   ~  ^?   112-127 */
-   LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, PU, PU, PU, SY, CT,
-			  /* 128-159 (C1 controls) */
-   CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT,
-   CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT,
-			  /* 160-255 (G1 graphics) */
-			  /* ISO Latin 1 (=Unicode) is assumed */
-/*  0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F */
-   SP, SY, SY, SY, SY, SY, SY, SY, SY, SY, LC, SY, SY, SO, SY, SY, /*00AX*/
-   SY, SY, SO, SO, SY, LC, SY, SY, SY, SO, LC, SY, SO, SO, SO, SY, /*00BX*/
-   UC, UC, UC, UC, UC, UC, UC, UC, UC, UC, UC, UC, UC, UC, UC, UC, /*00CX*/
-   UC, UC, UC, UC, UC, UC, UC, SY, UC, UC, UC, UC, UC, UC, UC, LC, /*00DX*/
-   LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, /*00EX*/
-   LC, LC, LC, LC, LC, LC, LC, SY, LC, LC, LC, LC, LC, LC, LC, LC  /*00FX*/
+   LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, LC, PU, PU, PU, SY, CT
 };
 
 
@@ -1064,6 +1066,17 @@ initEncoding(void)
   }
 
   return ENC_ANSI;
+}
+
+
+Sunicode_atoms_t
+initUnicodeAtoms(void)
+{ GET_LD
+
+  if ( HAS_LD )
+    return LD->unicode_atoms;
+
+  return S_UATOMS_ACCEPT;
 }
 
 

@@ -1013,6 +1013,13 @@ PL_utf8_strlen(const char *s, size_t len)
 }
 
 
+/* PL_wcwidth() lives in pl-read.c so it can read the per-code-point
+ * width slot directly out of uflags_map (see src/pl-umap.c). The
+ * result is locale-independent and pinned to the Unicode version
+ * reported by current_prolog_flag(unicode_syntax_version, _).
+ */
+
+
 		 /*******************************
 		 *	  GET ATOM TEXT		*
 		 *******************************/

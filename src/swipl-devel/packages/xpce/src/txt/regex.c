@@ -214,13 +214,13 @@ ensure_compiled_regex(Regex re, int flags)
        isNil(re->re_flags) ||
        valInt(re->re_flags) != myflags )
   { int rc;
-    wchar_t *ws;
+    charW *ws;
     size_t len;
 
     unlink_compiled(re);
     unlink_registers(re);
 
-    ws = charArrayToWC(re->pattern, &len);
+    ws = charArrayToCharW(re->pattern, &len);
     re->compiled = pceMalloc(sizeof(regex_t));
     rc = re_compileW(re->compiled, ws, len, myflags);
 
@@ -562,8 +562,8 @@ replaceRegex(Regex re, Any obj, CharArray value)
   status rval;
 
   for(i=o=0; i<size; i++)
-  { wint_t c = str_fetch(s, i);
-    wint_t c2;
+  { uchar_t c = str_fetch(s, i);
+    uchar_t c2;
 
 					/* only POSIX '0'..'9' */
     if ( c == '\\' && (c2=str_fetch(s, i+1)) >= '0' && c2 <= '9' )
@@ -656,7 +656,7 @@ getQuoteRegex(Regex re, CharArray ca)
     str_store(buf, o++, '\\');
 
   for( i=0; i < size; i++)
-  { wint_t c = str_fetch(s, i);
+  { uchar_t c = str_fetch(s, i);
 
     switch(c)
     { case '?':

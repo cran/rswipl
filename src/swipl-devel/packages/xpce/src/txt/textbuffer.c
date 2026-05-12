@@ -44,7 +44,7 @@ static status clear_textbuffer(TextBuffer);
 static status downcase_textbuffer(TextBuffer, intptr_t, intptr_t);
 static void   end_change(TextBuffer, intptr_t);
 static Int    getSizeTextBuffer(TextBuffer);
-static status store_textbuffer(TextBuffer, intptr_t, wint_t);
+static status store_textbuffer(TextBuffer, intptr_t, uchar_t);
 static status transpose_textbuffer(TextBuffer, intptr_t, intptr_t, intptr_t, intptr_t);
 static status upcase_textbuffer(TextBuffer, intptr_t, intptr_t);
 static status save_textbuffer(TextBuffer, intptr_t, intptr_t, SourceSink);
@@ -503,7 +503,7 @@ getCharacterTextBuffer(TextBuffer tb, Int where)
 
 status
 characterTextBuffer(TextBuffer tb, Int where, Int c)
-{ TRY(store_textbuffer(tb, valInt(where), (wint_t)valInt(c)));
+{ TRY(store_textbuffer(tb, valInt(where), (uchar_t)valInt(c)));
 
   return changedTextBuffer(tb);
 }
@@ -1061,7 +1061,7 @@ scan_syntax_textbuffer(TextBuffer tb,
 
 					/* Prolog 0'char syntax */
       if ( c == '\'' && syntax->language == NAME_prolog && here > 0 )
-      { wint_t c0 = fetch(here-1);
+      { int c0 = fetch(here-1);
 
 	if ( iswdigit(c0) )		/* or <digit><number> */
 	{ if ( c0 == '0' )
@@ -1211,7 +1211,7 @@ inStringTextBuffer(TextBuffer tb, Int pos, Int from)
 
 					/* Prolog 0'char syntax */
       if ( c == '\'' && syntax->name == NAME_prolog && here > 0 )
-      { wint_t c0 = fetch(here-1);
+      { int c0 = fetch(here-1);
 
 	if ( iswdigit(c0) )
 	{ if ( c0 == '0' && idx == here+1 )
@@ -1238,7 +1238,7 @@ inStringTextBuffer(TextBuffer tb, Int pos, Int from)
 Int
 getMatchingBracketTextBuffer(TextBuffer tb, Int idx, Int bracket)
 { intptr_t i = valInt(idx);
-  wint_t stack[MAXBRACKETS];
+  int stack[MAXBRACKETS];
   int depth = 1;
   int ic;
   SyntaxTable syntax = tb->syntax;
@@ -1372,7 +1372,7 @@ getSkipCommentTextBuffer(TextBuffer tb, Int where, Int to, BoolObj layouttoo)
     }
   } else				/* backwards */
   { for(;;)
-    { wint_t c;
+    { int c;
 
     again:
 
@@ -1676,8 +1676,8 @@ match_textbuffer(TextBuffer tb, intptr_t here, PceString s, int ec, int wm)
     }
   } else
   { for( i=0; i < l; i++ )
-    { wint_t c1 = fetch(here++);
-      wint_t c2 = str_fetch(s, i);
+    { int c1 = fetch(here++);
+      uchar_t c2 = str_fetch(s, i);
 
       if ( tolower(c1) != tolower(c2) )
 	return FALSE;
@@ -2089,10 +2089,10 @@ u16_range_length(TextBuffer tb, size_t where, size_t len)
 { if ( istbA(tb) )
   { return len;
   } else
-  {
-#if SIZEOF_WCHAR_T == 2
-    return len;
-#else
+  { /* charW now holds one Unicode code point per slot on every
+     * platform.  Each SMP code point takes two UTF-16 units, so the
+     * UTF-16 length is the code-point count plus the SMP count in
+     * the range. */
     charW *b = tb->tb_bufferW + where;
     size_t ulen = len;
     for( ; len-- > 0; b++)
@@ -2100,7 +2100,6 @@ u16_range_length(TextBuffer tb, size_t where, size_t len)
 	ulen++;
     }
     return ulen;
-#endif
   }
 }
 
@@ -2118,14 +2117,14 @@ fetch_textbuffer(TextBuffer tb, intptr_t where)
     return EOB;
   idx = Index(tb, where);
 
-  return istbA(tb) ? (wint_t)tb->tb_bufferA[idx] : (wint_t)tb->tb_bufferW[idx];
+  return istbA(tb) ? (uchar_t)tb->tb_bufferA[idx] : (uchar_t)tb->tb_bufferW[idx];
 }
 
 
 static status
-store_textbuffer(TextBuffer tb, intptr_t where, wint_t c)
+store_textbuffer(TextBuffer tb, intptr_t where, uchar_t c)
 { intptr_t idx;
-  wint_t old;
+  uchar_t old;
 
   if ( where < 0 || where >= tb->size )
     fail;
@@ -2176,7 +2175,7 @@ change_textbuffer(TextBuffer tb, intptr_t where, PceString s)
   if ( istbA(tb) )
   { for( w=where, n=0; n < s->s_size; n++, w++ )
     { intptr_t i = Index(tb, w);
-      wint_t new = str_fetch(s, n);
+      uchar_t new = str_fetch(s, n);
 
       if ( tb->tb_bufferA[i] != new )
       { if ( tisendsline(tb->syntax, tb->tb_bufferA[i]) )
@@ -2258,7 +2257,7 @@ transpose_textbuffer(TextBuffer tb, intptr_t f1, intptr_t t1, intptr_t f2, intpt
 static status
 downcase_textbuffer(TextBuffer tb, intptr_t from, intptr_t len)
 { for( ; from < tb->size && len > 0; len--, from++ )
-  { wint_t c;
+  { int c;
 
     if ( iswupper((c=fetch(from))) )
       store_textbuffer(tb, from, towlower(c));
@@ -2271,7 +2270,7 @@ downcase_textbuffer(TextBuffer tb, intptr_t from, intptr_t len)
 static status
 upcase_textbuffer(TextBuffer tb, intptr_t from, intptr_t len)
 { for( ; from < tb->size && len > 0; len--, from++ )
-  { wint_t c;
+  { int c;
 
     if ( iswlower((c=fetch(from))) )
       store_textbuffer(tb, from, towupper(c));
@@ -2283,11 +2282,11 @@ upcase_textbuffer(TextBuffer tb, intptr_t from, intptr_t len)
 
 static status
 capitalise_textbuffer(TextBuffer tb, intptr_t from, intptr_t len)
-{ wint_t b = ' ';
+{ uchar_t b = ' ';
 
   for( ; from < tb->size && len > 0; len--, from++ )
-  { wint_t c = fetch(from);
-    wint_t c2;
+  { int c = fetch(from);
+    uchar_t c2;
 
     if ( !iswalnum(b) )
       c2 = towupper(c);
@@ -2343,8 +2342,8 @@ save_textbuffer(TextBuffer tb, intptr_t from, intptr_t len, SourceSink file)
   { const charW *f = &tb->tb_bufferW[from];
     const charW *e = &f[len];
 
-    for( ; f<e; f++)
-    { if ( Sputcode(*f, fd) < 0 )
+    for ( ; f < e; f++ )
+    { if ( Sputcode((int)*f, fd) < 0 )
 	goto error;
     }
   }
@@ -2915,11 +2914,11 @@ getLspOffsetTextBuffer(TextBuffer tb, Int line, Int character)
   size_t off = scan_textbuffer(tb, 0, NAME_line, ln, 'a');
 
   for(size_t i=0; i<pos; i++, off++)
-  {
-#if SIZEOF_WCHAR_T > 2
+  { /* LSP advances `pos` in UTF-16 units; each SMP code point in the
+     * buffer corresponds to two UTF-16 units, so consume the second
+     * UTF-16 unit by skipping ahead in i. */
     if ( fetch(off) > 0xffff )
       i++;
-#endif
   }
 
   answer(toInt(off));

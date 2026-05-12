@@ -137,6 +137,7 @@ NewClass(editor)
   Vector	mark_ring;		/* ring of old marks */
   Int		tab_distance;		/* distance between tabs */
   Style		selection_style;	/* style for the <-selection */
+  Style		nfd_style;		/* Style for NFD grapheme clusters */
   Fragment	selected_fragment;	/* Currently selected fragment */
   Style		selected_fragment_style; /* style of selected_fragment */
   Sheet		styles;			/* Style-name --> Style-object */
@@ -239,6 +240,7 @@ struct text_char
   Any		underline;		/* Underline style (bool|colour*) */
   intptr_t	index;			/* Index in line (relative) */
   float		x;			/* X-position in line (pixels) */
+  short		vcol;			/* Visual column (0-based); 0 for combiners */
   unsigned char attributes;		/* Its attributes */
   unsigned	type : 2;		/* type of character */
 };
@@ -298,6 +300,7 @@ NewClass(terminal_image)
   FontObj	bold_font;		/* Boldened font */
   Colour	background;		/* Background colour */
   Style		selection_style;	/* Style for selected text  */
+  Style		nfd_style;		/* Style for NFD grapheme clusters */
   Vector	ansi_colours;		/* The 16 ANSI colour codes */
   BoolObj	armed_link;		/* Hovering over link */
   Code		link_message;		/* Handle a clicked link */

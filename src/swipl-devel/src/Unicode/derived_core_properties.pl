@@ -35,7 +35,12 @@
 
 :- module(unicode_derived_core_properties,
           [ unicode_derived_core_property/2,    % ?Code, ?Prop
-            unicode_property/3                  % +File, ?Code, ?Prop
+            unicode_property/3,                 % +File, ?Code, ?Prop
+            id_superscript/1,
+            id_subscript/1,
+            white_space/1,                      % ?Code
+            east_asian_width/2,                 % +Code, -EAW
+            bidi_mirror/2                       % ?Code, ?Mirror
           ]).
 :- use_module(library(debug), [debug/3]).
 :- use_module(library(lists), [member/2, numlist/3]).
@@ -45,8 +50,16 @@
     derived_property/3,
     loaded/1.
 
+user:file_search_path(unicode, Dir) :-
+    source_file(unicode_derived_core_property(_,_), File),
+    file_directory_name(File, Dir).
+
 unicode_derived_core_property(Code, Prop) :-
-    unicode_property('DerivedCoreProperties.txt', Code, Prop).
+    absolute_file_name(unicode('DerivedCoreProperties.txt'),
+                       File,
+                       [ access(read)
+                       ]),
+    unicode_property(File, Code, Prop).
 
 %!  unicode_derived_core_property(+File, ?Code, ?Prop)
 %
@@ -157,3 +170,141 @@ ws -->
     [].
 
 skip_rest(_, []).
+
+
+                /*******************************
+                *         WHITE SPACE          *
+                *******************************/
+
+%!  white_space(?Code)
+%
+%   Pattern_White_Space (UAX #31 R3a): the immutable, deliberately
+%   small set of white space code points recommended for programming
+%   language source. The 11 code points listed below are byte-identical
+%   to the Unicode `Pattern_White_Space` property.
+%
+%   Note that this set deliberately *excludes* U+00A0 (NO-BREAK SPACE)
+%   and the broader `White_Space` property (en/em spaces, U+1680,
+%   U+202F, U+205F, U+3000, ...). Programs that paste from word
+%   processors will occasionally encounter NBSP in the wrong place;
+%   reporting it as a stray character is the right behaviour.
+%
+%   See also: \secref{unicodesyntax} in the manual.
+
+white_space(0x0009).
+white_space(0x000A).
+white_space(0x000B).
+white_space(0x000C).
+white_space(0x000D).
+white_space(0x0020).
+white_space(0x0085).
+white_space(0x200E).
+white_space(0x200F).
+white_space(0x2028).
+white_space(0x2029).
+
+
+                /*******************************
+                *      DIGIT SUPERSCRIPT       *
+                *******************************/
+
+id_superscript(0x2070).
+id_superscript(0x00B9).
+id_superscript(0x00B2).
+id_superscript(0x00B3).
+id_superscript(0x2074).
+id_superscript(0x2075).
+id_superscript(0x2076).
+id_superscript(0x2077).
+id_superscript(0x2078).
+id_superscript(0x2079).
+
+id_subscript(0x2080).
+id_subscript(0x2081).
+id_subscript(0x2082).
+id_subscript(0x2083).
+id_subscript(0x2084).
+id_subscript(0x2085).
+id_subscript(0x2086).
+id_subscript(0x2087).
+id_subscript(0x2088).
+id_subscript(0x2089).
+
+
+                /*******************************
+                *       EAST ASIAN WIDTH       *
+                *******************************/
+
+%!  east_asian_width(+Code, -EAW) is det.
+%
+%   EAW is the East_Asian_Width property of Code (UAX #11), as one
+%   of the lowercase atoms `w`, `f`, `h`, `n`, `na`, `a`. Code points
+%   not listed in EastAsianWidth.txt default to `n` except for the
+%   CJK Ideograph blocks and the unallocated parts of Planes 2 and 3,
+%   which default to `w` per the file header.
+
+east_asian_width(Code, EAW) :-
+    absolute_file_name(unicode('EastAsianWidth.txt'),
+                       File, [access(read)]),
+    (   unicode_property(File, Code, EAW0)
+    ->  EAW = EAW0
+    ;   default_east_asian_width(Code, EAW)
+    ).
+
+default_east_asian_width(Code, w) :-
+    cjk_default_wide(Lo, Hi),
+    Code >= Lo, Code =< Hi,
+    !.
+default_east_asian_width(_, n).
+
+cjk_default_wide(0x3400,  0x4DBF).         % CJK Unified Ideographs Ext A
+cjk_default_wide(0x4E00,  0x9FFF).         % CJK Unified Ideographs
+cjk_default_wide(0xF900,  0xFAFF).         % CJK Compatibility Ideographs
+cjk_default_wide(0x20000, 0x2FFFD).        % Plane 2
+cjk_default_wide(0x30000, 0x3FFFD).        % Plane 3
+
+
+                /*******************************
+                *        BIDI MIRRORING        *
+                *******************************/
+
+%!  bidi_mirror(?Code, ?Mirror) is nondet.
+%
+%   Mirror is the canonical Bidi mirror of Code per BidiMirroring.txt.
+%   Used to derive bracket-pair tables (Ps↔Pe, Pi↔Pf) for the syntax
+%   classifier.
+
+:- dynamic
+    bidi_mirror_cache/2,
+    bidi_mirror_loaded/0.
+
+bidi_mirror(Code, Mirror) :-
+    ensure_bidi_mirror_loaded,
+    bidi_mirror_cache(Code, Mirror).
+
+ensure_bidi_mirror_loaded :-
+    bidi_mirror_loaded, !.
+ensure_bidi_mirror_loaded :-
+    absolute_file_name(unicode('BidiMirroring.txt'),
+                       File, [access(read)]),
+    setup_call_cleanup(
+        open(File, read, In),
+        load_bidi_mirror(In),
+        close(In)),
+    assertz(bidi_mirror_loaded).
+
+load_bidi_mirror(In) :-
+    read_line_to_codes(In, Line),
+    (   Line == end_of_file
+    ->  true
+    ;   ignore(parse_bidi_line(Line)),
+        load_bidi_mirror(In)
+    ).
+
+parse_bidi_line(Line) :-
+    phrase(bidi_line(Code, Mirror), Line),
+    assertz(bidi_mirror_cache(Code, Mirror)).
+
+bidi_line(Code, Mirror) -->
+    ucc(Code), ws, ";", ws, ucc(Mirror), ws, "#", skip_rest.
+

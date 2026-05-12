@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker
     E-mail:        J.Wielemaker@vu.nl
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2025, University of Amsterdam
+    Copyright (c)  1985-2026, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -40,6 +40,7 @@
 #include "pl-arith.h"
 #include <math.h>
 #include <float.h>
+#include <wchar.h>
 #include "os/pl-ctype.h"
 #include "os/pl-utf8.h"
 #include "os/pl-dtoa.h"
@@ -74,26 +75,85 @@ static void	  addUTF8Buffer(Buffer b, int c);
 		 *     UNICODE CLASSIFIERS	*
 		 *******************************/
 
-#define CharTypeW(c, t, w) \
-	((unsigned)(c) <= 0xff ? (_PL_char_types[(unsigned)(c)] t) \
-			       : (uflagsW(c) & (w)))
+#define CharTypeA(c, t) (_PL_char_types[(unsigned)(c)] t)
 
-#define PlBlankW(c)	CharTypeW(c, == SP, U_SEPARATOR)
-#define PlUpperW(c)	CharTypeW(c, == UC, U_UPPERCASE)
-#define PlIdStartW(c)	((unsigned)c <= 0xff ? \
-				(isLower(c)||isUpper(c)||c=='_') \
-				: uflagsW(c) & U_ID_START)
-#define PlIdContW(c)	CharTypeW(c, >= UC, U_ID_CONTINUE)
-#define PlSymbolW(c)	CharTypeW(c, == SY, U_SYMBOL)
-#define PlDecimalW(c)	CharTypeW(c, == DI, U_DECIMAL)
-#define PlPunctW(c)	CharTypeW(c, == PU, 0)
-#define PlSoloW(c)	CharTypeW(c, == SO, U_OTHER)
-#define PlInvalidW(c)   (uflagsW(c) == 0)
+/* Tokeniser predicates for code points >= 0x80 dispatch directly on
+ * the u_category enum stored in bits 0..3 of uflags_map.  ASCII
+ * (c < 0x80) goes through the legacy _PL_char_types table.
+ */
+
+static inline bool
+pl_cat_is_id_start(u_category cat)
+{ return cat == U_CAT_ID_START_ATOM || cat == U_CAT_ID_START_VARIABLE;
+}
+
+static inline bool
+pl_cat_is_id_continue(u_category cat)
+{ switch ( cat )
+  { case U_CAT_ID_CONTINUE:
+    case U_CAT_ID_START_ATOM:
+    case U_CAT_ID_START_VARIABLE:
+    case U_CAT_DECIMAL:
+    case U_CAT_ID_CONTINUE_SOLO:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static inline bool
+pl_cat_is_solo(u_category cat)
+{ return cat == U_CAT_SOLO || cat == U_CAT_ID_CONTINUE_SOLO;
+}
+
+#define PlCatW(c)	U_CAT_OF(uflagsRaw(c))
+
+#define PlBlankW(c)	((unsigned)(c) < 0x80 ? CharTypeA(c, == SP) \
+					      : PlCatW(c) == U_CAT_LAYOUT)
+#define PlUpperW(c)	((unsigned)(c) < 0x80 ? CharTypeA(c, == UC) \
+					      : PlCatW(c) == U_CAT_ID_START_VARIABLE)
+#define PlIdStartW(c)	((unsigned)(c) < 0x80 \
+			   ? (isLower(c)||isUpper(c)||(c)=='_') \
+			   : pl_cat_is_id_start(PlCatW(c)))
+#define PlIdContW(c)	((unsigned)(c) < 0x80 ? CharTypeA(c, >= UC) \
+					      : pl_cat_is_id_continue(PlCatW(c)))
+#define PlSymbolW(c)	((unsigned)(c) < 0x80 ? CharTypeA(c, == SY) : false)
+#define PlDecimalW(c)	((unsigned)(c) < 0x80 ? CharTypeA(c, == DI) \
+					      : PlCatW(c) == U_CAT_DECIMAL)
+#define PlPunctW(c)	((unsigned)(c) < 0x80 ? CharTypeA(c, == PU) : false)
+#define PlSoloW(c)	((unsigned)(c) < 0x80 ? CharTypeA(c, == SO) \
+					      : pl_cat_is_solo(PlCatW(c)))
+#define PlInvalidW(c)	(PlCatW(c) == U_CAT_OTHER)
 
 /* these functions  must be of type  int (*)(int) as they  are used by
  * os/pl-ctype.c for function pointers  of this type.  Other functions
  * in this class return -1 for false and a code point otherwise.
  */
+
+/* True for the seven line-terminator-like Pattern_White_Space code
+ * points: LF, VT, FF, CR, NEL (U+0085), LINE SEPARATOR (U+2028),
+ * PARAGRAPH SEPARATOR (U+2029).  Used by raw_read's `%`-comment
+ * scanner, the line-counter, the escape-sequence handler, and the
+ * end_of_line entry of code_type/2 (via pl-ctype.c).  Returns int
+ * (not bool) so it can fill a function-pointer slot of type
+ * `int (*)(int)` in os/pl-ctype.c.
+ */
+
+int
+is_eol_char(int c)
+{ switch ( c )
+  { case '\n':
+    case '\v':
+    case '\f':
+    case '\r':
+    case 0x0085:
+    case 0x2028:
+    case 0x2029:
+      return true;
+    default:
+      return false;
+  }
+}
 
 int
 f_is_prolog_var_start(int c)
@@ -116,6 +176,67 @@ f_is_prolog_symbol(int c)
 }
 
 int
+f_is_prolog_solo(int c)
+{ return PlSoloW(c) != 0;
+}
+
+/* Pair-table accessors used by char_type/2 and code_type/2 for the
+ * paren(Close) and quote(Close) categories.  ASCII quotes (' " `)
+ * are open == close by convention.  Unicode bracket and quote pairs
+ * come from pl_pair_table (see src/pl-umap.c).  Each helper returns
+ * the matching delimiter or -1 when `chr` is not a member of the
+ * category.
+ */
+
+int
+f_paren_close(int chr)
+{ if ( PlCatW(chr) == U_CAT_BRACKET )
+  { bool is_open;
+    int close = pl_pair_lookup(chr, &is_open);
+    if ( close && is_open )
+      return close;
+  }
+  return -1;
+}
+
+int
+f_paren_open(int chr)
+{ if ( PlCatW(chr) == U_CAT_BRACKET )
+  { bool is_open;
+    int open = pl_pair_lookup(chr, &is_open);
+    if ( open && !is_open )
+      return open;
+  }
+  return -1;
+}
+
+int
+f_quote_close(int chr)
+{ if ( chr == '\'' || chr == '"' || chr == '`' )
+    return chr;
+  if ( PlCatW(chr) == U_CAT_QUOTE )
+  { bool is_open;
+    int close = pl_pair_lookup(chr, &is_open);
+    if ( close && is_open )
+      return close;
+  }
+  return -1;
+}
+
+int
+f_quote_open(int chr)
+{ if ( chr == '\'' || chr == '"' || chr == '`' )
+    return chr;
+  if ( PlCatW(chr) == U_CAT_QUOTE )
+  { bool is_open;
+    int open = pl_pair_lookup(chr, &is_open);
+    if ( open && !is_open )
+      return open;
+  }
+  return -1;
+}
+
+int
 f_is_decimal(int c)
 { return PlDecimalW(c) != 0;
 }
@@ -125,17 +246,61 @@ unicode_separator(int c)
 { return PlBlankW(c);
 }
 
-int
-unicode_quoted_escape(int c)
-{ if ( c != ' ' )
-  { int uflags = uflagsW(c);
 
-    return !uflags || (uflags&(U_SEPARATOR|U_CONTROL));
-  } else
-  { return false;
-  }
+		 /*******************************
+		 *	  PUBLIC C API		*
+		 *******************************/
+
+/* The PL_is_* functions below expose SWI-Prolog's Unicode classifier
+ * to foreign code, dispatching directly on the u_category enum
+ * stored in src/pl-umap.c. They answer for the full Unicode range,
+ * locale-independently, and are thin enough to live here where the
+ * `pl-umap.c` table is in scope.
+ */
+
+bool
+PL_is_id_start(int chr)
+{ return pl_cat_is_id_start(PlCatW(chr));
 }
 
+bool
+PL_is_id_continue(int chr)
+{ return pl_cat_is_id_continue(PlCatW(chr));
+}
+
+bool
+PL_is_uppercase(int chr)
+{ return PlCatW(chr) == U_CAT_ID_START_VARIABLE;
+}
+
+bool
+PL_is_decimal(int chr)
+{ return PlCatW(chr) == U_CAT_DECIMAL;
+}
+
+bool
+PL_is_layout(int chr)
+{ return PlCatW(chr) == U_CAT_LAYOUT;
+}
+
+/* Display width of a Unicode code point, in terminal columns.
+ * Returns the same values as POSIX wcwidth():
+ *
+ *   -1  non-printable (control / DEL / C1 control / unassigned cell)
+ *    0  combining mark, format / zero-width
+ *    1  normal printable
+ *    2  wide (East Asian W or F)
+ *
+ * The value is read from bits 4..5 of the per-code-point byte in
+ * uflags_map (see src/pl-umap.c). Sourced from EastAsianWidth.txt
+ * and the general_category property at table-build time, so it is
+ * locale-independent and Unicode-version pinned.
+ */
+
+int
+PL_wcwidth(int chr)
+{ return ((int)((uflagsRaw(chr) >> 4) & 0x3)) - 1;
+}
 
 int
 decimal_weight(int code)
@@ -473,6 +638,7 @@ typedef struct
 #endif
   bool		cycles;			/* Re-establish cycles */
   bool		dotlists;		/* read .(a,b) as a list */
+  Sunicode_atoms_t unicode_atoms;	/* per-stream/per-call atom-content policy */
   int		strictness;		/* Strictness level */
 
   atom_t	locked;			/* atom that must be unlocked */
@@ -526,6 +692,119 @@ init_read_data(DECL_LD ReadData _PL_rd, IOSTREAM *in)
     _PL_rd->char_conversion_table = char_conversion_table;
   else
     _PL_rd->char_conversion_table = NULL;
+  _PL_rd->unicode_atoms = (Sunicode_atoms_t)in->unicode_atoms;
+}
+
+
+
+/* Forward declarations for errorWarning helpers (defined below)
+ * needed by the bidi-override / NFC checks above the main reader.
+ */
+static bool errorWarning(const char *id_str, term_t id_term,
+			 ReadData _PL_rd);
+
+/* Bidi-override and isolate code points (Unicode UAX #9 explicit
+ * formatting) that the source-level Trojan Source attack uses.
+ * Always rejected in tokens, comments, and raw bytes inside
+ * quoted atoms / strings; users who need the byte literally can
+ * write the U+202E escape, etc.
+ */
+static inline bool
+is_bidi_override(int c)
+{ return (c >= 0x202A && c <= 0x202E) ||
+	 (c >= 0x2066 && c <= 0x2069);
+}
+
+static bool
+bidi_override_error(int c, ReadData _PL_rd)
+{ GET_LD
+  term_t ex;
+
+  return ( (ex = PL_new_term_ref()) &&
+	   PL_unify_term(ex, PL_FUNCTOR_CHARS, "bidi_override", 1,
+			 PL_INT, c) &&
+	   errorWarning(NULL, ex, _PL_rd) );
+}
+
+/* check_no_bidi_override(): scan a UTF-8 byte range for any
+ * bidi-override / isolate code point and raise a syntax error if
+ * found.  Returns true when the range is clean.
+ */
+static bool
+check_no_bidi_override(const unsigned char *start, const unsigned char *end,
+		       ReadData _PL_rd)
+{ const unsigned char *p = start;
+
+  while ( p < end )
+  { int c;
+    p = (const unsigned char *)utf8_get_char((const char *)p, &c);
+    if ( is_bidi_override(c) )
+      return bidi_override_error(c, _PL_rd);
+  }
+  return true;
+}
+
+
+/* atom_text_has_non_ascii(): does the UTF-8 byte sequence carry any
+ * byte at or above 0x80 (i.e. any non-ASCII character)?
+ */
+static bool
+atom_text_has_non_ascii(const unsigned char *bytes, size_t len)
+{ size_t i;
+
+  for(i=0; i<len; i++)
+  { if ( bytes[i] >= 0x80 )
+      return true;
+  }
+  return false;
+}
+
+
+/* atom_text_not_in_nfc(): conservative test for "definitely not in
+ * NFC".  Fast path scans for any code point at or above U+0300 with
+ * wcwidth == 0 (combining marks etc.); when a normalisation hook is
+ * registered, run it on a stack copy and compare for an exact
+ * NFC test.  Same accuracy ladder as the writer's
+ * atom_has_combining/1.
+ */
+static bool
+atom_text_not_in_nfc(const unsigned char *bytes, size_t len)
+{ const unsigned char *p = bytes;
+  const unsigned char *e = bytes + len;
+  bool any_combining = false;
+
+  while ( p < e )
+  { int c;
+    p = (const unsigned char *)utf8_get_char((const char *)p, &c);
+    if ( c >= 0x300 && PL_wcwidth(c) < 1 )
+    { any_combining = true;
+      break;
+    }
+  }
+  if ( !any_combining )
+    return false;
+
+  if ( GD->atoms.normalize_hook )
+  { unsigned char *buf = PL_malloc(len);
+    size_t l = len;
+    bool changed;
+
+    if ( !buf )
+      return true;			/* assume not-NFC on OOM */
+    memcpy(buf, bytes, len);
+    if ( GD->atoms.normalize_hook(buf, &l) != 0 )
+    { PL_free(buf);
+      return true;
+    }
+    changed = (l != len) || (memcmp(buf, bytes, len) != 0);
+    PL_free(buf);
+    return changed;
+  }
+  /* No precise hook available; treat the combining-mark presence as
+   * "not in NFC" — conservative, may over-quote NFC texts that
+   * legitimately contain combining marks (e.g. Devanagari).
+   */
+  return true;
 }
 
 
@@ -640,7 +919,7 @@ ptr_to_location(const unsigned char *here, source_location *pos, ReadData _PL_rd
   while( (s = utf8_get_uchar(s, &c)) < here )
   { pos->position.charno++;
 
-    if ( c == '\n' )
+    if ( is_eol_char(c) )
     { pos->position.lineno++;
       ll = s+1;
     }
@@ -998,7 +1277,7 @@ getchr__(ReadData _PL_rd)
 #define getchrq() Sgetcode(rb.stream)
 
 #define ensure_space(c) { if ( something_read && \
-			       (c == '\n' || !isBlank(rb.here[-1])) ) \
+			       (is_eol_char(c) || !isBlank(rb.here[-1])) ) \
 			   addToBuffer(c, _PL_rd); \
 			}
 #define set_start_line { if ( !something_read ) \
@@ -1024,8 +1303,17 @@ setErrorLocation(IOPOS *pos, ReadData _PL_rd)
   rb.here = rb.base+1;			/* see rawSyntaxError() */
 }
 
+/* Read a quoted text that opens with code point `open` and closes
+ * with code point `close`. ASCII single, double and back quotes
+ * pass open == close; Unicode quote pairs (Pi/Pf) pass distinct
+ * code points (e.g. open=U+201C, close=U+201D for "..."). The
+ * buffered text mirrors the source verbatim — open codepoint,
+ * raw content (with escape sequences passed through unchanged),
+ * close codepoint — so get_token can re-tokenise it later.
+ */
+
 static int
-raw_read_quoted(int q, ReadData _PL_rd)
+raw_read_quoted(int open, int close, ReadData _PL_rd)
 { IOPOS pbuf;
   IOPOS *pos;
   int c;
@@ -1038,8 +1326,8 @@ raw_read_quoted(int q, ReadData _PL_rd)
   } else
     pos = NULL;
 
-  addToBuffer(q, _PL_rd);
-  while((c=getchrq()) != EOF && c != q)
+  addToBuffer(open, _PL_rd);
+  while((c=getchrq()) != EOF && c != close)
   {
   next:
     if ( c == '\\' && ison(_PL_rd, M_CHARESCAPE) )
@@ -1073,7 +1361,7 @@ raw_read_quoted(int q, ReadData _PL_rd)
 	  if ( c == EOF )
 	    goto eofinstr;
 	  addToBuffer(c, _PL_rd);
-	  if ( c == q )
+	  if ( c == close )
 	    return true;
 	  continue;
 	case 'c':			/* \c<whitespace>* */
@@ -1083,7 +1371,7 @@ raw_read_quoted(int q, ReadData _PL_rd)
 	  { addToBuffer(c, _PL_rd);
 	    c = getchrq();
 	  }
-	  if ( c == EOF || c == q )
+	  if ( c == EOF || c == close )
 	    goto out;
 	  goto next;
 	default:
@@ -1091,12 +1379,12 @@ raw_read_quoted(int q, ReadData _PL_rd)
 	  if ( digitValue(8, c) >= 0 )	/* \NNN\ */
 	  { base = 8;
 	    goto xdigits;
-	  } else if ( c == '\n' )	/* \<newline> */
+	  } else if ( is_eol_char(c) )	/* \<newline> */
 	  { c = getchrq();
 	    if ( c == EOF )
 	      goto eofinstr;
 	    addToBuffer(c, _PL_rd);
-	    if ( c == q )
+	    if ( c == close )
 	      return true;
 	  }
 	  continue;			/* \symbolic-control-char */
@@ -1107,13 +1395,14 @@ raw_read_quoted(int q, ReadData _PL_rd)
 
 out:
   if (c == EOF)
-  { char what[2];
+  { char what[8];
+    char *p;
   eofinstr:
     if ( Sferror(rb.stream) )
       return false;
     setErrorLocation(pos, _PL_rd);
-    what[0] = (char)q;
-    what[1] = EOS;
+    p = utf8_put_char(what, open);
+    *p = EOS;
     rawSyntaxError1("end_of_file_in_quoted", what);
   }
   addToBuffer(c, _PL_rd);
@@ -1273,7 +1562,7 @@ raw_read2(DECL_LD ReadData _PL_rd)
 		  if ( something_read )
 		  { addToBuffer(' ', _PL_rd);	/* positions */
 		    addToBuffer(' ', _PL_rd);
-		    addToBuffer(last == '\n' ? last : ' ', _PL_rd);
+		    addToBuffer(is_eol_char(last) ? last : ' ', _PL_rd);
 		  }
 
 		  for(;;)
@@ -1281,6 +1570,12 @@ raw_read2(DECL_LD ReadData _PL_rd)
 
 		    if ( cbuf )
 		      addUTF8Buffer(cbuf, c);
+
+		    if ( is_bidi_override(c) )
+		    { if ( cbuf )
+			discardBuffer(cbuf);
+		      return bidi_override_error(c, _PL_rd);
+		    }
 
 		    switch( c )
 		    { case EOF:
@@ -1310,7 +1605,7 @@ raw_read2(DECL_LD ReadData _PL_rd)
 			break;
 		    }
 		    if ( something_read )
-		      addToBuffer(c == '\n' ? c : ' ', _PL_rd);
+		      addToBuffer(is_eol_char(c) ? c : ' ', _PL_rd);
 		    last = c;
 		  }
 		} else
@@ -1344,12 +1639,16 @@ raw_read2(DECL_LD ReadData _PL_rd)
 		  addUTF8Buffer(cbuf, '%');
 
 		  for(;;)
-		  { while((c=getchr()) != EOF && c != '\n')
-		    { addUTF8Buffer(cbuf, c);
+		  { while((c=getchr()) != EOF && !is_eol_char(c))
+		    { if ( is_bidi_override(c) )
+		      { discardBuffer(cbuf);
+			return bidi_override_error(c, _PL_rd);
+		      }
+		      addUTF8Buffer(cbuf, c);
 		      if ( something_read )		/* record positions */
 			addToBuffer(' ', _PL_rd);
 		    }
-		    if ( c == '\n' )
+		    if ( is_eol_char(c) )
 		    { int c2 = Speekcode(rb.stream);
 
 		      if ( c2 == '%' )
@@ -1372,8 +1671,10 @@ raw_read2(DECL_LD ReadData _PL_rd)
 		  }
 		  discardBuffer(cbuf);
 		} else
-		{ while((c=getchr()) != EOF && c != '\n')
-		  { if ( something_read )		/* record positions */
+		{ while((c=getchr()) != EOF && !is_eol_char(c))
+		  { if ( is_bidi_override(c) )
+		      return bidi_override_error(c, _PL_rd);
+		    if ( something_read )		/* record positions */
 		      addToBuffer(' ', _PL_rd);
 		  }
 		}
@@ -1443,11 +1744,11 @@ raw_read2(DECL_LD ReadData _PL_rd)
 
 	      sqatom:
 		set_start_line;
-		if ( !raw_read_quoted(c, _PL_rd) )
+		if ( !raw_read_quoted(c, c, _PL_rd) )
 		  fail;
 		break;
       case '"':	set_start_line;
-		if ( !raw_read_quoted(c, _PL_rd) )
+		if ( !raw_read_quoted(c, c, _PL_rd) )
 		  fail;
 		break;
       case '.': addToBuffer(c, _PL_rd);
@@ -1471,12 +1772,12 @@ raw_read2(DECL_LD ReadData _PL_rd)
 		goto handle_c;
       case '`': if ( ison(_PL_rd, BQ_MASK) )
 		{ set_start_line;
-		  if ( !raw_read_quoted(c, _PL_rd) )
+		  if ( !raw_read_quoted(c, c, _PL_rd) )
 		    fail;
 		  break;
 		}
 		/*FALLTHROUGH*/
-      default:	if ( (unsigned)c <= 0xff )
+      default:	if ( (unsigned)c < 0x80 )
 		{ switch(_PL_char_types[c])
 		  { case SP:
 		    blank:
@@ -1517,8 +1818,23 @@ raw_read2(DECL_LD ReadData _PL_rd)
 		      addToBuffer(c, _PL_rd);
 		      set_start_line;
 		  }
-		} else			/* > 255 */
-		{ if ( PlIdStartW(c) )
+		} else			/* >= 0x80 */
+		{ bool is_open;
+		  int close_cp = pl_pair_lookup(c, &is_open);
+		  if ( close_cp && is_open &&
+		       U_CAT_OF(uflagsRaw(c)) == U_CAT_QUOTE )
+		  { /* Unicode quote pair open: read literal text up to
+		     * the matching close.  Like the ASCII quote cases
+		     * above, this hands the buffered text to get_token
+		     * for type conversion (per the double_quotes flag)
+		     * and `'<open><close>'/1` wrapping.
+		     */
+		    set_start_line;
+		    if ( !raw_read_quoted(c, close_cp, _PL_rd) )
+		      fail;
+		    break;
+		  }
+		  if ( PlIdStartW(c) )
 		  { set_start_line;
 		    c = raw_read_identifier(c, _PL_rd);
 		    goto handle_c;
@@ -2142,7 +2458,7 @@ SkipSymbol(unsigned char *in, ReadData _PL_rd)
 */
 
 static int
-skip_digit_separator(cucharp *sp, int base, int *grouped)
+skip_digit_separator(cucharp *sp, int base, bool *grouped)
 { cucharp s = *sp;
 
   if ( *s == '_' )
@@ -2161,8 +2477,8 @@ skip_digit_separator(cucharp *sp, int base, int *grouped)
 }
 
 
-static int
-skip_decimal_separator(cucharp *sp, int zero, int *grouped)
+static bool
+skip_decimal_separator(cucharp *sp, int zero, bool *grouped)
 { cucharp s = *sp;
   int c;
 
@@ -2184,7 +2500,7 @@ skip_decimal_separator(cucharp *sp, int zero, int *grouped)
 
 
 static strnumstat
-scan_decimal(cucharp *sp, int zero, int negative, Number n, int *grouped)
+scan_decimal(cucharp *sp, int zero, bool negative, Number n, bool *grouped)
 { int64_t maxi = PLMAXINT/10;
   int maxlastdigit = PLMAXINT % 10;
   int64_t mini = PLMININT/10;
@@ -2266,7 +2582,7 @@ scan_decimal(cucharp *sp, int zero, int negative, Number n, int *grouped)
 
 
 static strnumstat
-scan_number(cucharp *s, int negative, int b, Number n)
+scan_number(cucharp *s, bool negative, int b, Number n)
 { int d;
   int64_t maxi = PLMAXINT/b;		/* cache? */
   int maxlastdigit = (int)(PLMAXINT % b);
@@ -2391,6 +2707,9 @@ again:
       }
     }
     /*FALLTHROUGH*/
+    case 0x0085:			/* NEL */
+    case 0x2028:			/* LINE SEPARATOR */
+    case 0x2029:			/* PARAGRAPH SEPARATOR */
     case '\n':				/* \LF<blank>* */
       if ( _PL_rd )			/* quoted string, _not_ 0'\.. */
       { if ( !_PL_rd->strictness )
@@ -2399,7 +2718,7 @@ again:
 	  e = in;
 	  for( ; *in; in=e )
 	  { e = utf8_get_uchar(in, &c);
-	    if ( c == '\n' || !PlBlankW(c) )
+	    if ( is_eol_char(c) || !PlBlankW(c) )
 	    { if ( skipped )
 	      { term_t ex;
 		unsigned char *old_start = last_token_start;
@@ -2549,6 +2868,132 @@ addUTF8Buffer(Buffer b, int c)
 }
 
 
+/* Codepoint-aware variant of get_string() used for Unicode quote
+ * pairs (see case_solo in get_token). `in` points just past the
+ * opening delimiter UTF-8; the function reads codepoints up to the
+ * `close` codepoint and writes the content to `buf` as UTF-8.
+ * Escape sequences (`\n`, `»`, ...) follow the same rules as
+ * ASCII quoted strings, but no doubling of the close delimiter.
+ */
+
+/* Forward declaration: defined below, called by
+ * read_unicode_quote_token() above.
+ */
+static int
+get_unicode_quoted_string(unsigned char *in, int close,
+			  unsigned char *ein, unsigned char **end, Buffer buf,
+			  ReadData _PL_rd);
+
+/* Tokeniser entry point for a Unicode quote pair open. Reads the
+ * literal content with get_unicode_quoted_string(), converts it to
+ * the value type selected by the double_quotes flag (the same
+ * choice as the case DQ block below), then wraps it in a unary
+ * compound `'<open><close>'(Value)`. The result populates the
+ * global cur_token as a T_STRING token whose .value.term is the
+ * compound. Returns false on read or unify error.
+ */
+
+#define read_unicode_quote_token(open, close, _PL_rd) \
+	LDFUNC(read_unicode_quote_token, open, close, _PL_rd)
+
+static bool
+read_unicode_quote_token(DECL_LD int open, int close, ReadData _PL_rd)
+{ tmp_buffer b;
+  term_t str_term, t;
+  PL_chars_t txt;
+  int type;
+  atom_t functor;
+  char functor_utf8[16];
+  char *p;
+  size_t functor_len;
+  bool rc = false;
+
+  initBuffer(&b);
+  if ( !get_unicode_quoted_string(rdhere, close, rdend, &rdhere,
+				  (Buffer)&b, _PL_rd) )
+    goto cleanup;
+
+  txt.text.t    = baseBuffer(&b, char);
+  txt.length    = entriesBuffer(&b, char);
+  txt.storage   = PL_CHARS_HEAP;
+  txt.encoding  = ENC_UTF8;
+  txt.canonical = false;
+
+#if O_STRING
+  if ( ison(_PL_rd, DBLQ_STRING) )
+    type = PL_STRING;
+  else
+#endif
+  if ( ison(_PL_rd, DBLQ_ATOM) )
+    type = PL_ATOM;
+  else if ( ison(_PL_rd, DBLQ_CHARS) )
+    type = PL_CHAR_LIST;
+  else
+    type = PL_CODE_LIST;
+
+  str_term = PL_new_term_ref();
+  if ( !PL_unify_text(str_term, 0, &txt, type) )
+  { PL_free_text(&txt);
+    goto cleanup;
+  }
+  PL_free_text(&txt);
+
+  p = utf8_put_char(functor_utf8, open);
+  p = utf8_put_char(p, close);
+  functor_len = p - functor_utf8;
+  functor = PL_new_atom_mbchars(REP_UTF8, functor_len, functor_utf8);
+
+  t = PL_new_term_ref();
+  if ( !PL_cons_functor(t, PL_new_functor(functor, 1), str_term) )
+  { PL_unregister_atom(functor);
+    goto cleanup;
+  }
+  PL_unregister_atom(functor);
+
+  cur_token.value.term = t;
+  cur_token.type = T_STRING;
+  rc = true;
+
+cleanup:
+  discardBuffer(&b);
+  return rc;
+}
+
+static int
+get_unicode_quoted_string(unsigned char *in, int close,
+			  unsigned char *ein, unsigned char **end, Buffer buf,
+			  ReadData _PL_rd)
+{ int c;
+
+  for(;;)
+  { if ( in >= ein )
+    { errorWarning("end_of_file_in_string", 0, _PL_rd);
+      return false;
+    }
+    in = (unsigned char *)utf8_get_char((const char *)in, &c);
+    if ( c == close )
+      break;
+    if ( c == '\\' && ison(_PL_rd, M_CHARESCAPE) )
+    { c = escape_char(in, &in, 0, _PL_rd);
+      if ( c >= 0 )
+      { addUTF8Buffer(buf, c);
+	continue;
+      } else if ( c == ESC_ERROR )
+      { return false;
+      } else
+      { break;
+      }
+    }
+    if ( is_bidi_override(c) )
+      return bidi_override_error(c, _PL_rd);
+    addUTF8Buffer(buf, c);
+  }
+
+  if ( end )
+    *end = in;
+  return true;
+}
+
 static int
 get_string(unsigned char *in, unsigned char *ein, unsigned char **end, Buffer buf,
 	   ReadData _PL_rd)
@@ -2578,7 +3023,11 @@ get_string(unsigned char *in, unsigned char *ein, unsigned char **end, Buffer bu
       { break;
       }
     } else if ( c >= 0x80 )		/* copy UTF-8 sequence */
-    { do
+    { int code;
+      utf8_get_char((const char *)(in - 1), &code);
+      if ( is_bidi_override(code) )
+	return bidi_override_error(code, _PL_rd);
+      do
       { addBuffer(buf, (char)c, char);
 	c = *in++;
       } while( c > 0x80 );
@@ -2780,10 +3229,10 @@ to_double(cucharp s, cucharp e, int zero, double *dp)
 
 strnumstat
 str_number(cucharp in, ucharp *end, Number value, int flags)
-{ int negative = false;
+{ bool negative = false;
   cucharp start = in;
   strnumstat rc;
-  int grouped;
+  bool grouped;
 
   if ( *in == '-' )			/* skip optional sign */
   { negative = true;
@@ -2997,19 +3446,45 @@ get_token(DECL_LD bool must_be_op, ReadData _PL_rd)
 					/* TBD: quadratic due to ptr_to_pos()? */
 
   rdhere = (unsigned char*)utf8_get_char((char *)rdhere, &c);
-  if ( c > 0xff )
-  { if ( PlIdStartW(c) )
-    { if ( PlUpperW(c) )
+  if ( is_bidi_override(c) )
+  { bidi_override_error(c, _PL_rd);
+    return NULL;
+  }
+  if ( c >= 0x80 )
+  { switch ( PlCatW(c) )
+    { case U_CAT_ID_START_VARIABLE:
 	goto upper;
-      goto lower;
+      case U_CAT_ID_START_ATOM:
+	goto lower;
+      case U_CAT_BRACKET:
+	cur_token.value.character = c;
+	cur_token.type = T_PUNCTUATION;
+	DEBUG(MSG_READ_TOKEN,
+	      Sdprintf("PUNCT(bracket): U+%04X\n", c));
+	goto out;
+      case U_CAT_QUOTE:
+      { bool is_open = false;
+	int mate = pl_pair_lookup(c, &is_open);
+	if ( mate && is_open )
+	{ if ( !read_unicode_quote_token(c, mate, _PL_rd) )
+	    fail;
+	  DEBUG(MSG_READ_TOKEN,
+		Sdprintf("STRING(quote): U+%04X..U+%04X\n", c, mate));
+	  goto out;
+	}
+	/* Stray quote close at top level (defensive — raw_read should
+	 * have consumed the close inside raw_read_quoted).
+	 */
+	cur_token.value.character = c;
+	cur_token.type = T_PUNCTUATION;
+	goto out;
+      }
+      case U_CAT_SOLO:
+      case U_CAT_ID_CONTINUE_SOLO:
+	goto case_solo;
+      default:
+	syntaxError("illegal_character", _PL_rd);
     }
-    if ( PlSymbolW(c) )
-      goto case_symbol;
-    if ( PlDecimalW(c) )
-      goto case_digit;
-    if ( PlInvalidW(c) )
-      syntaxError("illegal_character", _PL_rd);
-    goto case_solo;
   }
 
   switch(_PL_char_types[c])
@@ -3018,6 +3493,8 @@ get_token(DECL_LD bool must_be_op, ReadData _PL_rd)
 		{ PL_chars_t txt;
 
 		  rdhere = SkipAtomIdCont(rdhere);
+		  if ( !check_no_bidi_override(start, rdhere, _PL_rd) )
+		    return NULL;
 		symbol:
 		  if ( _PL_rd->styleCheck & CHARSET_CHECK )
 		  { if ( !checkASCII(start, rdhere-start, "atom") )
@@ -3030,6 +3507,28 @@ get_token(DECL_LD bool must_be_op, ReadData _PL_rd)
 		  txt.storage   = PL_CHARS_HEAP;
 		  txt.encoding  = ENC_UTF8;
 		  txt.canonical = false;
+
+		  switch ( _PL_rd->unicode_atoms )
+		  { case S_UATOMS_ACCEPT:
+		      break;
+		    case S_UATOMS_NFC:
+		      if ( GD->atoms.normalize_hook )
+			GD->atoms.normalize_hook(start, &txt.length);
+		      break;
+		    case S_UATOMS_ERROR:
+		      if ( atom_text_not_in_nfc(start, txt.length) )
+		      { errorWarning("non_nfc_atom", 0, _PL_rd);
+			return NULL;
+		      }
+		      break;
+		    case S_UATOMS_REJECT:
+		      if ( atom_text_has_non_ascii(start, txt.length) )
+		      { errorWarning("non_ascii_atom", 0, _PL_rd);
+			return NULL;
+		      }
+		      break;
+		  }
+
 		  cur_token.value.atom = textToAtom(&txt);
 		  NeedUnlock(cur_token.value.atom);
 		  PL_free_text(&txt);
@@ -3055,6 +3554,8 @@ get_token(DECL_LD bool must_be_op, ReadData _PL_rd)
 		  goto lower;
 
 		{ rdhere = SkipVarIdCont(rdhere);
+		  if ( !check_no_bidi_override(start, rdhere, _PL_rd) )
+		    return NULL;
 		  if ( _PL_rd->styleCheck & CHARSET_CHECK )
 		  { if ( !checkASCII(start, rdhere-start, "variable") )
 		      return false;
@@ -3099,13 +3600,18 @@ get_token(DECL_LD bool must_be_op, ReadData _PL_rd)
 		  }
 		}
     case_solo:
-    case SO:	{ cur_token.value.atom = codeToAtom(c);		/* not registered */
+    case SO:	{ /* Single-code-point atom.  Bracket / quote-pair handling
+		   * is dispatched directly from the c >= 0x80 switch above
+		   * (and from the ASCII PU case when followed by '('); we
+		   * only get here for plain U_CAT_SOLO and
+		   * U_CAT_ID_CONTINUE_SOLO code points.
+		   */
+		  cur_token.value.atom = codeToAtom(c);	/* not registered */
 		  cur_token.type = (*rdhere == '(' ? T_FUNCTOR : T_NAME);
 		  DEBUG(MSG_READ_TOKEN,
 			Sdprintf("%s: %s\n",
 				 *rdhere == '(' ? "FUNC" : "NAME",
 				 stringAtom(cur_token.value.atom)));
-
 		  break;
 		}
     case_symbol:
@@ -3113,6 +3619,8 @@ get_token(DECL_LD bool must_be_op, ReadData _PL_rd)
 		  goto case_bq;
 
 		rdhere = SkipSymbol(rdhere, _PL_rd);
+		if ( !check_no_bidi_override(start, rdhere, _PL_rd) )
+		  return NULL;
 		if ( rdhere == start+1 )
 		{ if ( c == '-' &&			/* -number */
 		       !must_be_op &&
@@ -4295,6 +4803,22 @@ consider  the  last  operator  on  the  side   queue  as  an  atom.  See
 modify_op().
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+/* True if `code` is one of the code points encoded in the UTF-8
+ * string `stop`.  Used by complex_term() to recognise the closing
+ * delimiter of paired terms; UTF-8-aware so non-ASCII close
+ * characters (e.g. `»`, `」`, `’`) are matched correctly.
+ */
+static int
+stop_matches_codepoint(const char *stop, int code)
+{ while ( *stop )
+  { int c;
+    stop = utf8_get_char(stop, &c);
+    if ( c == code )
+      return 1;
+  }
+  return 0;
+}
+
 #define complex_term(stop, maxpri, positions, _PL_rd) \
 	LDFUNC(complex_term, stop, maxpri, positions, _PL_rd)
 
@@ -4337,7 +4861,7 @@ complex_term(DECL_LD const char *stop, short maxpri, term_t positions,
 	    goto exit;			/* exit for-loop */
 	  break;
 	case T_PUNCTUATION:
-	  if ( stop != NULL && strchr(stop, token->value.character) )
+	  if ( stop != NULL && stop_matches_codepoint(stop, token->value.character) )
 	    goto exit;
 	  break;
 #ifdef O_QUASIQUOTATIONS
@@ -4651,6 +5175,76 @@ read_brace_term(DECL_LD Token token, term_t positions, ReadData _PL_rd)
     set_range_position(positions, -1, token->end);
 
   return build_term(ATOM_curl, 1, _PL_rd);
+}
+
+/* Generic Unicode bracket / quote-pair reader.
+ *
+ * Modeled on read_brace_term().  When the tokenizer encounters a
+ * non-ASCII bracket / quote open (category 3 or 4 with a non-zero
+ * pl_pair_lookup entry) it emits a T_PUNCTUATION token carrying the
+ * open code point; this function looks up the matching close in the
+ * pair table, parses the contained term, expects the close, and
+ * builds an `'<open><close>'/1` compound — the same shape as
+ * `'{}'/1` for `{Term}`.
+ *
+ * Examples:
+ *   `«hello»`        ⇒ '«»'(hello)
+ *   `「foo bar」`    ⇒ '「」'((foo bar))
+ *   `‘x’`            ⇒ '‘’'(x)
+ *
+ * Mismatched closes raise the same syntax_error/1 that complex_term
+ * raises for any unexpected punctuation in term position.
+ */
+
+#define read_paired_term(token, positions, _PL_rd) \
+	LDFUNC(read_paired_term, token, positions, _PL_rd)
+static inline int
+read_paired_term(DECL_LD Token token, term_t positions, ReadData _PL_rd)
+{ int rc;
+  term_t pa;
+  int open  = token->value.character;
+  int close = pl_pair_lookup(open, NULL);
+  char close_utf8[8];
+  char functor_utf8[16];
+  char *p;
+  size_t functor_len;
+
+  if ( close == 0 )
+  { syntaxError("illegal_character", _PL_rd);
+    return false;
+  }
+
+  /* UTF-8 of the closing delimiter; drives complex_term's stop check. */
+  p = utf8_put_char(close_utf8, close);
+  *p = '\0';
+
+  /* '<open><close>' atom for the functor name. */
+  p = utf8_put_char(functor_utf8, open);
+  p = utf8_put_char(p, close);
+  functor_len = p - functor_utf8;
+
+  if ( positions )
+  { if ( !(pa = PL_new_term_ref()) ||
+	 !PL_unify_term(positions,
+			PL_FUNCTOR, FUNCTOR_brace_term_position3,
+			PL_INT64, token->start,
+			PL_VARIABLE,
+			PL_TERM, pa) )
+      return false;
+  } else
+    pa = 0;
+
+  if ( (rc=complex_term(close_utf8, OP_MAXPRIORITY+1, pa, _PL_rd)) != true )
+    return rc;
+  token = get_token(false, _PL_rd);
+  if ( positions )
+    set_range_position(positions, -1, token->end);
+
+  { atom_t functor = PL_new_atom_mbchars(REP_UTF8, functor_len, functor_utf8);
+    int br = build_term(functor, 1, _PL_rd);
+    PL_unregister_atom(functor);
+    return br;
+  }
 }
 
 
@@ -4980,7 +5574,11 @@ simple_term(DECL_LD Token token, term_t positions, ReadData _PL_rd)
 	case ',':
 	  return errorWarning("quoted_punctuation", 0, _PL_rd);
 	default:
-	{ term_t term = alloc_term(_PL_rd);
+	{ bool is_open;
+	  if ( pl_pair_lookup(token->value.character, &is_open) && is_open )
+	    return read_paired_term(token, positions, _PL_rd);
+
+	  term_t term = alloc_term(_PL_rd);
 	  PL_put_atom(term, codeToAtom(token->value.character));
 	  return unify_atomic_position(positions, token);
 	}
@@ -5358,6 +5956,7 @@ static const PL_option_t read_clause_options[] =
   { ATOM_process_comment,   OPT_BOOL },
   { ATOM_comments,	    OPT_TERM },
   { ATOM_syntax_errors,     OPT_ATOM },
+  { ATOM_unicode_atoms,     OPT_ATOM },
   { NULL_ATOM,		    0 }
 };
 
@@ -5405,6 +6004,7 @@ read_clause(DECL_LD IOSTREAM *s, term_t term, term_t options)
   term_t comments = 0;
   term_t opt_comments = 0;
   int process_comment;
+  atom_t opt_unicode_atoms = NULL_ATOM;
   atom_t syntax_errors = ATOM_dec10;
   predicate_t comment_hook;
 
@@ -5425,7 +6025,22 @@ retry:
 			&rd.subtpos,
 			&process_comment,
 			&opt_comments,
-			&syntax_errors) )
+			&syntax_errors,
+			&opt_unicode_atoms) )
+  { PL_close_foreign_frame(fid);
+    return false;
+  }
+
+  if ( opt_unicode_atoms != NULL_ATOM )
+  { Sunicode_atoms_t mode;
+
+    if ( !atom_to_unicode_atoms_ex(opt_unicode_atoms, &mode, true) )
+    { PL_close_foreign_frame(fid);
+      return false;
+    }
+    rd.unicode_atoms = mode;
+  } else if ( rd.unicode_atoms == S_UATOMS_NFC &&
+	      !ensure_unicode_normalize_hook(true) )
   { PL_close_foreign_frame(fid);
     return false;
   }
@@ -5502,6 +6117,7 @@ static const PL_option_t read_term_options[] =
 #endif
   { ATOM_cycles,	    OPT_BOOL },
   { ATOM_dotlists,	    OPT_BOOL },
+  { ATOM_unicode_atoms,     OPT_ATOM },
   { NULL_ATOM,		    0 }
 };
 
@@ -5518,6 +6134,7 @@ read_term_from_stream(DECL_LD IOSTREAM *s, term_t term, term_t options)
   read_data rd;
   int charescapes = -1;
   int varprefix = -1;
+  atom_t opt_unicode_atoms = NULL_ATOM;
   atom_t dq = NULL_ATOM;
   atom_t bq = NULL_ATOM;
   atom_t mname = NULL_ATOM;
@@ -5547,7 +6164,8 @@ retry:
 			&tcomments,
 			QQ_ARG
 			&rd.cycles,
-			&rd.dotlists) )
+			&rd.dotlists,
+			&opt_unicode_atoms) )
     return false;
 
   if ( mname )
@@ -5569,6 +6187,14 @@ retry:
     else
       clear(&rd, M_VARPREFIX);
   }
+  if ( opt_unicode_atoms != NULL_ATOM )
+  { Sunicode_atoms_t mode;
+    if ( !atom_to_unicode_atoms_ex(opt_unicode_atoms, &mode, true) )
+      return false;
+    rd.unicode_atoms = mode;
+  } else if ( rd.unicode_atoms == S_UATOMS_NFC &&
+	      !ensure_unicode_normalize_hook(true) )
+    return false;
   if ( dq )
   { if ( !setDoubleQuotes(dq, &rd.flags) )
       return false;
@@ -5689,14 +6315,14 @@ PRED_IMPL("read_term_from_atom", 3, read_term_from_atom, 0)
 #define atom_to_term(atom, term, bindings, text_type) \
 	LDFUNC(atom_to_term, atom, term, bindings, text_type)
 
-static int
+static bool
 atom_to_term(DECL_LD term_t atom, term_t term, term_t bindings, int text_type)
 { PL_chars_t txt;
 
   if ( !bindings && PL_is_variable(atom) ) /* term_to_atom(+, -) */
   { char buf[1024];
     size_t bufsize = sizeof(buf);
-    int rval;
+    bool rval;
     char *s = buf;
     IOSTREAM *stream;
     PL_chars_t txt;
@@ -5725,7 +6351,7 @@ atom_to_term(DECL_LD term_t atom, term_t term, term_t bindings, int text_type)
   if ( PL_get_text(atom, &txt, CVT_ALL|CVT_EXCEPTION) )
   { GET_LD
     read_data rd;
-    int rval;
+    bool rval;
     IOSTREAM *stream;
     source_location oldsrc = LD->read_source;
 
@@ -5747,7 +6373,7 @@ atom_to_term(DECL_LD term_t atom, term_t term, term_t bindings, int text_type)
     return rval;
   }
 
-  fail;
+  return false;
 }
 
 
@@ -5886,7 +6512,7 @@ for inspection of the chararacter categories   used for parsing. Defined
 categories are:
 
     * layout
-    * graphic
+    * symbol
     These are the glueing symbol characters
     * solo
     These are the non-glueing symbol characters
@@ -5919,7 +6545,7 @@ PRED_IMPL("$code_class", 2, code_class, 0)
   c = PL_atom_chars(class);
   if ( streq(c, "layout") )
     rc = PlBlankW(code);
-  else if ( streq(c, "graphic") )
+  else if ( streq(c, "symbol") )
     rc = PlSymbolW(code);
   else if ( streq(c, "solo") )
     rc = PlSoloW(code);
@@ -5936,7 +6562,7 @@ PRED_IMPL("$code_class", 2, code_class, 0)
   else
     return PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_category, A2);
 
-  return rc ? true : false;
+  return rc != 0;
 }
 
 

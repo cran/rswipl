@@ -346,12 +346,12 @@ bool PlTerm::unify_blob(const PlBlob* blob) const
                             blob->blob_size_(), blob->blob_t_);
 }
 
+template<typename T>
 _SWI_CPP2_CPP_inline
-bool PlTerm::unify_blob(std::unique_ptr<PlBlob>* b) const
-{ std::unique_ptr<PlBlob> blob(std::move(*b));
-  // if std::move is not supported, the above can be replaced by:
-  //   std:unique_ptr<PlBlob> blob;
-  //   blob.swap(*b);
+bool PlTerm::unify_blob(std::unique_ptr<T>* b) const
+{ static_assert(std::is_base_of<PlBlob, T>::value,
+                "T must derive from PlBlob");
+  std::unique_ptr<T> blob(std::move(*b));
   if ( !unify_blob(blob.get()) )
     return false;
   (void)blob.release(); // Pass ownership to the Prolog blob (`this`)
@@ -722,8 +722,8 @@ PlCompound::PlCompound(const std::wstring& text)
 }
 
 _SWI_CPP2_CPP_inline
-PlCompound::PlCompound(const char *functor, const PlTermv& args, PlEncoding rep)
-{ functor_t f = Plx_new_functor(Plx_new_atom_mbchars((int) rep, -1, functor), args.size());
+PlCompound::PlCompound(const char *functor, const PlTermv& args)
+{ functor_t f = Plx_new_functor(Plx_new_atom(functor), args.size());
   PlEx<bool>(f != (functor_t)0);
   Plx_cons_functor_v(unwrap(), f, args.termv());
 }
@@ -736,8 +736,8 @@ PlCompound::PlCompound(const wchar_t *functor, const PlTermv& args)
 }
 
 _SWI_CPP2_CPP_inline
-PlCompound::PlCompound(const std::string& functor, const PlTermv& args, PlEncoding rep)
-{ functor_t f = Plx_new_functor(Plx_new_atom_mbchars((int) rep, functor.size(), functor.data()), args.size());
+PlCompound::PlCompound(const std::string& functor, const PlTermv& args)
+{ functor_t f = Plx_new_functor(Plx_new_atom_nchars(functor.size(), functor.data()), args.size());
   Plx_cons_functor_v(unwrap(), f, args.termv());
 }
 

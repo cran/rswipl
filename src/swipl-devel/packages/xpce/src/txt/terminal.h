@@ -37,7 +37,10 @@
 #define _TERMINAL_H_INCLUDED
 #include "../sdl/sdlcolour.h"
 
+#ifndef UCHAR_T_DEFINED
+#define UCHAR_T_DEFINED
 typedef uint32_t uchar_t;
+#endif
 
 /* Marks a location in the line buffer
  */

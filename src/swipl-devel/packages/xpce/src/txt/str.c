@@ -97,7 +97,13 @@ str_ring_alloc(PceString s)
   { str_ring[str_ring_ptr] = pceRealloc(str_ring[str_ring_ptr], size);
   }
   s->s_textA = (charA*)str_ring[str_ring_ptr];
-  s->s_readonly = TRUE;
+  /* s_readonly stays FALSE: the ring buffer is *not* permanent
+   * storage.  initialiseCharArray's fast-path treats s_readonly as
+   * "share the pointer, the source lives forever" — that is correct
+   * for static C-string sources (str_set_static) but fatal here, since
+   * the next 16 ring allocations recycle the slot.  Callers must not
+   * call str_unalloc on a ring-derived string; in current xpce no
+   * caller does. */
 
   if ( ++str_ring_ptr == STR_RING_SIZE )
     str_ring_ptr = 0;
@@ -151,8 +157,21 @@ str_set_n_wchar(PceString str, size_t len, wchar_t *text)
     return errorPce(NIL, NAME_stringTooLong, toInt(len));
 
   str_inithdr(str, TRUE);
-  str->s_size = (int)len;
-  str->s_textW = text;
+
+  if ( sizeof(wchar_t) == sizeof(charW) )
+  { /* charW and wchar_t are the same width (Linux always; Windows
+     * when charW falls back to wchar_t).  Cast through; no copy. */
+    str->s_size = (int)len;
+    str->s_textW = (charW *)text;
+  } else
+  { /* charW is wider than wchar_t (Windows when charW is uint32_t):
+     * allocate a ring slot and surrogate-decode the source so the
+     * string's storage holds one code point per slot. */
+    size_t cwlen = wchar_to_charW_len(text, len);
+    str->s_size = (int)cwlen;
+    str_ring_alloc(str);
+    wchar_to_charW(str->s_textW, text, len);
+  }
 
   succeed;
 }
@@ -369,8 +388,8 @@ str_cmp(PceString s1, PceString s2)
   { int i;
 
     for(i=0; i<n; i++)
-    { wint_t c1 = str_fetch(s1, i);
-      wint_t c2 = str_fetch(s2, i);
+    { uchar_t c1 = str_fetch(s1, i);
+      uchar_t c2 = str_fetch(s2, i);
 
       if ( c1 != c2 )
 	return c1 -c2;
@@ -411,8 +430,8 @@ str_icase_cmp(PceString s1, PceString s2)
   { int i;
 
     for(i=0; i<n; i++)
-    { wint_t c1 = towlower(str_fetch(s1, i));
-      wint_t c2 = towlower(str_fetch(s2, i));
+    { uchar_t c1 = towlower(str_fetch(s1, i));
+      uchar_t c2 = towlower(str_fetch(s2, i));
 
       if ( c1 != c2 )
 	return c1 -c2;
@@ -674,7 +693,7 @@ str_icasesub(PceString s1, PceString s2)		/* s2 is substring of s1 */
 
 
 int
-str_next_index(PceString s, int from, wint_t chr)
+str_next_index(PceString s, int from, uchar_t chr)
 { int i, n = s->s_size;
 
   if ( isstrA(s) )
@@ -687,7 +706,7 @@ str_next_index(PceString s, int from, wint_t chr)
   { charW *d = &s->s_textW[from];
 
     for(i=from; i<n; i++, d++)
-      if ( (wint_t)*d == chr )
+      if ( (uchar_t)*d == chr )
 	return i;
   }
 
@@ -696,7 +715,7 @@ str_next_index(PceString s, int from, wint_t chr)
 
 
 int
-str_next_rindex(PceString s, int from, wint_t chr)
+str_next_rindex(PceString s, int from, uchar_t chr)
 { int i;
 
   if ( isstrA(s) )
@@ -709,7 +728,7 @@ str_next_rindex(PceString s, int from, wint_t chr)
   { charW *d = &s->s_textW[from];
 
     for(i=from; i >= 0; i--, d--)
-      if ( (wint_t)*d == chr )
+      if ( (uchar_t)*d == chr )
 	return i;
   }
 
@@ -718,20 +737,20 @@ str_next_rindex(PceString s, int from, wint_t chr)
 
 
 int
-str_index(PceString s, wint_t chr)
+str_index(PceString s, uchar_t chr)
 { return str_next_index(s, 0, chr);
 }
 
 
 int
-str_rindex(PceString s, wint_t chr)
+str_rindex(PceString s, uchar_t chr)
 { return str_next_rindex(s, s->s_size, chr);
 }
 
 /* count chr in [from,to) */
 
 int
-str_count_chr(PceString s, int from, int to, wint_t chr)
+str_count_chr(PceString s, int from, int to, uchar_t chr)
 { int i, count = 0;
 
   if ( isstrA(s) )
@@ -744,7 +763,7 @@ str_count_chr(PceString s, int from, int to, wint_t chr)
   { charW *d = &s->s_textW[from];
 
     for(i=from; i<to; i++, d++)
-      if ( (wint_t)*d == chr )
+      if ( (uchar_t)*d == chr )
 	count++;
   }
 
@@ -758,9 +777,9 @@ str_lineno(PceString s, int at)
 }
 
 
-wint_t
+uchar_t
 str_fetch(PceString s, int idx)
-{ return s->s_iswide ? str_fetchW(s, idx)
+{ return s->s_iswide ? (uchar_t)str_fetchW(s, idx)
 		     : str_fetchA(s, idx) & 0xff;
 }
 
@@ -968,8 +987,8 @@ str_tmp_init(tmp_string *tmp)
 }
 
 
-wint_t
-str_tmp_put(tmp_string *tmp, wint_t c)
+uchar_t
+str_tmp_put(tmp_string *tmp, uchar_t c)
 { PceString s = &tmp->s;
 
   if ( c > 0xff && !s->s_iswide )

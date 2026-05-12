@@ -76,6 +76,15 @@ Three levels of API are provided:
 Grapheme clusters (user-perceived characters) can be iterated with
 atom_graphemes/2 and string_graphemes/2.
 
+Loading this library also installs a Unicode NFC normalisation hook
+into the SWI-Prolog kernel.  The kernel's `unicode_atoms` policy
+(Prolog flag, stream property and `read_term/2,3` option) uses this
+hook for its `nfc` and `error` modes; without the library loaded
+those modes raise `existence_error(hook, unicode_normalize)`.  The
+kernel's quoted-write rule that force-quotes atoms containing
+combining marks is independent and works even without this library
+loaded.
+
 Lump handling:
 
 ==
@@ -244,10 +253,10 @@ unicode_casefold(In, Out) :-
 %   Supported properties:
 %
 %       * category(Atom)
-%       Unicode general category.  Atom is one of `cc`, `cf`, `cn`,
-%       `co`, `cs`, `ll`, `lm`, `lo`, `lt`, `lu`, `mc`, `me`, `mn`,
-%       `nd`, `nl`, `no`, `pc`, `pd`, `pe`, `pf`, `pi`, `po`, `ps`,
-%       `sc`, `sk`, `sm`, `so`, `zl`, `zp`, `zs`.  When querying, the
+%       Unicode general category.  Atom is one of `Cc`, `Cf`, `Cn`,
+%       `Co`, `Cs`, `Ll`, `Lm`, `Lo`, `Lt`, `Lu`, `Mc`, `Me`, `Mn`,
+%       `Nd`, `Nl`, `No`, `Pc`, `Pd`, `Pe`, `Pf`, `Pi`, `Po`, `Ps`,
+%       `Sc`, `Sk`, `Sm`, `So`, `Zl`, `Zp`, `Zs`.  When querying, the
 %       single capital letter of a subcategory stands for all its
 %       subcategories; e.g.
 %
@@ -376,7 +385,11 @@ property(indic_conjunct_break(_)).
 %!  unicode_version(-Version) is det.
 %
 %   Version is an atom describing the Unicode version implemented by
-%   the linked utf8proc library, e.g. `'15.1.0'`.
+%   the linked utf8proc library, e.g. `'15.1.0'`.  This drives the
+%   normalisation, case-folding and grapheme-cluster predicates in
+%   this module, and may differ from the Unicode version of the
+%   SWI-Prolog source syntax classifier reported by the read-only
+%   Prolog flag `unicode_syntax_version`.
 
 %!  unicode_codepoint_valid(+Code) is semidet.
 %

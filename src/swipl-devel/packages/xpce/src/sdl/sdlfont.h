@@ -46,12 +46,20 @@ typedef struct
 } charwidth_cache;
 
 typedef struct
+{ int first;
+  int last;
+  bool computed;
+} font_domain;
+
+typedef struct
 { PangoFont *font;
   PangoFontDescription *desc;
   PangoLayout *layout;		/* Should be per display/surface type */
   double ul_thickness;		/* Underline thinkness */
   double ul_position;		/* Underline position */
   charwidth_cache wcache;
+  font_domain dom_main;		/* Cached domain of primary font */
+  font_domain dom_family;	/* Cached domain over fontset/fallbacks */
   int references;		/* for cloning */
 } ws_font, *WsFont;
 
@@ -59,6 +67,8 @@ status ws_create_font(FontObj f);
 void   ws_destroy_font(FontObj f);
 bool   s_cwidth(uint32_t c, FontObj font, float *wp);
 bool   s_setcwidth(uint32_t c, FontObj font, float w);
+bool   s_has_char_family(FontObj f, unsigned int c);
+void   f_domain(FontObj f, bool family, int *a, int *z);
 Sheet  ws_font_families(BoolObj mono);
 Any    ws_get_pango_property(FontObj f, Name property);
 
@@ -88,7 +98,10 @@ cairo_font(FontObj f)
 
 #ifndef MONO_FAMILY
 #ifdef __WINDOWS__
-#define MONO_FAMILY "Consolas,Courier New,monospace"
+#define MONO_FAMILY "Consolas,Courier New,Cascadia Mono," \
+		    "MS Gothic,Malgun Gothic,NSimSun," \
+		    "Leelawadee UI,Microsoft Yi Baiti," \
+		    "Segoe UI Symbol,Segoe UI Emoji,monospace"
 #elif __APPLE__
 #define MONO_FAMILY "Menlo,monospace"
 #else
@@ -98,7 +111,10 @@ cairo_font(FontObj f)
 
 #ifndef SANS_FAMILY
 #ifdef __WINDOWS__
-#define SANS_FAMILY "Segoe UI,Verdana,sans"
+#define SANS_FAMILY "Segoe UI,Verdana," \
+		    "Yu Gothic UI,Malgun Gothic,Microsoft YaHei UI," \
+		    "Leelawadee UI,Microsoft Yi Baiti," \
+		    "Segoe UI Symbol,Segoe UI Emoji,sans"
 #elif __APPLE__
 #define SANS_FAMILY "sans"
 #else
@@ -108,7 +124,10 @@ cairo_font(FontObj f)
 
 #ifndef SERIF_FAMILY
 #ifdef __WINDOWS__
-#define SERIF_FAMILY "Georgia,Times New Roman,serif"
+#define SERIF_FAMILY "Georgia,Times New Roman," \
+		     "MS Mincho,Batang,SimSun," \
+		     "Leelawadee UI,Microsoft Yi Baiti," \
+		     "Segoe UI Symbol,serif"
 #elif __APPLE__
 #define SERIF_FAMILY "serif"
 #else

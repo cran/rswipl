@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker and Anjo Anjewierden
     E-mail:        jan@swi-prolog.org
     WWW:           https://www.swi-prolog.org/projects/xpce/
-    Copyright (c)  1985-2025, University of Amsterdam
+    Copyright (c)  1985-2026, University of Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
@@ -36,6 +36,7 @@
 #include <h/kernel.h>
 #include <h/graphics.h>
 #include <h/text.h>
+#include <h/charwidth.h>
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 The PCE-3 editor object is now split up into a large number of  separate
@@ -435,6 +436,7 @@ do_fill_line(TextImage ti, TextLine l, long index)
   TextChar tc;
   float x;
   int i, left_margin, right_margin;
+  int current_vcol = 0;
   long start;
 
   l->ends_because = 0;
@@ -461,6 +463,7 @@ do_fill_line(TextImage ti, TextLine l, long index)
     index = (*ti->fetch)(ti->text, tc);
     tc->index -= start;
     tc->x = x;
+    tc->vcol = (short)current_vcol;
 
     switch(tc->type)
     { case CHAR_ASCII:
@@ -479,34 +482,44 @@ do_fill_line(TextImage ti, TextLine l, long index)
 	    ensure_chars_line(l, i+1);
 	    tc = &l->chars[i];
 	    tc->x = x;
+	    tc->vcol = (short)current_vcol;
 	    fill_dimensions_line(l);
 	    return index;
 	  case '\t':
 	    x = tab(ti, x);
+	    current_vcol++;		/* count tab as one column step */
 	    last_is_space = TRUE;
 	    break;
 	  case ' ':
-	    x += c_width((wint_t)tc->value.c, tc->font);
+	    x += c_width((uchar_t)tc->value.c, tc->font);
+	    current_vcol++;
 	    last_is_space = TRUE;
 	    break;
 	  default:
-	    x += c_width((wint_t)tc->value.c, tc->font);
-	    if ( last_is_space )
-	      last_break = i;
-	    last_is_space = FALSE;
+	  { int dw = uchar_display_width((uchar_t)tc->value.c);
+	    if ( dw != 0 )	/* combining/zero-width: don't advance x */
+	    { x += c_width((uchar_t)tc->value.c, tc->font);
+	      if ( last_is_space )
+		last_break = i;
+	      last_is_space = FALSE;
+	    }
+	    current_vcol += dw;
 	    break;
+	  }
 	}
 	break;
       case CHAR_GRAPHICAL:
 	ComputeGraphical(tc->value.graphical);
 
 	x += valInt(tc->value.graphical->area->w);
+	current_vcol++;
 	if ( last_is_space )
 	  last_break = i;
 	last_is_space = FALSE;
 	break;
       case CHAR_IMAGE:
 	x += valInt(tc->value.image->size->w);
+	current_vcol++;
 	if ( last_is_space )
 	  last_break = i;
 	last_is_space = FALSE;
@@ -881,7 +894,7 @@ static void
 paint_line(TextImage ti, Area a, TextLine l, int from, int to)
 { charW buf[1000];
   charW *out;
-  int s = from, e;
+  int s, e;
   FontObj f;
   Colour c;
   Any bg;
@@ -893,6 +906,27 @@ paint_line(TextImage ti, Area a, TextLine l, int from, int to)
 
   DEBUG(NAME_text, Cprintf("painting line %p from %d to %d\n",
 			   l, from, to));
+
+  /* Snap from/to to grapheme cluster boundaries.
+   *
+   * A zero-advance character (Thai vowel signs, NFD combining marks, …)
+   * at index i satisfies chars[i+1].x == chars[i].x: the next character
+   * starts at the same pixel column because this one has zero advance.
+   *
+   * Splitting such a cluster across paint_line calls is fatal: Pango
+   * receives base character and combining mark in separate s_printW
+   * calls and renders them as independent glyphs at wrong positions,
+   * causing the "upset" visible when a selection boundary falls inside
+   * a cluster (e.g. while dragging through Thai สวัสดีชาวโลก).
+   *
+   * Fix: extend `from` backward to the start of any cluster it points
+   * into, and extend `to` forward to include any combining marks that
+   * trail the last character in range.  Both accesses to chars[i+1] are
+   * safe: chars[l->length] is always a valid sentinel entry. */
+  while ( from > 0 && l->chars[from+1].x == l->chars[from].x )
+    from--;
+  while ( to < l->length && l->chars[to+1].x == l->chars[to].x )
+    to++;
 
   cx = (from == 0 ? pen : l->chars[from].x);
   cw = (to >= l->length ? rmargin : l->chars[to].x) - cx;
@@ -969,7 +1003,17 @@ paint_line(TextImage ti, Area a, TextLine l, int from, int to)
     { prt = true;
 
       for(e++; e < to; e++)
-      { if ( l->chars[e].font != f ||
+      { /* Never split a grapheme cluster: a zero-advance character must
+	 * stay in the same Pango run as its base.  Belt-and-suspenders
+	 * guard for any cluster not caught by the from/to snapping above. */
+	if ( l->chars[e].type == CHAR_ASCII &&
+	     e < l->length &&
+	     l->chars[e+1].x == l->chars[e].x )
+	{ PutBuf(l->chars[e].value.c);
+	  continue;
+	}
+
+	if ( l->chars[e].font != f ||
 	     l->chars[e].colour != c ||
 	     l->chars[e].background != bg ||
 	     l->chars[e].attributes != atts ||
@@ -983,6 +1027,14 @@ paint_line(TextImage ti, Area a, TextLine l, int from, int to)
     }
 
 #define SWAP_COLORS(a,b) do { Any _tmp = a; a = b; b = _tmp; } while(0)
+
+    /* For text runs: use Pango to measure the exact advance of the run
+     * for the fill rectangle (avoids over-wide highlight for complex
+     * scripts).  For non-text (tab, newline) use the stored x
+     * difference, which is exact. */
+    int sx = (int)l->chars[s].x;
+    int run_tw = prt ? (int)str_advance_W(buf, (int)(out-buf), f)
+		     : (int)l->chars[e].x - sx;
 
     if ( atts & TXT_GREYED )
     { if ( isDefault(c) )
@@ -1006,8 +1058,8 @@ paint_line(TextImage ti, Area a, TextLine l, int from, int to)
 	  SWAP_COLORS(c, bg);
 	r_3d_box(x, l->y, tx-x, l->h, 0, bg, TRUE);
       } else
-      { int x  = l->chars[s].x;
-	int tx = l->chars[e].x;
+      { int x  = sx;
+	int tx = x + run_tw;
 
 	if ( tx > rmargin ) tx = rmargin;
 	if ( atts & TXT_HIGHLIGHTED )
@@ -1015,22 +1067,49 @@ paint_line(TextImage ti, Area a, TextLine l, int from, int to)
 	r_fill(x, l->y, tx-x, l->h, bg);
       }
     } else if ( atts & TXT_HIGHLIGHTED )
-    { int x  = l->chars[s].x;
-      int tx = l->chars[e].x;
+    { int x  = sx;
+      int tx = x + run_tw;
+      if ( tx > rmargin ) tx = rmargin;
       bg = r_background(DEFAULT);
       SWAP_COLORS(c, bg);
       r_fill(x, l->y, tx-x, l->h, bg);
     }
 
     if ( prt )
-    { size_t len = out-buf;
+    { r_colour(c);
+      /* Render per grapheme cluster so that each wide character (CJK,
+       * emoji) starts at its stored x position.  Pango's advance for a
+       * wide glyph can exceed the c_width() value by a pixel or two;
+       * rendering a long same-attributes run as one call lets that error
+       * accumulate, causing visual drift.  Non-wide runs are batched as
+       * before (one call per consecutive sequence of width-1/0 chars). */
+      { int   ci  = s;
+	charW *bp  = buf;
+	int    ty  = l->y + l->base;
 
-      r_colour(c);
-      s_printW(buf, len, l->chars[s].x, l->y + l->base, f);
+	while ( ci < e )
+	{ charW *sub = bp;
+	  int    sub_x = (int)l->chars[ci].x;
+	  int    dw = uchar_display_width((uchar_t)*bp);
+
+	  if ( dw == 2 )
+	  { /* Wide cluster: base glyph + any following combiners. */
+	    bp++; ci++;
+	    while ( ci < e && uchar_display_width((uchar_t)*bp) == 0 )
+	    { bp++; ci++; }
+	  } else
+	  { /* Non-wide batch: consume until a wide char or end of run. */
+	    do { bp++; ci++; }
+	    while ( ci < e && uchar_display_width((uchar_t)*bp) != 2 );
+	  }
+	  s_printW(sub, (int)(bp-sub), sub_x, ty, f);
+	}
+      }
 
       if ( atts & TXT_BOLDEN )
-      { s_printW(buf, len, l->chars[s].x+1, l->y   + l->base, f);
-	s_printW(buf, len, l->chars[s].x,   l->y-1 + l->base, f);
+      { size_t blen = (size_t)(out-buf);
+	s_printW(buf, blen, sx+1, l->y   + l->base, f);
+	s_printW(buf, blen, sx,   l->y-1 + l->base, f);
       }
     }
 
@@ -1526,10 +1605,7 @@ computeTextImage(TextImage ti)
 	} else
 	  ty = cy;
 
-	if ( ml->changed == 0 )
-	  cx = TXT_X_MARGIN;
-	else
-	  cx = ml->chars[ml->changed].x;
+	cx = TXT_X_MARGIN;		/* always repaint from left margin */
 	if ( cx < fx )
 	  fx = cx;
 

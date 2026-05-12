@@ -46,7 +46,8 @@ test_utf8proc :-
                 utf8proc_graphemes,
                 utf8proc_version,
                 utf8proc_codepoint_valid,
-                utf8proc_casefold
+                utf8proc_casefold,
+                utf8proc_unicode_atoms
               ]).
 
 %   Optional-feature probes.  Older distro libutf8proc (Ubuntu LTS)
@@ -112,6 +113,106 @@ test(nfc_ligature_preserved) :-
     X == 'ﬃ'.
 
 :- end_tests(utf8proc_normalise).
+
+
+/*******************************
+ *  unicode_atoms POLICY        *
+ *******************************/
+
+% Loading library(unicode) registers utf8proc as the kernel's
+% Unicode normalisation hook.  These tests exercise the
+% multi-valued unicode_atoms policy (Prolog flag, stream property,
+% read_term option) and the writeq combining-mark force-quoting
+% behaviour.
+
+:- begin_tests(utf8proc_unicode_atoms).
+
+test(read_term_unicode_atoms_nfc) :-
+    atom_codes(NFD,         [0'c, 0'a, 0'f, 0'e, 0x0301]),
+    atom_codes(Precomposed, [0'c, 0'a, 0'f, 0xe9]),
+    read_term_from_atom(NFD,         T1, [unicode_atoms(nfc)]),
+    read_term_from_atom(Precomposed, T2, [unicode_atoms(nfc)]),
+    T1 == T2.
+
+test(read_term_accept_keeps_distinct) :-
+    atom_codes(NFD,         [0'c, 0'a, 0'f, 0'e, 0x0301]),
+    atom_codes(Precomposed, [0'c, 0'a, 0'f, 0xe9]),
+    read_term_from_atom(NFD,         T1, []),
+    read_term_from_atom(Precomposed, T2, []),
+    T1 \== T2.
+
+test(read_term_nfc_does_not_touch_quoted) :-
+    atom_codes(QuotedNFD, [0'', 0'c, 0'a, 0'f, 0'e, 0x0301, 0'']),
+    atom_codes(NFD,       [0'c, 0'a, 0'f, 0'e, 0x0301]),
+    read_term_from_atom(QuotedNFD, T, [unicode_atoms(nfc)]),
+    atom_codes(T, NFDCodes),
+    atom_codes(NFD, NFDCodes).
+
+test(read_term_error_rejects_nfd, [error(syntax_error(non_nfc_atom))]) :-
+    atom_codes(NFD, [0'c, 0'a, 0'f, 0'e, 0x0301]),
+    read_term_from_atom(NFD, _, [unicode_atoms(error)]).
+
+test(read_term_error_accepts_nfc) :-
+    atom_codes(NFC, [0'c, 0'a, 0'f, 0xe9]),
+    read_term_from_atom(NFC, T, [unicode_atoms(error)]),
+    atom(T).
+
+test(read_term_reject_rejects_unicode, [error(syntax_error(non_ascii_atom))]) :-
+    atom_codes(A, [0'c, 0'a, 0'f, 0xe9]),
+    read_term_from_atom(A, _, [unicode_atoms(reject)]).
+
+test(read_term_reject_passes_quoted) :-
+    atom_codes(A, [0'', 0'c, 0'a, 0'f, 0xe9, 0'']),
+    read_term_from_atom(A, T, [unicode_atoms(reject)]),
+    atom_codes(T, [0'c, 0'a, 0'f, 0xe9]).
+
+test(flag_default_nfc) :-
+    setup_call_cleanup(
+        ( current_prolog_flag(unicode_atoms, Old),
+          set_prolog_flag(unicode_atoms, nfc) ),
+        ( atom_codes(A1, [0'c, 0'a, 0'f, 0'e, 0x0301]),
+          atom_codes(A2, [0'c, 0'a, 0'f, 0xe9]),
+          read_term_from_atom(A1, T1, []),
+          read_term_from_atom(A2, T2, []),
+          T1 == T2 ),
+        set_prolog_flag(unicode_atoms, Old)).
+
+test(stream_property_unicode_atoms) :-
+    setup_call_cleanup(
+        open_string("foo", S),
+        ( set_stream(S, unicode_atoms(nfc)),
+          stream_property(S, unicode_atoms(nfc)) ),
+        close(S)).
+
+test(writeq_quotes_combining_atom) :-
+    atom_codes(NFD, [0'c, 0'a, 0'f, 0'e, 0x0301]),
+    with_output_to(string(S), writeq(NFD)),
+    sub_string(S, 0, 1, _, "'"),
+    sub_string(S, _, 1, 0, "'").
+
+test(writeq_does_not_quote_nfc_atom) :-
+    atom_codes(NFC, [0'c, 0'a, 0'f, 0xe9]),
+    with_output_to(string(S), writeq(NFC)),
+    \+ sub_string(S, 0, 1, _, "'").
+
+% --- Trojan-source bidi rejection (always on) -------------------------
+
+test(bidi_in_unquoted_atom_is_error,
+     [error(syntax_error(bidi_override(0x202E)))]) :-
+    atom_codes(A, [0'a, 0x202E, 0'b]),
+    read_term_from_atom(A, _, []).
+
+test(bidi_in_quoted_atom_is_error,
+     [error(syntax_error(bidi_override(0x202E)))]) :-
+    atom_codes(A, [0'', 0'a, 0x202E, 0'b, 0'']),
+    read_term_from_atom(A, _, []).
+
+test(bidi_via_escape_is_allowed) :-
+    atom_codes(A, [0'', 0'a, 0'\\, 0'u, 0'2, 0'0, 0'2, 0'E, 0'b, 0'']),
+    read_term_from_atom(A, T, []),
+    atom_codes(T, [0'a, 0x202E, 0'b]).
+
+:- end_tests(utf8proc_unicode_atoms).
 
 
 /*******************************

@@ -47,6 +47,7 @@
 #include "pl-modul.h"
 #include "pl-setup.h"
 #include "pl-nt.h"
+#include <wchar.h>
 #include <math.h>
 #include "os/pl-dtoa.h"
 #include "os/pl-ctype.h"
@@ -263,7 +264,7 @@ truePrologFlagNoLD(unsigned int flag)
 
 static inline int
 wr_is_symbol(int c, write_options *options)
-{ return ( isSymbol(c) ||
+{ return ( f_is_prolog_symbol(c) ||
 	   (c == '`' &&
 	    options &&
 	    (options->flags & PL_WRT_BACKQUOTE_IS_SYMBOL)) );
@@ -275,6 +276,38 @@ code_requires_quoted(int c, IOSTREAM *fd, int flags)
     return true;
   if ( fd && Scanrepresent(c, fd) != 0 )
     return true;
+
+  return false;
+}
+
+/* atom_has_combining(a) returns true when `a` carries any code
+ * point whose wcwidth is 0 (combining mark, zero-width joiner,
+ * variation selector, ...).  Such atoms are not in NFC if any
+ * combining mark could compose with the preceding base character,
+ * and even when they are technically NFC (e.g. ZWJ-joined emoji)
+ * they are visually surprising as bare identifiers.  The writer
+ * uses this to force-quote denormalised atoms under `quoted(true)`.
+ *
+ * The check is independent of library(unicode); it relies only on
+ * the bundled mk_wcwidth tables.  A Latin-1 atom has no combining
+ * code points, so the test only needs to walk wide atoms.
+ */
+static bool
+atom_has_combining(atom_t a)
+{ Atom ap = atomValue(a);
+
+  if ( isoff(ap->type, PL_BLOB_TEXT) )
+    return false;
+
+  if ( isUCSAtom(ap) )
+  { const pl_wchar_t *w = (const pl_wchar_t *)ap->name;
+    size_t i, len = ap->length / sizeof(pl_wchar_t);
+
+    for(i=0; i<len; i++)
+    { if ( w[i] >= 0x300 && PL_wcwidth((int)w[i]) == 0 )
+	return true;
+    }
+  }
 
   return false;
 }
@@ -291,14 +324,20 @@ atomType(atom_t a, write_options *options)
   if ( len == 0 )
     return AT_QUOTE;
 
-  if ( isLower(*s) || (ison(m, M_VARPREFIX) && isAlpha(*s)) )
+  if ( f_is_prolog_atom_start((unsigned char)*s) ||
+       (ison(m, M_VARPREFIX) &&
+	f_is_prolog_var_start((unsigned char)*s) &&
+	*s != '_') )
   { do
     { for( ++s;
-	   --len > 0 && isAlpha(*s) && !code_requires_quoted(*s, fd, flags);
+	   --len > 0 &&
+	     f_is_prolog_identifier_continue((unsigned char)*s) &&
+	     !code_requires_quoted(*s, fd, flags);
 	   s++)
 	;
     } while ( len >= 2 &&
-	      *s == '.' && isAlpha(s[1]) &&
+	      *s == '.' &&
+	      f_is_prolog_identifier_continue((unsigned char)s[1]) &&
 	      truePrologFlagNoLD(PLFLAG_DOT_IN_ATOM) &&
 	      (!options || isoff(options, PL_WRT_NODOTINATOM))
 	    );
@@ -327,7 +366,7 @@ atomType(atom_t a, write_options *options)
 
 					/* % should be quoted! */
   if ( len == 1 && *s != '%' )
-  { if ( isSolo(*s) )
+  { if ( f_is_prolog_solo((unsigned char)*s) )
       return AT_SOLO;
   }
 
@@ -351,6 +390,9 @@ unquoted_atomW(atom_t atom, IOSTREAM *fd, int flags)
     return false;
 
   s1 = get_wchar(s, &c);
+  if ( len == 1 && f_is_prolog_solo(c) )
+    return true;
+
   if ( !f_is_prolog_atom_start(c) )	/* Sequence of symbol chars */
   { while ( s < e )
     { s = get_wchar(s, &c);
@@ -394,10 +436,11 @@ unquoted_atom(atom_t a)
 { Atom ap = atomValue(a);
 
   if ( ison(ap->type, PL_BLOB_TEXT) )
-  { if ( !ap->type->write )		/* ordinary atoms */
-    { return atomType(a, NULL) != AT_QUOTE;
-    } else if ( isUCSAtom(ap) )		/* wide atoms */
+  { if ( isUCSAtom(ap) )		/* wide atoms (uses write_ex) */
     { return unquoted_atomW(a, NULL, 0);
+    } else if ( !ap->type->write && !ap->type->write_ex )
+    {					/* ordinary single-byte atoms */
+      return atomType(a, NULL) != AT_QUOTE;
     }
   }
 
@@ -613,6 +656,14 @@ PutCloseBrace(IOSTREAM *s)
 { return Putc(')', s);
 }
 
+/**
+ * @return true if `c` must be escaped as part of a quoted string
+ */
+
+static bool
+unicode_quoted_escape(int c)
+{ return PL_wcwidth(c) < 0;
+}
 
 static bool
 putQuoted(int c, int quote, int flags, IOSTREAM *stream)
@@ -965,7 +1016,10 @@ writeAtom(atom_t a, write_options *options)
   }
 
   if ( ison(options, PL_WRT_QUOTED) )
-  { switch( atomType(a, options) )
+  { int t = atomType(a, options);
+    if ( t != AT_QUOTE && t != AT_FULLSTOP && atom_has_combining(a) )
+      t = AT_QUOTE;
+    switch( t )
     { case AT_LOWER:
       case AT_SYMBOL:
       case AT_SOLO:
@@ -1013,7 +1067,8 @@ writeUCSAtom(atom_t atom, void *context)
   }
 
   if ( (options->flags&PL_WRT_QUOTED) &&
-       !unquoted_atomW(atom, options->out, options->flags) )
+       (!unquoted_atomW(atom, options->out, options->flags) ||
+	atom_has_combining(atom)) )
   { pl_wchar_t quote = L'\'';
 
     return ( PutOpenToken(quote, options) &&
@@ -2515,6 +2570,24 @@ PRED_IMPL("$put_token", 2, put_token, 0)
   fail;
 }
 
+/** '$needs_quotes'(+Atom) is semidet.
+
+True when writing Atom with the `quoted(true)` write option would
+emit it surrounded by single quotes — i.e. the atom is not an
+identifier-form atom in the current Prolog syntax.  Wraps the
+internal unquoted_atom() helper that writeq/1 itself consults.
+*/
+
+static
+PRED_IMPL("$needs_quotes", 1, needs_quotes, 0)
+{ atom_t a;
+
+  if ( !PL_get_atom_ex(A1, &a) )
+    return false;
+
+  return !unquoted_atom(a);
+}
+
 /** '$put_quoted'(+Stream, +Quote, +Codes, +Options)
 
 Emit Codes using the escaped character  syntax,   but  does not emit the
@@ -2720,5 +2793,6 @@ BeginPredDefs(write)
   PRED_DEF("nl",	   1, nl,		ISO)
   PRED_DEF("$put_token",   2, put_token,	0)
   PRED_DEF("$put_quoted",  4, put_quoted_codes,	0)
+  PRED_DEF("$needs_quotes",1, needs_quotes,	0)
   PRED_DEF("write_size",   4, write_size,	META)
 EndPredDefs

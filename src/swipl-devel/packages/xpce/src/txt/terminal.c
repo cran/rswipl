@@ -34,20 +34,18 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-#define _XOPEN_SOURCE 600	/* Get PTY API, wcwidth */
+#define _XOPEN_SOURCE 600	/* Get PTY API */
 #undef _WIN32_WINNT
 #define _WIN32_WINNT 0x0B00	/* Get PseudoConsole API */
 #define SWIPL_WINDOWS_NATIVE_ACCESS 1
 #include <h/kernel.h>
 #include <h/text.h>
+#include <h/charwidth.h>
 #include "terminal.h"
 #ifdef HAVE_POLL
 #include <poll.h>
 #endif
 #include <SWI-Stream.h>
-#ifndef _WIN32
-#include <wchar.h>
-#endif
 
 /* This file  implements a terminal  emulator in XPCE.  A  terminal is
  * connected to a Prolog thread, the _client_.
@@ -89,6 +87,47 @@
 #define PrevLine(b, i) ((i) > 0 ? (i)-1 : (b)->height-1)
 #define Bounds(v, mn, mx) ((v) < (mn) ? (mn) : (v) > (mx) ? (mx) : (v))
 
+/* Optional terminal byte / caret trace.  Compile with -DXPCE_TERM_TRACE
+ * to activate; at runtime set XPCE_TERM_TRACE=<file> (or "1" for
+ * "xpce-terminal.log" in CWD) to capture every byte through
+ * rlc_putansi plus caret moves, puts, inserts and deletes.  Used to
+ * chase Windows surrogate-pair / cursor-tracking bugs against
+ * libedit's matching EL_REFRESH_TRACE log.  Inert and zero-cost when
+ * the macro is undefined: tlog collapses to ((void)0). */
+#ifdef XPCE_TERM_TRACE
+#include <stdarg.h>
+static FILE *xpce_term_trace_fp = NULL;
+static int   xpce_term_trace_enabled = -1;	/* -1 = uninitialised */
+
+static void
+xpce_term_trace_init(void)
+{ const char *env = getenv("XPCE_TERM_TRACE");
+  if ( env && *env )
+  { const char *path = (env[0] == '1' && env[1] == '\0')
+		     ? "xpce-terminal.log" : env;
+    xpce_term_trace_fp = fopen(path, "w");
+    xpce_term_trace_enabled = (xpce_term_trace_fp != NULL);
+  } else
+  { xpce_term_trace_enabled = 0;
+  }
+}
+
+static void
+tlog(const char *fmt, ...)
+{ if ( xpce_term_trace_enabled == -1 )
+    xpce_term_trace_init();
+  if ( !xpce_term_trace_enabled )
+    return;
+  va_list ap;
+  va_start(ap, fmt);
+  vfprintf(xpce_term_trace_fp, fmt, ap);
+  va_end(ap);
+  fflush(xpce_term_trace_fp);
+}
+#else
+# define tlog(...) ((void)0)
+#endif
+
 #define OPT_SIZE	0x01
 #define OPT_POSITION	0x02
 
@@ -96,68 +135,10 @@
 		 *	  UNICODE WIDTH		*
 		 *******************************/
 
-/** Return the display column width of a Unicode code point.
- *
- * Returns 0 for combining / non-spacing characters (they attach to
- * the preceding base character and consume no extra column), 2 for
- * East-Asian wide / fullwidth characters, and 1 for everything else.
- *
- * The implementation delegates to the POSIX wcwidth(3) function which
- * is available on all supported Unix/macOS platforms when
- * _XOPEN_SOURCE >= 600.  On Windows, where wcwidth is absent, we use
- * a minimal inline table that covers the most common ranges.
- */
-
-static int
-uchar_display_width(uchar_t c)
-{
-  if ( c == 0 )
-    return 0;
-  /* Non-spacing / combining characters.  Checked before wcwidth so the
-   * result is independent of the process locale: wcwidth() only returns
-   * 0 for combining marks when the locale's charset covers the code
-   * point, and returns -1 in the C locale.  Getting this wrong means
-   * combining marks claim one column, which throws off every caret and
-   * selection calculation downstream. */
-  if ( (c >= 0x0300 && c <= 0x036F) ||	/* Combining Diacritical Marks */
-       (c >= 0x1AB0 && c <= 0x1AFF) ||	/* Combining Diacritical Marks Extended */
-       (c >= 0x1DC0 && c <= 0x1DFF) ||	/* Combining Diacritical Marks Supplement */
-       (c >= 0x20D0 && c <= 0x20FF) ||	/* Combining Diacritical Marks for Symbols */
-       (c >= 0xFE20 && c <= 0xFE2F) ||	/* Combining Half Marks */
-       c == 0x200C || c == 0x200D ||	/* ZWNJ / ZWJ */
-       c == 0xFE0E || c == 0xFE0F )	/* Variation Selectors 15 / 16 */
-    return 0;
-  /* East-Asian wide / fullwidth characters and wide emoji. */
-  if ( (c >= 0x1100 && c <= 0x115F) ||	/* Hangul Jamo */
-       (c >= 0x2E80 && c <= 0x303E) ||	/* CJK Radicals etc. */
-       (c >= 0x3041 && c <= 0x33BF) ||	/* Hiragana .. CJK Compatibility */
-       (c >= 0x3400 && c <= 0x4DBF) ||	/* CJK Extension A */
-       (c >= 0x4E00 && c <= 0x9FFF) ||	/* CJK Unified Ideographs */
-       (c >= 0xA000 && c <= 0xA4CF) ||	/* Yi */
-       (c >= 0xA960 && c <= 0xA97F) ||	/* Hangul Jamo Extended-A */
-       (c >= 0xAC00 && c <= 0xD7FF) ||	/* Hangul Syllables + Jamo Ext-B */
-       (c >= 0xF900 && c <= 0xFAFF) ||	/* CJK Compatibility Ideographs */
-       (c >= 0xFE10 && c <= 0xFE1F) ||	/* Vertical Forms */
-       (c >= 0xFE30 && c <= 0xFE4F) ||	/* CJK Compatibility Forms */
-       (c >= 0xFF01 && c <= 0xFF60) ||	/* Fullwidth Latin/Katakana */
-       (c >= 0xFFE0 && c <= 0xFFE6) ||	/* Fullwidth Signs */
-       (c >= 0x1B000 && c <= 0x1B0FF) ||/* Kana Supplement */
-       (c >= 0x1F004 && c <= 0x1F0CF) ||/* Mahjong/Domino tiles */
-       (c >= 0x1F300 && c <= 0x1F9FF) ||/* Misc Symbols, Emoticons */
-       (c >= 0x20000 && c <= 0x2FFFD) ||/* CJK Extension B-F */
-       (c >= 0x30000 && c <= 0x3FFFD) ) /* CJK Extension G-H */
-    return 2;
-#ifndef _WIN32
-  /* Fall back to wcwidth for rare cases not covered above.  Treat
-   * wcwidth=-1 (unknown to this locale) as 1 column. */
-  { int w = wcwidth((wchar_t)c);
-    if ( w >= 0 )
-      return w;
-  }
-#endif
-  return 1;
-}
-
+/* uchar_display_width() is a static inline in <h/charwidth.h>.  Its
+ * fallback path goes through hostWcWidth() (defined in itf/interface.c),
+ * which routes to PL_wcwidth() in libswipl — no _XOPEN_SOURCE plumbing
+ * needed in this file. */
 
 /* Per-line cell capacity.  One cell per visual column is not enough:
    NFD content attaches combining marks as their own (width-0) cells, so a
@@ -611,7 +592,8 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
 	 notNil(ti->link_message) )
     { Name href = TCHAR2Name(lnk);
       clickedLinkTerminalImage(ti, href);
-    } else if ( rlc_has_selection(b) )
+    } else if ( rlc_has_selection(b) &&
+		isOn(getClassVariableValueObject(ti, NAME_autoCopy)) )
       send(ti, NAME_copy, EAV);
     succeed;
   }
@@ -629,7 +611,8 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
 
       get_xy_event(ev, ti, ON, &x, &y);
       rlc_extend_selection(b, valInt(x), valInt(y));
-      if ( rlc_has_selection(b) )
+      if ( rlc_has_selection(b) &&
+	   getClassVariableValueObject(ti, NAME_autoCopy) )
 	send(ti, NAME_copy, EAV);
       succeed;
     }
@@ -940,6 +923,12 @@ selectionStyleTerminalImage(TerminalImage ti, Style sel)
 }
 
 static status
+nfdStyleTerminalImage(TerminalImage ti, Style s)
+{ assign(ti, nfd_style, s);
+  return refreshTerminalImage(ti);
+}
+
+static status
 ansiColoursTerminalImage(TerminalImage ti, Vector colours)
 { assign(ti, ansi_colours, colours);
   return refreshTerminalImage(ti);
@@ -1039,6 +1028,8 @@ static vardecl var_terminal_image[] =
   SV(NAME_selectionStyle, "[style]", IV_GET|IV_STORE,
      selectionStyleTerminalImage,
      NAME_appearance, "Feedback for the selection"),
+  SV(NAME_nfdStyle, "style*", IV_GET|IV_STORE, nfdStyleTerminalImage,
+     NAME_appearance, "Style for NFD grapheme clusters (@nil to disable)"),
   SV(NAME_ansiColours, "vector*", IV_GET|IV_STORE, ansiColoursTerminalImage,
      NAME_appearance, "The 16 ansi colours"),
   IV(NAME_armedLink, "bool", IV_GET,
@@ -1145,6 +1136,10 @@ static classvardecl rc_terminal_image[] =
      UXWIN("style(background := yellow)",
 	   "@_select_style"),
      "Style for <-selection"),
+  RC(NAME_nfdStyle, "style*", "@nil",
+     "Style for NFD grapheme clusters (default off)"),
+  RC(NAME_autoCopy, "bool", UXWINMAC("@on", "@off", "@off"),
+     "Automatically copy selected text to the clipboard"),
   RC(NAME_saveLines, "int", "1000",
      "How many lines are saved for scroll back"),
   RC(NAME_syntax, "[syntax_table]", "default",
@@ -1939,17 +1934,32 @@ rlc_scroll_lines(RlcData b, int lines)
   rlc_request_redraw(b);
 }
 
-/** Paint a same-flags run, but split on every wide-char boundary so each
- *  wide cluster is drawn in its own 2-column box.
+/** Paint a same-flags run, splitting on every grapheme-cluster boundary
+ *  that involves zero-width followers (combining marks or wide-char
+ *  right-half placeholders) so each such cluster is drawn in its own
+ *  Pango call at a column-grid x0.  Plain narrow base characters are
+ *  batched into a single call as long as the run is uninterrupted.
  *
- *  Pango's natural advance for an emoji tends to exceed 2*cw by a pixel or
- *  two.  If we hand it a long "sskll😀😀😀…" span as one show_layout call,
- *  each emoji nudges the baseline rightward, so the visual text drifts past
- *  the column-grid cursor and "sskll😀😀😀😀😀😀😀" with the caret walked
- *  to the end shows the caret a few pixels left of the last emoji.  Drawing
- *  each emoji in its own cluster, at a column-grid x0, lets the following
- *  r_clear erase any bleed and resets the cursor to its true column every
- *  cluster boundary.
+ *  Two reasons for the per-cluster split:
+ *
+ *  1. Wide glyphs.  Pango's natural advance for an emoji tends to exceed
+ *     2*cw by a pixel or two; handing it a long "😀😀😀…" span as one
+ *     call lets each emoji nudge the baseline rightward, so the text
+ *     drifts past the column-grid cursor.
+ *
+ *  2. Complex-script clusters (Thai, Hangul, NFD).  Pango applies
+ *     contextual shaping inside a single layout, so the per-glyph
+ *     positions inside a Thai run depend on the run's neighbours.  When
+ *     the line is split into three chunks at a selection boundary
+ *     (rlc_redraw paints before-sel / sel / after-sel separately) the
+ *     two sides reshape independently and the visible glyph positions
+ *     no longer match what the unselected line drew.  Visible as the
+ *     "drift" reported when extending a selection over Thai สวัสดี.
+ *
+ *  Drawing each cluster on its own at a column-grid x0 makes each
+ *  cluster's shaping local — so split-at-selection produces the same
+ *  per-cluster Pango calls as no-selection, and the column grid stays
+ *  authoritative.
  *
  *  `cells` is the array of text_char cells for the run; `utf8`/`ulen` is
  *  the matching UTF-8 span (with wide-char placeholders already skipped).
@@ -1968,26 +1978,39 @@ paint_chunks(const text_char *cells, int n,
   while (i < n)
   { int chunk_i = i;
     const char *chunk_u = u;
-    int is_wide = (c[i].width == 2);
 
-    if (is_wide)
-    { /* Base wide cell + its width-0/placeholder followers (wide-char
-       * right-half placeholder with code 0, combining marks with width
-       * 0 and code != 0, variation selectors).  Stops at the next
-       * base-width-1 cell or the next base-width-2 cell. */
-      int chr;
-      u = utf8_get_char((char *)u, &chr);	/* the wide code point */
-      i++;
-      while (i < n && (c[i].code == 0 ||
-		       (c[i].width == 0 && c[i].code != 0)))
-      { if (c[i].code != 0)
-	  u = utf8_get_char((char *)u, &chr);
-	i++;
+    /* Consume one grapheme cluster: base cell at i, plus any width-0
+     * followers (wide-char right-half placeholder with code 0,
+     * combining marks with width 0 and code != 0, variation selectors). */
+    if (c[i].code != 0)
+    { int chr;
+      u = utf8_get_char((char *)u, &chr);
+    }
+    i++;
+    while (i < n && c[i].width == 0)
+    { if (c[i].code != 0)
+      { int chr;
+	u = utf8_get_char((char *)u, &chr);
       }
-    } else
-    { /* Contiguous non-wide run: width-1 cells and any trailing
-       * width-0 combining marks, up to the next width-2 cell. */
-      while (i < n && c[i].width != 2)
+      i++;
+    }
+
+    /* Fast path: if the cluster was a single ASCII base with no
+     * followers, batch subsequent ASCII bases into the same chunk so
+     * plain English text stays one Pango call.  ASCII has no contextual
+     * shaping, so a batched run lays out at the column grid regardless
+     * of context.  Anything beyond ASCII (e.g., Thai, Hangul, Arabic)
+     * needs per-cluster painting because the system fixed-width font
+     * usually has no glyphs for those scripts and Pango falls back to a
+     * proportional font; a multi-char Pango call there has natural
+     * advance < n*cw, and each chunk reshape (e.g., on selection)
+     * would shift the after-cluster glyphs by a different amount than
+     * the unselected line did. */
+    if (i - chunk_i == 1 && c[chunk_i].width == 1 && c[chunk_i].code < 128)
+    { while (i < n &&
+	     c[i].width == 1 &&
+	     c[i].code < 128 &&
+	     !(i+1 < n && c[i+1].width == 0 && c[i+1].code != 0))
       { if (c[i].code != 0)
 	{ int chr;
 	  u = utf8_get_char((char *)u, &chr);
@@ -2132,6 +2155,24 @@ rlc_paint_text(RlcData b,
 	      t, ulen, x0, *cx-x0, ty, pp(ti->font));
 #endif
       r_clear(x0, ty-b->cb, *cx-x0, b->ch);
+      if ( notNil(ti->nfd_style) && !isDefault(ti->nfd_style) )
+      { Colour nfd_bg = ti->nfd_style->background;
+	if ( notDefault(nfd_bg) )
+	{ int col = 0;
+	  for(int ci = 0; ci < segment; )
+	  { if ( s[ci].code == 0 ) { ci++; continue; } /* skip wide-char right-half: col advanced by base */
+	    int base_col = col;
+	    int base_width = (s[ci].width == 2) ? 2 : 1;
+	    col += base_width; ci++;
+	    bool has_combining = false;
+	    while ( ci < segment && s[ci].width == 0 && s[ci].code != 0 )
+	    { has_combining = true; ci++; }
+	    if ( has_combining )
+	      r_fill(x0 + base_col*b->cw, ty-b->cb,
+		     base_width*b->cw, b->ch, nfd_bg);
+	  }
+	}
+      }
       paint_chunks(s, segment, t, ulen, x0, ty, b->cw, font,
                    TF_UNDERLINE(flags));
       if ( TF_INVERSE(flags) )
@@ -2169,10 +2210,17 @@ rlc_redraw(RlcData b, int x, int y, int w, int h)
     r_clear(x, ty-b->cb, b->cw, b->ch); /* clear margin */
 
 					/* compute selection */
+    /* sel_{start,end}_char are CELL indices (consistent with caret_x and
+     * tl->text[] indexing in rlc_set_selection / rlc_read_from_window).
+     * rlc_paint_text takes VISUAL-COLUMN bounds, so convert here.  Without
+     * the conversion, NFD combining marks (own cell, width 0) make the cell
+     * index drift past the visual column, and the painted selection extends
+     * past where the user dragged. */
     if ( l == b->sel_start_line )
-    { int cf = b->sel_start_char;
-      int ce = (b->sel_end_line != b->sel_start_line ? b->width
-						     : b->sel_end_char);
+    { int cf = rlc_cell_to_vcol(tl, b->sel_start_char);
+      int ce = (b->sel_end_line != b->sel_start_line
+		  ? b->width
+		  : rlc_cell_to_vcol(tl, b->sel_end_char));
 
       rlc_paint_text(b, tl,  0, cf, ty, &cx, insel);
       insel = true;
@@ -2183,7 +2231,7 @@ rlc_redraw(RlcData b, int x, int y, int w, int h)
       } else
 	insel = true;
     } else if ( l == b->sel_end_line )	/* end of selection */
-    { int ce = b->sel_end_char;
+    { int ce = rlc_cell_to_vcol(tl, b->sel_end_char);
 
       rlc_paint_text(b, tl, 0, ce, ty, &cx, insel);
       insel = false;
@@ -2917,7 +2965,9 @@ rlc_caret_down(RlcData b, int arg)
 
 static void
 rlc_caret_forward(RlcData b, int arg)
-{ /* Move by VISUAL columns, not cells.  An NFD cluster takes several
+{ tlog("rlc_caret_forward(arg=%d) entry caret_x=%d caret_y=%d\n",
+       arg, b->caret_x, b->caret_y);
+  /* Move by VISUAL columns, not cells.  An NFD cluster takes several
      cells but one visual column, so cell-indexed arithmetic moves the
      caret by a fraction of a column for combining content.  Wide-char
      right-half placeholders are their own visual column (a `\b` steps
@@ -2936,12 +2986,16 @@ rlc_caret_forward(RlcData b, int arg)
   }
 
   b->changed |= CHG_CARET;
+  tlog("rlc_caret_forward exit  caret_x=%d caret_y=%d\n",
+       b->caret_x, b->caret_y);
 }
 
 
 static void
 rlc_caret_backward(RlcData b, int arg)
-{ /* See rlc_caret_forward: move by visual columns. */
+{ tlog("rlc_caret_backward(arg=%d) entry caret_x=%d caret_y=%d\n",
+       arg, b->caret_x, b->caret_y);
+  /* See rlc_caret_forward: move by visual columns. */
   while(arg-- > 0)
   { RlcTextLine tl = &b->lines[b->caret_y];
     int cur_vcol = rlc_cell_to_vcol(tl, b->caret_x);
@@ -2955,6 +3009,8 @@ rlc_caret_backward(RlcData b, int arg)
   }
 
   b->changed |= CHG_CARET;
+  tlog("rlc_caret_backward exit  caret_x=%d caret_y=%d\n",
+       b->caret_x, b->caret_y);
 }
 
 
@@ -3022,7 +3078,9 @@ rlc_set_caret(RlcData b, int x, int y)
 
 static void
 rlc_set_caret_x(RlcData b, int x)
-{ /* CSI G (HPA) uses 1-based visual columns.  Map the target visual
+{ tlog("rlc_set_caret_x(x=%d) entry caret_x=%d width=%d\n",
+       x, b->caret_x, b->width);
+  /* CSI G (HPA) uses 1-based visual columns.  Map the target visual
      column to a cell index via rlc_vcol_to_cell; do NOT clamp the
      result to b->width-1, because lines with combining marks or wide
      chars legitimately have cell indices that exceed the visual
@@ -3033,6 +3091,7 @@ rlc_set_caret_x(RlcData b, int x)
     b->caret_x = LINE_CELL_CAPACITY(b) - 1;
 
   b->changed |= CHG_CARET;
+  tlog("rlc_set_caret_x exit caret_x=%d\n", b->caret_x);
 }
 
 
@@ -3167,6 +3226,8 @@ static void
 rlc_put(RlcData b, int chr)
 { RlcTextLine tl = rlc_prepare_line(b, b->caret_y);
   int dw = uchar_display_width((uchar_t)chr);
+  tlog("rlc_put(0x%X) entry caret_x=%d width=%d\n",
+       chr, b->caret_x, dw);
   if ( dw == 0 )
   { /* Combining character: attach to the preceding base's cluster by
        storing in its own cell at caret_x.  Pango will render base +
@@ -3275,12 +3336,15 @@ rlc_put(RlcData b, int chr)
     b->caret_x += dw;
     b->changed |= CHG_CARET;
   }
+  tlog("rlc_put exit  caret_x=%d size=%d\n", b->caret_x, tl->size);
 }
 
 static void
 rlc_insert(RlcData b, int chr)
 { RlcTextLine tl = rlc_prepare_line(b, b->caret_y);
   int dw = uchar_display_width((uchar_t)chr);
+  tlog("rlc_insert(0x%X) entry caret_x=%d width=%d size=%d\n",
+       chr, b->caret_x, dw, tl->size);
   int slots = (dw == 2) ? 2 : 1;	/* wide chars need 2 cells */
 
   /* Bound tl->size by the line's physical cell capacity (which
@@ -3332,11 +3396,18 @@ rlc_insert(RlcData b, int chr)
 static void
 rlc_delete_chars(RlcData b, int count)
 { RlcTextLine tl = rlc_prepare_line(b, b->caret_y);
+  tlog("rlc_delete_chars(count=%d) entry caret_x=%d size=%d\n",
+       count, b->caret_x, tl->size);
+  for(int i = 0; i < tl->size && i < 16; i++)
+    tlog("  cell %2d: code=0x%05X width=%d flags=0x%X\n",
+	 i, (unsigned)tl->text[i].code, tl->text[i].width,
+	 (unsigned)tl->text[i].flags);
   /* ANSI DCH takes a VISUAL COLUMN count.  Snap the caret back to the
      start of its grapheme cluster (in case it lands on a combining mark
      or a wide-char right-half placeholder) so the erase begins at a
      cluster boundary. */
   int cx = rlc_snap_start(tl, b->caret_x);
+  tlog("  rlc_snap_start(%d) -> %d\n", b->caret_x, cx);
 
   /* Walk forward `count` visual columns, accumulating the number of
      cells to delete.  A cluster's visual width is the SUM of per-cell
@@ -3369,6 +3440,8 @@ rlc_delete_chars(RlcData b, int count)
   b->caret_x = cx;
 
   tl->changed |= CHG_CHANGED;
+  tlog("rlc_delete_chars exit  caret_x=%d size=%d del_cells=%d\n",
+       b->caret_x, tl->size, del_cells);
 }
 
 static void
@@ -3707,6 +3780,16 @@ rlc_putansi(RlcData b, int chr)
   const char *cmd;
 #endif
 
+#ifdef XPCE_TERM_TRACE
+  { static const char *names[] = {
+      "INITIAL", "ESC", "ANSI", "OSC", "DEC_PRIVATE", "G0", "G1"
+    };
+    const char *st = (b->cmdstat >= 0 && b->cmdstat < (int)(sizeof(names)/sizeof(*names)))
+		    ? names[b->cmdstat] : "?";
+    tlog("rlc_putansi state=%s 0x%X%s\n", st, chr,
+	 (chr >= 0x20 && chr < 0x7F) ? "" : " (control)");
+  }
+#endif
   switch(b->cmdstat)
   { case CMD_INITIAL:
       switch(chr)

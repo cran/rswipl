@@ -36,7 +36,6 @@
 
 #ifndef _PL_CTYPE_H
 #define _PL_CTYPE_H
-#define _GNU_SOURCE			/* get wcwidth() */
 #include "../pl-incl.h"
 
 		 /*******************************
@@ -47,7 +46,7 @@ IOENC		initEncoding(void);
 void		initCharTypes(void);
 access_level_t	setAccessLevel(access_level_t new_level);
 
-extern const char _PL_char_types[];	/* array of character types */
+extern const char _PL_char_types[];	/* array of character types (0..127) */
 
 #define CT  0			/* control-character */
 #define SP  1			/* space */
@@ -61,16 +60,21 @@ extern const char _PL_char_types[];	/* array of character types */
 #define LC  9			/* Lowercase character */
 #define DI 10			/* Digit */
 
-#define isControl(c)	(_PL_char_types[(unsigned)(c) & 0xff] == CT)
-#define isBlank(c)	(_PL_char_types[(unsigned)(c) & 0xff] == SP)
-#define isGraph(c)	(_PL_char_types[(unsigned)(c) & 0xff]  > SP)
-#define isDigit(c)	(_PL_char_types[(unsigned)(c) & 0xff] == DI)
-#define isLower(c)	(_PL_char_types[(unsigned)(c) & 0xff] == LC)
-#define isUpper(c)	(_PL_char_types[(unsigned)(c) & 0xff] == UC)
-#define isSymbol(c)	(_PL_char_types[(unsigned)(c) & 0xff] == SY)
-#define isPunct(c)	(_PL_char_types[(unsigned)(c) & 0xff] == PU)
-#define isSolo(c)	(_PL_char_types[(unsigned)(c) & 0xff] == SO)
-#define isAlpha(c)	(_PL_char_types[(unsigned)(c) & 0xff] >= UC)
+/* The is* macros classify ASCII (0..127) only; they return false for any
+ * code point >= 0x80. Use the corresponding *W (wide) macros below or the
+ * PlBlankW / PlIdStartW / ... macros in pl-read.c (which dispatch on the
+ * u_category enum stored in src/pl-umap.c) for non-ASCII handling.
+ */
+#define isControl(c)	((unsigned)(c) < 0x80 && _PL_char_types[(unsigned)(c)] == CT)
+#define isBlank(c)	((unsigned)(c) < 0x80 && _PL_char_types[(unsigned)(c)] == SP)
+#define isGraph(c)	((unsigned)(c) < 0x80 && _PL_char_types[(unsigned)(c)]  > SP)
+#define isDigit(c)	((unsigned)(c) < 0x80 && _PL_char_types[(unsigned)(c)] == DI)
+#define isLower(c)	((unsigned)(c) < 0x80 && _PL_char_types[(unsigned)(c)] == LC)
+#define isUpper(c)	((unsigned)(c) < 0x80 && _PL_char_types[(unsigned)(c)] == UC)
+#define isSymbol(c)	((unsigned)(c) < 0x80 && _PL_char_types[(unsigned)(c)] == SY)
+#define isPunct(c)	((unsigned)(c) < 0x80 && _PL_char_types[(unsigned)(c)] == PU)
+#define isSolo(c)	((unsigned)(c) < 0x80 && _PL_char_types[(unsigned)(c)] == SO)
+#define isAlpha(c)	((unsigned)(c) < 0x80 && _PL_char_types[(unsigned)(c)] >= UC)
 #define isLetter(c)	(isLower(c) || isUpper(c))
 #define isSign(c)	((c) == '-' || (c) == '+')
 #define isDecimal(zero, c) ((c) >= (zero) && (c) <= (zero)+9)
@@ -92,7 +96,7 @@ extern const char _PL_char_types[];	/* array of character types */
 #include <wchar.h>
 
 #define PlCharType(c, t, w) \
-	((unsigned)(c) <= 0xff ? (_PL_char_types[(unsigned char)(c)] t) : w)
+	((unsigned)(c) < 0x80 ? (_PL_char_types[(unsigned)(c)] t) : w)
 
 #define isControlW(c)	PlCharType(c, == CT, iswcntrl((wint_t)c))
 #define isBlankW(c)	PlCharType(c, == SP, iswspace((wint_t)c))

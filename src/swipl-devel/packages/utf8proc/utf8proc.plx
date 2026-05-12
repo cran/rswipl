@@ -37,6 +37,7 @@ properties.
 \newpage
 
 \input{unicode.tex}
+\input{unicodesecurity.tex}
 
 \section{License}
 \label{sec:utf8proc-license}

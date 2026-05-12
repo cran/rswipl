@@ -226,6 +226,8 @@ struct PL_global_data
     PL_blob_t  *types;			/* registered atom types */
     int		text_rank;		/* next rank for text types */
     int		nontext_rank;		/* next rank for non-text types */
+    PL_atom_normalize_t normalize_hook;	/* UTF-8 normaliser, NULL if none */
+    bool	normalize_hook_load_attempted;	/* tried to install via boot pred */
   } atoms;
 
   struct
@@ -500,6 +502,7 @@ struct PL_local_data
   int		in_print_message;	/* Inside printMessage() */
   void *	glob_info;		/* pl-glob.c */
   IOENC		encoding;		/* default I/O encoding */
+  Sunicode_atoms_t unicode_atoms;	/* default atom-content policy */
   struct PL_local_data *next_free;	/* see maybe_free_local_data() */
 
   struct

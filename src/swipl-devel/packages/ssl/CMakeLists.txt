@@ -200,7 +200,7 @@ install_src(pkg_ssl_etc
 
 pkg_doc(ssl
 	SOURCES
-	    crypto.doc
+	    crypto.plx
 	SECTION
 	    SOURCE ssl.pl ssllib.tex
 	    SOURCE cryptolib.md --lib=crypto --module=crypto

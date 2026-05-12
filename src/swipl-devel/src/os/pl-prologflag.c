@@ -57,6 +57,7 @@
 #include "../pl-setup.h"
 #include "../pl-modul.h"
 #include "../pl-version.h"
+#include "../pl-umap-version.h"
 #include <ctype.h>
 #include <time.h>
 #ifdef HAVE_SYS_TIME_H
@@ -696,6 +697,125 @@ setEncoding(atom_t a)
 }
 
 
+/* atom_to_unicode_atoms_ex(a, m, ensure_hook)
+ *
+ * Validate atom `a` as a unicode_atoms mode; on success store the
+ * enum in *m.  On invalid input raise domain_error(unicode_atoms, a)
+ * and return false.  When `ensure_hook` is true and the resolved
+ * mode is `nfc`, also ensure the kernel normalisation hook is
+ * available (auto-loading library(unicode) on demand and propagating
+ * its existence_error if the library is unavailable).
+ */
+bool
+atom_to_unicode_atoms_ex(atom_t a, Sunicode_atoms_t *m, bool ensure_hook)
+{ if      ( a == ATOM_accept ) *m = S_UATOMS_ACCEPT;
+  else if ( a == ATOM_nfc    ) *m = S_UATOMS_NFC;
+  else if ( a == ATOM_error  ) *m = S_UATOMS_ERROR;
+  else if ( a == ATOM_reject ) *m = S_UATOMS_REJECT;
+  else
+  { GET_LD
+    term_t v;
+    return ( (v = PL_new_term_ref()) &&
+	     PL_put_atom(v, a) &&
+	     PL_error(NULL, 0, NULL, ERR_DOMAIN,
+		      ATOM_unicode_atoms, v) );
+  }
+  if ( ensure_hook && *m == S_UATOMS_NFC )
+    return ensure_unicode_normalize_hook(true);
+  return true;
+}
+
+
+atom_t
+unicode_atoms_to_atom(Sunicode_atoms_t m)
+{ switch ( m )
+  { case S_UATOMS_ACCEPT: return ATOM_accept;
+    case S_UATOMS_NFC:    return ATOM_nfc;
+    case S_UATOMS_ERROR:  return ATOM_error;
+    case S_UATOMS_REJECT: return ATOM_reject;
+  }
+  return NULL_ATOM;
+}
+
+
+/* hook_missing_error(): raise existence_error(hook, unicode_normalize). */
+static bool
+hook_missing_error(void)
+{ GET_LD
+  term_t obj;
+
+  return ( (obj=PL_new_term_ref()) &&
+	   PL_put_atom(obj, ATOM_unicode_normalize) &&
+	   PL_error(NULL, 0, NULL, ERR_EXISTENCE, ATOM_hook, obj) );
+}
+
+
+/* ensure_unicode_normalize_hook(mandatory)
+ *
+ * Make sure the kernel Unicode normalisation hook (registered by
+ * library(unicode)) is available.  If it is already there, succeed.
+ * Otherwise call system:'$install_unicode_normalize_hook'/0, which
+ * does use_module(library(unicode), []).
+ *
+ * Once an attempt has been made, GD->atoms.normalize_hook_load_attempted
+ * is set so subsequent calls don't retry the load.  PL_cleanup zeroes
+ * GD on next initialisation, so the cache resets across an embedded
+ * Prolog teardown/restart cycle.
+ *
+ * Returns true iff the hook is registered after the call.
+ *
+ * When `mandatory` is true and the hook is not available, an exception
+ * is left set: on the first attempt the source_sink existence_error
+ * from use_module/1 if the library is missing, otherwise the generic
+ * existence_error(hook, unicode_normalize).
+ *
+ * When `mandatory` is false, no exception is propagated; any
+ * exception raised by use_module/1 is cleared and the function
+ * returns false.
+ */
+bool
+ensure_unicode_normalize_hook(bool mandatory)
+{ if ( GD->atoms.normalize_hook )
+    return true;
+
+  if ( GD->atoms.normalize_hook_load_attempted )
+    return mandatory ? hook_missing_error() : false;
+
+  GD->atoms.normalize_hook_load_attempted = true;
+
+  predicate_t pred =
+    PL_predicate("$install_unicode_normalize_hook", 0, "system");
+  bool loaded = PL_call_predicate(NULL, PL_Q_PASS_EXCEPTION, pred, 0);
+
+  if ( GD->atoms.normalize_hook )
+    return true;
+
+  if ( !mandatory )
+  { if ( !loaded && PL_exception(0) )
+      PL_clear_exception();
+    return false;
+  }
+
+  if ( loaded )				/* loaded but no hook → defensive */
+    return hook_missing_error();
+  return false;				/* exception already set */
+}
+
+
+static bool
+setUnicodeAtoms(atom_t a)
+{ GET_LD
+  Sunicode_atoms_t mode;
+
+  if ( !atom_to_unicode_atoms_ex(a, &mode, true) )
+    return false;
+
+  LD->unicode_atoms = mode;
+
+  return true;
+}
+
+
 static bool
 setStreamTypeCheck(atom_t a)
 { GET_LD
@@ -1147,6 +1267,8 @@ set_flag_value(DECL_LD prolog_flag *f, Module m, atom_t k, term_t value)
       { rval = setAccessLevelFromAtom(a);
       } else if ( k == ATOM_encoding )
       { rval = setEncoding(a);
+      } else if ( k == ATOM_unicode_atoms )
+      { rval = setUnicodeAtoms(a);
       } else if ( k == ATOM_stream_type_check )
       { rval = setStreamTypeCheck(a);
       } else if ( k == ATOM_file_name_case_handling )
@@ -1401,7 +1523,7 @@ set_prolog_flag_ptr(DECL_LD term_t key, term_t value,
 
   if ( k == ATOM_autoload && !propagateAutoload(value) )
     return false;
-  if ( k == ATOM_threads )
+  if ( k == ATOM_threads || k == ATOM_unicode_atoms )
     return set_prolog_flag_unlocked(m, k, value, flags, of);
 
   PL_LOCK(L_PLFLAG);
@@ -2129,6 +2251,7 @@ initPrologFlags(void)
   else
     setPrologFlag("integer_rounding_function", FT_ATOM|FF_READONLY, "toward_zero");
   setPrologFlag("max_char_code", FT_INTEGER|FF_READONLY, (intptr_t)UNICODE_MAX);
+  setPrologFlag("unicode_syntax_version", FT_ATOM|FF_READONLY, UNICODE_SYNTAX_VERSION);
   setPrologFlag("max_arity", FT_ATOM|FF_READONLY, "unbounded");
   setPrologFlag("max_procedure_arity", FT_INTEGER|FF_READONLY, (intptr_t)MAXARITY);
   setPrologFlag("colon_sets_calling_context", FT_BOOL|FF_READONLY, true, 0);
@@ -2136,6 +2259,8 @@ initPrologFlags(void)
   setPrologFlag("character_escapes_unicode", FT_BOOL, true,
 		PLFLAG_CHARESCAPE_UNICODE);
   setPrologFlag("var_prefix", FT_BOOL, false, PLFLAG_VARPREFIX);
+  setPrologFlag("unicode_atoms", FT_ATOM, "accept");
+  setPrologFlag("atom_normalize_hook", FT_BOOL, false, 0);
   setPrologFlag("char_conversion", FT_BOOL, false, PLFLAG_CHARCONVERSION);
 #ifdef O_QUASIQUOTATIONS
   setPrologFlag("quasi_quotations", FT_BOOL, true, PLFLAG_QUASI_QUOTES);

@@ -400,7 +400,8 @@ End;
   BoolObj    editable;			/* TextItem is editable */ \
   Int	     value_width;		/* Width of value-field in pixels */ \
   Int	     hor_stretch;		/* Horizontal stretchability */ \
-  Name	     style;			/* normal, combo_box */
+  Name	     style;			/* normal, combo_box */ \
+  Image	     clear_image;		/* Optional clear-field image */
 
 NewClass(textitem)
   ABSTRACT_TEXTITEM
@@ -793,6 +794,8 @@ NewClass(display_manager)
   ABSTRACT_VISUAL
   Chain		members;		/* Available displays */
   BoolObj	test_queue;		/* Test queue during redraw */
+  Code		focus_message;		/* Sent with the frame that gained
+					   keyboard focus */
 End;
 
 

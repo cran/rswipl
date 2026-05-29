@@ -79,6 +79,12 @@ swipl_plugin(
     C_LIBS PkgConfig::UTF8PROC
     PL_LIBS unicode_security.pl)
 
+swipl_plugin(
+    uniname
+    MODULE uniname4pl
+    C_SOURCES uniname4pl.c uniname.c uniname_data.c
+    PL_LIBS uniname.pl)
+
 # Regenerate uts39_data.{c,h} from the vendored UCD files under data/.
 # Not in the default build; the generated files are checked in.  Run as
 # `ninja regen-uts39` after a UCD version bump.  Listing BYPRODUCTS
@@ -88,6 +94,17 @@ add_custom_target(regen-uts39
             -- --ucd-dir ${CMAKE_CURRENT_SOURCE_DIR}/data
                --out     ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Regenerating UTS #39 / UAX #24 tables"
+    VERBATIM)
+
+# Regenerate the compact Unicode name table (uniname_data.{c,h}) from
+# data/UnicodeData.txt.  Prototype; not yet compiled into a plugin.
+# Run as `ninja regen-uniname` after a UCD version bump.
+add_custom_target(regen-uniname
+    COMMAND ${PROG_SWIPL} ${CMAKE_CURRENT_SOURCE_DIR}/etc/gen_uniname.pl
+            -- --ucd-dir ${CMAKE_CURRENT_SOURCE_DIR}/data
+               --out     ${CMAKE_CURRENT_SOURCE_DIR}
+               --version 17.0.0
+    COMMENT "Regenerating compact Unicode name table"
     VERBATIM)
 
 if(MINGW_ROOT)
@@ -102,8 +119,9 @@ endif()
 pkg_doc(utf8proc
 	SECTION
 	    unicode.pl
-	    unicode_security.pl)
+	    unicode_security.pl
+	    uniname.pl)
 
-test_libs(utf8proc uts39)
+test_libs(utf8proc uts39 uniname)
 
 endif()

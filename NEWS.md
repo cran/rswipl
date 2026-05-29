@@ -1,3 +1,9 @@
+# rswipl 10.1.8
+
+See https://swi-prolog.discourse.group/t/ann-swi-prolog-10-1-8/
+
+Fix a (harmless) race condition in unit tests reported by CRAN 
+
 # rswipl 10.1.7
 
 See https://swi-prolog.discourse.group/t/ann-swi-prolog-10-1-7/

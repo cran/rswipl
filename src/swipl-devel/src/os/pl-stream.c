@@ -943,7 +943,10 @@ put_utf16(int c, IOSTREAM *s, int be)
 
 static int
 put_code(int c, IOSTREAM *s)
-{ switch(s->encoding)
+{ if ( IS_UTF16_SURROGATE(c) )
+    return reperror(c, s);
+
+  switch(s->encoding)
   { case ENC_OCTET:
     case ENC_ISO_LATIN_1:
       if ( c >= 256 )
@@ -1152,6 +1155,9 @@ get_utf16(IOSTREAM *s, int be)
     } else
     { return utf16_decode(c, c2);
     }
+  } else if ( IS_UTF16_TRAIL(c) )
+  { Sseterr(s, SIO_WARN, "Lone UTF-16 trail surrogate");
+    return UTF8_MALFORMED_REPLACEMENT;
   } else
   { return c;
   }
@@ -1235,6 +1241,11 @@ retry:
 	    goto out;
 	  }
 	  code = (code<<6)+(c2&0x3f);
+	}
+	if ( IS_UTF16_SURROGATE(code) )
+	{ Sseterr(s, SIO_WARN, "UTF-8 surrogate code point");
+	  c = UTF8_MALFORMED_REPLACEMENT;
+	  goto out;
 	}
 	c = code;
       }

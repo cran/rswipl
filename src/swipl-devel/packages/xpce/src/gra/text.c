@@ -642,11 +642,11 @@ get_char_pos_text(TextObj t, Int chr, int *X, int *Y)
 
 
 Int
-get_pointed_text(TextObj t, int x, int y)
+get_pointed_text(TextObj t, int x, int y, int round)
 { PceString s = &t->string->data;
   int ch = valInt(getHeightFont(t->font));
   int b = valInt(t->border);
-  int cw, w;
+  int w;
   int caret = 0, el;
   int line = (y-b) / ch;			/* line for caret */
   string buf;
@@ -689,25 +689,20 @@ get_pointed_text(TextObj t, int x, int y)
   }
   w += valInt(t->x_offset);
 
-  if ( caret < el-1 )
-  { for( cw = c_width(str_fetch(s, caret), t->font);
-	 x > w + cw/2;
-	 caret++, w += cw, cw = c_width(str_fetch(s, caret), t->font) )
-    { if ( caret >= el )
-	break;
-    }
-  }
-
-  answer(toInt(caret));
+  /* Map the click to a character index using the same Pango layout
+     that renders the text, so proportional fonts and fallback glyphs
+     are hit-tested correctly.
+  */
+  answer(toInt(str_x_to_index(s, caret, el, t->font, x - w, round)));
 }
 
 
 static Int
-getPointedText(TextObj t, Point pos)
+getPointedText(TextObj t, Point pos, BoolObj round)
 { int x = valInt(pos->x);
   int y = valInt(pos->y);
 
-  return get_pointed_text(t, x, y);
+  return get_pointed_text(t, x, y, round != OFF);
 }
 
 static Num
@@ -1119,7 +1114,7 @@ nextLineText(TextObj t, Int arg, Int column)
   cy += UArg(t) * fh + fh/2;
   cx  = (isDefault(column) ? cx + fw/2 : valInt(column));
 
-  return caretText(t, get_pointed_text(t, cx, cy));
+  return caretText(t, get_pointed_text(t, cx, cy, TRUE));
 }
 
 
@@ -1633,6 +1628,8 @@ hasGetMethodText(TextObj t, Name sel)
 
 static char *T_insert[] =
         { "at=[int]", "text=char_array" };
+static char *T_pointed[] =
+        { "at=point", "round=[bool]" };
 static char *T_resize[] =
         { "factor_x=real", "factor_y=[real]", "origin=[point]" };
 static char *T_margin[] =
@@ -1800,7 +1797,7 @@ static getdecl get_text[] =
      NAME_caret, "Current X-location of caret (pixels)"),
   GM(NAME_transparent, 0, "bool", NULL, getTransparentText,
      NAME_compatibility, "Map <-background"),
-  GM(NAME_pointed, 1, "index=int", "at=point", getPointedText,
+  GM(NAME_pointed, 2, "index=int", T_pointed, getPointedText,
      NAME_event, "Convert position to character index"),
   GM(NAME_selectedText, 0, "string", NULL, getSelectedTextText,
      NAME_selection, "New string with contents of selection"),

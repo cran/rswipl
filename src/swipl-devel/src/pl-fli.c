@@ -925,16 +925,24 @@ compareUCSAtom(atom_t h1, atom_t h2)
   Atom a2 = atomValue(h2);
   const pl_wchar_t *s1 = (const pl_wchar_t*)a1->name;
   const pl_wchar_t *s2 = (const pl_wchar_t*)a2->name;
-  size_t len = a1->length < a2->length ? a1->length : a2->length;
+  const pl_wchar_t *e1 = s1 + a1->length/sizeof(pl_wchar_t);
+  const pl_wchar_t *e2 = s2 + a2->length/sizeof(pl_wchar_t);
 
-  len /= sizeof(pl_wchar_t);
+  /* Compare code points, not code units: on Windows wchar_t is 16-bit
+   * and supplementary characters are stored as surrogate pairs whose
+   * lead surrogate (U+D800..U+DBFF) sorts below BMP code points above
+   * U+DBFF — so a code-unit comparison would order e.g. U+1D11E below
+   * U+F900.  get_wchar() resolves the pair on 16-bit platforms and is
+   * a plain dereference on 32-bit ones.
+   */
 
-  for( ; len-- > 0; s1++, s2++)
-  { if ( *s1 != *s2 )
-    { int d = *s1 - *s2;
+  while ( s1 < e1 && s2 < e2 )
+  { int c1, c2;
 
-      return SCALAR_TO_CMP(d, 0);
-    }
+    s1 = get_wchar(s1, &c1);
+    s2 = get_wchar(s2, &c2);
+    if ( c1 != c2 )
+      return SCALAR_TO_CMP(c1, c2);
   }
 
   return SCALAR_TO_CMP(a1->length, a2->length);
@@ -4484,14 +4492,22 @@ PL_predicate(const char *name, int arity, const char *module)
   if ( arity < 0 || arity > MAXARITY )
     PL_api_error("invalid arity %d (out of range)", arity);
 
-  atom_t a    = lookupAtom(name, strlen(name));
+  atom_t a = PL_new_atom_mbchars(ENC_UTF8, (size_t)-1, name);
+  if ( !a )
+  { PL_clear_exception();
+    PL_api_error("invalid predicate name %s (invalid UTF-8)", name);
+  }
   functor_t f = lookupFunctorDef(a, (size_t)arity);
 
   PL_unregister_atom(a);
 
   if ( module )
   { GET_LD
-    a = lookupAtom(module, strlen(module));
+    a = PL_new_atom_mbchars(ENC_UTF8, (size_t)-1, module);
+    if ( !a )
+    { PL_clear_exception();
+      PL_api_error("invalid module name %s (invalid UTF-8)", module);
+    }
     m = lookupModule(a);
     PL_unregister_atom(a);
   } else

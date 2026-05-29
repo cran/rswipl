@@ -1,9 +1,24 @@
-# UCD inputs for `etc/gen_uts39.pl`
+# UCD inputs for the table generators
 
-The files in this directory feed `etc/gen_uts39.pl`, which emits the
-checked-in `uts39_data.{c,h}` compiled into `library(unicode_security)`.
-The generator runs only on demand (`ninja regen-uts39` after a UCD
-version bump); the `.txt` files are **not** checked in.
+The files in this directory feed the generators under `etc/`:
+
+- `etc/gen_uts39.pl` emits the checked-in `uts39_data.{c,h}` compiled
+  into `library(unicode_security)`.
+- `etc/gen_uniname.pl` emits the checked-in compact Unicode name table
+  `uniname_data.{c,h}` (prototype) from `UnicodeData.txt`.
+
+The generators run only on demand (`ninja regen-uts39` /
+`ninja regen-uniname` after a UCD version bump); the `.txt` files are
+**not** checked in.
+
+## UnicodeData.txt (for `gen_uniname.pl`)
+
+From `https://www.unicode.org/Public/<version>/ucd/`:
+
+- `UnicodeData.txt`
+
+`UnicodeData.txt` carries no version line; pass `--version` to the
+generator (the `regen-uniname` target pins it to match the UCD set).
 
 ## Fetching
 

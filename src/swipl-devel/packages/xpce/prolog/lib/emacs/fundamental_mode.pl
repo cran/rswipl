@@ -1,9 +1,9 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        J.Wielemaker@cs.vu.nl
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c) 1985-2025, University of Amsterdam,
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org/projects/xpce/
+    Copyright (c) 1985-2026, University of Amsterdam,
                              VU University
                              SWI-Prolog Solutions b.v.
     Amsterdam All rights reserved.
@@ -46,6 +46,14 @@
            , default/3
            , ignore/1
            ]).
+:- if(exists_source(library(unicode))).
+:- autoload(library(unicode),
+            [ unicode_nfc/2,
+              unicode_nfd/2,
+              unicode_nfkc/2,
+              unicode_nfkd/2
+            ]).
+:- endif.
 
 :- emacs_begin_mode(fundamental, [],    % []: root of the mode hierarchy
                     "Generic PceEmacs editing mode",
@@ -104,8 +112,13 @@
           find                     = key('<f4>') + button(edit),
           replace                  = button(edit),
           -                        = button(edit),
+          insert_symbol            = button(edit) +
+                                     key('\\C-x8RET') + key('\\C-x8s'),
+          -                        = button(edit),
           editor_preferences       = button(edit),
           prolog_preferences       = button(edit),
+
+          prefix                   = key('\\C-x8'),
 
                                         % BROWSER menu
           prefix                   = key('\\C-x5'),
@@ -981,6 +994,49 @@ insert_date(M) :->
 insert_character_by_code(M, Code:code='0..') :->
     "Insert character by entering numeric value"::
     send(M, insert_self, @default, Code).
+
+
+insert_symbol(M) :->
+    "Open the Unicode symbol picker, targeting this editor"::
+    get(M, editor, E),
+    auto_call(symbol_picker),
+    send(@symbol_picker, client, E).
+
+
+:- if(exists_source(library(unicode))).
+
+normalize_region(M, Form:form={nfc,nfd,nfkc,nfkd}) :->
+    "Apply a Unicode normalization form to the region"::
+    get(M, region, tuple(From, To)),
+    Len is To - From,
+    normalize_span(M, From, Len, Form).
+
+normalize_buffer(M, Form:form={nfc,nfd,nfkc,nfkd}) :->
+    "Apply a Unicode normalization form to the buffer"::
+    get(M, text_buffer, TB),
+    get(TB, size, Size),
+    normalize_span(M, 0, Size, Form).
+
+%   Replace [From,From+Len) with its Unicode normalization.  A plain
+%   predicate (not a method) so it is not offered as an M-x command.
+
+normalize_span(M, From, Len, Form) :-
+    get(M, text_buffer, TB),
+    get(TB, contents, From, Len, string(In)),
+    unicode_normalize(Form, In, Out),
+    (   In == Out
+    ->  send(M, report, status, 'Text already in %s form', Form)
+    ;   send(TB, delete, From, Len),
+        send(TB, insert, From, Out),
+        send(M, report, status, 'Normalized to %s form', Form)
+    ).
+
+unicode_normalize(nfc,  In, Out) :- unicode_nfc(In, Out).
+unicode_normalize(nfd,  In, Out) :- unicode_nfd(In, Out).
+unicode_normalize(nfkc, In, Out) :- unicode_nfkc(In, Out).
+unicode_normalize(nfkd, In, Out) :- unicode_nfkd(In, Out).
+
+:- endif.
 
 
 what_cursor_position(M) :->

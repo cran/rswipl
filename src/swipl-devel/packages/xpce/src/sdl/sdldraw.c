@@ -177,6 +177,69 @@ r_offset(int x, int y)
 }
 
 /**
+ * Apply a 2D affine transform on top of the current drawing context.
+ *
+ * The current integer pen offset is folded into the cairo transform as
+ * a translation, the user-supplied matrix is then composed on top, and
+ * the offset is reset to zero.  Subsequent r_* calls therefore deliver
+ * coordinates directly as input to the matrix.
+ *
+ * Pair with r_pop_transform(saved) to undo.
+ */
+void
+r_push_transform(Transform t, r_transform_save *saved)
+{ saved->saved_offset_x = context.offset_x;
+  saved->saved_offset_y = context.offset_y;
+
+  cairo_save(CR);
+  cairo_translate(CR,
+		  (double)context.offset_x,
+		  (double)context.offset_y);
+
+  cairo_matrix_t m;
+  m.xx = valNum(t->xx);
+  m.yx = valNum(t->yx);
+  m.xy = valNum(t->xy);
+  m.yy = valNum(t->yy);
+  m.x0 = valNum(t->tx);
+  m.y0 = valNum(t->ty);
+  cairo_transform(CR, &m);
+
+  context.offset_x = 0;
+  context.offset_y = 0;
+}
+
+void
+r_pop_transform(r_transform_save *saved)
+{ context.offset_x = saved->saved_offset_x;
+  context.offset_y = saved->saved_offset_y;
+  cairo_restore(CR);
+}
+
+/**
+ * Begin an offscreen drawing group on the current cairo context.
+ * Subsequent draws accumulate into the group instead of the target.
+ * Pair with r_pop_group_with_alpha() to composite.
+ */
+void
+r_push_group(void)
+{ cairo_push_group(CR);
+}
+
+/**
+ * Composite the topmost cairo group onto the underlying target with
+ * the given alpha (0.0..1.0).  Values are clamped to that range.
+ */
+void
+r_pop_group_with_alpha(double alpha)
+{ if ( alpha < 0.0 ) alpha = 0.0;
+  else if ( alpha > 1.0 ) alpha = 1.0;
+
+  cairo_pop_group_to_source(CR);
+  cairo_paint_with_alpha(CR, alpha);
+}
+
+/**
  * Initialize the fill state with the specified offset and starting point.
  *
  * @param offset Pointer to the Point object representing the offset.
@@ -1229,18 +1292,23 @@ r_3d_diamond(int x, int y, int w, int h, Elevation e, int up)
  * @param y The y-coordinate of the top-left corner of the bounding rectangle.
  * @param w The width of the bounding rectangle.
  * @param h The height of the bounding rectangle.
- * @param s The starting angle of the arc.
- * @param e The ending angle of the arc.
+ * @param s The starting angle in degrees (xpce convention: positive = CCW
+ *	    on screen, 0 = +x axis).
+ * @param sz The angular size in degrees (signed; positive = CCW on screen).
  * @param close {none, chord, pie_slice}
  * @param fill The fill pattern or color.
  */
 void
-r_arc(int x, int y, int w, int h, int s, int e, Name close, Any fill)
+r_arc(double x, double y, double w, double h,
+      double s, double sz, Name close, Any fill)
 { Translate(x, y);
-  NormaliseArea(x, y, w, h);
+  if ( w < 0 ) { x += w; w = -w; }
+  if ( h < 0 ) { y += h; h = -h; }
   FloatArea(x, y, w, h);
-  double fs = s * M_PI / 180.0;
-  double fe = e * M_PI / 180.0;
+  /* xpce angles are CCW from +x with y-up; cairo angles are CW on screen
+     because cairo's y points down.  Negate to convert. */
+  double fs = -s * M_PI / 180.0;
+  double fe = -(s + sz) * M_PI / 180.0;
 
   cairo_new_path(CR);
   cairo_save(CR);
@@ -1248,7 +1316,10 @@ r_arc(int x, int y, int w, int h, int s, int e, Name close, Any fill)
   cairo_scale(CR, fw / 2.0, fh / 2.0);              // Scale unit circle
   if ( close == NAME_pieSlice )
     cairo_move_to(CR, 0, 0);
-  cairo_arc(CR, 0, 0, 1.0, fs, fe);
+  if ( sz >= 0 )
+    cairo_arc_negative(CR, 0, 0, 1.0, fs, fe);
+  else
+    cairo_arc(CR, 0, 0, 1.0, fs, fe);
   cairo_restore(CR);
   if ( close == NAME_pieSlice || close == NAME_chord )
   { cairo_close_path(CR);
@@ -1327,17 +1398,43 @@ r_line(double x1, double y1, double x2, double y2)
  */
 
 void
-r_underline(FontObj font, double x, double base, double w, Any underline)
+r_underline(FontObj font, double x, double base, double w,
+	    Any underline, Name texture)
 { if ( underline != OFF )
   { WsFont wsf = ws_get_font(font);
     Any oldc = NULL;
     if ( instanceOfObject(underline, ClassColour) )
       oldc = r_colour(underline);
     double o_pen = r_thickness(wsf->ul_thickness);
-    r_dash(NAME_none);
+    r_dash(isDefault(texture) || !texture ? NAME_none : texture);
     double uly = base + wsf->ul_thickness/2.0 - wsf->ul_position;
     r_line(x, uly, x+w, uly);
     r_thickness(o_pen);
+    r_dash(NAME_none);
+    if ( oldc )
+      r_colour(oldc);
+  }
+}
+
+/* Draw a strikethrough line for the run `[x, x+w)` whose text was
+ * placed on baseline `base`.  `strike` is the same Bool|Colour idiom as
+ * `r_underline`'s underline arg; `texture` picks a dash pattern from
+ * the line-texture vocabulary.
+ */
+void
+r_strikethrough(FontObj font, double x, double base, double w,
+		Any strike, Name texture)
+{ if ( strike != OFF )
+  { WsFont wsf = ws_get_font(font);
+    Any oldc = NULL;
+    if ( instanceOfObject(strike, ClassColour) )
+      oldc = r_colour(strike);
+    double o_pen = r_thickness(wsf->st_thickness);
+    r_dash(isDefault(texture) || !texture ? NAME_none : texture);
+    double sty = base - wsf->st_position + wsf->st_thickness/2.0;
+    r_line(x, sty, x+w, sty);
+    r_thickness(o_pen);
+    r_dash(NAME_none);
     if ( oldc )
       r_colour(oldc);
   }
@@ -1450,23 +1547,6 @@ r_path(Chain points, int ox, int oy, int radius, int closed, Image fill)
     cairo_set_line_width(CR, context.pen);
     cairo_stroke(CR);
   }
-}
-
-/**
- * Perform an image operation with a specified operator.
- *
- * @param image The image to operate on.
- * @param sx The source x-coordinate.
- * @param sy The source y-coordinate.
- * @param x The destination x-coordinate.
- * @param y The destination y-coordinate.
- * @param w The width of the area to operate on.
- * @param h The height of the area to operate on.
- * @param op The operation to perform.
- */
-void
-r_op_image(Image image, int sx, int sy, int x, int y, int w, int h, Name op)
-{
 }
 
 static cairo_surface_t *
@@ -1783,17 +1863,6 @@ r_pixel(int x, int y, Any val)
   } else
   { return false;
   }
-}
-
-/**
- * Invert the color of a specific pixel.
- *
- * @param x The x-coordinate of the pixel.
- * @param y The y-coordinate of the pixel.
- */
-void
-r_complement_pixel(int x, int y)
-{
 }
 
 /**
@@ -2250,7 +2319,7 @@ str_text(FontObj font, PceString s, int x, int y)
   }
 }
 
-static void
+void
 str_stext(FontObj font, PceString s, int f, int len,
 	  int x, int y, Style style)
 { if ( len > 0 )
@@ -2437,7 +2506,7 @@ str_string(PceString s, FontObj font,
   for(n=0, line = lines; n++ < nlines; line++)
   { str_text(font, &line->text, line->x, line->y+baseline);
     if ( isOn(underline) || instanceOfObject(underline, ClassColour) )
-      r_underline(font, line->x, y+baseline, line->width, underline);
+      r_underline(font, line->x, y+baseline, line->width, underline, NAME_none);
   }
 }
 
@@ -2531,7 +2600,7 @@ str_draw_text_lines(int acc, FontObj font,
 	  int cw = str_width(&line->text, cn, cn+1, font);
 	  int cy = line->y+baseline+oy;
 
-	  r_underline(font, cx, cy, cw, DEFAULT);
+	  r_underline(font, cx, cy, cw, DEFAULT, NAME_none);
 	  acc = 0;
 	  break;
 	}

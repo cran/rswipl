@@ -1,10 +1,11 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        J.Wielemaker@vu.nl.nl
-    WWW:           http://www.swi-prolog.org/packages/xpce/
-    Copyright (c)  1995-2014, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org/packages/xpce/
+    Copyright (c)  1995-2026, University of Amsterdam
                               VU University Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -33,20 +34,13 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-:- module(pce_demo,
-          [ pcedemo/0
-          ]).
+:- module(pce_demo, []).
+:- encoding(utf8).
 :- use_module(library(pce)).
 :- use_module(contrib(contrib)).
 :- use_module(library(persistent_frame)).
-:- require([ emacs/1
-           , forall/2
-           , member/2
-           , term_to_atom/2
-           ]).
-
-:- multifile                            % So this may be predefined, avoiding
-    pcedemo/0.                      % an undefined trap
+:- autoload(library(process), [process_which/2]).
+:- autoload(library(pce_emacs), [emacs/1]).
 
 /** <module> XPCE demo starter
 
@@ -55,38 +49,40 @@ in the library files 'demo/<demo-file>.pl'. At the end of this file is a
 list of available demo's.
 */
 
-pcedemo :-
-    new(F, persistent_frame('XPCE Demo Programs')),
+:- pce_begin_class(man_demo_browser, man_frame,
+                   "Show demo programs").
+
+initialise(F, M:man_manual) :->
+    "Create tool for manual"::
+    send_super(F, initialise, M, 'XPCE Demo Programs'),
     send(F, append, new(B, browser(@default, size(60,10)))),
     send(B, confirm_done, @off),
-    send(B, tab_stops, vector(150)),
-    fill_browser(B),
+    get(B?font, width, "Drag-and-drop File   ", LeftWidth),
+    send(B, tab_stops, vector(LeftWidth)),
+    send(F, fill_browser, B),
 
     send(new(D, dialog), below, B),
-    send(D, append, new(O, button(open, message(@prolog, open_demo, B)))),
-    send(D, append, button(source, message(@prolog, view_source, B))),
-    send(D, append, button(quit, message(D?frame, free))),
+    send(D, append, new(O, button(open, message(F, open_demo, B)))),
+    send(D, append, button(source, message(F, view_source, B))),
+    send(D, append, button(quit, message(F, destroy))),
     send(D, default_button, open),
 
     send(B, open_message, message(O, execute)),
-    send(B, style, title, style(font := boldlarge)),
+    send(B, style, title, style(font := boldlarge)).
 
-    send(B, open).
-
-
-fill_browser(B) :-
+fill_browser(_F, B:browser) :->
     forall(demo(Name, Summary, _, _),
            send(B, append, dict_item(Name,
                                      string('%s\t%s', Name, Summary)))),
     send(B, append,
-         dict_item('======Contributions====================',
+         dict_item('💙 Contributions 💙',
                    style := title)),
     forall(contribution(Name, Summary, _Author, _, _),
            send(B, append, dict_item(Name,
                                      string('%s\t%s', Name, Summary)))).
 
-
-open_demo(Browser) :-
+open_demo(_F, Browser:browser) :->
+    "Open a demo"::
     get(Browser, selection, DictItem),
     (   (   DictItem == @nil
         ;   get(DictItem, style, title)
@@ -109,7 +105,8 @@ open_demo(Browser) :-
         )
     ).
 
-view_source(Browser) :-
+view_source(_F, Browser:browser) :->
+    "View source for a demo program"::
     get(Browser, selection, DictItem),
     (   DictItem == @nil
     ->  send(@display, inform, 'First select a demo')
@@ -131,7 +128,6 @@ locate_file(Base, File) :-
                          access(read)
                        ], File).
 
-
                 /********************************
                 *             DEMO'S            *
                 ********************************/
@@ -145,17 +141,8 @@ demo('Ispell',
      'Graphical interface to ispell (requires ispell 3)',
      demo(ispell),
      ispell) :-
-    send(@pce, has_feature, process).
-
-demo('Emacs',
-     'Emacs (Epoch) look-alike editor',
-     library(pce_emacs),
-     emacs).
-
-demo('XMLView',
-     'Browse structure of HTML/SGML and XML files',
-     library('doc/xml_browse'),
-     send(new(xml_browser), open)).
+    send(@pce, has_feature, process),
+    process_which(ispell, _Path).
 
 demo('FontViewer',
      'Examine PCE predefined fonts',
@@ -182,24 +169,45 @@ demo('ImageViewer',
      demo(imageviewer),
      image_viewer).
 
-demo('Events',
+demo('EventHierarchy',
      'Display hierarchy of event-types',
      demo(event_hierarchy),
      event_hierarchy).
+
+demo('Drag-and-drop File',
+     'Receive files dropped from the desktop (drop_file/drop_text events)',
+     demo(dragdrop_file),
+     dragdrop_file_demo).
+
+demo('Transform',
+     'Live figure->transform: rotate, scale and shear a small scene',
+     demo(transform),
+     transform_demo).
+
+demo('Arc gallery',
+     'A gallery of class arc usage',
+     demo(arc),
+     arc_demo).
+
+demo('Opacity',
+     'Per-graphical opacity: ramps, primitives, groups, overlays',
+     demo(opacity),
+     opacity_demo).
+
+demo('London Tube',
+     'Interactive London tube map: zoom, pan, search and toggle lines',
+     demo(tube_gui),
+     london_tube).
 
 demo('GraphViewer',
      'Visualise a graph represented as Prolog facts',
      demo(graph),
      graph_viewer).
 
-demo('FtpLog',
-     'Examine /usr/adm/xferlog (ftp log file)',
-     demo(ftplog),
-     ftplog('/usr/adm/xferlog')) :-
-    send(@pce, has_feature, process),
-    absolute_file_name('/usr/adm/xferlog', Path),
-    send(file(Path), access, read).
-
+demo('XMLView',
+     'Browse structure of HTML/SGML and XML files',
+     library('doc/xml_browse'),
+     send(new(xml_browser), open)).
 
 demo('ChessTool',
      'Simple frontend for /usr/games/chess',
@@ -224,3 +232,4 @@ demo('Juggler',
      demo(juggler),
      juggle_demo).
 
+:- pce_end_class.

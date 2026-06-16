@@ -177,38 +177,44 @@ typedef struct lqueued
   struct lqueued* next;			/* Next in queue */
 } lqueued, *LQueued;
 
-typedef unsigned short text_flags;
-
-#define ANSI_COLOR_DEFAULT 31
-
-/* Encode color and attributes in a 16 bit entity:
- *   - 5 bit (0..4) foreground color
- *   - 5 bit (5..9) background color
- *   - 1 bit (10)   bold
- *   - 1 bit (11)   underline
- *   - 1 bit (12)   inverse video
- *   - 1 bit (13)   (hyper)link
+/* Packed per-cell metadata (32 bits).  Indices `fg` and `bg` reference
+ * the per-buffer color palette (see `palette` in rlc_data).  The sentinel
+ * PAL_DEFAULT means "use the terminal/style default for this slot".
+ *
+ *   - width      : 2   display width (0=combining, 1=normal, 2=wide)
+ *   - bold       : 1
+ *   - underline  : 1
+ *   - inverse    : 1
+ *   - link       : 1   inside a hyperlink
+ *   - strike     : 1   strikethrough (SGR 9 / crossed_out)
+ *   - reserved   : 1   future: italic
+ *   - fg         : 12  palette index, 4096 entries
+ *   - bg         : 12  palette index, 4096 entries
  */
-#define TF_FG(f)	((f)&0x1f)	/* foreground */
-#define TF_BG(f)	(((f)>>5)&0x1f)	/* background */
-#define TF_BOLD(f)	((f)&(1<<10))	/* bold */
-#define TF_UNDERLINE(f)	((f)&(1<<11))	/* underline */
-#define TF_INVERSE(f)	((f)&(1<<12))	/* inverse video */
-#define TF_LINK(f)	((f)&(1<<13))	/* inside a link */
+typedef union text_flags
+{ uint32_t raw;				/* fast equality / memcpy */
+  struct
+  { unsigned width     : 2;
+    unsigned bold      : 1;
+    unsigned underline : 1;
+    unsigned inverse   : 1;
+    unsigned link      : 1;
+    unsigned strike    : 1;
+    unsigned reserved  : 1;
+    unsigned fg        : 12;
+    unsigned bg        : 12;
+  };
+} text_flags;
 
-#define TF_DEFAULT (ANSI_COLOR_DEFAULT | ANSI_COLOR_DEFAULT<<5)
+#define PAL_DEFAULT 4095		/* sentinel: use default fg/bg */
+#define PAL_LIMIT   4095		/* exclusive upper bound: valid 0..4094 */
+#define PAL_ANSI_RESERVED 16		/* slots 0..15 mirror ti->ansi_colours */
 
-#define TF_SET_FG(f,c)		(((f)&~0x1f)|(c))
-#define TF_SET_BG(f,c)		(((f)&~(0x1f<<5))|((c)<<5))
-#define TF_SET_BOLD(f,v)	(((f)&~(1<<10))|((v)<<10))
-#define TF_SET_UNDERLINE(f,v)	(((f)&~(1<<11))|((v)<<11))
-#define TF_SET_INVERSE(f,v)	(((f)&~(1<<12))|((v)<<12))
-#define TF_SET_LINK(f,v)	(((f)&~(1<<13))|((v)<<13))
+#define TF_DEFAULT ((text_flags){ .fg = PAL_DEFAULT, .bg = PAL_DEFAULT })
 
 typedef struct
 { uchar_t	 code;			/* character code */
-  text_flags	 flags;			/* flags for the text */
-  uint8_t	 width;			/* display width (0=combining, 1=normal, 2=wide) */
+  text_flags	 flags;			/* width + style + palette indices */
 } text_char;
 
 typedef struct href
@@ -291,6 +297,7 @@ typedef struct rlc_data
   int		argc;			/* argument count for ANSI */
   int		argv[ANSI_MAX_ARGC];	/* argument vector for ANSI */
   uchar_t		link[ANSI_MAX_LINK];	/* Max URL length */
+  href	       *armed_href;		/* href the mouse is hovering, or NULL */
   bool		shift_in;		/* select G1 */
   G_state	G0;			/* Character set slot 0 */
   G_state	G1;			/* Character set slot 1 */
@@ -304,6 +311,12 @@ typedef struct rlc_data
   COLORRGBA	sel_foreground;		/* Selection foreground */
   COLORRGBA	sel_background;		/* Selection background */
   COLORRGBA	ansi_color[16];		/* ANSI colors (8 normal + 8 bright) */
+  COLORRGBA    *palette;		/* per-buffer color palette */
+  struct colour **palette_obj;		/* owned locked Colour per slot >=16 */
+  uint32_t	palette_size;		/* live entries (>= PAL_ANSI_RESERVED) */
+  uint32_t	palette_alloc;		/* capacity */
+  struct pal_hash *palette_hash;	/* COLORRGBA -> index for intern */
+  bool		palette_full;		/* sticky once nearest-fallback engages */
   text_flags	sgr_flags;		/* Current SGR flags */
   double	cw;			/* character width */
   int		ch;			/* character height */

@@ -35,14 +35,9 @@
 :- module(graph_viewer,
           [ graph_viewer/0
           ]).
-
 :- use_module(library(pce)).
-:- require([ forall/2
-           , term_variables/2
-           , random/3
-           , term_to_atom/2
-           ]).
-
+:- use_module(library(apply)).
+:- use_module(library(random)).
 
 graph_viewer :-
     new(GV, graph_viewer),
@@ -68,10 +63,10 @@ fill_dialog(D) :-
     send(D, append, text_item(generator, 'graph_viewer:test(A, B)',
                               message(D?generate_member, execute)), right),
 
-    send(D, append, button(quit, message(Frame, destroy))),
+    send(D, append, button(layout, message(Frame, layout))),
     send(D, append, button(clear, message(Frame, clear))),
-    send(D, append, button(postscript, message(Frame, postscript))),
-    send(D, append, button(layout, message(Frame, layout))).
+    send(D, append, button('Export PDF', message(Frame, save_pdf))),
+    send(D, append, button(quit, message(Frame, destroy))).
 
 
 clear(F) :->
@@ -92,31 +87,40 @@ layout(F) :->
 :- pce_autoload(finder, library(find_file)).
 :- pce_global(@finder, new(finder)).
 
-postscript(F) :->
-    "Create PostScript in file"::
-    get(@finder, file, @off, '.eps', FileName),
+save_pdf(F) :->
+    "Create PDF in file"::
+    get(F, save_file,
+        chain(tuple('PDF file', pdf)), @default,
+        FileName0),
+    ensure_extension(FileName0, pdf, FileName),
     get(F, member, picture, Pict),
     new(File, file(FileName)),
-    send(File, open, write),
-    send(File, append, Pict?postscript),
-    send(File, close),
-    send(File, done),
-    send(F, report, status, 'Saved PostScript in %s', FileName).
+    send(Pict, pdf, File),
+    send(F, report, status, 'Saved PDF in %s', FileName).
 
+ensure_extension(Base, Ext, File) :-
+    file_name_extension(_, Ext, Base),
+    !,
+    File = Base.
+ensure_extension(Base, Ext, File) :-
+    file_name_extension(Base, Ext, File).
 
 generate(F, Generator:name) :->
     "Create graph using generator"::
-    (   term_to_atom(Term, Generator),
-        term_variables(Term, [From, To])
+    (   term_string(Term, Generator, [variable_names(Bindings0)]),
+        exclude(named_anon, Bindings0, Bindings),
+        Bindings = [_=From, _=To]
     ->  send(F, clear),
         forall(user:Term,
                send(F, display_arc, From, To)),
         send(F, layout),
         send(F, label, Generator)
     ;   send(F, report, error,
-             'Generator should be a Prolog goal with two variables')
+             'Generator should be a Prolog goal with two named variables')
     ).
 
+named_anon(Name=_) :-                     % Should deal with Unicode Names.
+    sub_atom(Name, 0, _, _, '_').
 
 :- pce_global(@demo_graph_link, new(link(link, link, line(0,0,0,0,second)))).
 

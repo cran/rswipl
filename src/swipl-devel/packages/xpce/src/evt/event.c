@@ -35,6 +35,7 @@
 
 #include <h/kernel.h>
 #include <h/graphics.h>
+#include <math.h>
 #include <time.h>
 
 forwards void init_event_tree(void);
@@ -540,6 +541,17 @@ get_xy_event_device(EventObj ev, Device dev, int *rx, int *ry)
   }
 
   get_xy_event_window(ev, sw, OFF, rx, ry);
+
+  if ( hasTransformInDeviceChain(dev) )
+  { double lx, ly;
+    if ( windowToDeviceLocalCoord(dev, (double)*rx, (double)*ry, &lx, &ly) )
+    { *rx = (int)floor(lx + 0.5);
+      *ry = (int)floor(ly + 0.5);
+      return;
+    }
+    /* singular or detached: fall through to the integer path */
+  }
+
   offsetDeviceGraphical(dev, &ox, &oy);
   *rx -= ox + valInt(dev->offset->x);
   *ry -= oy + valInt(dev->offset->y);
@@ -556,6 +568,17 @@ get_xy_event_graphical(EventObj ev, Graphical gr, int *rx, int *ry)
     sw = ev->window;
 
   get_xy_event_window(ev, sw, OFF, rx, ry);
+
+  if ( deviceChainHasTransform(gr) )
+  { double lx, ly;
+    if ( windowToGraphicalCoord(gr, (double)*rx, (double)*ry, &lx, &ly) )
+    { *rx = (int)floor(lx + 0.5);
+      *ry = (int)floor(ly + 0.5);
+      return;
+    }
+    /* singular or detached: fall through to the integer path */
+  }
+
   offsetDeviceGraphical(gr, &ox, &oy);
   DEBUG(NAME_inside, Cprintf("At %d,%d: offset %s --> %s is %d,%d\n",
 			     *rx, *ry,
@@ -1196,6 +1219,19 @@ static struct namepair
   { NAME_activateKeyboardFocus,		NAME_obtainKeyboardFocus },
   { NAME_releaseFocus,			NAME_focus },
   { NAME_obtainFocus,			NAME_focus },
+
+  /* OS-level file / text drag-and-drop, delivered by the SDL backend
+   * via SDL_EVENT_DROP_*.  The drop_file / drop_text events carry the
+   * path / text payload as the `path' / `text' attribute on the
+   * event.  drop_begin / drop_complete bracket a drop sequence;
+   * drop_position is emitted while the user drags over the window.
+   */
+  { NAME_drop,				NAME_any },
+  { NAME_dropBegin,			NAME_drop },
+  { NAME_dropComplete,			NAME_drop },
+  { NAME_dropPosition,			NAME_drop },
+  { NAME_dropFile,			NAME_drop },
+  { NAME_dropText,			NAME_drop },
 
   { 0,			0 }
 };

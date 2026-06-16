@@ -7,11 +7,12 @@ CMAKE_VERSION_MACOS := $(shell /Applications/CMake.app/Contents/bin/cmake --vers
 CTEST_VERSION := $(shell ctest --version 2>/dev/null)
 CTEST_VERSION_MACOS := $(shell /Applications/CMake.app/Contents/bin/ctest --version 2>/dev/null)
 
-BUILD_TYPE=$(if $(findstring -fsanitize=address,$(CXX)),Sanitize,Release)
+BUILD_TYPE=$(if $(findstring -fsanitize=,$(CXX)),Sanitize,Release)
 
-ASAN=$(if $(and $(if $(findstring clang++,$(CXX)),,true),$(findstring g++,$(CXX)),$(findstring -fsanitize=address,$(CXX))),$(realpath $(shell $(CXX) -print-file-name=libasan.so)))
-STDCXX=$(if $(findstring -fsanitize=address,$(CXX)),$(realpath $(shell $(CXX) -print-file-name=libstdc++.so)))
-PRELOAD_CTEST=$(if $(STDCXX),LD_PRELOAD=$(ASAN):$(STDCXX))
+ASAN=$(if $(and $(if $(findstring clang++,$(CXX)),,true),$(findstring g++,$(CXX)),$(and $(findstring -fsanitize=,$(CXX)), $(findstring address,$(CXX)))),$(realpath $(shell $(CXX) -print-file-name=libasan.so)))
+UBSAN=$(if $(and $(if $(findstring clang++,$(CXX)),,true),$(findstring g++,$(CXX)),$(and $(findstring -fsanitize=,$(CXX)), $(findstring undefined,$(CXX)))),$(realpath $(shell $(CXX) -print-file-name=libubsan.so)))
+STDCXX=$(if $(findstring -fsanitize=,$(CXX)),$(realpath $(shell $(CXX) -print-file-name=libstdc++.so)))
+PRELOAD_CTEST=$(if $(STDCXX),LD_PRELOAD=$(ASAN):$(UBSAN):$(STDCXX))
 
 CFLAGS1=$(subst -pedantic,,$(subst -Wstrict-prototypes,,$(CFLAGS)))
 

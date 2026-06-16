@@ -94,7 +94,8 @@ NewClass(style)
   FontObj	font;			/* font of fragment */
   Colour	colour;			/* colour of fragment */
   Any		background;		/* Background for drawing */
-  Any		underline;		/* Bool or colour */
+  Any		underline;		/* Bool, texture name, or colour */
+  Any		strikethrough;		/* Bool, texture name, or colour */
   Image		icon;			/* margin marker */
   Int		left_margin;		/* left margin in pixels */
   Int		right_margin;		/* right margin in pixels */
@@ -301,6 +302,8 @@ NewClass(terminal_image)
   Colour	background;		/* Background colour */
   Style		selection_style;	/* Style for selected text  */
   Style		nfd_style;		/* Style for NFD grapheme clusters */
+  Style		link_style;		/* Style for hyperlinks  */
+  Style		link_armed_style;	/* Style for the hovered link  */
   Vector	ansi_colours;		/* The 16 ANSI colour codes */
   BoolObj	armed_link;		/* Hovering over link */
   Code		link_message;		/* Handle a clicked link */

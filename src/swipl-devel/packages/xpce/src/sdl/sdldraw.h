@@ -51,6 +51,28 @@ void d_init_surface(cairo_surface_t *surf, Any background);
 void resetDraw(void);
 void d_offset(int x, int y);
 void r_offset(int x, int y);
+
+/* Push/pop a 2D affine transform on the current drawing context.
+ * Subsequent r_* calls deliver coordinates as input to the matrix; the
+ * integer offset that was in effect at push time becomes part of the
+ * cairo transform until pop.
+ */
+typedef struct r_transform_save
+{ int saved_offset_x;
+  int saved_offset_y;
+} r_transform_save;
+
+void r_push_transform(Transform t, r_transform_save *saved);
+void r_pop_transform (r_transform_save *saved);
+
+/* Push a temporary cairo group; subsequent drawing renders into it.
+ * Pair with r_pop_group_with_alpha(alpha) to composite the group's
+ * contents onto the underlying target modulated by alpha (0.0..1.0).
+ * Used to implement per-graphical opacity with correct overlapping-
+ * children semantics.
+ */
+void r_push_group(void);
+void r_pop_group_with_alpha(double alpha);
 void r_filloffset(Point offset, int x0, int y0, fill_state *state);
 void r_fillrestore(fill_state *state);
 DisplayObj d_display(DisplayObj d);
@@ -90,15 +112,18 @@ void r_3d_triangle(double x1, double y1,
 		   double x3, double y3,
 		   Elevation e, bool up, unsigned int map);
 void r_3d_diamond(int x, int y, int w, int h, Elevation e, int up);
-void r_arc(int x, int y, int w, int h, int s, int e, Name close, Any fill);
+void r_arc(double x, double y, double w, double h,
+	   double s, double sz, Name close, Any fill);
 void r_ellipse(int x, int y, int w, int h, Any fill);
 void r_3d_ellipse(int x, int y, int w, int h, Elevation z, int up);
 void r_line(double x1, double y1, double x2, double y2);
-void r_underline(FontObj font, double x, double base, double w, Any underline);
+void r_underline(FontObj font, double x, double base, double w,
+		 Any underline, Name texture);
+void r_strikethrough(FontObj font, double x, double base, double w,
+		     Any strike, Name texture);
 void r_polygon(FPoint pts, int n, int close);
 void r_bezier(fpoint start, fpoint end, fpoint control1, fpoint control2);
 void r_path(Chain points, int ox, int oy, int radius, int closed, Image fill);
-void r_op_image(Image image, int sx, int sy, int x, int y, int w, int h, Name op);
 void r_image(Image image, int sx, int sy, int x, int y, int w, int h);
 void r_fill(double x, double y, double w, double h, Any pattern);
 void r_fill_polygon(FPoint pts, int n);
@@ -106,7 +131,6 @@ void r_caret(int cx, int cy, FontObj font);
 void r_fill_triangle(double x1, double y1, double x2, double y2, double x3, double y3);
 void r_triangle(int x1, int y1, int x2, int y2, int x3, int y3, Any fill);
 bool r_pixel(int x, int y, Any val);
-void r_complement_pixel(int x, int y);
 void d_modify(void);
 COLORRGBA r_get_pixel(int x, int y);
 bool s_has_char(FontObj f, unsigned int c);
@@ -134,6 +158,8 @@ void str_string(PceString s, FontObj font,
 void str_selected_string(PceString s, FontObj font,
 			 int f, int t, Style style, int x, int y, int w, int h,
 			 Name hadjust, Name vadjust);
+void str_stext(FontObj font, PceString s, int f, int len,
+	       int x, int y, Style style);
 void ps_string(PceString s, FontObj font, int x, int y, int w, Name format, int flags);
 void str_label(PceString s, int acc, FontObj font, int x, int y, int w, int h, Name hadjust, Name vadjust, int flags);
 

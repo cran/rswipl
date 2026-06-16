@@ -1,7 +1,8 @@
 #define COMMON(type) SO_LOCAL type
 
 /* /swi40/jan/src/pl/packages/xpce/src/gra/arc.c */
-COMMON(void)	points_arc(ArcObj a, int *sx, int *sy, int *ex, int *ey);
+COMMON(void)	points_arc(ArcObj a, double *sx, double *sy,
+			   double *ex, double *ey);
 COMMON(status)	makeClassArc(Class class);
 
 /* /swi40/jan/src/pl/packages/xpce/src/gra/arrow.c */
@@ -24,6 +25,30 @@ COMMON(Int)	getBlueColour(Colour c);
 COMMON(Colour)	getHiliteColour(Colour c, Real h);
 COMMON(Colour)	getReduceColour(Colour c, Real re);
 COMMON(status)	makeClassColour(Class class);
+
+/* /swi40/jan/src/pl/packages/xpce/src/gra/coords.c */
+COMMON(bool)	deviceLocalToWindowCoord(Device dev, double lx, double ly,
+					 double *wx, double *wy);
+COMMON(bool)	windowToDeviceLocalCoord(Device dev, double wx, double wy,
+					 double *lx, double *ly);
+COMMON(bool)	graphicalToWindowCoord(Graphical gr, double lx, double ly,
+				       double *wx, double *wy);
+COMMON(bool)	windowToGraphicalCoord(Graphical gr, double wx, double wy,
+				       double *lx, double *ly);
+COMMON(bool)	graphicalToWindowArea(Graphical gr, Area in, double bbox[4]);
+COMMON(bool)	graphicalToDeviceCoord(Graphical gr, Device *target_io,
+				       double lx, double ly,
+				       double *ox, double *oy);
+COMMON(bool)	graphicalToDeviceAreaAABB(Graphical gr, Device *target_io,
+					  int lx, int ly, int lw, int lh,
+					  int *ox, int *oy,
+					  int *ow, int *oh);
+COMMON(bool)	deviceLocalAreaToWindowAABB(Device dev,
+					    int lx, int ly, int lw, int lh,
+					    int *wx, int *wy,
+					    int *ww, int *wh);
+COMMON(bool)	hasTransformInDeviceChain(Device dev);
+COMMON(bool)	deviceChainHasTransform(Graphical gr);
 
 /* /swi40/jan/src/pl/packages/xpce/src/gra/connection.c */
 COMMON(status)	updateHideExposeConnection(Connection c);
@@ -158,6 +183,7 @@ COMMON(status)	rightGraphical(Graphical gr1, Graphical gr2);
 COMMON(status)	leftGraphical(Graphical gr1, Graphical gr2);
 COMMON(status)	referenceGraphical(Graphical gr, Point ref);
 COMMON(status)	penGraphical(Graphical gr, Int pen);
+COMMON(status)	opacityGraphical(Graphical gr, Num o);
 COMMON(status)	shadowGraphical(Graphical gr, Int s);
 COMMON(status)	fillGraphical(Graphical gr, Any pattern);
 COMMON(status)	fillOffsetGraphical(Graphical gr, Point pattern);
@@ -283,6 +309,21 @@ COMMON(status)	pasteText(TextObj t, Name buffer);
 COMMON(status)	lengthText(TextObj t, Int l);
 COMMON(status)	marginText(TextObj t, Int width, Name wrap);
 COMMON(status)	makeClassText(Class class);
+
+/* /swi40/jan/src/pl/packages/xpce/src/gra/transform.c */
+COMMON(bool)	transformIsIdentity(Transform t);
+COMMON(void)	transformPoint(Transform t, double x, double y,
+			       double *ox, double *oy);
+COMMON(bool)	inverseTransformPoint(Transform t, double x, double y,
+				      double *ox, double *oy);
+COMMON(void)	transformAreaAABB(Transform t, Area in, double bbox[4]);
+COMMON(void)	transformAreaToIntAABB(Transform t, Area in, Area out);
+COMMON(double)	transformSnapInt(double v);
+COMMON(status)	translateTransform(Transform t, Num dx, Num dy);
+COMMON(status)	scaleTransform(Transform t, Num sx, Num sy);
+COMMON(status)	rotateTransform(Transform t, Num degrees);
+COMMON(status)	shearTransform(Transform t, Num kx, Num ky);
+COMMON(status)	makeClassTransform(Class class);
 
 /* /swi40/jan/src/pl/packages/xpce/src/gra/tree.c */
 COMMON(status)	requestComputeTree(Tree t);

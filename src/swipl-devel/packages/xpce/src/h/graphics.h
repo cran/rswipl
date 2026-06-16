@@ -73,6 +73,7 @@ typedef struct colour_context *ColourContext; /* for selection/inactive */
   Int		pen;			/* pen thickness for this object */ \
   Name		texture;		/* dash pattern for lines */ \
   Any		colour;			/* colour of the graphical */ \
+  Num		opacity;		/* 0.0..1.0; 1.0 = opaque */ \
   Chain		handles;		/* handles connected to graphical */ \
   Chain		connections;		/* Available connections */ \
   Name		name;			/* name to find it */ \
@@ -99,10 +100,12 @@ typedef struct colour_context *ColourContext; /* for selection/inactive */
 #define ABSTRACT_FIGURE \
   ABSTRACT_DEVICE \
   Name		status;			/* Which members are displayed? */ \
-  Image		background;		/* Pattern for background */ \
-  Int		border;			/* border around graphicals */ \
-  Int		radius;			/* radius of outline */ \
-  Elevation	elevation;		/* elevation of outline */
+  Any		background;		/* Pattern for background */ \
+  Num		border;			/* border around graphicals */ \
+  Num		radius;			/* radius of outline */ \
+  Elevation	elevation;		/* elevation of outline */ \
+  Transform	transform;		/* optional 2D affine on contents */ \
+  Area		local_area;		/* children bbox in local coords */
 
 #define ABSTRACT_DIALOGITEM \
   ABSTRACT_GRAPHICAL \
@@ -268,8 +271,8 @@ NewClass(arc)
   ABSTRACT_JOINT
   Point		position;		/* Center of the arc */
   Size		size;			/* width and height */
-  Real		start_angle;		/* Start angle */
-  Real		size_angle;		/* Size angle */
+  Int		start_angle;		/* Start angle (Num, degrees) */
+  Int		size_angle;		/* Size angle (Num, degrees) */
   Name		close;			/* {none,chord,pie_slice} */
   Image		fill;		/* Filled with this pattern */
 End;
@@ -688,10 +691,10 @@ End;
   PopupObj	popup;			/* Associated popup */ \
   EventObj	current_event;		/* Currently processed event */ \
   BoolObj	sensitive;		/* Sensitive to events */ \
+  BoolObj	restrict_scroll;	/* Clamp scroll to <-bounding_box */ \
   Any		background;		/* Background colour of the window */ \
   BoolObj	has_pointer;		/* We own the pointer */ \
   Any		selection_feedback;	/* Feedback for selection */ \
-  BoolObj	buffered_update;	/* Buffered update? */ \
 					/* Alien stuff */ \
   UpdateArea	changes_data;		/* Recorded changes */ \
   WsRef		ws_ref;			/* Window system reference */
@@ -764,9 +767,9 @@ NewClass(fontobj)
   Num		points;			/* Point size */
   Num		ascent;			/* Height above baseline */
   Num		descent;		/* Depth below baseline */
-  BoolObj	fixed_width;		/* Is this a fixed width font? */
   Num		ex;			/* Height of an x in this font */
   Num		avg_char_width;		/* Average char width */
+  BoolObj	fixed_width;		/* Is this a fixed width font? */
   WsRef		ws_ref;			/* Window system reference */
 End;
 

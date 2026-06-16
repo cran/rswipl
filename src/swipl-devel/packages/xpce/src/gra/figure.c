@@ -48,6 +48,8 @@ initialiseFigure(Figure f)
   assign(f, border,	ZERO);
   assign(f, radius,	ZERO);
   assign(f, elevation,	NIL);
+  assign(f, transform,	NIL);
+  assign(f, local_area,	newObject(ClassArea, EAV));
   assign(f, status,     NAME_allActive);
 
   succeed;
@@ -92,16 +94,69 @@ RedrawBoxFigure(Figure f, Area area)
 }
 
 
+/* Paint the children of f with f->transform applied.  Mirrors the body
+ * of RedrawAreaDevice between Enter/Exit, with cairo carrying the affine
+ * via r_push_transform/r_pop_transform around the children loop.
+ *
+ * After EnterRedrawAreaDevice the incoming `area' is in the figure's
+ * POST-transform local coord (where the rotated pixel AABB lives), but
+ * the children's own `area' slots live in PRE-transform local coord.
+ * RedrawArea's overlap test would then mis-clip the children — visible
+ * as text disappearing at ±180° rotation or small scales.  We replace
+ * `area' with the figure's local_area for the children loop, which is
+ * always in pre-transform coord and encloses every child; cairo's clip
+ * (and the dirty-rect filtering done by changed_window) still keeps
+ * the paint area minimal.  Exit restores the original area.
+ */
+
+static void
+RedrawTransformedChildren(Figure f, Area area)
+{ device_draw_context ctx;
+  Device dev = (Device) f;
+
+  if ( EnterRedrawAreaDevice(dev, area, &ctx) )
+  { Cell cell;
+    r_transform_save saved;
+    Area la = f->local_area;
+
+    qassign(area, x, la->x);
+    qassign(area, y, la->y);
+    qassign(area, w, la->w);
+    qassign(area, h, la->h);
+
+    if ( notNil(dev->layout_manager) )
+      qadSendv(dev->layout_manager, NAME_redrawBackground, 1, (Any*)&area);
+
+    r_push_transform(f->transform, &saved);
+    for_cell(cell, dev->graphicals)
+      RedrawArea(cell->value, area);
+    r_pop_transform(&saved);
+
+    if ( notNil(dev->layout_manager) )
+      qadSendv(dev->layout_manager, NAME_redrawForeground, 1, (Any*)&area);
+
+    ExitRedrawAreaDevice(dev, area, &ctx);
+  }
+
+  RedrawAreaGraphical((Graphical) f, area);
+}
+
+
 static status
 RedrawAreaFigure(Figure f, Area area)
 { Any bg, obg;
+  bool transformed = ( notNil(f->transform) &&
+		       !transformIsIdentity(f->transform) );
 
   if ( notNil(bg = RedrawBoxFigure(f, area)) )
     obg = r_background(bg);
   else
     obg = NULL;
 
-  RedrawAreaDevice((Device) f, area);
+  if ( transformed )
+    RedrawTransformedChildren(f, area);
+  else
+    RedrawAreaDevice((Device) f, area);
 
   if ( obg )
     r_background(obg);
@@ -119,8 +174,31 @@ computeBoundingBoxFigure(Figure f)
 { if ( f->badBoundingBox == ON )
   { Area a = f->area;
     Int ox = a->x, oy = a->y, ow = a->w, oh = a->h;
+    bool transformed = ( notNil(f->transform) &&
+			 !transformIsIdentity(f->transform) );
 
     computeBoundingBoxDevice((Device) f);
+
+    /* f->area now holds the un-transformed children union, translated
+     * by dev->offset (and clipped by clip_area in local coords).
+     * Snapshot the local-coord bbox into f->local_area; later phases
+     * (events, damage) need it.
+     */
+    int offx = valInt(f->offset->x);
+    int offy = valInt(f->offset->y);
+    qassign(f->local_area, x, toInt(valInt(f->area->x) - offx));
+    qassign(f->local_area, y, toInt(valInt(f->area->y) - offy));
+    qassign(f->local_area, w, f->area->w);
+    qassign(f->local_area, h, f->area->h);
+
+    if ( transformed )
+    { /* Project local_area through the transform, then re-apply offset
+       * to land back in parent coords.
+       */
+      transformAreaToIntAABB(f->transform, f->local_area, f->area);
+      qassign(f->area, x, toInt(valInt(f->area->x) + offx));
+      qassign(f->area, y, toInt(valInt(f->area->y) + offy));
+    }
 
     if ( f->border != ZERO )
       increaseArea(f->area, f->border);
@@ -246,6 +324,85 @@ elevationFigure(Figure f, Elevation e)
 }
 
 
+/* Attach an optional 2D affine transform to the figure's contents.
+ * @nil restores the un-transformed default.
+ *
+ * Unlike a "pure" slot setter we always invalidate here, even when the
+ * passed transform is the same object as the current one: callers
+ * typically modify a single transform in place (e.g. driven by a
+ * slider) and re-assign it to trigger repaint.
+ */
+
+static status
+transformFigure(Figure f, Transform t)
+{ CHANGING_GRAPHICAL(f,
+		     assign(f, transform, t);
+		     requestComputeDevice((Device) f, DEFAULT);
+		     changedEntireImageGraphical(f));
+
+  succeed;
+}
+
+
+/* Compose an operation into the figure's transform.  If the figure has
+ * no transform yet (the @nil default), one is created lazily and set to
+ * the identity before the operation is applied.  After composing the
+ * figure is invalidated so that bounding box, damage and repaint pick
+ * up the new transform on the next round.
+ */
+
+static Transform
+get_or_make_transform(Figure f)
+{ if ( isNil(f->transform) )
+  { Transform t = newObject(ClassTransform, EAV);
+    assign(f, transform, t);
+  }
+  return f->transform;
+}
+
+static void
+transform_changed(Figure f)
+{ requestComputeDevice((Device) f, DEFAULT);
+  changedEntireImageGraphical(f);
+}
+
+static status
+translateFigure(Figure f, Num dx, Num dy)
+{ Transform t = get_or_make_transform(f);
+  CHANGING_GRAPHICAL(f,
+		     translateTransform(t, dx, dy);
+		     transform_changed(f));
+  succeed;
+}
+
+static status
+scaleFigureMethod(Figure f, Num sx, Num sy)
+{ Transform t = get_or_make_transform(f);
+  CHANGING_GRAPHICAL(f,
+		     scaleTransform(t, sx, sy);
+		     transform_changed(f));
+  succeed;
+}
+
+static status
+rotateFigure(Figure f, Num degrees)
+{ Transform t = get_or_make_transform(f);
+  CHANGING_GRAPHICAL(f,
+		     rotateTransform(t, degrees);
+		     transform_changed(f));
+  succeed;
+}
+
+static status
+shearFigureMethod(Figure f, Num kx, Num ky)
+{ Transform t = get_or_make_transform(f);
+  CHANGING_GRAPHICAL(f,
+		     shearTransform(t, kx, ky);
+		     transform_changed(f));
+  succeed;
+}
+
+
 static status
 shadowFigure(Figure f, Int shadow)
 { return elevationFigure(f, shadow == ZERO ?
@@ -269,13 +426,13 @@ getShadowFigure(Figure f)
 
 
 static status
-radiusFigure(Figure f, Int radius)
+radiusFigure(Figure f, Num radius)
 { return assignGraphical(f, NAME_radius, radius);
 }
 
 
 static status
-borderFigure(Figure f, Int border)
+borderFigure(Figure f, Num border)
 { if ( f->border != border )
   { assign(f, border, border);
     requestComputeDevice((Device) f, DEFAULT);
@@ -313,14 +470,18 @@ makeClassFigure(Class class)
   localClass(class, NAME_status, NAME_visibility, "name", NAME_get,
 	     "Name of visible graphical (or all_active)");
   localClass(class, NAME_background, NAME_appearance,
-	     "image|colour*", NAME_get,
+	     TYPE_FILL, NAME_get,
 	     "Fill pattern used as background");
-  localClass(class, NAME_border, NAME_appearance, "int", NAME_get,
+  localClass(class, NAME_border, NAME_appearance, "num", NAME_get,
 	     "Border around graphicals");
-  localClass(class, NAME_radius, NAME_appearance, "int", NAME_get,
+  localClass(class, NAME_radius, NAME_appearance, "num", NAME_get,
 	     "Radius of outline");
   localClass(class, NAME_elevation, NAME_appearance, "elevation*", NAME_get,
 	     "Elevation from background");
+  localClass(class, NAME_transform, NAME_appearance, "transform*", NAME_get,
+	     "Optional 2D affine transform applied to contents");
+  localClass(class, NAME_localArea, NAME_area, "area", NAME_get,
+	     "Children bbox in figure-local coords (before transform/offset)");
 
   setRedrawFunctionClass(class, RedrawAreaFigure);
 
@@ -330,6 +491,7 @@ makeClassFigure(Class class)
   storeMethod(class, NAME_border,     borderFigure);
   storeMethod(class, NAME_radius,     radiusFigure);
   storeMethod(class, NAME_elevation,  elevationFigure);
+  storeMethod(class, NAME_transform,  transformFigure);
 
   sendMethod(class, NAME_initialise, DEFAULT, 0,
 	     "Create figure",
@@ -346,6 +508,22 @@ makeClassFigure(Class class)
   sendMethod(class, NAME_shadow, NAME_appearance, 1, "0..",
 	     "Attach `shadow' elevation object",
 	     shadowFigure);
+  sendMethod(class, NAME_translate, NAME_calculate, 2,
+	     "dx=num", "dy=num",
+	     "Compose translate(dx,dy) into the figure's transform",
+	     translateFigure);
+  sendMethod(class, NAME_scale, NAME_calculate, 2,
+	     "sx=num", "sy=[num]",
+	     "Compose scale(sx,sy) into the figure's transform",
+	     scaleFigureMethod);
+  sendMethod(class, NAME_rotate, NAME_calculate, 1,
+	     "degrees=num",
+	     "Compose rotate(degrees) into the figure's transform",
+	     rotateFigure);
+  sendMethod(class, NAME_shear, NAME_calculate, 2,
+	     "kx=num", "ky=num",
+	     "Compose shear(kx,ky) into the figure's transform",
+	     shearFigureMethod);
   sendMethod(class, NAME_convertOldSlot, NAME_compatibility, 2,
 	     "slot=name", "value=any",
 	     "Translate old shadow into elevation",

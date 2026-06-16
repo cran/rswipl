@@ -170,9 +170,9 @@ static inline int
 tc_display_width(const text_char *tc)
 { if ( tc->code == 0 )
     return 1;				/* right half of a wide char */
-  if ( tc->width == 2 )
+  if ( tc->flags.width == 2 )
     return 1;				/* left half of a wide char */
-  return tc->width;			/* 0 for combining marks, 1 for normal */
+  return tc->flags.width;		/* 0 for combining marks, 1 for normal */
 }
 
 
@@ -205,7 +205,7 @@ rlc_vcol_to_cell(const RlcTextLine tl, int vcol)
          skip wide-char right-half placeholders (code == 0): each is
          its own visual column in the per-cell width model. */
       while ( cell < tl->size &&
-	      tl->text[cell].width == 0 &&
+	      tl->text[cell].flags.width == 0 &&
 	      tl->text[cell].code != 0 )
 	cell++;
     }
@@ -244,7 +244,7 @@ static int
 rlc_snap_start(const RlcTextLine tl, int cell)
 { if ( !tl->text || cell <= 0 || cell >= tl->size )
     return cell;
-  while ( cell > 0 && tl->text[cell].width == 0 )
+  while ( cell > 0 && tl->text[cell].flags.width == 0 )
     cell--;
   return cell;
 }
@@ -258,7 +258,7 @@ static int
 rlc_snap_end(const RlcTextLine tl, int cell)
 { if ( !tl->text )
     return cell;
-  while ( cell < tl->size && tl->text[cell].width == 0 )
+  while ( cell < tl->size && tl->text[cell].flags.width == 0 )
     cell++;
   return cell;
 }
@@ -272,7 +272,7 @@ rlc_cluster_next(const RlcTextLine tl, int pos)
 { if ( !tl->text || pos >= tl->size )
     return pos;
   pos++;
-  while ( pos < tl->size && tl->text[pos].width == 0 )
+  while ( pos < tl->size && tl->text[pos].flags.width == 0 )
     pos++;
   return pos;
 }
@@ -290,7 +290,7 @@ rlc_cluster_prev(const RlcTextLine tl, int pos)
   if ( pos == 0 )
     return 0;
   pos--;
-  while ( pos > 0 && tl->text[pos].width == 0 )
+  while ( pos > 0 && tl->text[pos].flags.width == 0 )
     pos--;
   return pos;
 }
@@ -323,10 +323,12 @@ static void	rlc_free(void *ptr);
 static void	rlc_set_selection(RlcData b, int sl, int sc, int el, int ec);
 static const uchar_t *rlc_clicked_link(RlcData b, int x, int y);
 static const uchar_t *rlc_over_link(RlcData b, int x, int y);
+static href    *rlc_href_at(RlcData b, int x, int y, int *l, int *c);
+static status	refreshTerminalImage(TerminalImage ti);
 static href    *rlc_add_link(RlcTextLine tl, const uchar_t *link,
 			     int start, int len);
-static void	rlc_free_link(href *hr);
-static void	rlc_free_links(href *links);
+static void	rlc_free_link(RlcData b, href *hr);
+static void	rlc_free_links(RlcData b, href *links);
 static void	rlc_check_links(RlcTextLine tl);
 static bool	rlc_copy(RlcData b, Name to);
 static void	rlc_request_redraw(RlcData b);
@@ -400,6 +402,7 @@ initialiseTerminalImage(TerminalImage ti, Int w, Int h)
     h = toInt(100);
   initialiseGraphical(ti, ZERO, ZERO, w, h);
   assign(ti, bindings, newObject(ClassKeyBinding, NIL, NAME_terminal, EAV));
+  assign(ti, armed_link, OFF);
   obtainClassVariablesObject(ti);
 
   // compute width in characters from w
@@ -525,10 +528,12 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
 { if ( ev->id == NAME_locMove && notNil(ti->link_message) )
   { Int x, y;
     get_xy_event(ev, ti, ON, &x, &y);
-    if ( rlc_over_link(ti->data, valInt(x), valInt(y)) )
-    { assign(ti, armed_link, ON);
-    } else
-    { assign(ti, armed_link, OFF);
+    RlcData b = ti->data;
+    href *hr = rlc_href_at(b, valInt(x), valInt(y), NULL, NULL);
+    if ( hr != b->armed_href )
+    { b->armed_href = hr;
+      assign(ti, armed_link, hr ? ON : OFF);
+      refreshTerminalImage(ti);		/* repaint old + new armed run */
     }
 
     fail;
@@ -936,6 +941,18 @@ nfdStyleTerminalImage(TerminalImage ti, Style s)
 }
 
 static status
+linkStyleTerminalImage(TerminalImage ti, Style s)
+{ assign(ti, link_style, s);
+  return refreshTerminalImage(ti);
+}
+
+static status
+linkArmedStyleTerminalImage(TerminalImage ti, Style s)
+{ assign(ti, link_armed_style, s);
+  return refreshTerminalImage(ti);
+}
+
+static status
 ansiColoursTerminalImage(TerminalImage ti, Vector colours)
 { assign(ti, ansi_colours, colours);
   return refreshTerminalImage(ti);
@@ -1037,6 +1054,11 @@ static vardecl var_terminal_image[] =
      NAME_appearance, "Feedback for the selection"),
   SV(NAME_nfdStyle, "style*", IV_GET|IV_STORE, nfdStyleTerminalImage,
      NAME_appearance, "Style for NFD grapheme clusters (@nil to disable)"),
+  SV(NAME_linkStyle, "style*", IV_GET|IV_STORE, linkStyleTerminalImage,
+     NAME_appearance, "Style for hyperlinks (@nil for none)"),
+  SV(NAME_linkArmedStyle, "style*", IV_GET|IV_STORE,
+     linkArmedStyleTerminalImage,
+     NAME_appearance, "Style for the hyperlink under the mouse"),
   SV(NAME_ansiColours, "vector*", IV_GET|IV_STORE, ansiColoursTerminalImage,
      NAME_appearance, "The 16 ansi colours"),
   IV(NAME_armedLink, "bool", IV_GET,
@@ -1145,6 +1167,12 @@ static classvardecl rc_terminal_image[] =
      "Style for <-selection"),
   RC(NAME_nfdStyle, "style*", "@nil",
      "Style for NFD grapheme clusters (default off)"),
+  RC(NAME_linkStyle, "style*",
+     "style(colour := blue, underline := dotted)",
+     "Style for hyperlinks"),
+  RC(NAME_linkArmedStyle, "style*",
+     "style(colour := blue, underline := @on)",
+     "Style for the hyperlink under the mouse"),
   RC(NAME_autoCopy, "bool", UXWINMAC("@on", "@off", "@off"),
      "Automatically copy selected text to the clipboard"),
   RC(NAME_saveLines, "int", "1000",
@@ -1565,28 +1593,31 @@ rlc_clicked_link(RlcData b, int x, int y)
   return NULL;
 }
 
-static const uchar_t *
-rlc_over_link(RlcData b, int x, int y)
+/* Locate the href at viewport (x,y), or NULL.  When found, (l,c) record
+ * the line ring index and cell of the hit, useful for redraw scheduling.
+ */
+static href *
+rlc_href_at(RlcData b, int x, int y, int *line_out, int *cell_out)
 { int l, c;
 
   rlc_translate_mouse(b, x, y, &l, &c);
-  { RlcTextLine tl = &b->lines[l];
-    if ( c >= 0 && c < tl->size )
-    { text_char *chr = &tl->text[c];
-      if ( TF_LINK(chr->flags) )
-      { //DEBUG(Dprintf(_T("On link at %d,%d\n"), l, c));
-	for(href *hr=tl->links; hr; hr = hr->next)
-	{ if ( c >= hr->start && c <= hr->start + hr->length )
-	  { //DEBUG(Dprintf(_T("  link: %d(%d) -> \"%ls\"\n"),
-	    //	    hr->start, hr->length, hr->link));
-	    return hr->link;
-	  }
-	}
+  RlcTextLine tl = &b->lines[l];
+  if ( c >= 0 && c < tl->size && tl->text[c].flags.link )
+  { for(href *hr=tl->links; hr; hr = hr->next)
+    { if ( c >= hr->start && c <= hr->start + hr->length )
+      { if ( line_out ) *line_out = l;
+	if ( cell_out ) *cell_out = c;
+	return hr;
       }
     }
   }
-
   return NULL;
+}
+
+static const uchar_t *
+rlc_over_link(RlcData b, int x, int y)
+{ href *hr = rlc_href_at(b, x, y, NULL, NULL);
+  return hr ? hr->link : NULL;
 }
 
 static int				/* v >= f && v <= t */
@@ -1977,7 +2008,9 @@ rlc_scroll_lines(RlcData b, int lines)
 static void
 paint_chunks(const text_char *cells, int n,
 	     const char *utf8, int ulen,
-	     int x0, int ty, int cw, FontObj font, int underline)
+	     int x0, int ty, int cw, FontObj font,
+	     int underline, Name underline_texture,
+	     int strike, Name strike_texture)
 { const text_char *c = cells;
   const char *u = utf8;
   int i = 0;
@@ -1994,7 +2027,7 @@ paint_chunks(const text_char *cells, int n,
       u = utf8_get_char((char *)u, &chr);
     }
     i++;
-    while (i < n && c[i].width == 0)
+    while (i < n && c[i].flags.width == 0)
     { if (c[i].code != 0)
       { int chr;
 	u = utf8_get_char((char *)u, &chr);
@@ -2013,11 +2046,11 @@ paint_chunks(const text_char *cells, int n,
      * advance < n*cw, and each chunk reshape (e.g., on selection)
      * would shift the after-cluster glyphs by a different amount than
      * the unselected line did. */
-    if (i - chunk_i == 1 && c[chunk_i].width == 1 && c[chunk_i].code < 128)
+    if (i - chunk_i == 1 && c[chunk_i].flags.width == 1 && c[chunk_i].code < 128)
     { while (i < n &&
-	     c[i].width == 1 &&
+	     c[i].flags.width == 1 &&
 	     c[i].code < 128 &&
-	     !(i+1 < n && c[i+1].width == 0 && c[i+1].code != 0))
+	     !(i+1 < n && c[i+1].flags.width == 0 && c[i+1].code != 0))
       { if (c[i].code != 0)
 	{ int chr;
 	  u = utf8_get_char((char *)u, &chr);
@@ -2032,11 +2065,325 @@ paint_chunks(const text_char *cells, int n,
 
     s_print_utf8(chunk_u, chunk_ulen, x0, ty, font);
     if (underline)
-      r_underline(font, x0, ty, chunk_w, DEFAULT);
+      r_underline(font, x0, ty, chunk_w, DEFAULT, underline_texture);
+    if (strike)
+      r_strikethrough(font, x0, ty, chunk_w, DEFAULT, strike_texture);
 
     x0 += chunk_w;
   }
   (void)utf8; (void)ulen;
+}
+
+		 /*******************************
+		 *     TERMINAL COLOR PALETTE	*
+		 *******************************/
+
+/* The palette is a per-buffer dynamic array of COLORRGBA values.  Indices
+ * 0..15 (PAL_ANSI_RESERVED) are reserved: those cells live in the
+ * user-settable ti->ansi_colours Vector — slots in palette[] for those
+ * indices are unused, but counted in palette_size so the allocator never
+ * hands them out for truecolor.  Indices >= 16 hold interned 256-color
+ * cube/grayscale entries and SGR 38;2/48;2 truecolor entries.
+ *
+ * Lookup is by COLORRGBA via an open-addressed hashtable so SGR runs that
+ * repeatedly select the same color don't grow the palette.  Once the
+ * palette fills (PAL_LIMIT entries), new requests fall back to the
+ * nearest existing color by Euclidean distance in RGB space.
+ */
+
+struct pal_hash
+{ uint32_t  cap;			/* power of 2, > 0 */
+  uint32_t  mask;			/* cap - 1 */
+  uint16_t *slots;			/* index+1 stored; 0 = empty */
+};
+
+#define PAL_INITIAL_ALLOC 64		/* covers ANSI 0..15 + first 48 */
+#define PAL_HASH_INITIAL  64
+
+static uint32_t
+pal_hash_mix(COLORRGBA c)
+{ uint32_t h = (uint32_t)c;
+  h ^= h >> 16;
+  h *= 0x7feb352dU;
+  h ^= h >> 15;
+  h *= 0x846ca68bU;
+  h ^= h >> 16;
+  return h;
+}
+
+static void
+palette_hash_grow(struct pal_hash *h, const COLORRGBA *pal)
+{ uint32_t new_cap = h->cap ? h->cap * 2 : PAL_HASH_INITIAL;
+  uint16_t *old = h->slots;
+  uint32_t  old_cap = h->cap;
+
+  h->slots = rlc_malloc(new_cap * sizeof(*h->slots));
+  memset(h->slots, 0, new_cap * sizeof(*h->slots));
+  h->cap   = new_cap;
+  h->mask  = new_cap - 1;
+  if ( old )
+  { for(uint32_t i=0; i<old_cap; i++)
+    { uint16_t enc = old[i];
+      if ( !enc )
+	continue;
+      uint32_t idx = enc - 1;
+      uint32_t p = pal_hash_mix(pal[idx]) & h->mask;
+      while ( h->slots[p] )
+	p = (p + 1) & h->mask;
+      h->slots[p] = enc;
+    }
+    rlc_free(old);
+  }
+}
+
+/* Look up an RGB value in the palette.  Returns the index if present,
+ * else (uint32_t)-1.  Does not allocate.
+ */
+static uint32_t
+palette_hash_lookup(const struct pal_hash *h, const COLORRGBA *pal, COLORRGBA c)
+{ if ( h->cap == 0 )
+    return (uint32_t)-1;
+  uint32_t p = pal_hash_mix(c) & h->mask;
+  for(;;)
+  { uint16_t enc = h->slots[p];
+    if ( !enc )
+      return (uint32_t)-1;
+    if ( pal[enc - 1] == c )
+      return enc - 1;
+    p = (p + 1) & h->mask;
+  }
+}
+
+static void
+palette_init(RlcData b)
+{ b->palette       = rlc_malloc(PAL_INITIAL_ALLOC * sizeof(*b->palette));
+  b->palette_obj   = rlc_malloc(PAL_INITIAL_ALLOC * sizeof(*b->palette_obj));
+  memset(b->palette_obj, 0, PAL_INITIAL_ALLOC * sizeof(*b->palette_obj));
+  b->palette_alloc = PAL_INITIAL_ALLOC;
+  b->palette_size  = PAL_ANSI_RESERVED;	/* reserve 0..15 for ANSI */
+  b->palette_hash  = rlc_malloc(sizeof(*b->palette_hash));
+  memset(b->palette_hash, 0, sizeof(*b->palette_hash));
+  /* Slots 0..15 are sentinel placeholders; nothing to write yet. */
+}
+
+static void
+palette_destroy(RlcData b)
+{ if ( b->palette_obj )
+  { for(uint32_t i = PAL_ANSI_RESERVED; i < b->palette_size; i++)
+    { if ( b->palette_obj[i] )
+	lockObject(b->palette_obj[i], OFF);
+    }
+    rlc_free(b->palette_obj);
+    b->palette_obj = NULL;
+  }
+  if ( b->palette )
+  { rlc_free(b->palette);
+    b->palette = NULL;
+  }
+  if ( b->palette_hash )
+  { if ( b->palette_hash->slots )
+      rlc_free(b->palette_hash->slots);
+    rlc_free(b->palette_hash);
+    b->palette_hash = NULL;
+  }
+  b->palette_alloc = b->palette_size = 0;
+}
+
+/* Insert `c` at a fresh slot.  Caller has already verified !lookup.
+ * Returns the new index, or (uint32_t)-1 if the palette is full and
+ * cannot grow further.
+ */
+static uint32_t
+palette_append(RlcData b, COLORRGBA c)
+{ if ( b->palette_size >= PAL_LIMIT )
+    return (uint32_t)-1;
+  if ( b->palette_size >= b->palette_alloc )
+  { uint32_t new_alloc = b->palette_alloc * 2;
+    if ( new_alloc > PAL_LIMIT )
+      new_alloc = PAL_LIMIT;
+    b->palette = rlc_realloc(b->palette, new_alloc * sizeof(*b->palette));
+    b->palette_obj = rlc_realloc(b->palette_obj,
+				 new_alloc * sizeof(*b->palette_obj));
+    memset(b->palette_obj + b->palette_alloc, 0,
+	   (new_alloc - b->palette_alloc) * sizeof(*b->palette_obj));
+    b->palette_alloc = new_alloc;
+  }
+  if ( !b->palette_hash || b->palette_hash->cap == 0 ||
+       b->palette_size * 2 >= b->palette_hash->cap )
+    palette_hash_grow(b->palette_hash, b->palette);
+
+  uint32_t idx = b->palette_size++;
+  b->palette[idx] = c;
+  uint32_t p = pal_hash_mix(c) & b->palette_hash->mask;
+  while ( b->palette_hash->slots[p] )
+    p = (p + 1) & b->palette_hash->mask;
+  b->palette_hash->slots[p] = (uint16_t)(idx + 1);
+  return idx;
+}
+
+/* Find the nearest existing palette entry to (r,g,b) by RGB Euclidean
+ * distance.  Used as fallback once the palette is full.  Slots 0..15
+ * (ANSI) are excluded because their COLORRGBA isn't stored in
+ * b->palette[]; the fallback only weighs interned colors.
+ */
+static uint32_t
+palette_nearest(const RlcData b, int r, int g, int b_)
+{ uint32_t best = PAL_ANSI_RESERVED;	/* falls back to first interned slot */
+  long best_d = -1;
+  for(uint32_t i = PAL_ANSI_RESERVED; i < b->palette_size; i++)
+  { COLORRGBA c = b->palette[i];
+    long dr = (long)((c >> 16) & 0xff) - r;
+    long dg = (long)((c >>  8) & 0xff) - g;
+    long db = (long)( c        & 0xff) - b_;
+    long d  = dr*dr + dg*dg + db*db;
+    if ( best_d < 0 || d < best_d )
+    { best_d = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/* Intern an opaque RGB color in the palette and return its index.  Full
+ * palette: nearest-fallback (log once at DEBUG).
+ */
+static uint32_t
+palette_intern_rgb(RlcData b, int r, int g, int b_)
+{ COLORRGBA rgba = RGBA(r, g, b_, 0xff);
+  uint32_t idx = palette_hash_lookup(b->palette_hash, b->palette, rgba);
+  if ( idx != (uint32_t)-1 )
+    return idx;
+  idx = palette_append(b, rgba);
+  if ( idx != (uint32_t)-1 )
+    return idx;
+  if ( !b->palette_full )
+  { b->palette_full = true;
+    DEBUG(NAME_term, Cprintf("Terminal palette full at %u entries; "
+			     "falling back to nearest color\n",
+			     b->palette_size));
+  }
+  return palette_nearest(b, r, g, b_);
+}
+
+/* Map an xterm 256-color number to a palette index.  0..15 alias the
+ * ANSI palette; 16..231 are the 6x6x6 RGB cube; 232..255 the 24-step
+ * grayscale ramp.  Cube and grayscale entries are interned on first
+ * use, so a session that only uses a handful gets a small palette.
+ */
+static uint32_t
+palette_for_xterm256(RlcData b, int n)
+{ if ( n < 0 || n > 255 )
+    return PAL_DEFAULT;
+  if ( n < 16 )
+    return (uint32_t)n;
+  if ( n < 232 )			/* 6x6x6 cube */
+  { static const int levels[6] = { 0, 95, 135, 175, 215, 255 };
+    int x = n - 16;
+    int r = levels[(x / 36) % 6];
+    int g = levels[(x /  6) % 6];
+    int bl = levels[ x       % 6];
+    return palette_intern_rgb(b, r, g, bl);
+  }
+  /* grayscale ramp: 8, 18, 28, ..., 238 */
+  int v = 8 + (n - 232) * 10;
+  return palette_intern_rgb(b, v, v, v);
+}
+
+/* Resolve a palette index to an xpce Colour object.  PAL_DEFAULT yields
+ * NULL — callers fall back to the terminal/style default.  Slots 0..15
+ * read from ti->ansi_colours so theme changes take effect immediately;
+ * higher slots come from the interned COLORRGBA palette, with each
+ * Colour created lazily and locked so it survives xpce GC between
+ * paints (RevColourTable holds Colours with refer=none).
+ */
+static Colour
+palette_colour(RlcData b, unsigned idx)
+{ if ( idx >= PAL_DEFAULT )
+    return NULL;
+  if ( idx < PAL_ANSI_RESERVED )
+  { TerminalImage ti = b->object;
+    if ( ti->ansi_colours )
+      return getElementVector(ti->ansi_colours, toInt(idx+1));
+    return NULL;
+  }
+  if ( idx >= b->palette_size )		/* defensive: shouldn't happen */
+    return NULL;
+  if ( !b->palette_obj[idx] )
+  { Colour c = ws_pixel_to_colour(b->palette[idx]);
+    if ( c )
+      lockObject(c, ON);
+    b->palette_obj[idx] = c;
+  }
+  return b->palette_obj[idx];
+}
+
+/* Resolved render parameters for a same-flags run of cells.  Encodes
+ * what to actually paint: NULL fg/bg mean "inherit the surrounding
+ * default".  The result already reflects any link_style overlay so the
+ * paint loop doesn't have to special-case hyperlinks.
+ */
+typedef struct
+{ Colour fg;
+  Colour bg;
+  Name   underline_texture;		/* NAME_none, NAME_dotted, ... */
+  Name   strike_texture;
+  bool   underline;
+  bool   strike;
+  bool   bold;
+} effective_style;
+
+static effective_style
+effective_style_for(RlcData b, text_flags flags, bool armed)
+{ TerminalImage ti = b->object;
+  effective_style es =
+    { .fg                = palette_colour(b, flags.fg),
+      .bg                = palette_colour(b, flags.bg),
+      .underline         = flags.underline,
+      .underline_texture = NAME_none,
+      .strike            = flags.strike,
+      .strike_texture    = NAME_none,
+      .bold              = flags.bold
+    };
+
+  /* Link overlay: only slots that the user explicitly set (neither nil
+   * nor @default) replace the cell's own values.  An application can
+   * still embed colored, bold, or unstyled links by leaving link_style
+   * slots at @default — the cell's flags win where the style is silent.
+   * The hover (armed) variant overrides link_style on a per-link basis;
+   * cells outside the hovered href keep using the resting link_style.
+   *
+   * Style->underline historically was "Bool or Colour" (we ignore the
+   * Colour shade for now since the line is drawn in the current fg).
+   * We additionally accept a texture Name from the line-texture
+   * vocabulary (solid, dotted, dashed, dashdot, dashdotted, longdash).
+   */
+  if ( flags.link )
+  { Style ls = (armed &&
+		notNil(ti->link_armed_style) && !isDefault(ti->link_armed_style))
+		 ? ti->link_armed_style
+		 : ti->link_style;
+    if ( notNil(ls) && !isDefault(ls) )
+    { if ( notDefault(ls->colour) && notNil(ls->colour) )
+	es.fg = ls->colour;
+      if ( notDefault(ls->background) && notNil(ls->background) )
+	es.bg = ls->background;
+      Any uls = ls->underline;
+      if ( notDefault(uls) && notNil(uls) && uls != OFF )
+      { es.underline = true;
+	if ( instanceOfObject(uls, ClassName) )
+	  es.underline_texture = uls;
+      }
+      Any sts = ls->strikethrough;
+      if ( notDefault(sts) && notNil(sts) && sts != OFF )
+      { es.strike = true;
+	if ( instanceOfObject(sts, ClassName) )
+	  es.strike_texture = sts;
+      }
+      if ( ls->attributes & TXT_BOLDEN )
+	es.bold = true;
+    }
+  }
+  return es;
 }
 
 /** Draw a line of the terminal
@@ -2084,7 +2431,7 @@ rlc_paint_text(RlcData b,
     for(; i<len; i++, o++)
     { o->code  = ' ';
       o->flags = TF_DEFAULT;
-      o->width = 1;
+      o->flags.width = 1;
     }
   }
 
@@ -2098,13 +2445,35 @@ rlc_paint_text(RlcData b,
   }
   *t = 0;
 
+  /* If the hovered href lives on this line, compute its range within the
+   * `chars` window (cell indices, half-open).  Otherwise leave the range
+   * empty so every cell renders unarmed.  Walking tl->links is O(links)
+   * per visible line; trivial. */
+  int armed_from = 0, armed_to = 0;
+  if ( b->armed_href && tl->text )
+  { for(href *hr = tl->links; hr; hr = hr->next)
+    { if ( hr == b->armed_href )
+      { int f = hr->start - cell_from;
+	int e = f + hr->length + 1;	/* href->length is inclusive */
+	if ( f < 0   ) f = 0;
+	if ( e > len ) e = len;
+	if ( e > f )
+	{ armed_from = f;
+	  armed_to   = e;
+	}
+	break;
+      }
+    }
+  }
+
   if ( insel )					/* TBD: Cache */
   { Any ofg = r_colour(ti->selection_style->colour);
     Any obg = r_background(ti->selection_style->background);
     int x0 = *cx;
     *cx += chars_columns(chars, len) * b->cw;
     r_clear(x0, ty-b->cb, *cx-x0, b->ch);
-    paint_chunks(chars, len, text, (int)(t-text), x0, ty, b->cw, ti->font, 0);
+    paint_chunks(chars, len, text, (int)(t-text), x0, ty, b->cw, ti->font,
+                 0, NAME_none, 0, NAME_none);
     r_colour(ofg);
     r_background(obg);
   } else
@@ -2115,14 +2484,19 @@ rlc_paint_text(RlcData b,
 	start+=segment, s+=segment, t+=ulen)
     { text_flags flags = s->flags;
       int left = len-start;
+      bool armed0 = (start >= armed_from && start < armed_to);
 
-      /* Count characters in this same-flags segment and build its UTF-8 span.
-	 Wide-char placeholders (code==0) inherit the previous cell's flags and
-	 are skipped in the UTF-8 output.  We walk both the char array (segment)
-	 and the UTF-8 bytes (ut) together. */
+      /* Count characters in this same-flags + same-armed segment and build
+	 its UTF-8 span.  Wide-char placeholders (code==0) inherit the
+	 preceding cell's flags and are skipped in the UTF-8 output.  We
+	 walk both the char array (segment) and the UTF-8 bytes (ut)
+	 together.  Armed status flips at the href's edge, splitting an
+	 otherwise-uniform link run when only part of it is hovered. */
       char *ut = t;
       for(segment=0;
-	  segment<left && s[segment].flags == flags;
+	  segment<left && s[segment].flags.raw == flags.raw &&
+	  ((start + segment >= armed_from &&
+	    start + segment <  armed_to) == armed0);
 	  segment++)
       { if ( s[segment].code != 0 )
 	{ int chr;
@@ -2131,24 +2505,17 @@ rlc_paint_text(RlcData b,
       }
       ulen = ut-t;
 
+      effective_style es = effective_style_for(b, flags, armed0);
       Colour ofg = DEFAULT;
       Colour obg = DEFAULT;
-      int ifg = TF_FG(flags);
-      int ibg = TF_BG(flags);
-      if ( ifg != ANSI_COLOR_DEFAULT )
-      { Colour fg = getElementVector(ti->ansi_colours, toInt(ifg+1));
-	if ( fg )
-	  ofg = r_colour(fg);
-      }
-      if ( ibg != ANSI_COLOR_DEFAULT )
-      { Colour bg = getElementVector(ti->ansi_colours, toInt(ifg+1));
-	if ( bg )
-	  obg = r_background(bg);
-      }
-      if ( TF_INVERSE(flags) )
+      if ( es.fg )
+	ofg = r_colour(es.fg);
+      if ( es.bg )
+	obg = r_background(es.bg);
+      if ( flags.inverse )
 	r_swap_background_and_foreground();
       FontObj font = ti->font;
-      if ( TF_BOLD(flags) )
+      if ( es.bold )
       { if ( notNil(ti->bold_font) )
 	  font = ti->bold_font;
 	else
@@ -2169,10 +2536,10 @@ rlc_paint_text(RlcData b,
 	  for(int ci = 0; ci < segment; )
 	  { if ( s[ci].code == 0 ) { ci++; continue; } /* skip wide-char right-half: col advanced by base */
 	    int base_col = col;
-	    int base_width = (s[ci].width == 2) ? 2 : 1;
+	    int base_width = (s[ci].flags.width == 2) ? 2 : 1;
 	    col += base_width; ci++;
 	    bool has_combining = false;
-	    while ( ci < segment && s[ci].width == 0 && s[ci].code != 0 )
+	    while ( ci < segment && s[ci].flags.width == 0 && s[ci].code != 0 )
 	    { has_combining = true; ci++; }
 	    if ( has_combining )
 	      r_fill(x0 + base_col*b->cw, ty-b->cb,
@@ -2181,8 +2548,9 @@ rlc_paint_text(RlcData b,
 	}
       }
       paint_chunks(s, segment, t, ulen, x0, ty, b->cw, font,
-                   TF_UNDERLINE(flags));
-      if ( TF_INVERSE(flags) )
+                   es.underline, es.underline_texture,
+                   es.strike, es.strike_texture);
+      if ( flags.inverse )
 	r_swap_background_and_foreground();
       if ( notDefault(ofg) )
 	r_colour(ofg);
@@ -2413,6 +2781,7 @@ rlc_make_buffer(int w, int h)
   b->cmdstat	    = CMD_INITIAL;
   b->changed	    = CHG_CARET|CHG_CHANGED|CHG_CLEAR;
   b->sgr_flags	    = TF_DEFAULT;
+  palette_init(b);
 
   memset(b->lines, 0, sizeof(rlc_text_line) * h);
   for(i=0; i<h; i++)
@@ -2434,7 +2803,7 @@ rlc_destroy_buffer(RlcData b)
 	rlc_free(tl->text);
       href *links = tl->links;
       if ( links )
-	rlc_free_links(links);
+	rlc_free_links(b, links);
     }
 
     rlc_free(b->lines);
@@ -2442,6 +2811,7 @@ rlc_destroy_buffer(RlcData b)
 
   rlc_destroy_saved_screen(b);
   rlc_close_connection(b);
+  palette_destroy(b);
 
   free(b);
 }
@@ -2564,8 +2934,17 @@ move_link_positions(RlcTextLine tl, int offset)
     hr->start += offset;
 }
 
+/* When two hrefs merge, retarget b->armed_href so hover survives the
+ * splice.  Anything else that frees an href will fall back to clearing
+ * armed_href in rlc_free_link. */
+static inline void
+retarget_armed(RlcData b, href *from_hr, href *to_hr)
+{ if ( b->armed_href == from_hr )
+    b->armed_href = to_hr;
+}
+
 static void
-move_links(RlcTextLine from, RlcTextLine to)
+move_links(RlcData b, RlcTextLine from, RlcTextLine to)
 { href *next;
 
   DEBUG(NAME_term,
@@ -2581,7 +2960,8 @@ move_links(RlcTextLine from, RlcTextLine to)
       {	DEBUG(NAME_term, Cprintf("Rejoin split link\n"));
 	hr2->start = hr->start;
 	hr2->length += hr->length;
-	rlc_free_link(hr);
+	retarget_armed(b, hr, hr2);
+	rlc_free_link(b, hr);
 	goto next_link;
       }
     }
@@ -2596,7 +2976,7 @@ move_links(RlcTextLine from, RlcTextLine to)
 }
 
 static void
-move_links_soft(RlcTextLine from, RlcTextLine to)
+move_links_soft(RlcData b, RlcTextLine from, RlcTextLine to)
 { href *next;
 
   DEBUG(NAME_term,
@@ -2614,7 +2994,8 @@ move_links_soft(RlcTextLine from, RlcTextLine to)
 	{ DEBUG(NAME_term, Cprintf("Rejoin split link\n"));
 	  hr2->start = hr->start;
 	  hr2->length += hr->length;
-	  rlc_free_link(hr);
+	  retarget_armed(b, hr, hr2);
+	  rlc_free_link(b, hr);
 	  goto next_link;
 	}
       }
@@ -2697,7 +3078,7 @@ rlc_resize(RlcData b, int w, int h)
 	nl->size += move;
 	tl->size = w;
 	move_link_positions(nl, move);
-	move_links_soft(tl, nl);
+	move_links_soft(b, tl, nl);
       }
     } else if ( tl->text && tl->softreturn && tl->size < w )
     { RlcTextLine nl;
@@ -2712,7 +3093,7 @@ rlc_resize(RlcData b, int w, int h)
       memmove(&nl->text[tl->size], nl->text, nl->size*sizeof(text_char));
       move_link_positions(nl, tl->size);
       memmove(nl->text, tl->text, tl->size*sizeof(text_char));
-      move_links(tl, nl);
+      move_links(b, tl, nl);
 
       nl->size += tl->size;
       nl->adjusted = true;
@@ -2754,18 +3135,20 @@ rlc_reinit_line(RlcData b, int line)
 }
 
 static void
-rlc_free_link(href *hr)
-{ rlc_free(hr->link);
+rlc_free_link(RlcData b, href *hr)
+{ if ( b->armed_href == hr )
+    b->armed_href = NULL;
+  rlc_free(hr->link);
   rlc_free(hr);
 }
 
 static void
-rlc_free_links(href *links)
+rlc_free_links(RlcData b, href *links)
 { href *next;
 
   for(; links; links=next)
   { next = links->next;
-    rlc_free_link(links);
+    rlc_free_link(b, links);
   }
 }
 
@@ -2799,7 +3182,7 @@ rlc_free_line(RlcData b, int line)
   href *links = tl->links;
   if ( links )
   { tl->links = NULL;
-    rlc_free_links(links);
+    rlc_free_links(b, links);
   }
 }
 
@@ -3045,7 +3428,7 @@ rlc_tab(RlcData b)
 
       tc->code  = ' ';
       tc->flags = b->sgr_flags;
-      tc->width = 1;
+      tc->flags.width = 1;
     }
   }
 
@@ -3179,36 +3562,48 @@ rlc_sgr(RlcData b, int sgr)
 { if ( sgr == 0 )
   { b->sgr_flags = TF_DEFAULT;
   } else if ( sgr >= 30 && sgr <= 39 )
-  { b->sgr_flags = TF_SET_FG(b->sgr_flags,
-			     sgr == 39 ? ANSI_COLOR_DEFAULT : sgr-30);
+  { b->sgr_flags.fg = sgr == 39 ? PAL_DEFAULT : sgr-30;
   } else if ( sgr >= 40 && sgr <= 49 )
-  { b->sgr_flags = TF_SET_BG(b->sgr_flags,
-			     sgr == 49 ? ANSI_COLOR_DEFAULT : sgr-40);
+  { b->sgr_flags.bg = sgr == 49 ? PAL_DEFAULT : sgr-40;
   } else if ( sgr >= 90 && sgr <= 99 )
-  { b->sgr_flags = TF_SET_FG(b->sgr_flags,
-			     sgr == 99 ? ANSI_COLOR_DEFAULT : sgr-90+8);
+  { b->sgr_flags.fg = sgr == 99 ? PAL_DEFAULT : sgr-90+8;
   } else if ( sgr >= 100 && sgr <= 109 )
-  { b->sgr_flags = TF_SET_BG(b->sgr_flags,
-			     sgr == 109 ? ANSI_COLOR_DEFAULT : sgr-100+8);
+  { b->sgr_flags.bg = sgr == 109 ? PAL_DEFAULT : sgr-100+8;
   } else if ( sgr == 1 )
-  { b->sgr_flags = TF_SET_BOLD(b->sgr_flags, 1);
+  { b->sgr_flags.bold = 1;
   } else if ( sgr == 4 )
-  { b->sgr_flags = TF_SET_UNDERLINE(b->sgr_flags, 1);
+  { b->sgr_flags.underline = 1;
   } else if ( sgr == 7 )
-  { b->sgr_flags = TF_SET_INVERSE(b->sgr_flags, 1);
+  { b->sgr_flags.inverse = 1;
+  } else if ( sgr == 9 )
+  { b->sgr_flags.strike = 1;
   } else if ( sgr == 22 )	/* also clears "faint" */
-  { b->sgr_flags = TF_SET_BOLD(b->sgr_flags, 0);
+  { b->sgr_flags.bold = 0;
   } else if ( sgr == 24 )
-  { b->sgr_flags = TF_SET_UNDERLINE(b->sgr_flags, 0);
+  { b->sgr_flags.underline = 0;
   } else if ( sgr == 27 )
-  { b->sgr_flags = TF_SET_INVERSE(b->sgr_flags, 0);
+  { b->sgr_flags.inverse = 0;
+  } else if ( sgr == 29 )
+  { b->sgr_flags.strike = 0;
   }
 }
 
 static void
 rlc_24bit_colour(RlcData b, bool fg, int red, int green, int blue)
-{ DEBUG(NAME_term, Cprintf("Colour: %s %d,%d,%d (not implemented)\n",
-			   fg ? "fg" : "bg", red, green, blue));
+{ uint32_t idx = palette_intern_rgb(b, red & 0xff, green & 0xff, blue & 0xff);
+  if ( fg )
+    b->sgr_flags.fg = idx;
+  else
+    b->sgr_flags.bg = idx;
+}
+
+static void
+rlc_256_colour(RlcData b, bool fg, int n)
+{ uint32_t idx = palette_for_xterm256(b, n);
+  if ( fg )
+    b->sgr_flags.fg = idx;
+  else
+    b->sgr_flags.bg = idx;
 }
 
 static RlcTextLine
@@ -3222,7 +3617,7 @@ rlc_prepare_line(RlcData b, int y)
 
     tc->code  = ' ';
     tc->flags = b->sgr_flags;
-    tc->width = 1;
+    tc->flags.width = 1;
   }
 
   return tl;
@@ -3261,7 +3656,7 @@ rlc_put(RlcData b, int chr)
        refresh. */
     if ( b->caret_x < tl->size &&
 	 tl->size < LINE_CELL_CAPACITY(b) &&
-	 !(tl->text[b->caret_x].width == 0 &&
+	 !(tl->text[b->caret_x].flags.width == 0 &&
 	   tl->text[b->caret_x].code != 0) )
     { for(int i=tl->size; i>b->caret_x; i--)
 	tl->text[i] = tl->text[i-1];
@@ -3270,7 +3665,7 @@ rlc_put(RlcData b, int chr)
     text_char *tc = &tl->text[b->caret_x];
     tc->code  = chr;
     tc->flags = b->sgr_flags;
-    tc->width = 0;
+    tc->flags.width = 0;
     if ( tl->size <= b->caret_x )
       tl->size = b->caret_x + 1;
     tl->changed |= CHG_CHANGED;
@@ -3299,7 +3694,7 @@ rlc_put(RlcData b, int chr)
       { text_char *pad = &tl->text[b->caret_x];
 	pad->code  = ' ';
 	pad->flags = b->sgr_flags;
-	pad->width = 1;
+	pad->flags.width = 1;
 	if ( tl->size <= b->caret_x )
 	  tl->size = b->caret_x + 1;
 	tl->changed |= CHG_CHANGED;
@@ -3313,7 +3708,7 @@ rlc_put(RlcData b, int chr)
     text_char *tc = &tl->text[b->caret_x];
     tc->code  = chr;
     tc->flags = b->sgr_flags;
-    tc->width = (uint8_t)dw;
+    tc->flags.width = (unsigned)dw;
     if ( tl->size <= b->caret_x )
       tl->size = b->caret_x + 1;
 
@@ -3323,7 +3718,7 @@ rlc_put(RlcData b, int chr)
       text_char *ph = &tl->text[b->caret_x + 1];
       ph->code  = 0;
       ph->flags = b->sgr_flags;
-      ph->width = 0;
+      ph->flags.width = 0;
       if ( tl->size <= b->caret_x + 1 )
 	tl->size = b->caret_x + 2;
     }
@@ -3368,12 +3763,12 @@ rlc_insert(RlcData b, int chr)
   text_char *tc = &tl->text[b->caret_x];
   tc->code  = chr;
   tc->flags = b->sgr_flags;
-  tc->width = (uint8_t)dw;
+  tc->flags.width = (unsigned)dw;
   if ( dw == 2 && b->caret_x + 1 < cap )
   { text_char *ph = &tl->text[b->caret_x + 1];
     ph->code  = 0;
     ph->flags = b->sgr_flags;
-    ph->width = 0;
+    ph->flags.width = 0;
   }
   /* ANSI ICH discards content shifted past the right edge.  Trim any
      tail clusters whose visual column would fall past b->width so the
@@ -3407,8 +3802,8 @@ rlc_delete_chars(RlcData b, int count)
        count, b->caret_x, tl->size);
   for(int i = 0; i < tl->size && i < 16; i++)
     tlog("  cell %2d: code=0x%05X width=%d flags=0x%X\n",
-	 i, (unsigned)tl->text[i].code, tl->text[i].width,
-	 (unsigned)tl->text[i].flags);
+	 i, (unsigned)tl->text[i].code, tl->text[i].flags.width,
+	 (unsigned)tl->text[i].flags.raw);
   /* ANSI DCH takes a VISUAL COLUMN count.  Snap the caret back to the
      start of its grapheme cluster (in case it lands on a combining mark
      or a wide-char right-half placeholder) so the erase begins at a
@@ -3458,10 +3853,10 @@ rlc_check_links(RlcTextLine tl)
   int links = 0;
 
   for(int x=0; x<tl->size; x++)
-  { if ( TF_LINK(tl->text[x].flags) )
+  { if ( tl->text[x].flags.link )
     { int start = x;
       links++;
-      for(; x<tl->size && TF_LINK(tl->text[x].flags); x++)
+      for(; x<tl->size && tl->text[x].flags.link; x++)
 	;
       int len = x-start;
       href *hr;
@@ -3549,12 +3944,12 @@ rlc_shift_up(RlcData b, int shift)
 
 
 static void
-rlc_destroy_saved_line(RlcTextLine tl)
+rlc_destroy_saved_line(RlcData b, RlcTextLine tl)
 { if ( tl->text )
     rlc_free(tl->text);
   href *links = tl->links;
   if ( links )
-    rlc_free_links(links);
+    rlc_free_links(b, links);
 }
 
 static void
@@ -3566,7 +3961,7 @@ rlc_destroy_saved_screen(RlcData b)
     b->saved.lines = NULL;
     b->saved.height = 0;
     for(int i=0; i<count; i++)
-      rlc_destroy_saved_line(&tls[i]);
+      rlc_destroy_saved_line(b, &tls[i]);
     rlc_free(tls);
   }
 }
@@ -3628,7 +4023,7 @@ rlc_restore_screen(RlcData b)
 	}
 	line = NextLine(b, line);
       } else
-      { rlc_destroy_saved_line(&tls[i]);
+      { rlc_destroy_saved_line(b, &tls[i]);
       }
     }
     rlc_free(tls);
@@ -3755,11 +4150,9 @@ osc8_end(RlcData b)
 static void
 rlc_put_link(RlcData b, const uchar_t *label, const uchar_t *link)
 { text_flags flags0 = b->sgr_flags;
-  rlc_sgr(b, 34);	/* blue */
-  rlc_sgr(b, 4);	/* underline */
   int y = b->caret_y;
   href *hr = rlc_register_link(b, link, ucslen(label));
-  b->sgr_flags = TF_SET_LINK(b->sgr_flags, true);
+  b->sgr_flags.link = 1;
   for( ; *label; label++)
   { rlc_put(b, *label);
     if ( b->caret_y != y )	/* moved to next line */
@@ -4087,13 +4480,29 @@ rlc_putansi(RlcData b, int chr)
 	case 'm':
 	  { rlc_need_arg(b, 1, 0);
 
-	    if ( (b->argv[0] == 38 || b->argv[0] == 48) &&
-		 b->argc == 5 && b->argv[1] == 2 )
-	    { CMD(rlc_24bit_colour(b, b->argv[0] == 38,
-				   b->argv[2], b->argv[3], b->argv[4]));
-	    } else
-	    { for(int i=0; i<b->argc; i++)
-		CMD(rlc_sgr(b, b->argv[i]));
+	    /* Walk the SGR parameter list.  Most codes are atomic (handled
+	     * by rlc_sgr); 38/48 introduce a sub-sequence for extended
+	     * color: 38;5;N or 48;5;N selects an xterm-256 color, and
+	     * 38;2;R;G;B or 48;2;R;G;B selects a 24-bit color.  Anything
+	     * malformed (too few following args, unknown mode) is dropped. */
+	    for(int i=0; i<b->argc; )
+	    { int code = b->argv[i];
+	      if ( (code == 38 || code == 48) && i+1 < b->argc )
+	      { bool fg = (code == 38);
+		int mode = b->argv[i+1];
+		if ( mode == 5 && i+2 < b->argc )
+		{ CMD(rlc_256_colour(b, fg, b->argv[i+2]));
+		  i += 3;
+		  continue;
+		} else if ( mode == 2 && i+4 < b->argc )
+		{ CMD(rlc_24bit_colour(b, fg,
+				       b->argv[i+2], b->argv[i+3], b->argv[i+4]));
+		  i += 5;
+		  continue;
+		}
+	      }
+	      CMD(rlc_sgr(b, code));
+	      i++;
 	    }
 	    break;
 	  }

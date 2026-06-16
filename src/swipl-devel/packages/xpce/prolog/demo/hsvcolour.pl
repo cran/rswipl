@@ -2,9 +2,9 @@
 
     Author:        Jan Wielemaker and Anjo Anjewierden
     E-mail:        jan@swi-prolog.org
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  2001-2025, University of Amsterdam
-			    SWI-Prolog Solutions b.v.
+    WWW:           https://www.swi-prolog.org/projects/xpce/
+    Copyright (c)  2001-2026, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -181,7 +181,7 @@ rgb(R,G,B, colour(@default, R, G, B)).
 initialise(Candidate, Name:name, Label:name) :->
     send_super(Candidate, initialise, Name, group),
     send(Candidate, append, new(Btn, button(copy))),
-    send(Btn, label, image('16x16/copy.png')),
+    send(Btn, label, image('tool/copy.svg')),
     send(Candidate, append, new(Nme, text('#xxxxxx')), right),
     send(Candidate, append, new(Txt,  text(Label)), right),
     send(Candidate, append, new(Box,  box(100, 20)), right),

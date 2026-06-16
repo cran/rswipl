@@ -64,6 +64,10 @@
 :- use_module(library(prolog_code), [pi_head/2]).
 :- use_module(library(thread), [call_in_thread/2, call_in_thread/3]).
 :- use_module(library(pce_symbol_picker), [symbol_picker/1]).
+:- use_module(library(pce_drop_target),
+              [ drop_target_event/4,
+                drop_target_show_rejected/3
+              ]).
 
 :- meta_predicate
     epilog(:),
@@ -313,8 +317,9 @@ binding('\\C-\\S-e', split_vertically).
 binding('\\C-\\S-i', new_window).
 binding('\\C-\\S-k', clear_screen).       % Gnome terminal
 binding('\\C-\\S-w', close).
-binding('\\C-\\S-w', close).
 binding('\\C-\\S-m', make).
+binding('\\C-\\S-v', paste).
+binding('\\C-\\S-c', copy).
 binding('\\C--',     font_reduce).
 binding('\\C-=',     font_default).
 binding('<f5>',      trace_mode).
@@ -687,7 +692,7 @@ parent_thread(_, main).
 :- pce_group(event).
 
 event(T, Ev:event) :->
-    "Handle popup"::
+    "Handle popup and drag-and-drop"::
     (   send_super(T, event, Ev)
     ->  (   send(Ev, is_a, activate_keyboard_focus)
         ->  send(T?frame, current_terminal, T)
@@ -699,6 +704,9 @@ event(T, Ev:event) :->
 
     ;   send(Ev, is_a, ms_right_down)
     ->  send(T, show_popup, Ev)
+    ;   drop_target_event(T, Ev,
+                          'Drop Prolog source file(s) to consult',
+                          epilog_consult_drop)
     ).
 
 split(T, Dir:{horizontally,vertically}) :->
@@ -882,6 +890,41 @@ fragment_location(Fragment, File, File:Line:Column) :-
     number_string(Column, ColumnS).
 fragment_location(Fragment, File, File:Line) :-
     atom_number(Fragment, Line).
+
+%!  epilog_consult_drop(+Terminal, +Paths) is det.
+%
+%   Drop-target callback: consult dropped Prolog files; briefly flag
+%   any non-Prolog files in red.
+
+epilog_consult_drop(Terminal, Paths) :-
+    split_dropped_files(Paths, PrologOS, OtherOS),
+    (   PrologOS \== []
+    ->  prolog_path_list(PrologOS, PrologFiles),
+        send(Terminal, inject, consult(PrologFiles))
+    ;   OtherOS \== []
+    ->  rejection_text(OtherOS, Msg),
+        drop_target_show_rejected(Terminal, Msg, 1.5)
+    ;   true
+    ).
+
+split_dropped_files([], [], []).
+split_dropped_files([P|T], [P|PR], O) :-
+    file_name_extension(_, Ext, P),
+    user:prolog_file_type(Ext, prolog),
+    !,
+    split_dropped_files(T, PR, O).
+split_dropped_files([P|T], PR, [P|O]) :-
+    split_dropped_files(T, PR, O).
+
+prolog_path_list([], []).
+prolog_path_list([OS|TOS], [Pl|TPl]) :-
+    prolog_to_os_filename(Pl, OS),
+    prolog_path_list(TOS, TPl).
+
+rejection_text([_], 'Ignored: not a Prolog source file') :- !.
+rejection_text(Files, Msg) :-
+    length(Files, N),
+    format(string(Msg), 'Ignored ~d files: not Prolog source', [N]).
 
 :- pce_end_class(prolog_terminal).
 
@@ -1145,6 +1188,11 @@ ide(_T, Tool:name) :->
     "Open an IDE tool"::
     call(user:prolog_ide(Tool)).
 
+manpce_tool(_T, Tool:name) :->
+    "Open a manpce/0 tool routed through @manual"::
+    use_module(user:library(pce_manual), []),
+    send(@manual, start_tool, Tool).
+
 preferences(_T, Which:{prolog,xpce}) :->
     "Edit Prolog or GUI preferences"::
     call(prolog_edit_preferences(Which)).
@@ -1231,12 +1279,13 @@ initialise(D) :->
     send(D, gap, size(0,0)),
     send(D, pen, 0),
     send(D, append, new(MB, menu_bar)),
+    Epilog = @event?receiver?frame,
     send(MB, append, new(File,     epilog_popup(file))),
     send(MB, append, new(Settings, popup(settings))),
     send(MB, append, new(Tools,    popup(tools))),
     send(MB, append, new(Debug,    epilog_popup(debug))),
+    send(MB, append, new(GUI,      popup('GUI'))),
     send(MB, append, new(Help,     popup(help))),
-    Epilog = @event?receiver?frame,
     send_list(File, append,
               [ menu_item(consult,
                           message(Epilog, consult)),
@@ -1270,10 +1319,33 @@ initialise(D) :->
                           message(Epilog, ide, debug_monitor)),
                 menu_item(cross_referencer,
                           message(Epilog, ide, xref),
+                          end_group := @on)
+              ]),
+    send_list(GUI, append,
+              [ menu_item('GUI demo programs',
+                          message(Epilog, manpce_tool, demos)),
+                menu_item(example_XPCE_code_snippets,
+                          message(Epilog, manpce_tool, examples),
+                          end_group := @on),
+                menu_item('Explore XPCE classes',
+                          message(Epilog, manpce_tool, class_browser)),
+                menu_item('Explore XPCE class hierarchy',
+                          message(Epilog, manpce_tool, class_hierarchy)),
+                menu_item('Explore XPCE global objects',
+                          message(Epilog, manpce_tool, global_objects)),
+                menu_item('Explore XPCE errors',
+                          message(Epilog, manpce_tool, errors)),
+                menu_item('Explore by function group',
+                          message(Epilog, manpce_tool, group_overview)),
+                menu_item('Search XPCE manual',
+                          message(Epilog, manpce_tool, search),
                           end_group := @on),
                 menu_item('Inspect GUI hierarchy',
-                          message(Epilog, ide, visual_hierarchy),
-                          end_group := @on)
+                          message(Epilog, manpce_tool, visual_hierarchy)),
+                menu_item('Inspect XPCE object',
+                          message(Epilog, manpce_tool, inspector)),
+                menu_item('Show XPCE events',
+                          message(Epilog, manpce_tool, event_viewer))
               ]),
     send_list(Debug, append,
               [ new(TraceMode,
@@ -1305,11 +1377,29 @@ initialise(D) :->
                           message(Epilog, open_url,
                                   'https://github.com/SWI-Prolog/packages-xpce/wiki'))
               ]),
+    add_pce_demos(D, Help),
     send(Debug, show_current, @on),
     send(Debug, multiple_selection, @on),
     send(DebugMode, condition, message(Epilog, update_debug_mode, DebugMode)),
     send(TraceMode, condition, message(Epilog, update_trace_mode, TraceMode)),
     send(GuiDebug,  condition, message(Epilog, update_gui_debug, GuiDebug)).
+
+:- if(exists_source(demo(pce_demo))).
+:- autoload(demo(pce_demo), [pcedemo/0]).
+
+add_pce_demos(Dialog, Menu) :-
+    send_list(Menu, append,
+              [ menu_item('GUI demos',
+                          message(Dialog, pce_demos))
+              ]).
+
+pce_demos(_D) :->
+    "Start demos browser"::
+    autoload_call(pcedemo).
+:- else.
+add_pce_demos(_Dialog, _Menu).
+:- endif.
+
 
 :- pce_end_class(epilog_dialog).
 

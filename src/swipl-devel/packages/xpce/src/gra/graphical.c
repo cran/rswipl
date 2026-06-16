@@ -59,6 +59,7 @@ initialiseGraphical(Any obj, Int x, Int y, Int w, Int h)
   assign(gr, name,             class->name);
   assign(gr, inverted,         OFF);
   assign(gr, active,	       ON);
+  assign(gr, opacity,	       toNum(1.0));
   obtainClassVariablesObject(obj);
 
   if ( class->solid == ON )
@@ -104,6 +105,7 @@ copyGraphical(Any obj1, Any obj2)
   assign(gr1, inverted,  gr2->inverted);
   assign(gr1, displayed, gr2->displayed);
   assign(gr1, colour,	 gr2->colour);
+  assign(gr1, opacity,	 gr2->opacity);
   assign(gr1, cursor,    gr2->cursor);
   assign(gr1, name,      gr2->name);
 
@@ -321,7 +323,25 @@ Area
 getAbsoluteAreaGraphical(Graphical gr, Device device)
 { if ( gr->device == device || isNil(gr->device) )
     answer(gr->area);
-  else
+
+  if ( deviceChainHasTransform(gr) )
+  { /* Project gr->area's rectangle through ancestor figure->transforms
+     * up to `device` (or window).  The result is an AABB whose width
+     * and height may differ from gr->area->{w,h} when rotation or
+     * non-uniform scale is in play.
+     */
+    Device target = device;
+    int ox, oy, ow, oh;
+    if ( graphicalToDeviceAreaAABB(gr, &target,
+				   0, 0,
+				   valInt(gr->area->w),
+				   valInt(gr->area->h),
+				   &ox, &oy, &ow, &oh) )
+      answer(answerObject(ClassArea,
+			  toInt(ox), toInt(oy),
+			  toInt(ow), toInt(oh), EAV));
+  }
+
   { Device dev = gr->device;
     int x, y;
 
@@ -448,7 +468,7 @@ get_extension_margin_graphical(Graphical gr)
     if ( instanceOfObject(gr, ClassButton) )
     { Button b = (Button)gr;
 
-      if ( b->look == NAME_motif || b->look == NAME_gtk )
+      if ( b->look == NAME_xpce )
 	m = GTK_BUTTON_MARGIN + 1;
     }
 
@@ -482,19 +502,31 @@ changedAreaGraphical(Any obj, Int x, Int y, Int w, Int h)
       if ( instanceOfObject(d, ClassWindow) )
       { PceWindow sw = (PceWindow) d;
 	Area a = gr->area;
-	int ox = valInt(x), oy = valInt(y),
-	    ow = valInt(w), oh = valInt(h);
-	int cx = valInt(a->x), cy = valInt(a->y),
-            cw = valInt(a->w), ch = valInt(a->h);
+	int ox, oy, ow, oh;
+	int cx, cy, cw, ch;
 	int m;
 
 	if ( !createdWindow(sw) )
 	  break;
 
-	NormaliseArea(ox, oy, ow, oh);
-	NormaliseArea(cx, cy, cw, ch);
-	ox += offx; oy += offy;
-	cx += offx; cy += offy;
+	int ix = valInt(x), iy = valInt(y), iw = valInt(w), ih = valInt(h);
+	int ax = valInt(a->x), ay = valInt(a->y),
+            aw = valInt(a->w), ah = valInt(a->h);
+	NormaliseArea(ix, iy, iw, ih);
+	NormaliseArea(ax, ay, aw, ah);
+
+	if ( hasTransformInDeviceChain(gr->device) )
+	{ /* Project both the old (passed-in) and new (current) area
+	   * rects through the ancestor figure->transforms.
+	   */
+	  deviceLocalAreaToWindowAABB(gr->device, ix, iy, iw, ih,
+				      &ox, &oy, &ow, &oh);
+	  deviceLocalAreaToWindowAABB(gr->device, ax, ay, aw, ah,
+				      &cx, &cy, &cw, &ch);
+	} else
+	{ ox = ix + offx; oy = iy + offy; ow = iw; oh = ih;
+	  cx = ax + offx; cy = ay + offy; cw = aw; ch = ah;
+	}
 
 					/* HACKS ... */
 	if ( (m = get_extension_margin_graphical(gr)) )
@@ -552,14 +584,28 @@ changedImageGraphical(Any obj, Int x, Int y, Int w, Int h)
       if ( isDefault(w) ) w = gr->area->w;
       if ( isDefault(h) ) h = gr->area->h;
 
-      cx = valInt(x) + valInt(gr->area->x),
-      cy = valInt(y) + valInt(gr->area->y),
-      cw = valInt(w),
-      ch = valInt(h);
+      if ( !instanceOfObject(obj, ClassWindow) &&
+	   hasTransformInDeviceChain(gr->device) )
+      { /* Map the rect (in gr's local coord) through ancestor
+	 * figure->transforms to a window-coord AABB.
+	 */
+	int ix = valInt(x) + valInt(gr->area->x);
+	int iy = valInt(y) + valInt(gr->area->y);
+	int iw = valInt(w);
+	int ih = valInt(h);
+	NormaliseArea(ix, iy, iw, ih);
+	deviceLocalAreaToWindowAABB(gr->device, ix, iy, iw, ih,
+				    &cx, &cy, &cw, &ch);
+      } else
+      { cx = valInt(x) + valInt(gr->area->x),
+	cy = valInt(y) + valInt(gr->area->y),
+	cw = valInt(w),
+	ch = valInt(h);
 
-      NormaliseArea(cx, cy, cw, ch);
-      cx += ox;
-      cy += oy;
+	NormaliseArea(cx, cy, cw, ch);
+	cx += ox;
+	cy += oy;
+      }
 
       if ( instanceOfObject(gr, ClassText) ||
 	   instanceOfObject(gr, ClassDialogItem) )
@@ -794,14 +840,21 @@ RedrawArea(Any obj, Area area)
 
     rval = RedrawAreaGraphical(sw, area);
   } else
-  { if ( clearbg )
+  { double op = valNum(gr->opacity);
+    bool use_group = (op < 1.0);
+
+    if ( clearbg )
     { int x, y, w, h;
 
       initialiseDeviceGraphical(obj, &x, &y, &w, &h);
       r_clear(x, y, w, h);
     }
 
+    if ( use_group )
+      r_push_group();
     rval = qadSendv(gr, NAME_RedrawArea, 1, (Any *)&area);
+    if ( use_group )
+      r_pop_group_with_alpha(op);
   }
 
   if ( fix )
@@ -1348,14 +1401,28 @@ getPositionGraphical(Graphical gr)
 
 status
 get_absolute_xy_graphical(Graphical gr, Device *dev, Int *X, Int *Y)
-{ int x, y;
-
-  DEBUG(NAME_absolutePosition,
+{ DEBUG(NAME_absolutePosition,
 	Cprintf("get_absolutePosition(%s, %s) ... ", pp(gr), pp(*dev)));
 
   ComputeGraphical(gr);
-  x = valInt(gr->area->x);
-  y = valInt(gr->area->y);
+
+  if ( deviceChainHasTransform(gr) )
+  { /* Map gr's origin (lx=0, ly=0 in gr-local) through ancestor
+     * figure->transforms.
+     */
+    double ox, oy;
+    if ( !graphicalToDeviceCoord(gr, dev, 0.0, 0.0, &ox, &oy) )
+    { DEBUG(NAME_absolutePosition, Cprintf("failed\n"));
+      fail;
+    }
+    *X = toInt((intptr_t)floor(ox + 0.5));
+    *Y = toInt((intptr_t)floor(oy + 0.5));
+    DEBUG(NAME_absolutePosition, Cprintf("X=%s; Y=%s\n", pp(*X), pp(*Y)));
+    succeed;
+  }
+
+  int x = valInt(gr->area->x);
+  int y = valInt(gr->area->y);
 
   while( !instanceOfObject(gr->device, ClassWindow) &&
 	 !isNil(gr->device) &&
@@ -1476,6 +1543,52 @@ getSizeGraphical(Graphical gr)
 { answer(answerObject(ClassSize,
 		      getAreaGraphical(gr)->w,
 		      getAreaGraphical(gr)->h, EAV));
+}
+
+
+/* <-window_point: [point] → point
+ *
+ * Map a point in gr's local coord (relative to gr->area origin) to
+ * window-coord, taking any figure->transform along the device chain
+ * into account.  Defaults to (0,0), which yields the window-coord of
+ * gr's own origin.  Result is rounded to integer.
+ */
+
+static Point
+getWindowPointGraphical(Graphical gr, Point p)
+{ double lx = 0.0, ly = 0.0;
+  double wx, wy;
+
+  if ( notDefault(p) )
+  { lx = (double)valInt(p->x);
+    ly = (double)valInt(p->y);
+  }
+  if ( !graphicalToWindowCoord(gr, lx, ly, &wx, &wy) )
+    fail;
+  answer(answerObject(ClassPoint,
+		      toInt((intptr_t)floor(wx + 0.5)),
+		      toInt((intptr_t)floor(wy + 0.5)), EAV));
+}
+
+
+/* <-graphical_point: point → point
+ *
+ * Inverse of <-window_point: map a window-coord point to gr's local
+ * coord.  Fails if no window ancestor or the composed transform is
+ * singular.  Result is rounded to integer.
+ */
+
+static Point
+getGraphicalPointGraphical(Graphical gr, Point p)
+{ double wx = (double)valInt(p->x);
+  double wy = (double)valInt(p->y);
+  double lx, ly;
+
+  if ( !windowToGraphicalCoord(gr, wx, wy, &lx, &ly) )
+    fail;
+  answer(answerObject(ClassPoint,
+		      toInt((intptr_t)floor(lx + 0.5)),
+		      toInt((intptr_t)floor(ly + 0.5)), EAV));
 }
 
 
@@ -1780,6 +1893,21 @@ status
 penGraphical(Graphical gr, Int pen)
 { if (gr->pen != pen)
   { CHANGING_GRAPHICAL(gr, assign(gr, pen, pen);
+			   changedEntireImageGraphical(gr));
+  }
+
+  succeed;
+}
+
+
+status
+opacityGraphical(Graphical gr, Num o)
+{ double v = valNum(o);
+  if ( v < 0.0 ) v = 0.0;
+  else if ( v > 1.0 ) v = 1.0;
+
+  if ( valNum(gr->opacity) != v )
+  { CHANGING_GRAPHICAL(gr, assign(gr, opacity, toNum(v));
 			   changedEntireImageGraphical(gr));
   }
 
@@ -2776,8 +2904,7 @@ flashGraphical(Graphical gr, Area a, Int time)
 { PceWindow sw = getWindowGraphical(gr);
 
   if ( sw )
-  { int x, y;
-    Int w, h;
+  { int x, y, fw, fh;
     Area a2;
 
     if ( isDefault(time) )
@@ -2785,21 +2912,38 @@ flashGraphical(Graphical gr, Area a, Int time)
     if ( !isInteger(time) )
       time = toInt(250);
 
-    offsetDeviceGraphical(gr, &x, &y);
-    x += valInt(gr->area->x);
-    y += valInt(gr->area->y);
-
+    int lx, ly, lw, lh;
     if ( isDefault(a) )
-    { w = gr->area->w;
-      h = gr->area->h;
+    { lx = 0; ly = 0;
+      lw = valInt(gr->area->w); lh = valInt(gr->area->h);
     } else
-    { x += valInt(a->x);
-      y += valInt(a->y);
-      w = a->w;
-      h = a->h;
+    { lx = valInt(a->x); ly = valInt(a->y);
+      lw = valInt(a->w); lh = valInt(a->h);
     }
 
-    a2 = answerObject(ClassArea, toInt(x), toInt(y), w, h, EAV);
+    if ( deviceChainHasTransform(gr) )
+    { /* Project the flash rect through any ancestor transforms. */
+      Device target = NIL;
+      graphicalToDeviceAreaAABB(gr, &target, lx, ly, lw, lh,
+				&x, &y, &fw, &fh);
+    } else
+    { offsetDeviceGraphical(gr, &x, &y);
+      x += valInt(gr->area->x) + lx;
+      y += valInt(gr->area->y) + ly;
+      fw = lw;
+      fh = lh;
+    }
+
+    if ( (Graphical)sw != gr )
+    { /* Translate from window-local to window-pixel coordinates,
+       * mirroring the Translate(x,y) Cairo applies in d_window().
+       */
+      x += valInt(sw->scroll_offset->x);
+      y += valInt(sw->scroll_offset->y);
+    }
+
+    a2 = answerObject(ClassArea, toInt(x), toInt(y),
+		      toInt(fw), toInt(fh), EAV);
     flashWindow(sw, a2, time);
     doneObject(a2);
   }
@@ -3078,8 +3222,8 @@ static status
 drawArcGraphical(Graphical gr,		/* has to handle mode */
 		 Int x, Int y, Int w, Int h,
 		 Real start, Real end, Any fill)
-{ int s = (isDefault(start) ? 0   : rfloat(valReal(start)));
-  int e = (isDefault(end)   ? 360 : rfloat(valReal(end)));
+{ double s = (isDefault(start) ? 0.0   : valReal(start));
+  double e = (isDefault(end)   ? 360.0 : valReal(end));
 
   if ( isDefault(fill) )
     fill = NIL;
@@ -3283,6 +3427,8 @@ static vardecl var_graphical[] =
      NAME_appearance, "Stipple pattern of drawing pen"),
   SV(NAME_colour, "[colour|pixmap]", IV_GET|IV_STORE, colourGraphical,
      NAME_appearance, "Colour of drawing pen"),
+  SV(NAME_opacity, "num", IV_GET|IV_STORE, opacityGraphical,
+     NAME_appearance, "Opacity 0.0..1.0; 1.0 is opaque"),
   IV(NAME_handles, "chain*", IV_NONE,
      NAME_relation, "Connection points for connections"),
   IV(NAME_connections, "chain*", IV_NONE,
@@ -3502,6 +3648,8 @@ static getdecl get_graphical[] =
      NAME_area, "Get X-position relative to device"),
   GM(NAME_absoluteY, 1, "int", "[device]", getAbsoluteYGraphical,
      NAME_area, "Get Y-position relative to device"),
+  GM(NAME_absoluteArea, 1, "area", "device", getAbsoluteAreaGraphical,
+     NAME_area, "Bounding-box AABB in target device's frame"),
   GM(NAME_area, 0, "area", NULL, getAreaGraphical,
      NAME_area, "->compute and return area slot"),
   GM(NAME_bottomSide, 0, "int", NULL, getBottomSideGraphical,
@@ -3524,6 +3672,10 @@ static getdecl get_graphical[] =
      NAME_area, "Position relative to frame"),
   GM(NAME_displayPosition, 0, "point", NULL, getDisplayPositionGraphical,
      NAME_area, "Position relative to display"),
+  GM(NAME_windowPoint, 1, "point", "[point]", getWindowPointGraphical,
+     NAME_area, "Map a local point to window-coord (transform-aware)"),
+  GM(NAME_graphicalPoint, 1, "point", "point", getGraphicalPointGraphical,
+     NAME_area, "Map a window-coord point to local (inverse of <-window_point)"),
   GM(NAME_height, 0, "int", NULL, getHeightGraphical,
      NAME_area, "Height of graphical"),
   GM(NAME_leftSide, 0, "int", NULL, getLeftSideGraphical,

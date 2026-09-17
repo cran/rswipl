@@ -1,9 +1,9 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
+    E-mail:        jan@swi-prolog.org
     WWW:           http://www.swi-prolog.org
-    Copyright (c)  2007-2025, University of Amsterdam
+    Copyright (c)  2007-2026, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
@@ -110,13 +110,13 @@ supported in SWI-Prolog version 7 and later):
 
   - The *classical* representation is provided by json_read/3 and
     json_write/3.  This represents a JSON object as json(NameValueList),
-    a JSON string as an atom and the JSON constants =null=, =true= and
-    =false= as @(null), @(true) and @false.
+    a JSON string as an atom and the JSON constants `null`, `true` and
+    `false` as @(null), @(true) and @false.
 
   - The *new* representation is provided by json_read_dict/3 and
     json_write_dict/3. This represents a JSON object as a dict, a JSON
     string as a Prolog string and the JSON constants using the Prolog
-    atoms =null=, =true= and =false=.
+    atoms `null`, `true` and `false`.
 
 This module provides the `json` _Quasi Quotation_ syntax that allows for
 embedding JSON documents in Prolog.
@@ -195,10 +195,10 @@ type_term(chars,  Result, chars(Result)).
 %
 %     * A JSON number is mapped to a Prolog number
 %
-%     * The JSON constants =true= and =false= are mapped -like JPL-
+%     * The JSON constants `true` and `false` are mapped -like JPL-
 %       to @(true) and @(false).
 %
-%     * The JSON constant =null= is mapped to the Prolog term
+%     * The JSON constant `null` is mapped to the Prolog term
 %       @(null)
 %
 %   Here is a complete example in  JSON and its corresponding Prolog
@@ -227,11 +227,11 @@ type_term(chars,  Result, chars(Result)).
 %   The following options are processed:
 %
 %     - null(+NullTerm)
-%       Term used to represent JSON =null=.  Default @(null)
+%       Term used to represent JSON `null`.  Default @(null)
 %     - true(+TrueTerm)
-%       Term used to represent JSON =true=.  Default @(true)
+%       Term used to represent JSON `true`.  Default @(true)
 %     - false(+FalseTerm)
-%       Term used to represent JSON =false=.  Default @(false)
+%       Term used to represent JSON `false`.  Default @(false)
 %     - end_of_file(+ErrorOrTerm)
 %       If end of file is reached after skipping white space
 %       but before any input is processed take the following
@@ -544,7 +544,7 @@ stream_error_context(Stream, stream(Stream, Line, LinePos, CharNo)) :-
 %
 %   The version 7 _dict_ type is supported   as well. Optionally, if the
 %   dict has a _tag_, a  property  "type":"tag"   can  be  added  to the
-%   object. This behaviour can be controlled using the =tag= option (see
+%   object. This behaviour can be controlled using the `tag` option (see
 %   below). For example:
 %
 %     ==
@@ -582,7 +582,7 @@ stream_error_context(Stream, stream(Stream, Line, LinePos, CharNo)) :-
 %       is generated with one tab per level.
 %
 %       * serialize_unknown(+Boolean)
-%       If =true= (default =false=), serialize unknown terms and
+%       If `true` (default `false`), serialize unknown terms and
 %       print them as a JSON string.  The default raises a type
 %       error.  Note that this option only makes sense if you can
 %       guarantee that the passed value is not an otherwise valid
@@ -949,7 +949,7 @@ string_len(String, Len0, Len) :-
 %
 %   True if Term is  a  json  term.   Options  are  the  same as for
 %   json_read/2, defining the Prolog  representation   for  the JSON
-%   =true=, =false= and =null= constants.
+%   `true`, `false` and `null` constants.
 
 is_json_term(Term) :-
     default_json_options(Options),
@@ -996,10 +996,10 @@ is_json_pair(Options, Name=Value) :-
 %   representation depends on the options, where the default is:
 %
 %     * String values are mapped to Prolog strings
-%     * JSON =true=, =false= and =null= are represented using these
+%     * JSON `true`, `false` and `null` are represented using these
 %       Prolog atoms.
 %     * JSON objects are mapped to dicts.
-%     * Optionally, a =type= field in an object assigns a tag for
+%     * Optionally, a `type` field in an object assigns a tag for
 %       the dict.
 %
 %   The predicate json_read_dict/3 processes  the   same  options as
@@ -1114,12 +1114,12 @@ make_json_dict_options(Options, Record, RestOptions) :-
 %!  atom_json_dict(-Text, +JSONDict, +Options) is det.
 %
 %   Convert  between  textual  representation  and    a   JSON  term
-%   represented as a dict. Options are as for json_read/3.
+%   represented as a dict. Options are as for json_read_dict/3.
 %   In _write_ mode, the additional option
 %
 %       * as(Type)
-%       defines the output type, which is one of =atom=,
-%       =string= or =codes=.
+%       defines the output type, which is one of `atom`,
+%       `string` or `codes`.
 
 atom_json_dict(Atom, Term, Options) :-
     ground(Atom),

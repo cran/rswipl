@@ -71,6 +71,9 @@
 #ifndef SYSTEM_CACERT_FILENAME
 #define SYSTEM_CACERT_FILENAME "/etc/ssl/certs/ca-certificates.crt"
 #endif
+			/* Value of system_cacert_filename that asks for */
+			/* the macOS keychain rather than a PEM file */
+#define CACERT_KEYCHAIN "keychain"
 
 #define SSL_MAX_CERT_KEY_PAIRS 12
 
@@ -88,18 +91,11 @@ typedef int BOOL;
 #define FALSE 0
 #endif
 
+static atom_t ATOM_warning;
 static atom_t ATOM_server;
 static atom_t ATOM_client;
-static atom_t ATOM_password;
 static atom_t ATOM_host;
 static atom_t ATOM_peer_cert;
-static atom_t ATOM_cacerts;
-static atom_t ATOM_require_crl;
-static atom_t ATOM_crl;
-static atom_t ATOM_certificate_file;
-static atom_t ATOM_certificate_key_pairs;
-static atom_t ATOM_key_file;
-static atom_t ATOM_pem_password_hook;
 static atom_t ATOM_cert_verify_hook;
 static atom_t ATOM_close_parent;
 static atom_t ATOM_close_notify;
@@ -137,6 +133,8 @@ static functor_t FUNCTOR_public_key1;
 static functor_t FUNCTOR_private_key1;
 static functor_t FUNCTOR_rsa8;
 static functor_t FUNCTOR_ec3;
+static functor_t FUNCTOR_ed255191;
+static functor_t FUNCTOR_x255191;
 static functor_t FUNCTOR_key1;
 static functor_t FUNCTOR_hash1;
 static functor_t FUNCTOR_next_update1;
@@ -408,15 +406,6 @@ get_bool_arg(int a, term_t t, int *i)
 
   _PL_get_arg(a, t, t2);
   return PL_get_bool_ex(t2, i);
-}
-
-
-static int
-get_file_arg(int a, term_t t, char **f)
-{ term_t t2 = PL_new_term_ref();
-
-  _PL_get_arg(a, t, t2);
-  return PL_get_file_name(t2, f, PL_FILE_EXIST);
 }
 
 
@@ -767,25 +756,31 @@ unify_ec(term_t item, ECKEY *key)
   int rc;
   term_t privkey, pubkey;
 #ifdef USE_EVP_API
-  BIGNUM* priv_bn;
-  size_t publen;
-  size_t grouplen;
-  unsigned char* group;
-  EVP_PKEY_get_octet_string_param(key, "pub", NULL, 0, &publen);
+  BIGNUM* priv_bn = NULL;
+  size_t publen = 0;
+  char group[80];
+  if ( !EVP_PKEY_get_octet_string_param(key, OSSL_PKEY_PARAM_PUB_KEY,
+					NULL, 0, &publen) )
+    return raise_ssl_error(ERR_get_error());
   buf = OPENSSL_malloc(publen);
-  EVP_PKEY_get_octet_string_param(key, "pub", buf, publen, NULL);
-  EVP_PKEY_get_bn_param(key, "priv", &priv_bn);
-  EVP_PKEY_get_octet_string_param(key, "group", NULL, 0, &grouplen);
-  group = PL_malloc(grouplen);
-  EVP_PKEY_get_octet_string_param(key, "group", group, grouplen, NULL);
-
+  if ( !buf )
+    return raise_ssl_error(ERR_get_error());
+  if ( !EVP_PKEY_get_octet_string_param(key, OSSL_PKEY_PARAM_PUB_KEY,
+					buf, publen, NULL) ||
+       !EVP_PKEY_get_utf8_string_param(key, OSSL_PKEY_PARAM_GROUP_NAME,
+				       group, sizeof(group), NULL) )
+  { OPENSSL_free(buf);
+    return raise_ssl_error(ERR_get_error());
+  }
+  /* "priv" is absent for public-only keys; ignore failure here. */
+  EVP_PKEY_get_bn_param(key, OSSL_PKEY_PARAM_PRIV_KEY, &priv_bn);
 #else
   int publen = i2o_ECPublicKey(key, &buf);
   const BIGNUM* priv_bn = EC_KEY_get0_private_key(key);
   const char* group = OBJ_nid2sn(EC_GROUP_get_curve_name(EC_KEY_get0_group(key)));
-#endif
   if ( publen < 0 )
     return raise_ssl_error(ERR_get_error());
+#endif
 
   rc = ( (pubkey = PL_new_term_ref()) &&
          (privkey = PL_new_term_ref()) &&
@@ -799,11 +794,112 @@ unify_ec(term_t item, ECKEY *key)
 
   OPENSSL_free(buf);
 #ifdef USE_EVP_API
-  PL_free(group);
+  BN_free(priv_bn);
 #endif
   return rc;
 }
 #endif
+
+
+#if defined HAVE_EVP_PKEY_GET_RAW_PRIVATE_KEY && \
+    defined HAVE_EVP_PKEY_GET_RAW_PUBLIC_KEY
+#define HAVE_RAW_KEYS 1
+#endif
+
+#if defined HAVE_RAW_KEYS && defined EVP_PKEY_ED25519
+#define HAVE_ED25519 1
+#endif
+#if defined HAVE_RAW_KEYS && defined EVP_PKEY_X25519
+#define HAVE_X25519 1
+#endif
+
+#ifdef HAVE_RAW_KEYS
+
+#define CURVE25519_KEY_LEN 32
+
+static int
+unify_hex_key(term_t item, functor_t functor,
+	      size_t len, const unsigned char *data)
+{ term_t hex;
+
+  return ( (hex=PL_new_term_ref()) &&
+	   unify_bytes_hex(hex, len, data) &&
+	   PL_unify_term(item, PL_FUNCTOR, functor, PL_TERM, hex) );
+}
+
+
+static int
+unify_raw_public_key(term_t item, EVP_PKEY *key, functor_t functor)
+{ unsigned char public[CURVE25519_KEY_LEN];
+  size_t public_len = sizeof(public);
+
+  if ( !EVP_PKEY_get_raw_public_key(key, public, &public_len) )
+    return raise_ssl_error(ERR_get_error());
+
+  return unify_hex_key(item, functor, public_len, public);
+}
+
+#endif /*HAVE_RAW_KEYS*/
+
+#ifdef HAVE_ED25519
+
+/* An Ed25519 private key is unified as the PKCS#8 v2 (RFC 5958, RFC 8410)
+   key pair that is also created by ed25519_new_keypair/1 of library(crypto)
+   and thus can be used for signing with ed25519_sign/4.
+*/
+
+static int
+unify_ed25519(term_t item, EVP_PKEY *key)
+{ static const unsigned char header[] =
+    { 0x30,81,			/* SEQUENCE of 81 bytes */
+      2,1,1,			/* INTEGER 1: version v2, public key included */
+      0x30,5,			/* privateKeyAlgorithm: SEQUENCE of 5 bytes */
+      6,3,43,101,112,		/* OBJECT IDENTIFIER 1.3.101.112 (Ed25519) */
+      4,34,4,32			/* privateKey: OCTET STRING of OCTET STRING */
+    };
+  unsigned char pair[16+CURVE25519_KEY_LEN+3+CURVE25519_KEY_LEN];
+  unsigned char *seed   = &pair[sizeof(header)];
+  unsigned char *public = &pair[sizeof(header)+CURVE25519_KEY_LEN+3];
+  size_t seed_len = CURVE25519_KEY_LEN, public_len = CURVE25519_KEY_LEN;
+
+  if ( !EVP_PKEY_get_raw_private_key(key, seed, &seed_len) )
+  { ERR_clear_error();			/* we only have the public key */
+    return unify_raw_public_key(item, key, FUNCTOR_ed255191);
+  }
+
+  if ( !EVP_PKEY_get_raw_public_key(key, public, &public_len) )
+    return raise_ssl_error(ERR_get_error());
+
+  memcpy(pair, header, sizeof(header));
+  pair[sizeof(header)+CURVE25519_KEY_LEN+0] = 0x81; /* [1] IMPLICIT BIT STRING */
+  pair[sizeof(header)+CURVE25519_KEY_LEN+1] = 33;   /* of 33 bytes */
+  pair[sizeof(header)+CURVE25519_KEY_LEN+2] = 0;    /* 0 unused bits */
+
+  return unify_hex_key(item, FUNCTOR_ed255191, sizeof(pair), pair);
+}
+
+#endif /*HAVE_ED25519*/
+
+#ifdef HAVE_X25519
+
+/* X25519 keys and points are unified as 32 bytes, the representation used
+   by curve25519_scalar_mult/3 of library(crypto).
+*/
+
+static int
+unify_x25519(term_t item, EVP_PKEY *key)
+{ unsigned char private[CURVE25519_KEY_LEN];
+  size_t private_len = sizeof(private);
+
+  if ( !EVP_PKEY_get_raw_private_key(key, private, &private_len) )
+  { ERR_clear_error();			/* we only have the public key */
+    return unify_raw_public_key(item, key, FUNCTOR_x255191);
+  }
+
+  return unify_hex_key(item, FUNCTOR_x255191, private_len, private);
+}
+
+#endif /*HAVE_X25519*/
 
 
 static int
@@ -848,6 +944,14 @@ unify_key(EVP_PKEY* key, functor_t type, term_t item)
       return rc;
     }
 #endif
+#endif
+#ifdef HAVE_ED25519
+    case EVP_PKEY_ED25519:
+    return unify_ed25519(item, key);
+#endif
+#ifdef HAVE_X25519
+    case EVP_PKEY_X25519:
+    return unify_x25519(item, key);
 #endif
 #ifndef OPENSSL_NO_DH
     case EVP_PKEY_DH:
@@ -1759,11 +1863,22 @@ ssl_inspect_status(PL_SSL_INSTANCE *instance, int ssl_ret, status_role role)
        a handshake. If it will, we should never get these return values.
        If it wont, then we presumably need to simply try again which is
        why I am returning SSL_PL_RETRY
+
+       If the wire stream hit its timeout we must not retry, but report
+       the timeout to Prolog.  S__wait() already flagged the stream with
+       SIO_TIMEOUT|SIO_FERR and Sseterr() propagated this to the SSL
+       stream on top of it, so Prolog raises a timeout_error/2.  As
+       bio_read()/bio_write() told OpenSSL the condition is retryable,
+       the SSL connection remains usable and Prolog may retry.
     */
     case SSL_ERROR_WANT_READ:
+      if ( instance->sread && (instance->sread->flags&SIO_TIMEOUT) )
+	return SSL_PL_ERROR;
       return SSL_PL_RETRY;
 
     case SSL_ERROR_WANT_WRITE:
+      if ( instance->swrite && (instance->swrite->flags&SIO_TIMEOUT) )
+	return SSL_PL_ERROR;
       return SSL_PL_RETRY;
 
 #ifdef SSL_ERROR_WANT_CONNECT
@@ -2438,7 +2553,7 @@ ssl_init(PL_SSL_ROLE role, const SSL_METHOD *ssl_method)
 }
 
 
-#if !defined(__WINDOWS__) && !defined(HAVE_SECURITY_SECURITY_H)
+#if !defined(__WINDOWS__)
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Extract   the   system   certificate   file   from   the   Prolog   flag
 system_cacert_filename
@@ -2452,9 +2567,9 @@ system_cacert_filename(void)
   if ( !cacert_filename )
   { if ( (fid = PL_open_foreign_frame()) )
     { term_t av = PL_new_term_refs(2);
-      PL_put_atom_chars(av+0, "system_cacert_filename");
 
-      if ( PL_call_predicate(NULL, PL_Q_NORMAL,
+      if ( PL_put_atom_chars(av+0, "system_cacert_filename") &&
+           PL_call_predicate(NULL, PL_Q_NORMAL,
                              PL_predicate("current_prolog_flag", 2, "system"),
                              av) )
       { char *s;
@@ -2472,7 +2587,157 @@ system_cacert_filename(void)
 
   return cacert_filename;
 }
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Complain about the system root certificates.  Failing  to load these is
+not an error: we simply end up with an empty  set of trusted certificates
+and every connection fails with a rather  cryptic message from OpenSSL.
+Id identifies the message (see prolog:message//1 in ssl.pl) and Culprit
+is the file we tried to read or `keychain`.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static bool
+ssl_cacerts_warning(const char *id, const char *culprit)
+{ return PL_print_message(ATOM_warning,
+			  PL_FUNCTOR_CHARS, "ssl_cacerts", 2,
+			    PL_CHARS, id,
+			    PL_CHARS, culprit);
+}
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Load PEM encoded certificates from filename  and  add  these  to  the
+system_certs stack.  Returns the number of certificates added or -1 if
+the file cannot be opened.  *ok is set to FALSE on resource errors.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static int
+load_system_cacerts_file(const char *filename,
+                         STACK_OF(X509) *system_certs, bool *ok)
+{ X509 *cert;
+  FILE *cafile;
+  int count = 0;
+
+  if ( !filename || !*filename )
+    return -1;
+  if ( !(cafile=fopen(filename, "rb")) )
+    return -1;
+
+  ssl_deb(1, "cacert_filename = %s\n", filename);
+
+  while( (cert=PEM_read_X509(cafile, NULL, NULL, NULL)) )
+  { if ( sk_X509_push(system_certs, cert) )
+    { count++;
+    } else
+    { X509_free(cert);
+      *ok = PL_resource_error("memory");
+      break;
+    }
+  }
+  ERR_clear_error();		/* the loop ends on PEM_R_NO_START_LINE */
+  fclose(cafile);
+
+  return count;
+}
+
+
+#ifdef HAVE_SECURITY_SECURITY_H
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Load the trust anchors using the macOS  Security framework.  Returns the
+number of certificates added or -1 if the anchors cannot be copied.
+
+Note that SecTrustCopyAnchorCertificates() talks to  securityd and may
+block indefinitely if the keychain cannot be  accessed,  e.g., from an
+ssh session while the login keychain is  locked.   As the call is made
+from a Mach IPC it cannot be interrupted using e.g. call_with_time_limit/2.
+This is why we normally read the PEM  file  and only get here if the user
+asks for it or the PEM file is not available.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static int
+load_system_cacerts_keychain(STACK_OF(X509) *system_certs, bool *ok)
+{ CFArrayRef certs = NULL;
+  CFIndex i, ncerts;
+  int count = 0;
+
+  if ( SecTrustCopyAnchorCertificates(&certs) != errSecSuccess )
+    return -1;
+
+  ssl_deb(1, "loading trust anchors from the keychain\n");
+
+  ncerts = CFArrayGetCount(certs);
+  for(i=0; i<ncerts; i++)
+  { SecCertificateRef cert =
+	 (SecCertificateRef)CFArrayGetValueAtIndex(certs, i);
+    CFDataRef cert_data;
+
+    if ( (cert_data=SecCertificateCopyData(cert)) )
+    { const unsigned char *der = CFDataGetBytePtr(cert_data);
+      X509 *x509 = d2i_X509(NULL, &der, CFDataGetLength(cert_data));
+
+      CFRelease(cert_data);
+      if ( x509 )
+      { if ( sk_X509_push(system_certs, x509) )
+	{ count++;
+	} else
+	{ X509_free(x509);
+	  *ok = PL_resource_error("memory");
+	  break;
+	}
+      } else
+      { ERR_clear_error();
+      }
+    }
+  }
+  CFRelease(certs);
+
+  return count;
+}
+#endif /*HAVE_SECURITY_SECURITY_H*/
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Load the system root certificates as   described  by the Prolog flag
+system_cacert_filename.  This is either the  name  of  a file holding
+PEM encoded certificates or `keychain`  to  use  the macOS keychain.
+If the file cannot be read or holds  no certificates we fall back to
+the keychain if we have one and complain otherwise.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static bool
+load_system_cacerts(STACK_OF(X509) *system_certs)
+{ const char *filename = system_cacert_filename();
+  bool ok = TRUE;
+
+  if ( !filename )
+    filename = SYSTEM_CACERT_FILENAME;
+
+  if ( strcmp(filename, CACERT_KEYCHAIN) == 0 )
+  {
+#ifdef HAVE_SECURITY_SECURITY_H
+    if ( load_system_cacerts_keychain(system_certs, &ok) < 0 && ok )
+      return ssl_cacerts_warning("no_anchors", CACERT_KEYCHAIN);
+    return ok;
+#else
+    return ssl_cacerts_warning("no_keychain", CACERT_KEYCHAIN);
 #endif
+  }
+
+  if ( load_system_cacerts_file(filename, system_certs, &ok) > 0 || !ok )
+    return ok;
+
+#ifdef HAVE_SECURITY_SECURITY_H
+  if ( !ssl_cacerts_warning("keychain_fallback", filename) )
+    return FALSE;
+  if ( load_system_cacerts_keychain(system_certs, &ok) < 0 && ok )
+    return ssl_cacerts_warning("no_anchors", CACERT_KEYCHAIN);
+  return ok;
+#else
+  return ssl_cacerts_warning("no_certificates", filename);
+#endif
+}
+#endif /*!__WINDOWS__*/
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 ssl_system_verify_locations() adds trusted  root   certificates  from OS
@@ -2480,12 +2745,17 @@ dependent locations if cacert_file(system(root_certificates)) is passed.
 
 The code is written after this StackOverflow message
 http://stackoverflow.com/questions/10095676/openssl-reasonable-default-for-trusted-ca-certificates
+
+On macOS we prefer the PEM file  provided  by  the OS (/etc/ssl/cert.pem)
+over SecTrustCopyAnchorCertificates() because the  latter  can block for
+ever in securityd if the keychain is not accessible.  See
+load_system_cacerts_keychain().
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static STACK_OF(X509) *
 ssl_system_verify_locations(void)
 { STACK_OF(X509) *system_certs = sk_X509_new_null();
-  int ok = TRUE;
+  bool ok = TRUE;
 
   if (!system_certs) return NULL;
 
@@ -2501,7 +2771,7 @@ ssl_system_verify_locations(void)
       X509 *cert = d2i_X509(NULL, &ce, (int)pCertCtx->cbCertEncoded);
       if ( cert )
       { if ( !sk_X509_push(system_certs, cert) )
-        { ok = FALSE;
+        { ok = PL_resource_error("memory");
           break;
         }
       }
@@ -2509,60 +2779,15 @@ ssl_system_verify_locations(void)
 
     CertCloseStore(hSystemStore, 0);
   }
-#elif defined(HAVE_SECURITY_SECURITY_H) /* __APPLE__ */
-  CFArrayRef certs = NULL;
-  OSStatus status;
-
-  status = SecTrustCopyAnchorCertificates(&certs);
-  if (status == errSecSuccess)
-  { size_t i, count = CFArrayGetCount(certs);
-
-    for (i = 0; i < count; i++)
-    { const void *cert = CFArrayGetValueAtIndex(certs, i);
-      CFDataRef cert_data = NULL;
-      const unsigned char *der;
-      unsigned long cert_data_length;
-      X509 *x509 = NULL;
-
-      cert_data = SecCertificateCopyData((SecCertificateRef)cert);
-      der = CFDataGetBytePtr(cert_data);
-      cert_data_length = CFDataGetLength(cert_data);
-      x509 = d2i_X509(NULL, &der, cert_data_length);
-      CFRelease(cert_data);
-      if ( x509 )
-      { if ( !sk_X509_push(system_certs, x509) )
-	{ ok = FALSE;
-	  break;
-	}
-      }
-    }
-    CFRelease(certs);
-  }
 #else
-  const char *cacert_filename;
-  if ( (cacert_filename = system_cacert_filename()) )
-  { X509 *cert = NULL;
-    FILE *cafile = fopen(cacert_filename, "rb");
-
-    ssl_deb(1, "cacert_filename = %s\n", cacert_filename);
-
-    if ( cafile != NULL )
-    { while ((cert = PEM_read_X509(cafile, NULL, NULL, NULL)) != NULL)
-      { if ( !sk_X509_push(system_certs, cert) )
-        { ok = FALSE;
-          break;
-        }
-      }
-      fclose(cafile);
-    }
-  }
+  ok = load_system_cacerts(system_certs);
 #endif
 
   if ( ok )
   { return system_certs;
   } else
   { sk_X509_pop_free(system_certs, X509_free);
-    return NULL;                                /* no memory */
+    return NULL;			/* exception pending */
   }
 }
 
@@ -2574,8 +2799,8 @@ system_root_certificates(void)
   pthread_mutex_lock(&root_store_lock);
 #endif
   if ( !system_root_store_fetched )
-  { system_root_store_fetched = TRUE;
-    system_root_store = ssl_system_verify_locations();
+  { if ( (system_root_store=ssl_system_verify_locations()) )
+      system_root_store_fetched = TRUE;	/* else retry; exception pending */
   }
 #ifdef O_PLMT
   pthread_mutex_unlock(&root_store_lock);
@@ -3475,13 +3700,17 @@ static cacert_stack *root_cacert_stack = NULL;
 static int
 add_system_root_certificates(cacert_stack *stack)
 { STACK_OF(X509) *system_certs = system_root_certificates();
+  int index = 0;
 
-  if ( system_certs )
-  { int index = 0;
+  if ( !system_certs )
+    return FALSE;			/* exception pending */
 
-    while( index < sk_X509_num(system_certs) )
-    { sk_X509_push(stack->cacerts,
-		   X509_dup(sk_X509_value(system_certs, index++)));
+  while( index < sk_X509_num(system_certs) )
+  { X509 *cert = X509_dup(sk_X509_value(system_certs, index++));
+
+    if ( !cert || !sk_X509_push(stack->cacerts, cert) )
+    { X509_free(cert);
+      return PL_resource_error("memory");
     }
   }
 
@@ -3590,20 +3819,90 @@ get_cacerts(term_t CATail, cacert_stack **stackp)
 }
 
 
+static int
+get_crls(term_t list, STACK_OF(X509_CRL) **crlp)
+{ STACK_OF(X509_CRL) *crls = sk_X509_CRL_new_null();
+  term_t list_head = PL_new_term_ref();
+  term_t list_tail = PL_copy_term_ref(list);
+
+  while( PL_get_list(list_tail, list_head, list_tail) )
+  { atom_t crl_name;
+    X509_CRL *crl;
+    if (PL_is_atom(list_head) && PL_get_atom(list_head, &crl_name))
+    { FILE *file = fopen(PL_atom_chars(crl_name), "rb");
+      if ( file )
+      { crl = PEM_read_X509_CRL(file, NULL, NULL, NULL);
+        sk_X509_CRL_push(crls, crl);
+      } else
+        return PL_existence_error("file", list_head);
+    }
+  }
+
+  *crlp = crls;
+  return TRUE;
+}
+
+
+static int
+get_cert_key_pairs(term_t list, PL_SSL *conf, term_t options)
+{ term_t cert_head = PL_new_term_ref();
+  term_t cert_tail = PL_copy_term_ref(list);
+
+  while( PL_get_list(cert_tail, cert_head, cert_tail) )
+  { atom_t name;
+    size_t arity;
+    char *certificate, *key;
+    int idx = conf->num_cert_key_pairs;
+
+    if ( idx >= SSL_MAX_CERT_KEY_PAIRS )
+      return PL_domain_error("fewer_certificates", options);
+
+    ssl_deb(4, "loading certificate/key pair with index %d\n", idx);
+
+    if ( !PL_get_name_arity(cert_head, &name, &arity) ||
+         name != ATOM_minus ||
+         arity != 2 )
+      return PL_type_error("pair", cert_head);
+
+    if ( !get_char_arg(1, cert_head, &certificate) )
+      return FALSE;
+    if ( !get_char_arg(2, cert_head, &key) )
+      return FALSE;
+
+    conf->cert_key_pairs[idx].certificate = ssl_strdup(certificate);
+    conf->cert_key_pairs[idx].key         = ssl_strdup(key);
+    conf->num_cert_key_pairs++;
+  }
+
+  return PL_get_nil_ex(cert_tail);
+}
+
+
+static PL_option_t context_options[] =
+{ PL_OPTION("password",		     OPT_STRING),
+  PL_OPTION("require_crl",	     OPT_BOOL),
+  PL_OPTION("crl",		     OPT_TERM),
+  PL_OPTION("certificate_file",	     OPT_TERM),
+  PL_OPTION("cacerts",		     OPT_TERM),
+  PL_OPTION("certificate_key_pairs", OPT_TERM),
+  PL_OPTION("key_file",		     OPT_TERM),
+  PL_OPTION("pem_password_hook",     OPT_TERM),
+  PL_OPTIONS_END
+};
 
 static foreign_t
 pl_ssl_context(term_t role, term_t config, term_t options, term_t method)
 { atom_t a;
   PL_SSL *conf;
   int r;
-  term_t tail;
-  term_t head = PL_new_term_ref();
   module_t module = NULL;
   const SSL_METHOD *ssl_method;
+  char *password = NULL;
+  term_t crl_t = 0, certfile_t = 0, cacerts_t = 0, ckp_t = 0;
+  term_t keyfile_t = 0, pem_hook_t = 0;
 
   if ( !PL_strip_module(options, &module, options) )
     return FALSE;
-  tail = PL_copy_term_ref(options);
 
   if ( !PL_get_atom_ex(role, &a) )
     return FALSE;
@@ -3620,116 +3919,50 @@ pl_ssl_context(term_t role, term_t config, term_t options, term_t method)
   if ( !(conf = ssl_init(r, ssl_method)) )
     return PL_resource_error("memory");
 
-  while( PL_get_list(tail, head, tail) )
-  { atom_t name;
-    size_t arity;
+  if ( !PL_scan_options(options, OPT_UNKNOWN_IGNORE, "ssl_option",
+			context_options,
+			&password, &conf->crl_required, &crl_t, &certfile_t,
+			&cacerts_t, &ckp_t, &keyfile_t, &pem_hook_t) )
+    return FALSE;
 
-    if ( !(PL_get_name_arity(head, &name, &arity) && arity == 1) )
-      return PL_type_error("ssl_option", head);
+  if ( password )
+    set_string(conf, password, password);
+  if ( crl_t )
+  { STACK_OF(X509_CRL) *crls = NULL;
 
-    if ( name == ATOM_password )
-    { char *s;
+    if ( !get_crls(crl_t, &crls) )
+      return FALSE;
+    if ( conf->crl_list )
+      sk_X509_CRL_pop_free(conf->crl_list, X509_CRL_free);
+    conf->crl_list = crls;
+  }
+  if ( certfile_t )
+  { char *file;
 
-      if ( !get_char_arg(1, head, &s) )
-	return FALSE;
+    if ( !PL_get_file_name(certfile_t, &file, PL_FILE_EXIST) )
+      return FALSE;
+    set_string(conf, certificate_file, file);
+  }
+  if ( cacerts_t )
+  { cacert_stack *stack;
 
-      set_string(conf, password, s);
-    } else if ( name == ATOM_require_crl )
-    { int val;
+    if ( !get_cacerts(cacerts_t, &stack) )
+      return FALSE;
+    free_cacert_stack(conf->cacerts);
+    conf->cacerts = stack;
+  }
+  if ( ckp_t && !get_cert_key_pairs(ckp_t, conf, options) )
+    return FALSE;
+  if ( keyfile_t )
+  { char *file;
 
-      if ( !get_bool_arg(1, head, &val) )
-	return FALSE;
-
-      conf->crl_required = val;
-    } else if ( name == ATOM_crl )
-    { STACK_OF(X509_CRL) *crls = sk_X509_CRL_new_null();
-      term_t list_head = PL_new_term_ref();
-      term_t list_tail = PL_new_term_ref();
-
-      _PL_get_arg(1, head, list_tail);
-      while( PL_get_list(list_tail, list_head, list_tail) )
-      { atom_t crl_name;
-        X509_CRL *crl;
-        if (PL_is_atom(list_head) && PL_get_atom(list_head, &crl_name))
-        { FILE *file = fopen(PL_atom_chars(crl_name), "rb");
-          if ( file )
-          { crl = PEM_read_X509_CRL(file, NULL, NULL, NULL);
-            sk_X509_CRL_push(crls, crl);
-          } else
-            return PL_existence_error("file", list_head);
-        }
-      }
-      if (conf->crl_list)
-        sk_X509_CRL_pop_free(conf->crl_list, X509_CRL_free);
-      conf->crl_list = crls;
-    } else if ( name == ATOM_certificate_file )
-    { char *file;
-
-      if ( !get_file_arg(1, head, &file) )
-	return FALSE;
-
-      set_string(conf, certificate_file, file);
-    } else if ( name == ATOM_cacerts )
-    { term_t arg = PL_new_term_ref();
-      cacert_stack *stack;
-
-      _PL_get_arg(1, head, arg);
-      if ( get_cacerts(arg, &stack) )
-      { free_cacert_stack(conf->cacerts);
-	conf->cacerts = stack;
-      } else
-	return FALSE;
-    } else if ( name == ATOM_certificate_file )
-    { char *file;
-
-      if ( !get_file_arg(1, head, &file) )
-	return FALSE;
-
-      set_string(conf, certificate_file, file);
-    } else if ( name == ATOM_certificate_key_pairs )
-    { term_t cert_head = PL_new_term_ref();
-      term_t cert_tail = PL_new_term_ref();
-      _PL_get_arg(1, head, cert_tail);
-      while( PL_get_list(cert_tail, cert_head, cert_tail) )
-      { atom_t name;
-        char *certificate, *key;
-        int idx = conf->num_cert_key_pairs;
-
-        if ( idx >= SSL_MAX_CERT_KEY_PAIRS )
-          return PL_domain_error("fewer_certificates", options);
-
-        ssl_deb(4, "loading certificate/key pair with index %d\n", idx);
-
-        if ( !PL_get_name_arity(cert_head, &name, &arity) ||
-             name != ATOM_minus ||
-             arity != 2 )
-          return PL_type_error("pair", cert_head);
-
-        if ( !get_char_arg(1, cert_head, &certificate) )
-          return FALSE;
-        if ( !get_char_arg(2, cert_head, &key) )
-          return FALSE;
-
-        conf->cert_key_pairs[idx].certificate = ssl_strdup(certificate);
-        conf->cert_key_pairs[idx].key         = ssl_strdup(key);
-        conf->num_cert_key_pairs++;
-      }
-      if ( !PL_get_nil_ex(cert_tail) )
-        return FALSE;
-    } else if ( name == ATOM_key_file )
-    { char *file;
-
-      if ( !get_file_arg(1, head, &file) )
-	return FALSE;
-
-      set_string(conf, key_file, file);
-    } else if ( name == ATOM_pem_password_hook )
-    { term_t cb = PL_new_term_ref();
-      _PL_get_arg(1, head, cb);
-      conf->cb_pem_passwd.goal   = PL_record(cb);
-      conf->cb_pem_passwd.module = module;
-    } else
-      continue;
+    if ( !PL_get_file_name(keyfile_t, &file, PL_FILE_EXIST) )
+      return FALSE;
+    set_string(conf, key_file, file);
+  }
+  if ( pem_hook_t )
+  { conf->cb_pem_passwd.goal   = PL_record(pem_hook_t);
+    conf->cb_pem_passwd.module = module;
   }
 
   if ( !parse_malleable_options(conf, module, options) )
@@ -4020,7 +4253,7 @@ pl_system_root_certificates(term_t list)
   int index = 0;
 
   if ( !(certs=system_root_certificates()) )
-    return PL_unify_nil(list);
+    return FALSE;			/* exception pending */
 
   while (index < sk_X509_num(certs))
   { if ( !(PL_unify_list(tail, head, tail) &&
@@ -4241,16 +4474,12 @@ err:
 
 install_t
 install_ssl4pl(void)
-{ MKATOM(server);
+{ PL_register_blob_type(&certificate_type);
+  PL_register_blob_type(&ssl_context_type);
+  MKATOM(server);
   MKATOM(client);
-  MKATOM(password);
   MKATOM(host);
   MKATOM(peer_cert);
-  MKATOM(cacerts);
-  MKATOM(certificate_file);
-  MKATOM(certificate_key_pairs);
-  MKATOM(key_file);
-  MKATOM(pem_password_hook);
   MKATOM(cert_verify_hook);
   MKATOM(close_parent);
   MKATOM(close_notify);
@@ -4268,10 +4497,9 @@ install_ssl4pl(void)
   MKATOM(tlsv1_1);
   MKATOM(tlsv1_2);
   MKATOM(tlsv1_3);
-  MKATOM(require_crl);
-  MKATOM(crl);
   MKATOM(alpn_protocols);
   MKATOM(alpn_protocol_hook);
+  MKATOM(warning);
 
   ATOM_minus                = PL_new_atom("-");
 
@@ -4289,6 +4517,8 @@ install_ssl4pl(void)
   FUNCTOR_private_key1      = PL_new_functor(PL_new_atom("private_key"), 1);
   FUNCTOR_rsa8              = PL_new_functor(PL_new_atom("rsa"), 8);
   FUNCTOR_ec3               = PL_new_functor(PL_new_atom("ec"), 3);
+  FUNCTOR_ed255191          = PL_new_functor(PL_new_atom("ed25519"), 1);
+  FUNCTOR_x255191           = PL_new_functor(PL_new_atom("x25519"), 1);
   FUNCTOR_hash1             = PL_new_functor(PL_new_atom("hash"), 1);
   FUNCTOR_next_update1      = PL_new_functor(PL_new_atom("next_update"), 1);
   FUNCTOR_signature1        = PL_new_functor(PL_new_atom("signature"), 1);

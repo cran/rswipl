@@ -36,6 +36,20 @@ specification.  See:
 
     Normally invoked through the Prolog predicate checkpce/0.
 
+    Each reported inconsistency is followed by the path from the checked
+    object to the object that holds the illegal value.  Each step of this
+    path is printed as the object followed by the slot we descend in.  The
+    slot is printed as `<-name` for an instance variable, as `[index]` for
+    an element of a chain or vector and as `{key}` for a key of a hash
+    table.  For example:
+
+	[PCE warning: <pce>(0x327ad700,vector): Freed object in element 2: ...]
+		Path from checked object:
+		  @pce/pce <-all_attributes
+		  <pce>(0x327ad6c0,chain)[1]
+		  <pce>(0x327a5080,attribute) <-value
+		  <pce>(0x327ad700,vector)[2]
+
     **Diagnostics**: See related error objects
 
     @see !freed_value_value
@@ -902,16 +916,16 @@ specification.  See:
 	   get(@p, send_method, mirror, tuple(Object, Impl)).
 
 	Object = @p/point
-	Impl = @632241/send_method
+	Impl = <pce>(0x7f9c3a41b0,send_method)
 
 	?- new(@v, view),
 	   get(@v, send_method, append, tuple(Object, Impl)).
 
-	Object = @833889/editor
-	Impl = @749374/send_method
+	Object = <pce>(0x7f9c3a5d20,editor)
+	Impl = <pce>(0x7f9c3a6c40,send_method)
 
     The second example indicates that, when a message ->append is sent to
-    @v it will be delegated to the editor @833889.
+    @v it will be delegated to the editor bound to Object.
 
     See also ->has_get_method, ->has_send_method and <-all_send_methods.
 

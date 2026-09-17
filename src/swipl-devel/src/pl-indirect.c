@@ -166,7 +166,7 @@ destroy_indirect_table(indirect_table *tab)
 
 
 word
-intern_indirect(DECL_LD indirect_table *tab, word val, int create)
+intern_indirect(DECL_LD indirect_table *tab, word val, bool create)
 { Word	 idata     = addressIndirect(val);	/* points at header */
   size_t isize     = wsizeofInd(*idata);	/* include header */
   unsigned int key = MurmurHashAligned2(idata+1, isize*sizeof(word), MURMUR_SEED);
@@ -378,14 +378,8 @@ extern_indirect(DECL_LD indirect_table *tab, word val, Word *gp)
   size_t wsize = wsizeofInd(h->header);
   Word p, r;
 
-  if ( !hasGlobalSpace(wsize+2) )
-  { int rc;
-
-    if ( (rc=ensureGlobalSpace(wsize+2, ALLOW_GC)) != true )
-    { raiseStackOverflow(rc);
-      return 0;
-    }
-  }
+  if ( !ensureGlobalSpace(wsize+2, ALLOW_GC) )
+    return 0;
 
   if ( gp )
     r = p = *gp;

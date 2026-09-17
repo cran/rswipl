@@ -39,6 +39,13 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 #define SWIPL_WINDOWS_NATIVE_ACCESS 1
 
+#ifdef _WIN32				/* STARTUPINFOEXW, see */
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600 /* do_create_process() */
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+#endif
+
 /*#define O_DEBUG 1*/
 #undef O_DEBUG
 #define _GNU_SOURCE			/* get pipe2() */
@@ -84,15 +91,7 @@ static atom_t ATOM_stdout;
 static atom_t ATOM_stderr;
 static atom_t ATOM_std;
 static atom_t ATOM_null;
-static atom_t ATOM_process;
-static atom_t ATOM_detached;
-static atom_t ATOM_cwd;
-static atom_t ATOM_env;
-static atom_t ATOM_environment;
-static atom_t ATOM_priority;
-static atom_t ATOM_window;
 static atom_t ATOM_timeout;
-static atom_t ATOM_release;
 static atom_t ATOM_infinite;
 static atom_t ATOM_text;
 static atom_t ATOM_binary;
@@ -207,6 +206,19 @@ typedef struct wait_options
   int	 has_timeout;
   int	 release;
 } wait_options;
+
+
+/* True when we start the process and never look at it again: detached(true)
+   without process(PID) and without pipes.  In this case process_create/3
+   returns as soon as the process is started.  On POSIX systems we fork
+   twice, such that the process is inherited by init and we do not have to
+   reclaim it.  On Windows we simply close the handles.
+*/
+
+static int
+fire_and_forget(const p_options *info)
+{ return info->detached && info->pid == 0 && info->pipes == 0;
+}
 
 
 typedef enum create_method
@@ -522,71 +534,66 @@ get_stream(term_t t, p_options *info, p_stream *stream, atom_t name)
 }
 
 
+static PL_option_t process_options[] =
+{ PL_OPTION("stdin",	   OPT_TERM),
+  PL_OPTION("stdout",	   OPT_TERM),
+  PL_OPTION("stderr",	   OPT_TERM),
+  PL_OPTION("process",	   OPT_TERM),
+  PL_OPTION("detached",	   OPT_BOOL),
+  PL_OPTION("cwd",	   OPT_TERM),
+  PL_OPTION("window",	   OPT_BOOL),
+  PL_OPTION("env",	   OPT_TERM),
+  PL_OPTION("environment", OPT_TERM),
+  PL_OPTION("priority",	   OPT_INT),
+  PL_OPTIONS_END
+};
+
 static int
 parse_options(term_t options, p_options *info)
-{ term_t tail = PL_copy_term_ref(options);
-  term_t head = PL_new_term_ref();
-  term_t arg = PL_new_term_ref();
+{ term_t stdin_t = 0, stdout_t = 0, stderr_t = 0, process_t = 0;
+  term_t cwd_t = 0, env_t = 0, environment_t = 0;
 
   info->window = MAYBE;
 
-  while(PL_get_list(tail, head, tail))
-  { atom_t name;
-    size_t arity;
-
-    if ( !PL_get_name_arity(head, &name, &arity) || arity != 1 )
-      return PL_type_error("option", head);
-    _PL_get_arg(1, head, arg);
-
-    if ( name == ATOM_stdin )
-    { if ( !get_stream(arg, info, &info->streams[0], name) )
-	return FALSE;
-    } else if ( name == ATOM_stdout )
-    { if ( !get_stream(arg, info, &info->streams[1], name) )
-	return FALSE;
-    } else if ( name == ATOM_stderr )
-    { if ( !get_stream(arg, info, &info->streams[2], name) )
-	return FALSE;
-    } else if ( name == ATOM_process )
-    { info->pid = PL_copy_term_ref(arg);
-    } else if ( name == ATOM_detached )
-    { if ( !PL_get_bool_ex(arg, &info->detached) )
-	return FALSE;
-    } else if ( name == ATOM_cwd )
-    {
-#ifdef __WINDOWS__
-      if ( !PL_get_wchars(arg, NULL, &info->cwd,
-			 CVT_ATOM|CVT_STRING|CVT_EXCEPTION|BUF_MALLOC) )
-	return FALSE;
-#else
-      if ( !PL_get_chars(arg, &info->cwd,
-			 CVT_ATOM|CVT_STRING|CVT_EXCEPTION|BUF_MALLOC|REP_FN) )
-	return FALSE;
-#endif
-    } else if ( name == ATOM_window )
-    { if ( !PL_get_bool_ex(arg, &info->window) )
-	return FALSE;
-    } else if ( name == ATOM_env )
-    { if ( !parse_environment(arg, info, FALSE) )
-	return FALSE;
-    } else if ( name == ATOM_environment )
-    { if ( !parse_environment(arg, info, TRUE) )
-	return FALSE;
-    } else if ( name == ATOM_priority )
-    { int tmp;
-
-      if ( !PL_get_integer_ex(arg, &tmp) )
-	return FALSE;
-      if ( tmp < -20 || tmp > 19 )
-	return PL_domain_error("priority_option", arg);
-
-      info->priority = tmp;
-    } else
-      return PL_domain_error("process_option", head);
-  }
-
-  if ( !PL_get_nil_ex(tail) )
+  if ( !PL_scan_options(options, OPT_UNKNOWN_ERROR, "process_option",
+			process_options,
+			&stdin_t, &stdout_t, &stderr_t, &process_t,
+			&info->detached, &cwd_t, &info->window, &env_t,
+			&environment_t, &info->priority) )
     return FALSE;
+
+  if ( stdin_t && !get_stream(stdin_t, info, &info->streams[0], ATOM_stdin) )
+    return FALSE;
+  if ( stdout_t && !get_stream(stdout_t, info, &info->streams[1], ATOM_stdout) )
+    return FALSE;
+  if ( stderr_t && !get_stream(stderr_t, info, &info->streams[2], ATOM_stderr) )
+    return FALSE;
+  if ( process_t )
+    info->pid = PL_copy_term_ref(process_t);
+  if ( cwd_t )
+  {
+#ifdef __WINDOWS__
+    if ( !PL_get_wchars(cwd_t, NULL, &info->cwd,
+		       CVT_ATOM|CVT_STRING|CVT_EXCEPTION|BUF_MALLOC) )
+      return FALSE;
+#else
+    if ( !PL_get_chars(cwd_t, &info->cwd,
+		       CVT_ATOM|CVT_STRING|CVT_EXCEPTION|BUF_MALLOC|REP_FN) )
+      return FALSE;
+#endif
+  }
+  if ( env_t && !parse_environment(env_t, info, FALSE) )
+    return FALSE;
+  if ( environment_t && !parse_environment(environment_t, info, TRUE) )
+    return FALSE;
+  if ( info->priority != 255 &&
+       (info->priority < -20 || info->priority > 19) )
+  { term_t t;
+
+    return ( (t=PL_new_term_ref()) &&
+	     PL_put_integer(t, info->priority) &&
+	     PL_domain_error("priority_option", t) );
+  }
 
   return TRUE;
 }
@@ -685,6 +692,7 @@ typedef struct process_context
 { int	magic;				/* PROCESS_MAGIC */
 #ifdef __WINDOWS__
   HANDLE handle;			/* process handle */
+  IOSTREAM *console;			/* terminal whose console it holds */
 #else
   pid_t	pid;				/* the process id */
 #endif
@@ -966,6 +974,7 @@ typedef struct win_process
 { DWORD pid;
   HANDLE handle;
   HANDLE job;
+  IOSTREAM *console;			/* terminal whose console it holds */
   struct win_process *next;
 } win_process;
 
@@ -973,12 +982,13 @@ typedef struct win_process
 static win_process *processes;
 
 static void
-register_process(DWORD pid, HANDLE h, HANDLE job)
+register_process(DWORD pid, HANDLE h, HANDLE job, IOSTREAM *console)
 { win_process *wp = PL_malloc(sizeof(*wp));
 
   wp->pid = pid;
   wp->handle = h;
   wp->job = job;
+  wp->console = console;
   LOCK();
   wp->next = processes;
   processes = wp;
@@ -993,9 +1003,13 @@ unregister_process(DWORD pid)
   LOCK();
   for(wpp=&processes, wp=*wpp; wp; wpp=&wp->next, wp=*wpp)
   { if ( wp->pid == pid )
-    { *wpp = wp->next;
+    { IOSTREAM *console = wp->console;
+
+      *wpp = wp->next;
       PL_free(wp);
       UNLOCK();
+      if ( console )			/* the terminal takes it back */
+	Swinrelease_pseudoconsole(console);
       return TRUE;
     }
   }
@@ -1158,6 +1172,8 @@ static int
 wait_for_process(process_context *pc)
 { int rc = win_wait_success(pc->exe_name, pc->handle);
 
+  if ( pc->console )			/* the terminal takes it back */
+    Swinrelease_pseudoconsole(pc->console);
   PL_unregister_atom(pc->exe_name);
   PL_free(pc);
 
@@ -1238,22 +1254,88 @@ console_app(void)
 }
 
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Where the child gets its terminal from.
+
+An Epilog window has no console: it talks to its Prolog thread over two
+pipes, and a child handed those gets no terminal -- nothing echoes what it
+reads, it sees no window size and ^C does not reach it.  A pager therefore
+sat waiting for a key from a console nobody types on.  So put the child on
+the window's own pseudo console, as System() in src/pl-nt.c does for
+shell/1 and terminal_image->launch does for the process it starts.
+
+Only for the streams the caller left alone.  A child that is fully
+redirected has no business on the terminal, and holding the console is
+what tells the window that its keys are the child's rather than its own.
+Nor for a detached child, which outlives the goal that started it, or one
+the caller asked to give a window of its own.
+
+The console is claimed here and handed back when the child is reaped:
+below for a child we wait for, in wait_for_process() for one whose pipes
+we hold, and in unregister_process() for one with a process(PID).
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static int
+on_terminal(p_options *info)
+{ int i;
+
+  if ( info->detached || info->window == TRUE )
+    return FALSE;
+
+  for(i=0; i<3; i++)
+  { if ( info->streams[i].type == std_std )
+      return TRUE;
+  }
+
+  return FALSE;
+}
+
+
 static int
 do_create_process(p_options *info)
 { int flags = 0;
   PROCESS_INFORMATION pi;
-  STARTUPINFOW si;
+  STARTUPINFOEXW siEx;
+  STARTUPINFOW *si = &siEx.StartupInfo;
+  IOSTREAM *console = NULL;		/* terminal we hold the console of */
+  void *attrs = NULL;
+  int redirected = 0;			/* streams that are not the terminal */
 
-  switch(info->window)
-  { case MAYBE:
-      if ( !console_app() )
+  memset(&siEx, 0, sizeof(siEx));
+  si->cb = sizeof(*si);
+
+  if ( on_terminal(info) )
+  { HANDLE hpc;
+
+    if ( (hpc=Swinpseudoconsole(Suser_input)) )
+    { if ( (attrs=Swinpseudoconsole_attributes(hpc)) )
+      { console	           = Suser_input;
+	siEx.lpAttributeList = attrs;
+	si->cb		     = sizeof(siEx);
+	/* Only EXTENDED_STARTUPINFO_PRESENT: CREATE_NO_WINDOW asks for a
+	 * console of the child's own, which is the opposite of what the
+	 * attribute says and wins.
+	 */
+	flags		     = EXTENDED_STARTUPINFO_PRESENT;
+	Sflush(Suser_output);		/* or it lands after the child's */
+	Sflush(Suser_error);
+      } else
+	Swinrelease_pseudoconsole(Suser_input);
+    }
+  }
+
+  if ( !console )
+  { switch(info->window)
+    { case MAYBE:
+	if ( !console_app() )
+	  flags |= CREATE_NO_WINDOW;
+	break;
+      case TRUE:
+	break;
+      case FALSE:
 	flags |= CREATE_NO_WINDOW;
-      break;
-    case TRUE:
-      break;
-    case FALSE:
-      flags |= CREATE_NO_WINDOW;
-      break;
+	break;
+    }
   }
 
   if ( info->detached )
@@ -1261,67 +1343,83 @@ do_create_process(p_options *info)
   if ( info->envbuf.buffer )
     flags |= CREATE_UNICODE_ENVIRONMENT;
 
-  memset(&si, 0, sizeof(si));
-  si.cb = sizeof(si);
-  si.dwFlags = STARTF_USESTDHANDLES;
+  si->dwFlags = STARTF_USESTDHANDLES;
 
 				      /* stdin */
   switch( info->streams[0].type )
   { case std_stream:
-      si.hStdInput = info->streams[0].fd[0];
-      SetHandleInformation(si.hStdInput,
+      si->hStdInput = info->streams[0].fd[0];
+      SetHandleInformation(si->hStdInput,
 			   HANDLE_FLAG_INHERIT, TRUE);
+      redirected++;
       break;
     case std_pipe:
-      si.hStdInput = info->streams[0].fd[0];
+      si->hStdInput = info->streams[0].fd[0];
       SetHandleInformation(info->streams[0].fd[1],
 			   HANDLE_FLAG_INHERIT, FALSE);
+      redirected++;
       break;
     case std_null:
-      si.hStdInput = open_null_stream(GENERIC_READ);
+      si->hStdInput = open_null_stream(GENERIC_READ);
+      redirected++;
       break;
     case std_std:
-      si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+      /* NULL leaves it to the pseudo console, which is the one thing
+       * STARTF_USESTDHANDLES and a console attribute agree on.
+       */
+      si->hStdInput = console ? NULL : GetStdHandle(STD_INPUT_HANDLE);
       break;
   }
 				      /* stdout */
   switch( info->streams[1].type )
   { case std_stream:
-      si.hStdOutput = info->streams[1].fd[1];
-      SetHandleInformation(si.hStdOutput,
+      si->hStdOutput = info->streams[1].fd[1];
+      SetHandleInformation(si->hStdOutput,
 			   HANDLE_FLAG_INHERIT, TRUE);
+      redirected++;
       break;
     case std_pipe:
-      si.hStdOutput = info->streams[1].fd[1];
+      si->hStdOutput = info->streams[1].fd[1];
       SetHandleInformation(info->streams[1].fd[0],
 			   HANDLE_FLAG_INHERIT, FALSE);
+      redirected++;
       break;
     case std_null:
-      si.hStdOutput = open_null_stream(GENERIC_WRITE);
+      si->hStdOutput = open_null_stream(GENERIC_WRITE);
+      redirected++;
       break;
     case std_std:
-      si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+      si->hStdOutput = console ? NULL : GetStdHandle(STD_OUTPUT_HANDLE);
       break;
   }
 				      /* stderr */
   switch( info->streams[2].type )
   { case std_stream:
-      si.hStdError = info->streams[2].fd[1];
-      SetHandleInformation(si.hStdError,
+      si->hStdError = info->streams[2].fd[1];
+      SetHandleInformation(si->hStdError,
 			   HANDLE_FLAG_INHERIT, TRUE);
+      redirected++;
       break;
     case std_pipe:
-      si.hStdError = info->streams[2].fd[1];
+      si->hStdError = info->streams[2].fd[1];
       SetHandleInformation(info->streams[2].fd[0],
                            HANDLE_FLAG_INHERIT, FALSE);
+      redirected++;
       break;
     case std_null:
-      si.hStdError = open_null_stream(GENERIC_WRITE);
+      si->hStdError = open_null_stream(GENERIC_WRITE);
+      redirected++;
       break;
     case std_std:
-      si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+      si->hStdError = console ? NULL : GetStdHandle(STD_ERROR_HANDLE);
       break;
   }
+
+  /* Nothing to hand over: let the console hand the child all three, which
+   * is the path shell/1 takes and the only one the ConPTY samples show.
+   */
+  if ( console && !redirected )
+    si->dwFlags &= ~STARTF_USESTDHANDLES;
 
   if ( CreateProcessW(info->exe,
 		      info->cmdline,
@@ -1331,9 +1429,11 @@ do_create_process(p_options *info)
 		      flags,		/* Creation flags */
 		      info->envbuf.buffer, /* Environment */
 		      info->cwd,	/* Directory */
-		      &si,		/* Startup info */
+		      si,		/* Startup info */
 		      &pi) )		/* Process information */
   { int rc = TRUE;
+
+    Swinfree_pseudoconsole_attributes(attrs);
     HANDLE hJob = (HANDLE)0;
     if ( !info->detached )
     {
@@ -1350,6 +1450,7 @@ do_create_process(p_options *info)
       memset(pc, 0, sizeof(*pc));
       pc->magic    = PROCESS_MAGIC;
       pc->handle   = pi.hProcess;
+      pc->console  = console;		/* handed back in wait_for_process() */
       pc->exe_name = info->exe_name;
       PL_register_atom(pc->exe_name);
 
@@ -1416,13 +1517,32 @@ do_create_process(p_options *info)
     { AssignProcessToJobObject(rootJob, pi.hProcess);
     }
     if ( info->pid )
-    { register_process(pi.dwProcessId, pi.hProcess, hJob);
+    { /* handed back in unregister_process(), i.e. from process_wait/2 */
+      register_process(pi.dwProcessId, pi.hProcess, hJob, console);
       return PL_unify_integer(info->pid, pi.dwProcessId);
     }
 
-    return win_wait_success(info->exe_name, pi.hProcess);
+    if ( fire_and_forget(info) )	/* let the process go its own way */
+    { CloseHandle(pi.hProcess);
+      if ( hJob )
+	CloseHandle(hJob);
+      if ( console )
+	Swinrelease_pseudoconsole(console);
+
+      return TRUE;
+    }
+
+    rc = win_wait_success(info->exe_name, pi.hProcess);
+    if ( console )
+      Swinrelease_pseudoconsole(console);
+
+    return rc;
   } else
-  { return win_error("CreateProcess");
+  { Swinfree_pseudoconsole_attributes(attrs);
+    if ( console )
+      Swinrelease_pseudoconsole(console);
+
+    return win_error("CreateProcess");
   }
 }
 
@@ -1802,6 +1922,78 @@ restoreSignals(sigset_t *old)
 #define vfork fork
 #endif
 
+		 /*******************************
+		 *      CONTROLLING TERMINAL	*
+		 *******************************/
+
+/* A thread need not run on the terminal the process was started from:
+ * an Epilog window gives its Prolog thread a pty of its own, and
+ * process_create/3 hands that pty to the child.  Inheriting the fd is
+ * not enough there.  With no session owning that pty it has no
+ * foreground process group, so resizing the window raises no SIGWINCH
+ * in the child and ^C sends it no SIGINT.
+ *
+ * The child therefore calls setsid() and TIOCSCTTY when the terminal
+ * it is handed belongs to another session.  An ordinary
+ * process_create/3 is unaffected: there the terminal already is this
+ * session's controlling terminal.  Mirrors adopt_ctty() in
+ * src/os/pl-os.c, which does the same for shell/1.
+ */
+
+#include <termios.h>			/* tcgetsid() */
+#ifdef HAVE_SYS_IOCTL_H
+#include <sys/ioctl.h>			/* TIOCSCTTY */
+#endif
+
+#if defined(HAVE_SETSID) && defined(HAVE_TCGETSID) && defined(TIOCSCTTY)
+#define O_ADOPT_CTTY 1
+
+/* Called in the child, after the dup2()s and before the exec. */
+
+static void
+adopt_ctty(void)
+{ if ( isatty(0) && tcgetsid(0) != getsid(0) )
+  { if ( setsid() != -1 )
+      ioctl(0, TIOCSCTTY, 0);
+  }
+}
+#endif
+
+#if defined(O_ADOPT_CTTY) && defined(HAVE_POSIX_SPAWN)
+
+/* The fd that becomes the child's stdin, or -1 if it has none. */
+
+static int
+child_stdin_fd(p_options *info)
+{ switch( info->streams[0].type )
+  { case std_pipe:
+    case std_stream:
+      return info->streams[0].fd[0];
+    case std_std:
+      return Sfileno(Suser_input);
+    default:
+      return -1;
+  }
+}
+
+/* Must the child adopt its terminal?  Asked in the parent, because
+ * posix_spawn() has no hook to do so and we must fork() instead.
+ */
+
+static int
+needs_ctty(p_options *info)
+{ int fd;
+
+  return ( !info->detached &&
+	   (fd=child_stdin_fd(info)) >= 0 &&
+	   isatty(fd) &&
+	   tcgetsid(fd) != getsid(0) );
+}
+
+#else
+#define needs_ctty(info) 0
+#endif
+
 static int
 do_create_process_fork(p_options *info, create_method method)
 { int pid;
@@ -1822,7 +2014,15 @@ do_create_process_fork(p_options *info, create_method method)
   if ( pid == 0 )				/* child */
   { int fd;
 
+    restoreSignals(&set);
     PL_cleanup_fork();
+
+    if ( fire_and_forget(info) )
+    { pid_t p2 = fork();			/* fork again and die, such */
+						/* that init inherits p2 */
+      if ( p2 != 0 )
+	_exit(p2 > 0 ? 0 : 1);
+    }
 
 #if defined(HAVE_SYS_RESOURCE_H) && defined(PRIO_PROCESS)
     if ( info->priority != 255 )
@@ -1912,6 +2112,11 @@ do_create_process_fork(p_options *info, create_method method)
       }
     }
 
+#ifdef O_ADOPT_CTTY
+    if ( !info->detached )
+      adopt_ctty();
+#endif
+
     if ( info->envp )
     { execve(info->exe, info->argv, info->envp);
     } else
@@ -1947,7 +2152,9 @@ do_create_process(p_options *info)
   posix_spawnattr_t attr;
   int rc;
 
-  if ( info->cwd || create_process_method != PCREATE_SPAWN )
+  if ( fire_and_forget(info) )		/* needs the double fork */
+    return do_create_process_fork(info, PCREATE_FORK);
+  if ( info->cwd || needs_ctty(info) || create_process_method != PCREATE_SPAWN )
     return do_create_process_fork(info, create_process_method);
 
   posix_spawn_file_actions_init(&file_actions);
@@ -2022,7 +2229,10 @@ do_create_process(p_options *info)
 
 static int
 do_create_process(p_options *info)
-{ return do_create_process_fork(info, create_process_method);
+{ if ( fire_and_forget(info) )		/* needs the double fork */
+    return do_create_process_fork(info, PCREATE_FORK);
+
+  return do_create_process_fork(info, create_process_method);
 }
 
 #endif /*HAVE_POSIX_SPAWN*/
@@ -2116,43 +2326,40 @@ get_pid(term_t pid, pid_t *p)
 }
 
 
+static PL_option_t process_wait_options[] =
+{ PL_OPTION("timeout", OPT_TERM),
+  PL_OPTION("release", OPT_TERM),
+  PL_OPTIONS_END
+};
+
 static foreign_t
 process_wait(term_t pid, term_t code, term_t options)
 { pid_t p;
   wait_options opts;
-  term_t tail = PL_copy_term_ref(options);
-  term_t head = PL_new_term_ref();
-  term_t arg  = PL_new_term_ref();
+  term_t timeout = 0, release = 0;
 
   if ( !get_pid(pid, &p) )
     return FALSE;
 
   memset(&opts, 0, sizeof(opts));
-  while(PL_get_list(tail, head, tail))
-  { atom_t name;
-    size_t arity;
-
-    if ( !PL_get_name_arity(head, &name, &arity) || arity != 1 )
-      return PL_type_error("option", head);
-    _PL_get_arg(1, head, arg);
-    if ( name == ATOM_timeout )
-    { atom_t a;
-
-      if ( !(PL_get_atom(arg, &a) && a == ATOM_infinite) )
-      { if ( !PL_get_float(arg, &opts.timeout) )
-	  return PL_type_error("timeout", arg);
-	opts.has_timeout = TRUE;
-      }
-    } else if ( name == ATOM_release )
-    { if ( !PL_get_bool_ex(arg, &opts.release) )
-	return FALSE;
-      if ( opts.release == FALSE )
-	return PL_domain_error("true", arg);
-    } else
-      return PL_domain_error("process_wait_option", head);
-  }
-  if ( !PL_get_nil_ex(tail) )
+  if ( !PL_scan_options(options, OPT_UNKNOWN_ERROR, "process_wait_option",
+			process_wait_options, &timeout, &release) )
     return FALSE;
+  if ( timeout )
+  { atom_t a;
+
+    if ( !(PL_get_atom(timeout, &a) && a == ATOM_infinite) )
+    { if ( !PL_get_float(timeout, &opts.timeout) )
+	return PL_type_error("timeout", timeout);
+      opts.has_timeout = TRUE;
+    }
+  }
+  if ( release )
+  { if ( !PL_get_bool_ex(release, &opts.release) )
+      return FALSE;
+    if ( opts.release == FALSE )
+      return PL_domain_error("true", release);
+  }
 
   return wait_for_pid(p, code, &opts);
 }
@@ -2271,15 +2478,7 @@ install_process()
   MKATOM(stderr);
   MKATOM(std);
   MKATOM(null);
-  MKATOM(process);
-  MKATOM(detached);
-  MKATOM(cwd);
-  MKATOM(env);
-  MKATOM(environment);
-  MKATOM(priority);
-  MKATOM(window);
   MKATOM(timeout);
-  MKATOM(release);
   MKATOM(infinite);
   MKATOM(text);
   MKATOM(binary);

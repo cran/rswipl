@@ -2,8 +2,8 @@
 :- use_module(library(pce)).
 :- use_module(library(pce_util)).
 
-resource(back,    image, image('16x16/back.png')).
-resource(forward, image, image('16x16/forward.png')).
+resource(back,    image, image('tool/nav-backward.svg')).
+resource(forward, image, image('tool/nav-forward.svg')).
 
 :- pce_begin_class(select_set_item, dialog_group,
                    "Select objects from a set").

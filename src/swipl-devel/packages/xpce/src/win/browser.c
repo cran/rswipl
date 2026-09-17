@@ -130,7 +130,7 @@ clearBrowser(Browser b)
 
 static status
 cursorBrowser(Browser b, CursorObj cursor)
-{ return send(b->list_browser->image, NAME_cursor, cursor, EAV);
+{ return send(b->list_browser->text_image, NAME_cursor, cursor, EAV);
 }
 
 
@@ -172,7 +172,13 @@ backgroundBrowser(Browser b, Any bg)
 
 static Chain
 getContainsBrowser(Browser b)
-{ answer(getContainsListBrowser(b->list_browser));
+{ Chain ch = addFixedGraphicalsWindow((PceWindow)b,
+				      getContainsListBrowser(b->list_browser));
+
+  if ( ch )
+    answer(ch);
+
+  fail;
 }
 
 
@@ -183,7 +189,7 @@ getContainsBrowser(Browser b)
 /* Type declarations */
 
 static char *T_typed[] =
-        { "event_id", "delegate=[bool]" };
+        { "event|event_id", "delegate=[bool]" };
 static char *T_initialise[] =
         { "label=[name]", "size=[size]", "display=[display]" };
 static char *T_requestGeometry[] =

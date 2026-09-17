@@ -1,5 +1,7 @@
-PKG_CPPFLAGS=-I../inst/swipl/include $(CXXPICFLAGS) -D_REENTRANT -D__SWI_PROLOG__ -O2 -gdwarf-2 -g3 -Wall -fno-strict-aliasing -D__WINDOWS__ -D_WINDOWS -D_WIN32_WINNT=0x0600 -DWIN64
-PKG_LIBS=-Wl,-Bsymbolic-functions -L../inst/swipl/bin -lswipl -lgmp -lz -lm -lpthread -lws2_32 -lpsapi -lwinmm -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
+PKG_CFLAGS=$(C_VISIBILITY)
+PKG_CXXFLAGS=$(CXX_VISIBILITY)
+PKG_CPPFLAGS=-I../inst/swipl/include -D_REENTRANT -D__SWI_PROLOG__ -D__WINDOWS__ -D_WINDOWS -D_WIN32_WINNT=0x0600 -DWIN64
+PKG_LIBS=-L../inst/swipl/bin -lswipl -lgmp -lz -lm -lpthread -lws2_32 -lpsapi -lwinmm -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
 
 all: $(SHLIB)
 $(SHLIB): ../build/done
@@ -14,12 +16,12 @@ rswipl.o: ../build/done
 	mkdir -p ../inst/swipl/bin
 	rm -f ../inst/swipl/bin/*.dll
 	( cd ../build ;\
-		CC="$(CC)" CFLAGS="$(subst -pedantic,,$(subst -Wstrict-prototypes,,$(CFLAGS)))" CPPFLAGS="$(CPPFLAGS)" LDFLAGS="$(LDFLAGS)" cmake\
+		CC="$(CC)" CFLAGS="$(subst -pedantic,,$(subst -Wstrict-prototypes,,$(CFLAGS)))"\
+		CXX="$(CXX)" CXXFLAGS="$(CXXFLAGS)" CPPFLAGS="$(CPPFLAGS)" LDFLAGS="$(LDFLAGS)" cmake\
 		-DCMAKE_INSTALL_PREFIX=../inst/swipl\
 		-DSWIPL_PACKAGES_GUI=OFF -DSWIPL_PACKAGES_ODBC=OFF\
 		-DINSTALL_DOCUMENTATION=OFF -DSWIPL_PACKAGES_PYTHON=OFF\
 		-DBUILD_TESTING=ON -DINSTALL_TESTS=ON\
-		-DCMAKE_CXX_STANDARD=17\
 		-DUSE_GMP=ON\
 		-DMINGW_ROOT=$(R_TOOLS_SOFT)\
 		-DLibArchive_INCLUDE_DIRS="-I."\
@@ -28,7 +30,7 @@ rswipl.o: ../build/done
 	# dos2unix all Makefiles
 	find ../build -name Makefile -exec sed -i 's/\r//' \{\} \;
 	make -C ../build install
-	-( cd ../build ; ctest )
+	-( cd ../build ; ctest --output-on-failure )
 	rm ../inst/swipl/bin/swipl.exe
 	rm ../inst/swipl/bin/swipl-win.exe
 	rm ../inst/swipl/bin/swipl-ld.exe

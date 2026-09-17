@@ -37,13 +37,17 @@
 #include <SDL3/SDL.h>
 
 void ws_init_cursor_font(void);
+bool ws_busy_cursor(void);
+void ws_set_busy_cursor(CursorObj c);
 Int ws_cursor_font_index(Name name);
 status ws_create_cursor(CursorObj c, DisplayObj d);
 void ws_destroy_cursor(CursorObj c, DisplayObj d);
 
 static inline SDL_Cursor *
 pceCursor2SDL_Cursor(CursorObj c)
-{ if ( !c->ws_ref )
+{ if ( !c || isNil(c) || isDefault(c) )	/* `cursor*' slots may be @nil */
+    return NULL;
+  if ( !c->ws_ref )
     ws_create_cursor(c, CurrentDisplay(NIL));
   return c->ws_ref;
 }

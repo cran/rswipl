@@ -60,6 +60,9 @@ reexports the content of these files.
 	    send_class/3,
 	    get_class/4,
 	    object/1, object/2,
+	    object_reference/2,         % +Object, -Name
+	    object_from_reference/2,    % +Name, -Object
+	    is_object_reference/1,      % @Term
 
 	    pce_global/2,               % pce_global
 	    pce_autoload/2,             % pce_autoload
@@ -264,7 +267,12 @@ setup_theme :-
     ->  true
     ;   print_message(warning, error(existence_error(theme, Theme),_))
     ).
+setup_theme :-
+    current_prolog_flag(epilog, true),
+    !,
+    use_module(library(theme/light)).
 setup_theme.
+
 
 %!  init_pce
 %

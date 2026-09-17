@@ -1,9 +1,9 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        jan@swi.psy.uva.nl
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  2001-2020, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org/projects/xpce/
+    Copyright (c)  2001-2026, University of Amsterdam
                               SWI-Prolog Solutions b.v.
     All rights reserved.
 
@@ -35,8 +35,7 @@
 
 :- module(prolog_debug_status, []).
 :- use_module(library(pce)).
-:- use_module(library(persistent_frame)).
-:- use_module(library(pce_report)).
+:- use_module(library(pane_frame)).
 :- use_module(library(toolbar)).
 :- use_module(library('trace/clause')).
 :- use_module(library(prolog_predicate_item)).
@@ -53,6 +52,11 @@ This  module  defines  the  class   prolog_debug_status,  a  status  dialog
 representing the current debugger-status (cf.  debugging/0) with entries
 to alter the state of the  debugger   by  changing  the mode and editing
 trace, spy and break-points.
+
+It used to be a frame holding that dialog and a reporter.  The dialog is
+a pane now -- see library(pane_frame) -- so it sits in a tab of any
+window of the IDE or beside a terminal, an editor or another tool, and
+what it has to say goes on the status bar of that window.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 resource(delete, image, image('tool/cut.svg')).
@@ -65,22 +69,9 @@ resource(spy,    image, library('trace/icons/spy.svg')).
     debug_status_window/1.
 
 
-:- pce_begin_class(prolog_debug_status, persistent_frame,
-                   "Show status of Prolog debugger").
-
-initialise(F, App:[application]*) :->
-    send_super(F, initialise('Prolog debugging')),
-    send(F, append, new(prolog_debug_status_dialog)),
-    (   App \== @default, App \== @nil
-    ->  send(F, application, App)
-    ;   true
-    ).
-
-:- pce_end_class(prolog_debug_status).
-
-
-:- pce_begin_class(prolog_debug_status_dialog, dialog,
+:- pce_begin_class(prolog_debug_status, dialog,
                    "View/change debug_status information").
+:- use_class_template(pane).
 
 initialise(D) :->
     send_super(D, initialise),
@@ -88,31 +79,9 @@ initialise(D) :->
     send_list(TB, append,
               [ tool_button(cut,
                             resource(delete),
-                            delete)
-              ]),
-    send(D, append,
-         new(Ch, menu(mode, choice, message(D, mode, @arg1))),
-         right),
-    send_list(Ch, append, [ normal, debug ]),
-    send(Ch, layout, horizontal),
-    send(Ch, alignment, right),
-    send(Ch, reference, point(0, Ch?height)),
-    send(D, append, new(LB, list_browser)),
-    send(LB, select_message, message(D, identify, @arg1)),
-    send(LB, open_message, message(D, edit, @arg1)),
-    send(LB, style, spy, style(icon := resource(spy))),
-    send(LB, style, break, style(icon := resource(stop))),
-    send(LB, style, trace, style(icon := resource(trace))),
-    send(LB, attribute, hor_stretch, 100),
-    send(LB, attribute, ver_stretch, 100),
-    send(D, append, new(PI, prolog_predicate_item(predicate))),
-    send(PI, length, 30),
-    send(PI, reference, point(0, PI?height)),
-    send(D, append, new(TB2, tool_bar(D)), right),
-    send(TB2, name, tb2),
-    send(TB2, alignment, right),
-    send_list(TB2, append,
-              [ tool_button(spy,
+                            delete),
+                gap,
+                tool_button(spy,
                             resource(spy),
                             'Break on (spy) predicate'),
                 tool_button(trace,
@@ -122,21 +91,35 @@ initialise(D) :->
                             resource(edit),
                             'Edit predicate/show listing')
               ]),
-    send(D, append, new(reporter)),
-    send(D, resize_message, message(D, layout, @arg2)),
+    send(D, append, new(PI, prolog_predicate_item(predicate)), next_row),
+    send(PI, hor_stretch, 100),
+    send(PI, placeholder, 'Predicate'),
+    send(PI, show_label, @off),
+    send(D, append, new(LB, list_browser)),
+    send(LB, select_message, message(D, identify, @arg1)),
+    send(LB, open_message, message(D, edit, @arg1)),
+    send(LB, style, spy, style(icon := resource(spy))),
+    send(LB, style, break, style(icon := resource(stop))),
+    send(LB, style, trace, style(icon := resource(trace))),
+    send(LB, attribute, hor_stretch, 100),
+    send(LB, attribute, ver_stretch, 100),
+    send(D, display_fixed, new(split_handle)),  % puts itself in the corner
     send(D, update),
+    send(D, resize_message, message(D, layout, @arg2)),
     assert(debug_status_window(D)).
 
 unlink(D) :->
     retractall(debug_status_window(D)),
     send_super(D, unlink).
 
-layout(D, Size:[size]) :->
-    "Fix layout"::
-    send_super(D, layout, Size),
-    get(D, member, tb2, TB2),
-    get(D, member, predicate, PI),
-    send(PI, right_side, TB2?left_side - D?gap?width).
+
+                 /*******************************
+                 *             PANE             *
+                 *******************************/
+
+pane_label(_D, Label:name) :<-
+    "What my tab is called"::
+    Label = 'Debugging'.
 
 :- pce_group(update).
 
@@ -152,11 +135,6 @@ update(D) :->
         send(D, append_debug, How, Where),
         fail
     ;   true
-    ),
-    get(D, member, mode, Mode),
-    (   current_prolog_flag(debug, true)
-    ->  send(Mode, selection, debug)
-    ;   send(Mode, selection, normal)
     ).
 
 append_debug(D, What:{spy,trace,break}, Where:prolog) :->
@@ -292,15 +270,7 @@ delete(trace, Head) :-
 delete(break, breakpoint(Id)) :-
     delete_breakpoint(Id).
 
-mode(_D, Mode:{normal,debug,trace}) :->
-    "Set the run mode for all threads"::
-    (   Mode == normal
-    ->  tnodebug
-    ;   Mode == debug
-    ->  tdebug
-    ).
-
-:- pce_end_class.
+:- pce_end_class(prolog_debug_status).
 
 
                  /*******************************
@@ -334,17 +304,3 @@ prolog:message_action(trace(Head, []), _Level) :-
     debug_status_window(D),
     get(D, item, trace, Head, DI),
     free(DI).
-prolog:message_action(debug_mode(OnOff), _Level) :-
-    debug_status_window(D),
-    get(D, member, mode, Mode),
-    (   OnOff == off
-    ->  send(Mode, selection, normal)
-    ;   send(Mode, selection, debug)
-    ).
-prolog:message_action(trace_mode(_OnOff), _Level) :-
-    debug_status_window(D),
-    get(D, member, mode, Mode),
-    (   current_prolog_flag(debug, true)
-    ->  send(Mode, selection, debug)
-    ;   send(Mode, selection, normal)
-    ).

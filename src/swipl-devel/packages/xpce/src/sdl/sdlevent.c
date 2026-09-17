@@ -42,6 +42,9 @@
 #include "sdlframe.h"
 #include "sdltimer.h"
 #include "sdlstream.h"
+#ifdef __APPLE__
+#include "sdlnsmenu.h"
+#endif
 #ifdef HAVE_POLL
 #include <poll.h>
 #endif
@@ -154,17 +157,39 @@ state_to_buttons(SDL_MouseButtonFlags flags, SDL_Keymod mod)
 static Any
 keycode_to_name(SDL_Event *event)
 { if ( event->key.key >= 32 && event->key.key < DEL )
-  { if ( event->key.mod & MetaMask )
-      return toInt(Meta(event->key.key));
-    if ( event->key.mod & ControlMask )
-    { if ( event->key.key >= 'a' && event->key.key <= 'z' )
-	return toInt(Control(event->key.key));
-      else if ( event->key.key == SDLK_AT )
-	return ZERO;
+  { if ( event->key.mod & ControlMask )
+    { /* The C0 controls: Control() strips all but the low five bits,
+       * which turns `@' into NUL, the letters into 1..26 and the five
+       * keys after `Z' into 27..31, giving us ^[, ^\, ^] and friends.
+       * Without these, Ctrl+\ reached the client as a backslash and a
+       * program on a terminal could never be sent SIGQUIT.
+       */
+      SDL_Keycode key = event->key.key;
+
+      /* SDL reports the unshifted key, but three of the C0 controls
+       * live on shifted characters: on a US keyboard ^^ is Shift-6 and
+       * ^_ is Shift-`-'.  Taking the key as it comes sent a bare `6' or
+       * `-', so Control-Shift-`-' never reached the client as ^_, which
+       * is what libedit binds undo to.  Ask the keymap what this key
+       * produces with the modifiers actually held.
+       */
+      if ( (key < '@' || key >= DEL) && (event->key.mod & SDL_KMOD_SHIFT) )
+      { SDL_Keycode shifted = SDL_GetKeyFromScancode(event->key.scancode,
+						     event->key.mod, false);
+
+	if ( shifted >= '@' && shifted < DEL )
+	  key = shifted;
+      }
+
+      if ( key >= '@' && key < DEL )
+	return toInt(Control(key));
       else
-	return toInt(event->key.key);
+	return toInt(key);
     }
-    if ( event->key.mod & SDL_KMOD_GUI )
+    /* Meta is not part of the id: the event's buttons carry it, as
+     * they carry the other modifiers.
+     */
+    if ( event->key.mod & (SDL_KMOD_GUI|MetaMask) )
       return toInt(event->key.key);
   }
 
@@ -226,12 +251,24 @@ keycode_to_name(SDL_Event *event)
 static SDL_Keymod lastmod = SDL_KMOD_NONE;
 static Any grabbing_window = NIL;
 static Any mouse_tracking_window = NIL; /* Window or Frame */
+static Any pointer_window = NIL;	/* Window holding the pointer */
 static Uint8 mouse_tracking_button;
 static SDL_WindowID mouse_tracking_wid = 0;
 static SDL_DisplayID last_display_id = 0;
 static Uint32 keyboard_timer = 0;
 static SDL_Event keydown_event = {0};
 static Uint64 keyinput_time = 0;
+static Uint64 menubar_key_time = 0;	/* key-down taken by the MacOS menu */
+
+/* Milliseconds we hold a key-down while waiting to see whether SDL
+ * turns it into text input, and equally the window in which a text
+ * input event is taken to belong to the key-down just before it.
+ */
+
+#define KEYBOARD_DELAY 10
+#define ms_to_ns(ms) ((Uint64)(ms)*1000000)
+
+static void	set_pointer_window(Any window);
 
 static Uint32
 tm_keyboard_timeout(void *udata, SDL_TimerID id, Uint32 interval)
@@ -291,17 +328,142 @@ ws_grabbing_window(void)
   return NULL;
 }
 
+
+/* The window the pointer is in, if any.  SDL has one cursor for the
+ * whole application, so this is the window that decides which shape it
+ * must have.
+ */
+
+PceWindow
+ws_pointer_window(void)
+{ if ( notNil(pointer_window) &&
+       instanceOfObject(pointer_window, ClassWindow) &&
+       !onFlag(pointer_window, F_FREED|F_FREEING) )
+    return pointer_window;
+
+  return NULL;
+}
+
+
+/* Hold a code reference while we grab, as we do for the mouse tracking
+   window.  A menu item that destroys its own window -- Epilog's "Halt
+   Prolog" is one -- is executed while its menu bar still holds the
+   grab, and without the reference the object is unallocated under us
+   and the next event reads freed memory.
+*/
+
 void
 ev_event_grab_window(Any window)
-{ grabbing_window = window;
+{ if ( window == grabbing_window )
+    return;
+
+  if ( notNil(grabbing_window) )
+    delCodeReference(grabbing_window);
+  grabbing_window = window;
+  if ( notNil(grabbing_window) )
+    addCodeReference(grabbing_window);
 }
 
 void
 ws_event_destroyed_target(Any window)
 { if ( window == mouse_tracking_window )
+  { delCodeReference(mouse_tracking_window);
     mouse_tracking_window = NIL;
+  }
   if ( window == grabbing_window )
-    grabbing_window = NIL;
+    ev_event_grab_window(NIL);
+  if ( window == pointer_window )
+    set_pointer_window(NIL);
+}
+
+
+		 /*******************************
+		 *	   ENTER/LEAVE		*
+		 *******************************/
+
+/* SDL only reports enter/leave for its own (native) windows, which are
+   our frames.  We therefore synthesise `area_enter' and `area_exit'
+   for the xpce window that receives the mouse events.  These maintain
+   PceWindow <->has_pointer as well as the <->pointed chain of the
+   devices in the window, which is what makes e.g. scroll bars react to
+   the pointer entering and leaving them.
+*/
+
+static void
+post_area_event(Any window, Name id, float x, float y, Any buttons)
+{ if ( onFlag(window, F_FREED|F_FREEING) )
+    return;
+
+  ServiceMode(is_service_window(window),
+	      { AnswerMark mark;
+		EventObj ev;
+
+		markAnswerStack(mark);	/* before creating the event */
+		if ( (ev=answerObject(ClassEvent, id, window,
+				      toInt(x), toInt(y), buttons, EAV)) )
+		{ addCodeReference(ev);
+		  postNamedEvent(ev, window, DEFAULT, NAME_postEvent);
+		  delCodeReference(ev);
+		}
+		rewindAnswerStack(mark, NIL);
+	      });
+}
+
+
+/* Note that `fx' and `fy' are relative to the frame.  We translate
+   them to each of the two windows involved.
+*/
+
+static void
+set_pointer_window(Any window)
+{ if ( notNil(pointer_window) )
+    delCodeReference(pointer_window);
+  pointer_window = window;
+  if ( notNil(window) )
+    addCodeReference(window);		/* keep it around while we
+					   hold a pointer to it */
+}
+
+
+static void
+update_pointer_window(Any window, FrameObj frame,
+		      float fx, float fy, Any buttons)
+{ Any old = pointer_window;
+
+  if ( !instanceOfObject(window, ClassWindow) )
+    window = NIL;			/* on the frame, but not in a
+					   window */
+  if ( old == window )
+    return;
+
+  addCodeReference(old);		/* survives set_pointer_window() */
+  set_pointer_window(window);		/* update before we post: the
+					   handlers may generate events */
+
+  if ( notNil(old) && !onFlag(old, F_FREED|F_FREEING) )
+  { float ox=0, oy=0;
+
+    ws_window_frame_position(old, frame, &ox, &oy);
+    post_area_event(old, NAME_areaExit, fx-ox, fy-oy, buttons);
+  }
+  delCodeReference(old);
+
+  if ( notNil(window) )
+  { float ox=0, oy=0;
+
+    ws_window_frame_position(window, frame, &ox, &oy);
+    post_area_event(window, NAME_areaEnter, fx-ox, fy-oy, buttons);
+  }
+}
+
+
+/* Called when the pointer leaves a frame.  SDL does report this one. */
+
+void
+ws_pointer_left_frame(FrameObj fr)
+{ if ( notNil(pointer_window) &&
+       getFrameWindow(pointer_window, OFF) == fr )
+    update_pointer_window(NIL, fr, 0.0, 0.0, ZERO);
 }
 
 DisplayObj
@@ -318,6 +480,7 @@ CtoEvent(SDL_Event *event)
   Any name = NULL;
   Name ctx_name = NULL;
   Any ctx = NULL;
+  Int rotation = NULL;			/* wheel events */
   SDL_WindowID wid = 0;
   FrameObj frame = NIL;		/* ev->frame */
   Any window;			/* ev->window */
@@ -331,6 +494,8 @@ CtoEvent(SDL_Event *event)
   if ( sdl_timer_event(event) )	/* Timer event */
     fail;
   if ( sdl_stream_event(event) ) /* I/O stream event */
+    fail;
+  if ( ws_menubar_event(event) ) /* Native (MacOS) menu selection */
     fail;
   if ( event->type == MY_EVENT_FLASH_END )
   { FrameObj fr = event->user.data1;
@@ -388,7 +553,6 @@ CtoEvent(SDL_Event *event)
       wid  = event->wheel.windowID;
       time = event->wheel.timestamp/1000000;
       name = NAME_wheel;
-      ctx_name = NAME_rotation;
       int dy = 0;
 #if SDL_VERSION_ATLEAST(3, 2, 12)
       dy = event->wheel.integer_y;
@@ -408,9 +572,7 @@ CtoEvent(SDL_Event *event)
 		    ? " (flipped)" : ""));
       if ( dy )
       { last_time = time;
-	if ( event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED )
-	  dy = -dy;
-	ctx = toInt(dy*15);
+	rotation = toInt(dy*15);
 	break;
       }
       fail;
@@ -434,6 +596,23 @@ CtoEvent(SDL_Event *event)
       DEBUG(NAME_keyboard,
 	    Cprintf("SDL_EVENT_TEXT_INPUT: %d (\"%s\") at %" PRIu64 "\n",
 		    codepoint, event->text.text, event->text.timestamp));
+
+      /* A key-down the MacOS menu bar claimed is not delayed, so there
+       * is no timer and the test below would let its text through.
+       * MacOS composes text from Option, so an Option accelerator would
+       * insert a character on top of running the menu item.  Drop the
+       * text that belongs to the claimed key-down.
+       */
+      if ( !keyboard_timer && menubar_key_time &&
+	   event->text.timestamp >= menubar_key_time &&
+	   event->text.timestamp - menubar_key_time <
+	   ms_to_ns(KEYBOARD_DELAY) )
+      { DEBUG(NAME_keyboard,
+	      Cprintf("Dropping text input for a keystroke claimed by "
+		      "the native menu bar\n"));
+	menubar_key_time = 0;
+	fail;
+      }
 
       if ( keyboard_timer )
       { if ( isOptionPrintCharacter(codepoint) )
@@ -492,9 +671,28 @@ CtoEvent(SDL_Event *event)
     { SDL_Keymod isdown = (SDL_KMOD_LCTRL|SDL_KMOD_RCTRL|SDL_KMOD_GUI);
 #ifndef __APPLE__
       isdown |= SDL_KMOD_LALT;
+#else
+      /* SDL forgets the modifiers when a window loses the focus and
+       * learns them again only when they change.  Option held while
+       * the focus moves to a new window -- from M-x into its prompt --
+       * then arrives without SDL_KMOD_ALT, the key-down is not held
+       * back and the text MacOS composed from Option is typed.
+       */
+      if ( !(event->key.mod & SDL_KMOD_ALT) &&
+	   (ns_current_modifiers() & PCE_MOD_OPTION) )
+	event->key.mod |= SDL_KMOD_LALT;
 #endif
 
       lastmod = event->key.mod;
+      menubar_key_time = 0;
+      if ( ws_menubar_key_equivalent(event) )
+      { DEBUG(NAME_keyboard,
+	      Cprintf("Keystroke claimed by the native menu bar.  "
+		      "Mod=0x%x, key=0x%x\n",
+		      event->key.mod, event->key.key));
+	menubar_key_time = event->key.timestamp;
+	fail;			/* MacOS runs the menu item itself */
+      }
       name = keycode_to_name(event);
       if ( !name )
       { DEBUG(NAME_keyboard,
@@ -508,9 +706,10 @@ CtoEvent(SDL_Event *event)
 
       keydown_event  = *event;
       keyinput_time  = 0;
-      keyboard_timer = SDL_AddTimer(10, tm_keyboard_timeout, NULL);
+      keyboard_timer = SDL_AddTimer(KEYBOARD_DELAY, tm_keyboard_timeout, NULL);
       DEBUG(NAME_keyboard,
-	    Cprintf("Delaying keyboard down event at %" PRIu64 "\n"));
+	    Cprintf("Delaying keyboard down event at %" PRIu64 "\n",
+		    event->key.timestamp));
       fail;
     }
     case MY_EVENT_KEYDOWN_TIMEOUT:
@@ -553,6 +752,7 @@ CtoEvent(SDL_Event *event)
 
   float x = fx*scale;
   float y = fy*scale;
+  float frame_x = x, frame_y = y;	/* for update_pointer_window() */
   if ( notNil(mouse_tracking_window) )
   { if ( onFlag(mouse_tracking_window, F_FREED|F_FREEING) ||
 	 !ws_created_window(mouse_tracking_window) )
@@ -580,8 +780,9 @@ CtoEvent(SDL_Event *event)
     }
   } else if ( notNil(grabbing_window) )
   { if ( onFlag(grabbing_window, F_FREED|F_FREEING) )
-    { Cprintf("Grabbing window %s lost?\n", pp(grabbing_window));
-      grabbing_window = NIL;
+    { DEBUG(NAME_event,			/* the grabber destroyed itself */
+	    Cprintf("Grabbing window %s lost\n", pp(grabbing_window)));
+      ev_event_grab_window(NIL);
       goto not_grabbing;
     }
     float ox=0, oy=0;
@@ -621,15 +822,29 @@ CtoEvent(SDL_Event *event)
       break;
   }
 
+  Any buttons = state_to_buttons(mouse_flags, mod_for_event);
+
+  switch ( event->type )		/* pointer moved to another window? */
+  { case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+    case SDL_EVENT_MOUSE_MOTION:
+      update_pointer_window(window, frame, frame_x, frame_y, buttons);
+      break;
+    default:
+      break;
+  }
+
   EventObj ev = answerObject(ClassEvent,
 			     name,
 			     window,
 			     toInt(x), toInt(y),
-			     state_to_buttons(mouse_flags, mod_for_event),
+			     buttons,
 			     EAV);
   if ( ev )
   { assign(ev, frame, frame);
 
+    if ( rotation )
+      assign(ev, rotation, rotation);
     if ( ctx_name )
       attributeObject(ev, ctx_name, ctx);
   } else
@@ -643,7 +858,6 @@ CtoEvent(SDL_Event *event)
 static bool
 dispatch_event(EventObj ev)
 { Any target = ev->window;
-  AnswerMark mark;
   status rc;
 
   DEBUG(NAME_event,
@@ -659,12 +873,9 @@ dispatch_event(EventObj ev)
   }
 
   ServiceMode(is_service_window(target),
-	      { markAnswerStack(mark);
-		addCodeReference(ev);
+	      { addCodeReference(ev);
 		rc = postNamedEvent(ev, target, DEFAULT, NAME_postEvent);
 		delCodeReference(ev);
-		freeableObj(ev);
-		rewindAnswerStack(mark, NIL);
 	      });
 
   return rc;
@@ -725,15 +936,72 @@ pceUnregisterConsole(waitable_t handle)
   return false;
 }
 
+/**
+ * Turn an SDL event into an xpce event and post it, holding the xpce
+ * lock.  ws_dispatch() itself runs unlocked, so that other threads can
+ * use xpce while we wait for the next event, but making the event and
+ * posting it touch the object base and must be serialised.  The lock is
+ * recursive, so the handlers that claim it themselves (timers, streams,
+ * the menu bar) are unaffected, and the callback into Prolog releases it
+ * for the duration of the call (see pceMTUnlockAll()).
+ */
+
+static int  input_blocked = 0;		/* see sdl_dispatch_without_input() */
+static int  held_count = 0;
+static SDL_Event held_events[16];
+
+static bool
+hold_user_input(const SDL_Event *ev)
+{ switch(ev->type)
+  { case SDL_EVENT_MOUSE_BUTTON_UP:
+      if ( held_count < (int)(sizeof(held_events)/sizeof(held_events[0])) )
+	held_events[held_count++] = *ev;
+      return true;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_MOTION:
+    case SDL_EVENT_MOUSE_WHEEL:
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP:
+    case SDL_EVENT_TEXT_INPUT:
+    case SDL_EVENT_TEXT_EDITING:
+    case SDL_EVENT_TEXT_EDITING_CANDIDATES:
+    case SDL_EVENT_DROP_BEGIN:
+    case SDL_EVENT_DROP_FILE:
+    case SDL_EVENT_DROP_TEXT:
+    case SDL_EVENT_DROP_POSITION:
+    case SDL_EVENT_DROP_COMPLETE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static void
+dispatch_sdl_event(SDL_Event *ev)
+{ EventObj event;
+  AnswerMark mark;
+
+  if ( input_blocked && hold_user_input(ev) )
+    return;
+
+  pceMTLock();
+  if ( !sdl_live_resize_handled(ev) ) /* already done from the modal loop */
+  { markAnswerStack(mark);		/* CtoEvent() creates answer objects */
+    if ( (event=CtoEvent(ev)) )
+      dispatch_event(event);
+    rewindAnswerStack(mark, NIL);
+  }
+  pceMTUnlock();
+}
+
+
 static bool
 dispatch_ready_event(void)
 { ASSERT_SDL_MAIN();
   SDL_Event ev;
 
   if ( SDL_PollEvent(&ev) )
-  { EventObj event = CtoEvent(&ev);
-    if ( event )
-      dispatch_event(event);
+  { dispatch_sdl_event(&ev);
     return true;
   }
 
@@ -840,9 +1108,7 @@ ws_dispatch(IOSTREAM *input, Any timeout)
 	succeed;
       }
 
-      EventObj event = CtoEvent(&ev);
-      if ( event )
-	dispatch_event(event);
+      dispatch_sdl_event(&ev);
     }
 
     if ( transient )
@@ -1014,4 +1280,30 @@ sdl_alert(void)
 { SDL_Event ev = {0};
   ev.type = MY_EVENT_ALERT;
   SDL_PushEvent(&ev);
+}
+
+/**
+ * Keep the event loop running in the main thread until done(closure)
+ * returns true, while user input is not delivered.  This is used while
+ * another thread runs a blocking native dialog: windows keep redrawing
+ * and timers and streams keep being served, but the application cannot
+ * be operated behind the dialog's back.  Keyboard, text, wheel, motion,
+ * button-press and drop events are discarded.  Button releases are held
+ * and re-queued afterwards, so a gesture that started the dialog still
+ * sees its release.  The code that makes done() true must call
+ * sdl_alert() to wake us up.
+ */
+
+void
+sdl_dispatch_without_input(bool (*done)(void *closure), void *closure)
+{ ASSERT_SDL_MAIN();
+
+  input_blocked++;
+  while( !(*done)(closure) )
+    ws_dispatch(NULL, DEFAULT);
+  if ( --input_blocked == 0 )
+  { for(int i=0; i<held_count; i++)
+      SDL_PushEvent(&held_events[i]);
+    held_count = 0;
+  }
 }

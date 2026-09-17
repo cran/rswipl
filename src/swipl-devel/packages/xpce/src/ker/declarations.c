@@ -233,6 +233,9 @@ static struct class_definition classdefs[] =
   { NAME_graphical, NAME_visual, makeClassGraphical,
     &ClassGraphical, "Displayable graphical object" },
 
+  { NAME_gradient, NAME_object, makeClassGradient,
+    &ClassGradient, "Linear or radial colour gradient" },
+
   { NAME_handle, NAME_object, makeClassHandle,
     &ClassHandle, "Connection point on graphical" },
 
@@ -471,6 +474,9 @@ static struct class_definition classdefs[] =
 
   { NAME_terminalImage, NAME_graphical, makeClassTerminalImage,
     &ClassTerminalImage, "Display text for a terminal" },
+
+  { NAME_terminalBlock, NAME_object, makeClassTerminalBlock,
+    &ClassTerminalBlock, "Prompt, command and output of one command" },
 
   { NAME_textItem, NAME_dialogItem, makeClassTextItem,
     &ClassTextItem, "Text entry field" },

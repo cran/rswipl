@@ -3,7 +3,8 @@
     Author:        Jan Wielemaker and Anjo Anjewierden
     E-mail:        jan@swi-prolog.org
     WWW:           https://www.swi-prolog.org/projects/xpce/
-    Copyright (c)  1997-2011, University of Amsterdam
+    Copyright (c)  1997-2026, University of Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -36,16 +37,9 @@
           [ describe_drawing/2          % +Canvas, -Term
           ]).
 :- use_module(library(pce)).
-:- require([ atom_length/2
-           , chain_list/2
-           , flatten/2
-           , get_chain/3
-           , is_list/1
-           , maplist/3
-           , memberchk/2
-           , send_list/3
-           , sformat/3
-           ]).
+:- use_module(library(apply)).
+:- use_module(library(lists)).
+:- use_module(library(pce_util)).
 
 :- pce_autoload(drag_and_drop_gesture, library(dragdrop)).
 
@@ -61,7 +55,7 @@ A drawing is a term, informally described as:
                                           Link))
                           | compound(Term, Drawing, point(X, Y))
         Term            ::= new(Var, PlainTerm)
-                         | new(ClassName)
+                          | new(ClassName)
         PlainTerm       ::= NewTerm[+Attribute ...]
         NewTerm         ::= ClassName(Term ...)
         Attribute       ::= SendMethod(Term ...)
@@ -200,6 +194,7 @@ object_to_term(Object, Term) :-
 
 object_to_term(Atomic, _, Atomic) :-
     atomic(Atomic),
+    \+ is_object_reference(Atomic),  % which is atomic as well
     !.
 object_to_term(Font, _, Alias) :-       % replace font by alias
     send(Font, instance_of, font),
@@ -334,134 +329,15 @@ event(DD, Ev:event) :->
     ;   send(DD, send_super, event, Ev)
     ).
 
-prolog_source(DD, Source:string) :<-
-    get(DD, frame, Draw),
-    get(Draw, canvas, Canvas),
-    describe_drawing(Canvas, DrawingTerm),
-    new(TB, text_buffer),
-    pce_open(TB, write, Fd),
-    pretty_print(Fd, DrawingTerm),
-    close(Fd),
-    get(TB, contents, Source),
-    free(TB).
-
 copy(DD) :->
     "Export drawing in the selection"::
-    get(DD, prolog_source, String),
-    send(@display, copy, String),
-    send(DD, report, status, 'Drawing exported to clipboard').
+    get(DD, frame, Draw),
+    get(Draw, canvas, Canvas),
+    send(Canvas, copy_as_prolog_source).
 
 give_help(_) :->
     "Jump to help-page"::
     send(@helper, give_help, pcedraw, exportpl).
 
 :- pce_end_class.
-
-                 /*******************************
-                 *        PRETTY PRINTING       *
-                 *******************************/
-
-pretty_print(Term) :-
-    current_output(Fd),
-    pretty_print(Fd, Term).
-
-pretty_print(Fd, Term) :-
-    line_position(Fd, Pos),
-    pretty_print(Term, Fd, Pos).
-
-pretty_print(Term, Fd, Pos) :-
-    numbervars(Term, 0, _),
-    pp(Term, Fd, Pos, 1200),
-    fail.
-pretty_print(_, _, _).
-
-pp(Term, Fd, Pos, _Pri) :-
-    sformat(Tmp, '~q', [Term]),
-    atom_length(Tmp, N),
-    Pos + N =< 72,
-    !,
-    format(Fd, '~s', [Tmp]).
-pp([], Fd, _, _) :-
-    !,
-    format(Fd, [], []).
-pp(Term, Fd, Pos, _Pri) :-
-    is_list(Term),
-    !,
-    format(Fd, '[ ', []),
-    NPos is Pos + 2,
-    pplist(Term, Fd, NPos),
-    indent(Fd, Pos),
-    format(Fd, ']', []).
-pp(Term, Fd, Pos, _Pri) :-
-    functor(Term, Name, _),
-    current_op(OpPri, Type, Name),
-    ppop(Type, OpPri, Term, Name, Fd, Pos),
-    !.
-pp(Term, Fd, Pos, _Pri) :-
-    functor(Term, Name, Arity),
-    !,
-    format(Fd, '~q(', [Name]),
-    atom_length(Name, NL),
-    NPos is Pos + NL + 1,
-    ppargs(0, Arity, Term, Fd, NPos),
-    format(Fd, ')', []).
-pp(Term, Fd, _Pos, _Pri) :-
-    format(Fd, '~q', [Term]).
-
-pplist([], _, _).
-pplist([H|T], Fd, Pos) :-
-    pp(H, Fd, Pos, 999),
-    (   T = [_|_]
-    ->  format(Fd, ',', []),
-        indent(Fd, Pos),
-        pplist(T, Fd, Pos)
-    ;   T == []
-    ->  true
-    ;   ListPos is Pos - 2,
-        indent(Fd, ListPos),
-        format(Fd, '| ', []),
-        pp(T, Fd, Pos, 999)
-    ).
-
-ppop(yfx, OpPri, Term, Op, Fd, Pos) :-
-    ppyfx(Term, OpPri, Op, Fd, Pos).
-
-ppyfx(Term, OpPri, Op, Fd, Pos) :-
-    functor(Term, Op, 2),
-    !,
-    arg(1, Term, A1),
-    ppyfx(A1, OpPri, Op, Fd, Pos),
-    format(Fd, ' ~w', [Op]),
-    NPos is Pos + 2,
-    indent(Fd, NPos),
-    arg(2, Term, A2),
-    APri is OpPri-1,
-    pp(A2, Fd, NPos, APri).
-ppyfx(Term, OpPri, _, Fd, Pos) :-
-    pp(Term, Fd, Pos, OpPri).
-
-ppargs(N, N, _, _, _) :- !.
-ppargs(N, Arity, Term, Fd, Pos) :-
-    A is N + 1,
-    arg(A, Term, Arg),
-    pp(Arg, Fd, Pos, 999),
-    (   A < Arity
-    ->  format(Fd, ',', []),
-        indent(Fd, Pos),
-        ppargs(A, Arity, Term, Fd, Pos)
-    ;   true
-    ).
-
-indent(Fd, N) :-
-    nl(Fd),
-    Tabs is N // 8,
-    Spaces is N mod 8,
-    putn(Tabs, Fd, 9),
-    putn(Spaces, Fd, 32).
-
-putn(0, _, _) :- !.
-putn(N, Fd, C) :-
-    put(Fd, C),
-    NN is N - 1,
-    putn(NN, Fd, C).
 

@@ -41,7 +41,8 @@
 
 #define FF_ISLOCAL	 0x040000	/* Flag is local (internal) */
 #define FF_ISCREATE	 0x080000	/* Called from create_prolog_flag/3 */
-#define FF_MASK		 0x0ff000	/* All FF flags */
+#define FF_PUSH_ABSENT	 0x100000	/* Pushed frame: flag was absent */
+#define FF_MASK		 0x1ff000	/* All FF flags */
 static_assert(FF_ISLOCAL == FF_GLOBAL<<1,
 	      "Private flags must follow public flags");
 
@@ -61,6 +62,7 @@ typedef struct _prolog_flag
     record_t	t;			/* value as term */
   } value;
   oneof        *oneof;
+  struct _prolog_flag *pushed;		/* push_prolog_flag/2 stack */
 } prolog_flag;
 
 		 /*******************************
@@ -83,6 +85,7 @@ bool		atom_to_unicode_atoms_ex(atom_t a, Sunicode_atoms_t *m,
 atom_t		unicode_atoms_to_atom(Sunicode_atoms_t m);
 bool		ensure_unicode_normalize_hook(bool mandatory);
 bool		setRationalSyntax(atom_t a, unsigned int *flagp);
+bool		setFileNameCaseHandlingName(const char *name);
 void		initPrologFlags(void);
 void		setABIVersionPrologFlag(void);
 void		cleanupPrologFlags(void);

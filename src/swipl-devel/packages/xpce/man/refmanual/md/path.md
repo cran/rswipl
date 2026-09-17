@@ -8,7 +8,7 @@ of paths:
 
 The line of a path has a ->texture and a ->pen (thickness).  The first
 and last point of the path may be connected (->closed) and the
-interior of the path may be filled with an image object using
+interior of the path may be filled with a colour using
 ->fill.  Class path is a subclass of class joint and
 therefore may have ->arrows attached.
 
@@ -34,12 +34,10 @@ Paths can be used for numerous purposes:
     **Defaults**: @off
 
 - path<-fill: colour|{foreground,background}*
-    Pattern to fill the interior of the path.  To determine the interior,
-    the _Even-Odd-Rule_ is used.
+    Colour used to fill the interior of the path.  To determine the
+    interior, the _Even-Odd-Rule_ is used.
 
     **Defaults**: @nil (not filled)
-
-    @see bitmap-status
 
 - path<-interpolation: chain*
     When kind is `smooth`, this is a chain of interpolated points. The
@@ -125,6 +123,20 @@ Paths can be used for numerous purposes:
     after.
 
     @see path->append
+
+- path->inside: x=int, y=int
+    Succeed if the point (X, Y) — in the path's <-device coordinate
+    system — lies inside the polygon formed by the path's vertices.
+    Uses the standard even-odd (ray-casting) rule with an implicit
+    closing edge from the last vertex back to the first, so `<-closed`
+    is not consulted: an open polygon can still be probed as a closed
+    region for hit-testing purposes.  For smooth paths the test is
+    performed against the interpolated poly-line.  Fails silently
+    when the path has fewer than three vertices.
+
+    Companion to `path->in_event_area`, which combines this test with a
+    near-outline distance test to make edge hits work on closed paths
+    as well as open ones.
 
 - path->relative_move: diff=point, how=[{offset,points}]
     Move the graphical relative to its current position using the X- and

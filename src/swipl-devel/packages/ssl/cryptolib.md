@@ -133,7 +133,7 @@ someone who knows the key can compute.
 
 _Signing_ uses  a _private_  key, and _verifying_  a signature  uses the
 corresponding _public_ key of the  signing entity. This library supports
-both  RSA  and ECDSA  signatures.  You  can use  load_private_key/3  and
+RSA, ECDSA and Ed25519 signatures. You can use load_private_key/3 and
 load_public_key/2 to load keys from files and streams.
 
 In typical cases, we use this mechanism  to sign the _hash_ of data. See
@@ -153,6 +153,22 @@ use hex_bytes/2 to convert them to and from lists of bytes (integers).
 
   * [[rsa_sign/4]]
   * [[rsa_verify/4]]
+
+### Ed25519 {#crypto-Ed25519}
+
+Ed25519 (RFC 8032) is a signature scheme over a twisted Edwards curve
+that is birationally equivalent to Curve25519. A key _pair_ is derived
+from 32 arbitrary bytes and is represented in PKCS#8 v2 format (RFC
+8410), the format also used by ``openssl genpkey -algorithm ed25519``.
+
+Unlike ECDSA and RSA above, Ed25519 signs the data itself rather than a
+hash of it. The default encoding of Data is therefore `utf8`.
+
+  * [[ed25519_new_keypair/1]]
+  * [[ed25519_seed_keypair/2]]
+  * [[ed25519_keypair_public_key/2]]
+  * [[ed25519_sign/4]]
+  * [[ed25519_verify/4]]
 
 ## Asymmetric encryption and decryption {#crypto-asymmetric}
 
@@ -197,6 +213,19 @@ curves:
     * [[crypto_curve_order/2]]
     * [[crypto_curve_generator/2]]
     * [[crypto_curve_scalar_mult/4]]
+
+## Curve25519 {#crypto-curve25519}
+
+Curve25519 is a Montgomery curve with desirable cryptographic properties
+that make it comparatively easy to use safely and reliably. Its points
+are hexadecimal atoms denoting the u-coordinate, and X25519 (RFC 7748)
+scalar multiplication is the recommended way to establish a shared
+secret. See [Establishing a shared
+secret](<#crypto-shared-secret>) for the general procedure, which is
+carried out with the following two predicates:
+
+    * [[curve25519_generator/1]]
+    * [[curve25519_scalar_mult/3]]
 
 ## Example: Establishing a shared secret {#crypto-shared-secret}
 

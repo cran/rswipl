@@ -12,6 +12,7 @@ A UTF_8			"UTF-8"
 A UTF_16BE		"UTF-16BE"
 A UTF_16LE		"UTF-16LE"
 A ISO_8859_1		"ISO-8859-1"
+A blob_type               "blob_type"
 A dollar		"$"
 A abi			"abi"
 A abort			"abort"
@@ -74,6 +75,7 @@ A atom_garbage_collection	"atom_garbage_collection"
 A atom_space		"atom_space"
 A atomic		"atomic"
 A atoms			"atoms"
+A automaton		"automaton"
 A att			"att"
 A attributes		"attributes"
 A attvar		"attvar"
@@ -89,6 +91,7 @@ A binary		"binary"
 A binary_stream		"binary_stream"
 A bind			"bind"
 A bitor			"\\/"
+A blob			"blob"
 A blobs			"blobs"
 A bof			"bof"
 A bom			"bom"
@@ -204,6 +207,7 @@ A dcont			"$cont$"
 A dcut			"$cut"
 A dde_error		"dde_error"
 A dde_handle		"dde_handle"
+A dead			"dead"
 A deadline		"deadline"
 A deadlock		"deadlock"
 A deepbind		"deepbind"
@@ -252,6 +256,7 @@ A dload			"$load"
 A dmessage_queue	"$message_queue"
 A dmeta_call		"$meta_call"
 A dmutex		"$mutex"
+A dollar_var		"dollar_var"
 A domain_error		"domain_error"
 A done			"done"
 A dos			"dos"
@@ -369,6 +374,12 @@ A free_of_attvar	"free_of_attvar"
 A freeze		"freeze"
 A fresh			"fresh"
 A from_state		"from_state"
+A gc_margin               "gc_margin"
+A live                    "live"
+A nocopy                  "nocopy"
+A non_garbage             "non_garbage"
+A padding                 "padding"
+A rank                    "rank"
 A rollback		"rollback"
 A roundtoward		"roundtoward"
 A full			"full"
@@ -507,6 +518,7 @@ A lower			"lower"
 A lsb			"lsb"
 A lshift		"<<"
 A main			"main"
+A map			"map"
 A mark			"mark"
 A matches		"matches"
 A matching_rule		"matching_rule"
@@ -548,6 +560,7 @@ A meta_predicate	"meta_predicate"
 A method		"method"
 A min			"min"
 A min_free		"min_free"
+A minimal		"minimal"
 A minr			"minr"
 A minus			"-"
 A mismatched_char	"mismatched_char"
@@ -703,6 +716,7 @@ A protocol		"protocol"
 A prove			":-"
 A public		"public"
 A punct			"punct"
+A pushed_flag		"pushed_flag"
 A qlf			"qlf"
 A qlf_min_load		"qlf_min_load"
 A quasi_quotation	"quasi_quotation"
@@ -954,6 +968,7 @@ A type_error		"type_error"
 A undefined		"undefined"
 A undefined_global_variable	"undefined_global_variable"
 A undefinterc		"$undefined_procedure"
+A unavailable		"unavailable"
 A unicode		"unicode"
 A unicode_atoms		"unicode_atoms"
 A unicode_normalize	"unicode_normalize"
@@ -970,6 +985,7 @@ A unlimited		"unlimited"
 A unload		"unload"
 A unlock		"unlock"
 A unlocked		"unlocked"
+A unregistered            "unregistered"
 A untable		"untable"
 A unwind		"unwind"
 A up			"up"
@@ -1005,6 +1021,7 @@ A walltime		"walltime"
 A warn_not_accessed	"warn_not_accessed"
 A warning		"warning"
 A warnings		"warnings"
+A wchar                   "wchar"
 A wchar_t		"wchar_t"
 A weak			"weak"
 A width			"width"
@@ -1037,6 +1054,7 @@ F acos			1
 F acosh			1
 F alias			1
 F and			2
+F automaton		1
 F ar_equals		2
 F ar_not_equal		2
 F targp			3
@@ -1112,6 +1130,7 @@ F deep			1
 F detached		1
 F determinism_error	4
 F dependency		1
+F dependency		2
 F dexit			2
 F dforeign_registered   2
 F dgarbage_collect	1
@@ -1195,6 +1214,7 @@ F ifthen		2
 F import_into		1
 F inf			0
 F include		1
+F include		2
 F input			0
 F input			4
 F integer		1
@@ -1304,6 +1324,7 @@ F smaller		2
 F smaller_equal		2
 F softcut		2
 F source		1
+F source		2
 F spy			1
 F sqrt			1
 F ssu_commit		2

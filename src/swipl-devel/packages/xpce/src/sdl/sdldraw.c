@@ -67,6 +67,7 @@ typedef struct
   cairo_t      *cr;			/* Cairo context */
   int		offset_x;		/* Paint offset in X direction */
   int		offset_y;		/* Paint offset in Y direction */
+  SDL_Rect	clip_base;		/* Region we may paint (device px) */
   int		fixed_colours;		/* Colours are fixed */
   Any		colour;			/* Current colour */
   Any		background;		/* Background colour */
@@ -91,6 +92,8 @@ typedef struct
   double fh = (h)-_lw;
 
 static void pce_cairo_set_source_color(cairo_t *cr, Colour pce);
+static void pce_cairo_set_source_gradient(cairo_t *cr, Gradient g);
+static void pce_cairo_set_source_fill(cairo_t *cr, Any fill);
 #if 0
 static bool validate_cairo_text_consistency(cairo_t *draw_cr);
 #endif
@@ -342,6 +345,18 @@ d_window(PceWindow sw, int x, int y, int w, int h, int clear, int limit)
   /* do we need to clip? */
   cairo_scale(context.cr, wsw->scale, wsw->scale);
 
+  { int cx = X(x), cy = Y(y), cw = w, ch = h;
+
+    NormaliseArea(cx, cy, cw, ch);
+    context.clip_base.x = (int)floor(cx*wsw->scale);
+    context.clip_base.y = (int)floor(cy*wsw->scale);
+    context.clip_base.w = (int)ceil ((cx+cw)*wsw->scale) - context.clip_base.x;
+    context.clip_base.h = (int)ceil ((cy+ch)*wsw->scale) - context.clip_base.y;
+    ws_dirty_window(sw,
+		    context.clip_base.x, context.clip_base.y,
+		    context.clip_base.w, context.clip_base.h);
+  }
+
   d_clip(x, y, w, h);
   if ( clear )
     r_fill(x, y, w, h, context.background);
@@ -360,10 +375,18 @@ d_window(PceWindow sw, int x, int y, int w, int h, int clear, int limit)
  */
 status
 d_image(Image i, int x, int y, int w, int h)
-{ DisplayObj d =  CurrentDisplay(NIL);
+{ DisplayObj d = CurrentDisplay(NIL);
+  Any colour, background;
+
   ws_open_image(i);
-  Any colour = d->foreground;
-  Any background = d->background;
+  if ( d )
+  { colour     = d->foreground;
+    background = d->background;
+  } else	/* no display: an image is offscreen, so draw as d_pdf() does */
+  { d          = NIL;
+    colour     = BLACK_COLOUR;
+    background = WHITE_COLOUR;
+  }
 
   push_context();
   context.open = 1;
@@ -416,6 +439,33 @@ d_done_pdf(void)
 }
 
 
+/* Intersect the clipping region with <-clip_base, the area d_window()
+ * was asked to repaint.  d_clip() and d_clip_done() both discard the
+ * clipping region rather than restoring the enclosing one, so without
+ * this a graphical that clips itself lifts the clip of the window it
+ * is in and the ones painted after it may paint anywhere.  We must
+ * know what a redraw changed to upload no more than that (see
+ * ws_dirty_window()), so this has to hold.
+ *
+ * The base is in device pixels because the current transformation is
+ * whatever the graphical being painted made of it.
+ */
+
+static void
+d_clip_to_base(void)
+{ if ( context.clip_base.w > 0 )
+  { cairo_matrix_t m;
+
+    cairo_get_matrix(CR, &m);
+    cairo_identity_matrix(CR);
+    cairo_rectangle(CR,
+		    context.clip_base.x, context.clip_base.y,
+		    context.clip_base.w, context.clip_base.h);
+    cairo_clip(CR);
+    cairo_set_matrix(CR, &m);
+  }
+}
+
 /**
  * Define a clipping region for subsequent drawing operations.
  *
@@ -431,6 +481,7 @@ d_clip(int x, int y, int w, int h)
   cairo_reset_clip(CR);
   cairo_rectangle(CR, x, y, w, h);
   cairo_clip(CR);
+  d_clip_to_base();
 }
 
 /**
@@ -459,6 +510,7 @@ d_done(void)
 void
 d_clip_done(void)
 { cairo_reset_clip(CR);
+  d_clip_to_base();
 }
 
 /**
@@ -493,6 +545,64 @@ static void
 pce_cairo_set_source_color(cairo_t *cr, Colour pce)
 { SDL_Color c = pceColour2SDL_Color(pce);
   cairo_set_source_rgba(cr, c.r/256.0, c.g/256.0, c.b/256.0, c.a/256.0);
+}
+
+/* Build a cairo pattern from an XPCE `gradient' object and set it as
+ * the source on `cr'.  cairo_set_source() takes a reference to the
+ * pattern, so we destroy our local one afterwards.
+ */
+static void
+pce_cairo_set_source_gradient(cairo_t *cr, Gradient g)
+{ cairo_pattern_t *pat;
+  /* Translate the gradient's coordinates through the current draw-
+   * context offset, the same shift shape-drawing macros apply so the
+   * pattern lines up with the shape being filled.
+   */
+  double x0 = X(valNum(g->p0->x));
+  double y0 = Y(valNum(g->p0->y));
+  double x1 = X(valNum(g->p1->x));
+  double y1 = Y(valNum(g->p1->y));
+
+  if ( g->kind == NAME_radial )
+  { double r0 = notNil(g->r0) ? valNum(g->r0) : 0.0;
+    double r1 = notNil(g->r1) ? valNum(g->r1) : 0.0;
+    pat = cairo_pattern_create_radial(x0, y0, r0, x1, y1, r1);
+  } else
+  { pat = cairo_pattern_create_linear(x0, y0, x1, y1);
+  }
+
+  if ( notNil(g->stops) )
+  { Cell cell;
+
+    for_cell(cell, g->stops)
+    { Tuple t = (Tuple)cell->value;
+
+      if ( instanceOfObject(t, ClassTuple) &&
+	   instanceOfObject(t->second, ClassColour) )
+      { double frac = valNum(t->first);
+	SDL_Color c = pceColour2SDL_Color((Colour)t->second);
+	cairo_pattern_add_color_stop_rgba(pat, frac,
+					  c.r/256.0, c.g/256.0,
+					  c.b/256.0, c.a/256.0);
+      }
+    }
+  }
+
+  cairo_set_source(cr, pat);
+  cairo_pattern_destroy(pat);
+}
+
+/* Dispatch: set the source appropriate for whatever the fill slot
+ * carries.  Colours go via pce_cairo_set_source_color; gradients via
+ * pce_cairo_set_source_gradient.  Non-matching values fall through to
+ * the colour path (which will error/default).
+ */
+static void
+pce_cairo_set_source_fill(cairo_t *cr, Any fill)
+{ if ( instanceOfObject(fill, ClassGradient) )
+    pce_cairo_set_source_gradient(cr, (Gradient)fill);
+  else
+    pce_cairo_set_source_color(cr, (Colour)fill);
 }
 
 static PangoLayout *
@@ -810,7 +920,7 @@ r_box(int x, int y, int w, int h, int r, Any fill)
     cairo_rectangle(CR, fx, fy, fw, fh);
   if ( notNil(fill) )
   { r_fillpattern(fill, NAME_background);
-    pce_cairo_set_source_color(CR, context.fill);
+    pce_cairo_set_source_fill(CR, context.fill);
     if ( context.pen )
       cairo_fill_preserve(CR);
     else
@@ -1326,7 +1436,7 @@ r_arc(double x, double y, double w, double h,
   }
   if ( notNil(fill) )
   { r_fillpattern(fill, NAME_foreground);
-    pce_cairo_set_source_color(CR, context.fill);
+    pce_cairo_set_source_fill(CR, context.fill);
     if ( context.pen )
       cairo_fill_preserve(CR);
     else
@@ -1538,7 +1648,7 @@ r_path(Chain points, int ox, int oy, int radius, int closed, Image fill)
 
   if ( notNil(fill) )
   { r_fillpattern(fill, NAME_foreground);
-    pce_cairo_set_source_color(CR, context.fill);
+    pce_cairo_set_source_fill(CR, context.fill);
     cairo_fill_preserve(CR);
   }
 
@@ -1681,7 +1791,7 @@ r_set_fill_fgbg(Any fill, Name which)
   DEBUG(NAME_draw,
 	Cprintf("fill with %s->%s\n", pp(fill), pp(context.fill)));
   if ( instanceOfObject(context.fill, ClassColour) )
-  { pce_cairo_set_source_color(CR, context.fill);
+  { pce_cairo_set_source_fill(CR, context.fill);
     return true;
   } else if ( isNil(context.fill) )
   { cairo_set_source_rgba(CR, 0, 0, 0, 0);
@@ -1760,7 +1870,7 @@ r_fill_polygon(FPoint pts, int n)
   cairo_set_source_rgba(CR, 0, 0, 0, 0);
   cairo_paint(CR);
 
-  pce_cairo_set_source_color(CR, context.fill);
+  pce_cairo_set_source_fill(CR, context.fill);
   double x = pts[0].x;
   double y = pts[0].y;
   Translate(x, y);
@@ -1974,8 +2084,29 @@ ws_font_context(void)
   }
 
   DisplayObj d = CurrentDisplay(NIL);
-  WsDisplay wsd = d->ws_ref;
-  return wsd->hidden_cairo;
+  if ( d )
+  { WsDisplay wsd = d->ws_ref;
+
+    if ( wsd && wsd->hidden_cairo )
+      return wsd->hidden_cairo;
+  }
+
+  /* No display, or none opened: measure on a scratch surface of our own.
+   * Text metrics come from Pango rather than from the window system, so
+   * they are as good as the ones a display would have given, and drawing
+   * on an image works headless (see d_image()).
+   */
+  static cairo_t *no_display_cairo;
+
+  if ( !no_display_cairo )
+  { cairo_surface_t *surf =
+      cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 64, 64);
+
+    no_display_cairo = cairo_create(surf);
+    cairo_surface_destroy(surf);	/* the context holds a reference */
+  }
+
+  return no_display_cairo;
 }
 
 static void
@@ -2163,8 +2294,31 @@ c_width(uchar_t c, FontObj font)
   }
 }
 
+/**
+ * Render UTF-8 text, condensed horizontally to `xscale` of its natural
+ * advance.
+ *
+ * A caller laying text out on a grid of its own -- the terminal -- has
+ * a width the run must not exceed, and a font is free to disagree: a
+ * glyph taken from a fallback face is regularly half again as wide as
+ * the cell it has to sit in.  Squeezing it is the graceful way out.  It
+ * keeps the whole glyph, unlike clipping, and at the ratios this is
+ * called with (mostly 1.1-1.2, occasionally 2) it reads as a slightly
+ * narrow symbol rather than a broken one.
+ *
+ * `xscale` >= 1 draws unscaled: nothing needs squeezing, and the
+ * transform would only cost a save/restore.
+ *
+ * @param u      UTF-8 text
+ * @param len    Its length in bytes
+ * @param x      Left edge of the run
+ * @param y      Its baseline
+ * @param font   Font to draw in
+ * @param xscale Horizontal scale factor, in (0, 1] to condense
+ */
 void
-s_print_utf8(const char *u, size_t len, int x, int y, FontObj font)
+s_print_utf8_scaled(const char *u, size_t len, int x, int y, FontObj font,
+		    double xscale)
 { DEBUG(NAME_draw,
 	{ const char *du = u;
 	  char buf[100];
@@ -2176,8 +2330,9 @@ s_print_utf8(const char *u, size_t len, int x, int y, FontObj font)
 	    buf[dlen] = 0;
 	    du = buf;
 	  }
-	  Cprintf("s_print_utf8(\"%s\", %d, %d, %d, %s) (color: %s)\n",
-		  du, len, x, y, pp(font), pp(context.colour));
+	  Cprintf("s_print_utf8(\"%s\", %d, %d, %d, %s) "
+		  "(color: %s, xscale: %.2f)\n",
+		  du, len, x, y, pp(font), pp(context.colour), xscale);
 	});
 
   Translate(x, y);
@@ -2192,8 +2347,29 @@ s_print_utf8(const char *u, size_t len, int x, int y, FontObj font)
    * shifting the unselected tail. */
   pango_layout_set_text(layout, u, len);
   int baseline = pango_layout_get_baseline(layout);
-  cairo_move_to(CR, x, y-P2D(baseline));
-  pango_cairo_show_layout(CR, layout);
+  double ty = y-P2D(baseline);
+
+  if ( xscale < 1.0 )
+  { cairo_save(CR);
+    cairo_translate(CR, x, ty);
+    cairo_scale(CR, xscale, 1.0);
+    /* The layout was synced to the unscaled matrix by
+       pce_cairo_set_font(); re-sync it so Pango shapes and hints for
+       the matrix we are actually drawing under. */
+    pango_cairo_update_layout(CR, layout);
+    cairo_move_to(CR, 0.0, 0.0);
+    pango_cairo_show_layout(CR, layout);
+    cairo_restore(CR);
+  } else
+  { cairo_move_to(CR, x, ty);
+    pango_cairo_show_layout(CR, layout);
+  }
+}
+
+
+void
+s_print_utf8(const char *u, size_t len, int x, int y, FontObj font)
+{ s_print_utf8_scaled(u, len, x, y, font, 1.0);
 }
 
 /**

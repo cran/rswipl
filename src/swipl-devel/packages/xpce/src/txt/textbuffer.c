@@ -152,6 +152,7 @@ loadTextBuffer(TextBuffer tb, IOSTREAM *fd, ClassDef def)
   int chr;
 
   TRY( loadSlotsObject(tb, fd, def) );
+  obtainClassVariablesObject(tb);
 
   if ( isNil(tb->syntax) )
     assign(tb, syntax, getClassVariableValueObject(tb, NAME_syntax));

@@ -50,6 +50,7 @@
 #define TXT_GREYED	0x2	/* greyed character */
 #define TXT_BOLDEN	0x4	/* bold character */
 #define TXT_HIDDEN	0x8	/* invisible fragment */
+#define TXT_ITALIC	0x10	/* slanted character */
 
 NewClass(text_buffer)
   ABSTRACT_SOURCE_SINK
@@ -124,7 +125,7 @@ typedef struct isearch_cache  *ISearchCache;
 NewClass(editor)
   ABSTRACT_DEVICE			/* abstract super class device */
   TextBuffer	text_buffer;		/* Buffer editor operates on */
-  TextImage	image;			/* The text area */
+  TextImage	text_image;		/* The text area */
   ScrollBar	scroll_bar;		/* The scrollbar */
   TextMargin	margin;			/* The margin */
   TextCursor	text_cursor;		/* The cursor */
@@ -169,6 +170,7 @@ NewClass(editor)
   Int		dabbrev_origin;		/* Start of dabbrev word */
   Name		dabbrev_mode;		/* Current dabbrev mode */
   Chain		dabbrev_candidates;	/* Dabbrev user candidates */
+  CharArray	placeholder;		/* Shown while I hold no text */
 					/* Private data */
   intptr_t	internal_mark;		/* Internally used mark */
   FragmentCache fragment_cache;		/* Cache to compute frament overlap */
@@ -299,18 +301,51 @@ NewClass(terminal_image)
   KeyBinding	bindings;		/* Key bindings */
   FontObj	font;			/* Basic font */
   FontObj	bold_font;		/* Boldened font */
+  FontObj	italic_font;		/* Slanted font */
+  FontObj	bold_italic_font;	/* Boldened slanted font */
   Colour	background;		/* Background colour */
   Style		selection_style;	/* Style for selected text  */
+  Style		isearch_style;		/* ... while searching for it */
+  Style		isearch_other_style;	/* ... and its other matches */
   Style		nfd_style;		/* Style for NFD grapheme clusters */
   Style		link_style;		/* Style for hyperlinks  */
   Style		link_armed_style;	/* Style for the hovered link  */
+  Style		fold_style;		/* Style for the fold marker */
   Vector	ansi_colours;		/* The 16 ANSI colour codes */
   BoolObj	armed_link;		/* Hovering over link */
+  BoolObj	armed_fold;		/* Hovering over a fold marker */
   Code		link_message;		/* Handle a clicked link */
   ScrollBar	scroll_bar;		/* Associated scrollbar */
   Int		save_lines;		/* # saved lines */
   SyntaxTable	syntax;			/* Word description */
+  Name		focus_function;		/* Function in focus */
+  StringObj	search_string;		/* Target of the search */
+  StringObj	selection_string;	/* Selection we highlight matches of */
+  Name		search_direction;	/* Direction of the search */
+  BoolObj	search_wrapped_warned;	/* Search hit the end of the buffer */
+  BoolObj	exact_case;		/* Search is case sensitive */
+  BoolObj	search_word;		/* Search matches whole words */
+  Name		working_directory;	/* Directory the client reported */
+  Name		host;			/* ... and the host it is on */
+  Chain		blocks;			/* terminal_block objects, oldest first */
+  Timer		drag_scroll_timer;	/* Scrolls while dragging outside */
   struct rlc_data *data;		/* The buffered data */
+End;
+
+/* One command the client ran, as its OSC 133 marks describe it: the
+ * prompt (`A'), the line the user edited (`B'), the output of running it
+ * (`C') and the end of that output (`D', or the prompt after it).  The
+ * block outlives the marks it was made from but not the lines it points
+ * at: once those are pushed out of the scroll-back its <-terminal is
+ * @nil and every method that needs the text fails.
+ */
+
+NewClass(terminal_block)
+  TerminalImage	terminal;		/* Terminal it belongs to, or @nil */
+  Int		id;			/* Handle that survives scrolling */
+  BoolObj	folded;			/* Its output is collapsed */
+  BoolObj	running;		/* `C' seen, no `D' yet */
+  struct rlc_anchors *anchors;		/* Where its marks landed */
 End;
 
 COMMON(void)	update_lsp_pos_text_buffer(TextBuffer tb, size_t from, size_t to,

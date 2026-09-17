@@ -124,7 +124,7 @@ initialise(V, Root:[visual]) :->
     V=>>changed_message(new(C, message(V, changed, @arg1))),
     F->>debug_class(service),
     C->>debug_class(service),
-    Id    = TheRoot->>object_reference,
+    Id    = TheRoot,
     Label = TheRoot->>vis_icon_label,
     Icon  = TheRoot->>vis_icon,
     V->>root(toc_folder(Label, Id, Icon, Icon)).
@@ -141,8 +141,8 @@ unlink(V) :->
 vis_expandable(_V) :->
     fail.
 
-expand_node(V, Id:'name|int') :->
-    Ref  = @pce->>object_from_reference(Id),
+expand_node(V, Id:visual) :->
+    Ref  = Id,
     (   Subs = Ref->>contains,
         \+ Subs->>empty,
         V->>report(status, '')
@@ -151,13 +151,13 @@ expand_node(V, Id:'name|int') :->
     ).
 %       V*>>expand_node(Id).
 
-add_visual(V, Visual:visual, SuperId:[name|int]) :->
+add_visual(V, Visual:visual, SuperId:[visual]) :->
     "Add a visual object to the tree"::
-    Id = Visual->>object_reference,
+    Id = Visual,
     (   _ = V->>node(Id)
     ->  true
     ;   (   SuperId == @default
-        ->  TheSuperId = Visual->>contained_in->>object_reference
+        ->  TheSuperId = Visual->>contained_in
         ;   TheSuperId = SuperId
         ),
         Label = Visual->>vis_icon_label,
@@ -182,14 +182,14 @@ prepare(V, Visual:visual) :->
 
 freed(V, Visual:visual) :->
     "Handle a freed node"::
-    Id   = Visual->>object_reference,
+    Id   = Visual,
     Node = V->>node(Id),
     Node->>delete_tree.
 
 
 changed(V, Visual:visual) :->
     "Handle a changed node"::
-    Id    = Visual->>object_reference,
+    Id    = Visual,
     Node  = V->>node(Id),
     Label = Visual->>vis_icon_label,
     Node->>image->>label(Label).
@@ -206,27 +206,25 @@ visualise(V, Visual:visual) :->
     ).
 
 make_path(V, Visual) :-
-    Id = Visual->>object_reference,
-    _  = V->>node(Id),
+    _  = V->>node(Visual),
     !.
 make_path(V, Visual) :-
     Super   = Visual->>contained_in,
-    SuperId = Super->>object_reference,
+    SuperId = Super,
     make_path(V, Super),
     V->>add_visual(Visual, SuperId),
     V*>>expand_node(SuperId).
 
-select_node(V, Id:'name|int') :->
+select_node(V, Id:visual) :->
     "A node has been selected"::
-    Visual = @pce->>object_from_reference(Id),
+    Visual = Id,
     (   Visual->>has_send_method(flash)
     ->  Visual->>flash
     ;   true
     ),
     term_to_atom(Visual, Copy),
     @display->>copy(Copy),
-    ClassName = Visual->>class_name,
-    V->>report(status, 'Class: %s, Reference: @%s', ClassName, Id).
+    V->>report(status, 'Object: %O', Visual).
 
 :- free(@vis_node_popup).               % development
 :- pce_global(@vis_node_popup, make_vis_node_popup).
@@ -242,12 +240,11 @@ make_vis_node_popup(P) :-
     P->>append(class_details),
     P->>append(object_details).
 
-popup(_V, _Id:'name|int', @vis_node_popup:popup) :<-
+popup(_V, _Id:visual, @vis_node_popup:popup) :<-
     true.
 
 selection(V, Visual:visual) :<-
-    Ref    = V->>tree->>selection->>head->>identifier,
-    Visual = @pce->>object_from_reference(Ref).
+    Visual = V->>tree->>selection->>head->>identifier.
 
 copy_reference(V) :->
     Visual = V->>selection,
@@ -257,15 +254,18 @@ copy_reference(V) :->
 
 source(V) :->
     Class = V->>selection->>class,
-    V->>request_source(Class).
+    Tool = V->>container(man_frame),    % not me: these are the tool's
+    Tool->>request_source(Class).
 
 class_details(V) :->
     Class = V->>selection->>class,
-    V->>request_tool_focus(Class).
+    Tool = V->>container(man_frame),
+    Tool->>request_tool_focus(Class).
 
 object_details(V) :->
     Visual = V->>selection,
-    V->>frame->>manual->>inspect(Visual).
+    Tool = V->>container(man_frame),    % not <-frame: that is a window
+    Tool->>manual->>inspect(Visual).
 
 :- pce_end_class.
 
@@ -282,7 +282,8 @@ initialise(F, Manual:[man_manual]) :->
     ;   TheManual = Manual
     ),
     F*>>initialise(TheManual, 'Visual Hierarchy'),
-    F->>append(new(TD, tool_dialog)),
+    F->>append(new(TD, tool_dialog(F))),       % on me, not on <-frame:
+                                               % a window of the IDE
     send_list(TD, append,
               [ tool_button(help,
                             resource(help),
@@ -324,7 +325,8 @@ grab(F) :->
     new(D, select_graphical('Select object from screen')),
     D->>transient_for(F),
     D->>attribute(report_to, F),
-    Obj = D->>select(@arg1?frame \== F, F?area?center),
+    Mine = F->>frame,                   % anything but my own window: the
+    Obj = D->>select(@arg1?frame \== Mine, F?area?center),
     D->>destroy,
     Obj \== @nil,
     F->>window->>visualise(Obj).

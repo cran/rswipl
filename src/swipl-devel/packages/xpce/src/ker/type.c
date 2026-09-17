@@ -543,7 +543,7 @@ argType(const Type t, const Any val, const Any ctx)
 
 static inline status
 charType(const Type t, const Any val, const Any ctx)
-{ return isInteger(val) && valInt(val) >= 0 && valInt(val) <= UNICODE_MAX;
+{ return isInteger(val) && isCharCode(valInt(val));
 }
 
 
@@ -737,11 +737,6 @@ charpToChar(char *s)
   { return toupper(s[1]) - '@';
   } else if ( prefixstr(s, "\\C-") && s[4] == EOS )
   { return toupper(s[3]) - '@';
-  } else if ( prefixstr(s, "M-") || prefixstr(s, "\\e") )
-  { int c;
-
-    if ( (c = charpToChar(s+2)) >= 0 )
-      return c + META_OFFSET;
   }
 
   return -1;
@@ -762,7 +757,7 @@ getCharType(const Type t, const Any val, const Any ctx)
   } else
   { Int i = toInteger(val);
 
-    if ( valInt(i) >= 0 && valInt(i) <= 2*META_OFFSET )
+    if ( i && isCharCode(valInt(i)) )
       return i;
   }
 

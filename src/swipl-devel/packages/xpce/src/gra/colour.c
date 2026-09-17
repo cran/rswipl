@@ -130,9 +130,18 @@ initialiseColour(Colour c, Name name, Int r, Int g, Int b, Int a, Name model)
 }
 
 
+/* Both tables hold their Colours with `refer' none, so a Colour that is
+ * garbage collected has to take its entries out itself.  Leaving one
+ * behind hands the next lookup a freed object: two colours can share a
+ * name or an RGBA value, so only remove an entry that is still this one.
+ */
+
 static status
 unlinkColour(Colour c)
-{ deleteHashTable(ColourTable, c->name);
+{ if ( getMemberHashTable(ColourTable, c->name) == c )
+    deleteHashTable(ColourTable, c->name);
+  if ( getMemberHashTable(RevColourTable, c->rgba) == c )
+    deleteHashTable(RevColourTable, c->rgba);
 
   succeed;
 }
@@ -265,7 +274,7 @@ getConvertColour(Class class, Name name)
 	g = g*16 + g;
 	b = b*16 + b;
 	if ( has_alpha )
-	  a = b*16 + a;
+	  a = a*16 + a;
       }
 
       answer(answerObject(ClassColour, name,
@@ -432,7 +441,37 @@ getReduceColour(Colour c, Real re)
 }
 
 
-static Int
+/* Return a colour with the same RGB as C but alpha multiplied by
+ * `factor'.  Factor 0 fades to fully transparent, factor 1 is a
+ * no-op, values above 1 clamp at fully opaque.  The class variable
+ * `fade_factor' supplies a default; hard-coded fallback 0.5.
+ */
+Colour
+getFadeColour(Colour c, Real f)
+{ float ff;
+  int a;
+
+  if ( isDefault(f) )
+    f = getClassVariableValueObject(c, NAME_fadeFactor);
+  ff = f ? valReal(f) : 0.5;
+
+  if ( isDefault(c->rgba) )
+    ws_named_colour(c);
+
+  a = (int)((float)valInt(getAlphaColour(c)) * ff);
+  if ( a < 0 )   a = 0;
+  if ( a > 255 ) a = 255;
+
+  COLORRGBA rgb = valInt(c->rgba);
+  int r = ColorRValue(rgb);
+  int g = ColorGValue(rgb);
+  int b = ColorBValue(rgb);
+
+  return associateColour(c, toInt(r), toInt(g), toInt(b), toInt(a));
+}
+
+
+Int
 getIntensityColour(Colour c)
 { if ( isDefault(c->rgba) )
     ws_named_colour(c);
@@ -666,7 +705,7 @@ static senddecl send_colour[] =
      DEFAULT, "Create from name and optional rgb"),
   SM(NAME_unlink, 0, NULL, unlinkColour,
      DEFAULT, "Deallocate the colour object"),
-  SM(NAME_equal, 1, "colour", equalColour,
+  SM(NAME_equal, 1, "any", equalColour,
      DEFAULT, "Test if colours have equal RGB")
 };
 
@@ -677,6 +716,8 @@ static getdecl get_colour[] =
      NAME_3d, "Hilited version of the colour"),
   GM(NAME_reduce, 1, "colour", "factor=[0.0..1.0]", getReduceColour,
      NAME_3d, "Reduced version of the colour"),
+  GM(NAME_fade, 1, "colour", "factor=[0.0..1.0]", getFadeColour,
+     NAME_3d, "Same RGB with alpha multiplied by factor"),
   GM(NAME_convert, 1, "colour", "name", getConvertColour,
      NAME_conversion, "Convert X-colour name"),
   GM(NAME_storageReference, 0, "name", NULL, getStorageReferenceColour,
@@ -709,7 +750,9 @@ static classvardecl rc_colour[] =
 { RC(NAME_hiliteFactor, "real", "0.9",
      "Default factor for <-hilite'd colour"),
   RC(NAME_reduceFactor, "real", "0.6",
-     "Default factor for <-reduce'd colour")
+     "Default factor for <-reduce'd colour"),
+  RC(NAME_fadeFactor, "real", "0.5",
+     "Default alpha multiplier for <-fade")
 };
 
 /* Class Declaration */

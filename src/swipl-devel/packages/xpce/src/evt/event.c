@@ -106,6 +106,7 @@ initialiseEvent(EventObj e, Name id, Any window,
   assign(e, x,		x);
   assign(e, y,		y);
   assign(e, buttons,	bts);
+  assign(e, rotation,	NIL);
   e->time = t;
 
   if ( isDownEvent(e) )
@@ -292,9 +293,9 @@ isAEvent(EventObj e, Any id)
   if ( isInteger(e->id) )
   { int c = valInt(e->id);
 
-    if      ( c < 32 || c == 127 )		nm = NAME_control;
-    else if ( c >= 32 && c < META_OFFSET )	nm = NAME_printable;
-    else if ( c >= META_OFFSET   )		nm = NAME_meta;
+    if      ( valInt(e->buttons) & BUTTON_meta ) nm = NAME_meta;
+    else if ( c < 32 || c == 127 )		nm = NAME_control;
+    else if ( c >= 32 )				nm = NAME_printable;
     else					fail;
   } else if ( isName(e->id) )
   { nm = e->id;
@@ -559,6 +560,29 @@ get_xy_event_device(EventObj ev, Device dev, int *rx, int *ry)
 
 
 
+/* A graphical of a window's fixed layer is placed, painted and
+ * hit-tested in the coordinates of what is on screen, so the scroll
+ * offset must not be taken off again here.  See <-fixed_graphicals in
+ * src/win/window.c.
+ */
+
+static int
+in_fixed_layer(Graphical gr)
+{ Device d;
+
+  for(d = (Device)gr; notNil(d) && notNil(d->device); d = d->device)
+  { if ( instanceOfObject(d->device, ClassWindow) )
+    { PceWindow sw = (PceWindow)d->device;
+
+      return notNil(sw->fixed_graphicals) &&
+	     memberChain(sw->fixed_graphicals, d);
+    }
+  }
+
+  return FALSE;
+}
+
+
 static void
 get_xy_event_graphical(EventObj ev, Graphical gr, int *rx, int *ry)
 { int ox, oy;
@@ -567,7 +591,7 @@ get_xy_event_graphical(EventObj ev, Graphical gr, int *rx, int *ry)
   if ( !sw )
     sw = ev->window;
 
-  get_xy_event_window(ev, sw, OFF, rx, ry);
+  get_xy_event_window(ev, sw, in_fixed_layer(gr) ? ON : OFF, rx, ry);
 
   if ( deviceChainHasTransform(gr) )
   { double lx, ly;
@@ -939,8 +963,8 @@ getDisplayEvent(EventObj ev)
 		 *******************************/
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-Deal with scroll-mice and trackpads, mapping   events  with a `rotation`
-attribute to vertical scroll events.  Normally  a mouse scroll wheel has
+Deal with scroll-mice and trackpads, mapping  `wheel` events and their
+<-rotation to vertical scroll events.  Normally  a mouse scroll wheel has
 tick that are reported as 15 degrees rotations.
 
 @tbd We should also handle horizontal   scrolling  and smooth scrolling.
@@ -953,17 +977,17 @@ mapWheelMouseEvent(EventObj ev, Any rec)
 { if ( ev->id == NAME_wheel )
   { Name dir, unit;
     Int count;
-    Int rot_obj = getAttributeObject(ev, NAME_rotation);
 
-    if ( !rot_obj )
+    if ( isNil(ev->rotation) )
       fail;				/* Error? */
-    intptr_t rot = valInt(rot_obj);
+    intptr_t rot = valInt(ev->rotation);
 
     if ( isDefault(rec) )
       rec = ev->receiver;
 
     DEBUG(NAME_wheel,
-	  Cprintf("mapWheelMouseEvent() on %s, rot=%s\n", pp(rec), pp(rot)));
+	  Cprintf("mapWheelMouseEvent() on %s, rot=%s\n",
+		  pp(rec), pp(ev->rotation)));
 
     if ( !hasSendMethodObject(rec, NAME_scrollVertical) )
       fail;
@@ -1022,6 +1046,8 @@ static vardecl var_event[] =
      NAME_position, "X-coordinate, relative to window"),
   IV(NAME_y, "pixels=int", IV_GET,
      NAME_position, "Y-coordinate, relative to window"),
+  IV(NAME_rotation, "degrees=int*", IV_GET,
+     NAME_classify, "`wheel' events: rotation, 15 per notch"),
   IV(NAME_position, "point*", IV_NONE,
      NAME_position, "Last calculated position"),
   IV(NAME_time, "alien:Time", IV_NONE,
@@ -1109,6 +1135,7 @@ makeClassEvent(Class class)
 { Int t;
 
   declareClass(class, &event_decls);
+  cloneStyleVariableClass(class, NAME_frame,    NAME_reference);
   cloneStyleVariableClass(class, NAME_receiver, NAME_reference);
   cloneStyleVariableClass(class, NAME_window,   NAME_reference);
   init_event_tree();

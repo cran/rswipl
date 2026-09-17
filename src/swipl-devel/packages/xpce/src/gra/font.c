@@ -46,6 +46,7 @@ fontName(Name family, Name style, Int points, Name weight)
 { string s;
   Any av[4];
   Name rc;
+  StringObj fmt;
 
   if ( (weight == NAME_normal || weight == toInt(400)) ||
        (style == NAME_bold && (weight == NAME_bold || weight == toInt(700))) )
@@ -53,15 +54,18 @@ fontName(Name family, Name style, Int points, Name weight)
     av[1] = style;
     av[2] = points;
 
-    str_writefv(&s, (CharArray)CtoTempString("%s_%s_%.2f"), 3, av);
+    fmt = CtoTempString("%s_%s_%.2f");
+    str_writefv(&s, (CharArray)fmt, 3, av);
   } else
   { av[0] = family;
     av[1] = weight;
     av[2] = style;
     av[3] = points;
 
-    str_writefv(&s, (CharArray)CtoTempString("%s_%s_%s_%.2f"), 4, av);
+    fmt = CtoTempString("%s_%s_%s_%.2f");
+    str_writefv(&s, (CharArray)fmt, 4, av);
   }
+  considerPreserveObject(fmt);
 
   str_downcase(&s, 0, s.s_size);
   str_translate(&s, ' ', '_');
@@ -144,7 +148,8 @@ getConvertFont(Class class, Name name)
 
 FontObj
 getCopyFont(FontObj f)
-{ FontObj copy = allocObject(classOfObject(f), FALSE);
+{ Class class = classOfObject(f);
+  FontObj copy = allocObject(class, FALSE);
 
   ws_create_font(f);
   assign(copy, family,      f->family);
@@ -155,6 +160,7 @@ getCopyFont(FontObj f)
   assign(copy, descent,     f->descent);
   assign(copy, fixed_width, f->fixed_width);
   copy->ws_ref = ws_clone_ws_font(f->ws_ref);
+  createdClass(class, copy, NAME_copy);
 
   answer(copy);
 }
@@ -548,7 +554,9 @@ static classvardecl rc_font[] =
      "  boldhuge  := font(sans, bold,   18),\n"
      "  fixed     := font(mono, normal, 12),\n"
      "  tt        := font(mono, normal, 12),\n"
-     "  boldtt    := font(mono, bold,   12)\n"
+     "  boldtt    := font(mono, bold,   12),\n"
+     "  itt       := font(mono, italic, 12),\n"
+     "  bitt      := font(mono, italic, 12, bold)\n"
      "]",
      "Predefined font-aliases"),
   RC(NAME_pangoFamilies, "chain",

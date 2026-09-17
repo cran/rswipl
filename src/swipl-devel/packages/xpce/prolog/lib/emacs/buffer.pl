@@ -38,6 +38,7 @@
 :- use_module(library(pce)).
 :- use_module(library(dcg/basics)).
 :- use_module(library(broadcast)).
+:- autoload(library(prolog_xref), [xref_clean/1]).
 :- require([ between/3
            , default/3
            , ignore/1
@@ -123,6 +124,7 @@ unlink(B) :->
     ->  send(@emacs_base_names, delete, File?base_name, B)
     ;   true
     ),
+    ignore(xref_clean(B)),          % the xref data refers to us
     send(B, send_super, unlink).
 
 report(B,
@@ -289,9 +291,8 @@ name(B, Name:name) :->
         ->  send(DictItem, key, BufName)
         ;   send(@emacs_buffers, append, dict_item(BufName, @default, B))
         ),
-        send(B, update_label),
-        send(B?editors, for_some, message(@arg1?frame, label, BufName))
-    ).
+        send(B, update_label)           % reaches the views, their tabs
+    ).                                  % and the frame label from there
 
 
 lookup(_Ctx, File:file*, Name:[name], Buffer:emacs_buffer) :<-
@@ -704,24 +705,78 @@ confirm_reload(_, Frame, _, File) :-
                  *          OPEN WINDOW         *
                  *******************************/
 
-open(B, How:[{here,tab,window}], Frame:emacs_frame) :<-
-    "Create window for buffer"::
-    (   How == window
-    ->  send(new(Frame, emacs_frame(B)), open)
-    ;   How == tab,
-        get(@emacs, current_frame, Frame)
-    ->  send(Frame, tab, B, @on),
+%       The view is the frame's <-current_pane whichever route was
+%       taken: `@emacs ->show_buffer' either makes the view it found
+%       current or appends one that exposes itself, and a frame of its
+%       own holds nothing else.
+
+open(B, How:[{as_arranged,here,tab,split,window}], View:emacs_view) :<-
+    "Create window for buffer; answer the view showing me"::
+    (   How \== window,
+        get(@emacs, target_frame, Frame)
+    ->  default(How, here, Where),
+        send(@emacs, show_buffer, Frame, B, Where),
         send(Frame, expose)
-    ;   get(@emacs, current_frame, Frame)
-    ->  send(Frame, buffer, B),
-        send(Frame, expose)
-    ;   send(new(Frame, emacs_frame(B)), open)
+    ;   get(@emacs, frame, B, Frame)
     ),
+    get(Frame, current_pane, View),
     send(B, check_modified_file, Frame).
 
-open(B, How:[{here,tab,window}]) :->
+open(B, How:[{as_arranged,here,tab,split,window}]) :->
     "Create window for buffer"::
     get(B, open, How, _).
+
+
+                 /*******************************
+                 *          PROPERTIES          *
+                 *******************************/
+
+%       A window saying what this buffer is.  It was `->identify' until
+%       2002 and lived on `emacs_mode' until the list of buffers needed
+%       to ask about a buffer that is in no window.  A buffer with more
+%       to say refines <-properties -- see `emacs_process_buffer'.
+
+properties(B) :->
+    "Show a window describing me"::
+    get(B, properties, _).
+
+properties(B, V:view) :<-
+    "Show a window describing me and answer it"::
+    get(B, name, Name),
+    get(B, modified, Modified),
+    get(B, size, Size),
+    get(B, line_number, Lines),
+    get(B, mode, Mode),
+    new(V, view(string('Buffer %s', Name), size(60, 8))),
+    send(V, confirm_done, @off),
+    send(V, tab_stops, vector(200)),
+    send(V, appendf, 'Buffer Name:\t%s\n', Name),
+    send(V, appendf, 'Mode:\t%s\n', Mode),
+    send(V, appendf, 'Modified:\t%s\n', Modified?name),
+    send(V, appendf, 'Size:\t%d characters; %d lines\n', Size, Lines-1),
+    get(B, file, File),
+    (   Modified == @on,
+        File \== @nil
+    ->  get(File, size, FileSize),
+        send(V, appendf, 'File Size:\t%d characters\n', FileSize)
+    ;   true
+    ),
+    (   File \== @nil
+    ->  get(File, absolute_path, Path),
+        send(V, appendf, 'Path:\t%s\n', Path),
+        send(V, appendf, 'Encoding:\t%s (BOM=%s, NL=%s)\n',
+             File?encoding, File?bom, File?newline_mode)
+    ;   send(V, appendf, 'Path:\t<No file>\n')
+    ),
+    send(V, caret, 0),
+    send(new(D, dialog), below, V),
+    send(D, append, button(close, message(V, destroy))),
+    (   get(B, editors, Editors),
+        get(Editors, head, Editor),
+        get(Editor, frame, Frame)
+    ->  send(V, open_centered, Frame?area?center)
+    ;   send(V, open)
+    ).
 
 
                  /*******************************

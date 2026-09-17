@@ -69,7 +69,18 @@ expand(F) :->
 expand_all(F) :->
     "Expand this directory recursively"::
     send(F, collapsed, @off),
-    send(F?sons, for_all, message(@arg1, expand_all)).
+    (   object(F)                   % ->update deletes vanished directories
+    ->  send(F?sons, for_all, message(@arg1, async_expand))
+    ;   true
+    ).
+
+async_expand(F) :->
+    "Run ->expand_all in the next GUI iteration"::
+    Delay is random_float/5,
+    new(T, timer(Delay, message(@receiver, send_hyper,
+                                node, expand_all))),
+    new(_, hyper(T, F, node, timer)),
+    send(T, start, once).
 
 refresh(F) :->
     "Update for possible changes"::
@@ -78,22 +89,26 @@ refresh(F) :->
     ->  send(F, update)
     ;   true
     ),
-    send(F?sons, for_all,
-         if(message(@arg1, has_send_method, refresh),
-            message(@arg1, refresh))).
+    (   object(F)                   % ->update deletes vanished directories
+    ->  send(F?sons, for_all,
+             if(message(@arg1, has_send_method, refresh),
+                message(@arg1, refresh)))
+    ;   true
+    ).
 
 update(F) :->
     "Really update"::
     get(F, identifier, Dir),
     (   send(Dir, exists)
-    ->  get(F?tree, window, FB),
-        (   send(FB, has_get_method, file_pattern)
-        ->  get(FB, file_pattern, Regex)
-        ;   Regex = @default
-        ),
+    ->  get(F, file_pattern, Regex),
+        get(F, scan_hidden, Hidden),
         new(SubDirNames, chain),
         new(SubFileNames, chain),
-        send(Dir, scan, SubFileNames, SubDirNames, Regex),
+        send(Dir, scan, SubFileNames, SubDirNames, Regex, Hidden),
+        send(SubDirNames, delete_all, '.'),   % ->scan returns these if
+        send(SubDirNames, delete_all, '..'),  % hidden_too is @on
+        send(F, filter_files, SubFileNames),
+        send(F, filter_dirs, SubDirNames),
 
         get(F?sons, map, @arg1?name, Labels), % delete removed ones
         send(Labels, subtract, SubFileNames),
@@ -113,6 +128,26 @@ update(F) :->
     ).
 
 
+filter_files(_F, _Names:chain) :->
+    "Virtual: remove the files that must not be displayed"::
+    true.
+
+filter_dirs(_F, _Names:chain) :->
+    "Virtual: remove the subdirectories that must not be displayed"::
+    true.
+
+scan_hidden(_F, Hidden:[bool]) :<-
+    "Virtual: whether to scan the entries starting with a dot"::
+    Hidden = @default.
+
+file_pattern(F, Regex:[regex]) :<-
+    "Pattern for the files to display"::
+    get(F?tree, window, FB),
+    (   send(FB, has_get_method, file_pattern)
+    ->  get(FB, file_pattern, Regex)
+    ;   Regex = @default
+    ).
+
 ensure_dir(F, SubDir:name) :->
     "Ensure we have a subdirectory with this name"::
     (   get(F?sons, find, @arg1?name == SubDir, Node)
@@ -129,7 +164,8 @@ make_dir(F, Name:name) :->
     get(F, identifier, Dir),
     get(Dir, directory, Name, SubDir),
     get(F?tree, window, FB),
-    send(FB, son, F, toc_directory(SubDir)).
+    get(FB, make_dir_node, SubDir, Node),
+    send(FB, son, F, Node).
 
 ensure_file(F, File:name) :->
     "Ensure file is displayed"::
@@ -170,6 +206,64 @@ compare_sons(_, S1:node, S2:node, Diff:{smaller,equal,larger}) :<-
 :- pce_end_class(toc_directory).
 
 
+:- pce_begin_class(toc_roots, toc_folder,
+                   "Virtual root above the file system roots").
+
+initialise(TR, Label:[name]) :->
+    "Create from label, default \"This computer\""::
+    default(Label, 'This computer', TheLabel),
+    send_super(TR, initialise, TheLabel).
+
+expand(TR) :->
+    "Expand into the file system roots"::
+    send(TR, update).
+
+expand_all(TR) :->
+    "Expand recursively"::
+    send(TR, collapsed, @off),
+    send(TR?sons, for_all, message(@arg1, expand_all)).
+
+show_all_files(TR) :->
+    "Ensure all roots are shown"::
+    send(TR, update).
+
+refresh(TR) :->
+    "Update for possible changes"::
+    send(TR, update),
+    send(TR?sons, for_all,
+         if(message(@arg1, has_send_method, refresh),
+            message(@arg1, refresh))).
+
+update(TR) :->
+    "Ensure a node for each file system root"::
+    get(TR?tree, window, FB),
+    get(FB, root_directories, Roots),
+    send(Roots, for_all, message(TR, ensure_root, @arg1)),
+    send(TR, sort_sons).
+
+ensure_root(TR, Dir:directory) :->
+    "Ensure a node for the root directory Dir"::
+    get(TR?tree, window, FB),
+    (   \+ send(Dir, exists)        % empty or disconnected drive
+    ->  true
+    ;   get(FB, existing_dir_node, Dir, _)
+    ->  true
+    ;   get(FB, make_dir_node, Dir, Node),
+        send(Node, show, path),
+        send(FB, son, TR, Node)
+    ).
+
+sort_sons(TR) :->
+    "Sort the roots by path"::
+    send_super(TR, sort_sons, ?(TR, compare_sons, @arg1, @arg2)).
+
+compare_sons(_TR, S1:node, S2:node, Diff:{smaller,equal,larger}) :<-
+    "Compare the labels of the roots"::
+    get(S1?label, compare, S2?label, Diff).
+
+:- pce_end_class(toc_roots).
+
+
 :- pce_begin_class(toc_filesystem, toc_window,
                    "Table-of-content based on directories").
 
@@ -180,15 +274,9 @@ variable(refresh_timer, timer*, get, "Timer for automatic refresh").
 
 initialise(FB, Root:[directory]) :->
     "Create from initial dierctory"::
-    (   Root == @default
-    ->  absolute_file_name('.', Dir),
-        new(R, directory(Dir))
-    ;   get(Root, path, Path0),
-        absolute_file_name(Path0, Dir),
-        new(R, directory(Dir))
-    ),
     send_super(FB, initialise),
-    send(FB, root, toc_directory(R, path)),
+    get(FB, make_root_node, Root, RootNode),
+    send(FB, root, RootNode),
     send(FB, expand_root),
     (   get(FB, auto_refresh, Time),
         Time \== @nil
@@ -209,13 +297,43 @@ up(FB) :->
     "Provide the parent directory"::
     get(FB, root, RootNode),
     get(RootNode, identifier, RootDir),
-    get(RootDir, parent, Parent),
-    send(FB, root,
-         new(R, toc_directory(Parent, path)), @on),
-    send(RootNode, show, name),
-    send(R, update).
+    send(RootDir, instance_of, directory),
+    (   get(RootDir, parent, Parent)
+    ->  get(FB, make_dir_node, Parent, R),
+        send(R, show, path),
+        send(FB, root, R, @on),
+        send(RootNode, show, name),
+        send(R, update)
+    ;   get(FB, root_directories, Roots),  % above a Windows drive
+        get(Roots, size, Size),
+        Size > 1
+    ->  get(FB, make_roots_node, R),
+        send(FB, root, R, @on),
+        send(R, update)
+    ).
 
 :- pce_group(virtual).
+
+make_root_node(_FB, Root:[directory], Node:toc_folder) :<-
+    "Virtual: create the root node from the initial directory"::
+    (   Root == @default
+    ->  absolute_file_name('.', Path)
+    ;   get(Root, path, Path0),
+        absolute_file_name(Path0, Path)
+    ),
+    new(Node, toc_directory(directory(Path), path)).
+
+make_roots_node(_FB, Node:toc_folder) :<-
+    "Virtual: create a virtual root above the file system roots"::
+    new(Node, toc_roots).
+
+make_dir_node(_FB, Dir:directory, Node:toc_node) :<-
+    "Virtual: create a node for a directory"::
+    new(Node, toc_directory(Dir)).
+
+root_directories(_FB, Roots:chain) :<-
+    "Virtual: chain of file system roots (Windows drives)"::
+    get(directory('.'), roots, Roots).
 
 make_file_node(_FB, File:file, Node:toc_node) :<-
     "Virtual: create a node for a file"::
@@ -225,22 +343,31 @@ make_file_node(_FB, File:file, Node:toc_node) :<-
 
 :- pce_group(expand).
 
+existing_dir_node(FB, Dir:directory, Node:toc_node) :<-
+    "Node for Dir if it is already in the tree"::
+    get(FB?tree, nodes, NodeTable),
+    get(NodeTable, find_key,
+        and(message(@arg1, instance_of, directory),
+            message(@arg1, same, Dir)),
+        NodeDir),
+    get(NodeTable, member, NodeDir, Node).
+
+sub_dir_node(_FB, Node:toc_node, Dir:directory, SubNode:toc_node) :<-
+    "Son of Node representing Dir"::
+    get(Node?sons, find,
+        and(message(@arg1?identifier, instance_of, directory),
+            message(@arg1?identifier, same, Dir)),
+        SubNode).
+
 dir_node(FB, Dir:directory, Create:[bool], Node:toc_node) :<-
     "Get node for directory, possibly add it to tree"::
-    get(FB?tree, nodes, NodeTable),
-    (   get(NodeTable, find_key,
-            and(message(@arg1, instance_of, directory),
-                message(@arg1, same, Dir)),
-            NodeDir)
-    ->  get(NodeTable, member, NodeDir, Node)
+    (   get(FB, existing_dir_node, Dir, Node)
+    ->  true
     ;   Create == @on
     ->  get(Dir, parent, Parent),
         get(FB, dir_node, Parent, Create, ParentNode),
         send(ParentNode, collapsed, @off),
-        get(ParentNode?sons, find,
-            and(message(@arg1?identifier, instance_of, directory),
-                message(@arg1?identifier, same, Dir)),
-            Node)
+        get(FB, sub_dir_node, ParentNode, Dir, Node)
     ).
 
 

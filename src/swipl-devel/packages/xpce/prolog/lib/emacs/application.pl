@@ -38,6 +38,10 @@
 :- module(emacs_application, []).
 :- use_module(library(pce)).
 :- use_module(library(pce_history)).
+:- use_module(library(pane_frame), []).
+:- use_module(library(swi_ide), []).
+:- use_module(library(pce_util), [chain_list/2]).
+:- use_module(library(toolbar), []).
 :- use_module(library(broadcast)).
 :- use_module(library(edit)).
 :- use_module(library(lists)).
@@ -47,6 +51,21 @@
 :- if(current_prolog_flag(windows, true)).
 :- use_module(dde_server).
 :- endif.
+
+%!  emacs_server
+%
+%   PceEmacs listens on a socket (see @emacs_server_address), so that
+%   `xpce-client' and edit/1 from another  process reach this PceEmacs
+%   rather than starting one of  their  own.   Set  the flag to `false'
+%   before PceEmacs is created to  do   without,  which  is what a test
+%   wants: it must not take the address of the PceEmacs of whoever runs
+%   it, nor leave one behind.  ->server_start still starts the server if
+%   it is asked to explicitly.
+
+:- create_prolog_flag(emacs_server, true,
+                      [ type(boolean),
+                        keep(true)
+                      ]).
 
 :- require([ ignore/1
            , pce_help_file/2
@@ -75,7 +94,10 @@ initialise(Emacs, Buffers:dict) :->
          history(message(Emacs, goto_history, @arg1, tab))),
     send(Emacs, slot, buffer_list, Buffers),
     get(@emacs_mark_list, class, _), % force loading
-    ignore(send(Emacs, server_start)),
+    (   current_prolog_flag(emacs_server, false)
+    ->  true
+    ;   ignore(send(Emacs, server_start))
+    ),
     ignore(send(Emacs, load_user_init_file)),
     register_clean_exit(Emacs).
 
@@ -119,17 +141,14 @@ editor_event(_Emacs, Ev:event) :->
 
 :- pce_group(buffer).
 
-show_buffer_menu(Emacs) :->
+show_buffer_menu(_Emacs) :->
     "Show the buffer menu"::
-    (   get(Emacs, member, buffer_menu, Menu)
-    ->  send(Menu, expose)
-    ;   send(emacs_buffer_menu(Emacs), open)
-    ).
+    send(@prolog_ide, show_tool, emacs_buffer_menu).
 
 
-selection(Emacs, B:emacs_buffer*) :->
+selection(_Emacs, B:emacs_buffer*) :->
     "Select emacs buffer"::
-    (   get(Emacs, member, buffer_menu, Menu)
+    (   get(@prolog_ide, tool, emacs_buffer_menu, Menu)
     ->  send(Menu, selection, B)
     ;   true
     ).
@@ -158,10 +177,38 @@ buffers(Emacs, Buffers:chain) :<-
     get(Emacs?buffer_list?members, map, @arg1?object, Buffers).
 
 
-open_file(_Emacs, File:file, How:[{here,tab,window}]) :->
+%       Which window a buffer is shown in: the one PceEmacs was last
+%       working in, if there is one, and otherwise the window of the IDE
+%       the user is in.  A console with no editor in it can hold a tab or
+%       a split as well as any other window; only when there is no window
+%       at all does a buffer get one of its own.
+
+target_frame(Emacs, Frame:pane_frame) :<-
+    "The window to show a buffer in"::
+    (   get(Emacs, current_frame, Frame)        % one holding an editor
+    ->  true
+    ;   get(@prolog_ide, current_frame, Frame)  % the one being worked in
+    ).
+
+%       Where a source the user asks to see is opened.  A caller that
+%       says nothing gets the setting a window of the IDE offers on its
+%       Settings menu -- see `prolog_ide <-source_placement'; one that
+%       says where, as the popup offering "Edit in new window" does, is
+%       obeyed.
+
+source_placement(_Emacs, How:[{as_arranged,here,tab,split,window}],
+                 Where:{as_arranged,here,tab,split,window}) :<-
+    "Where to open a source; How overrules the setting"::
+    (   How \== @default
+    ->  Where = How
+    ;   get(@prolog_ide, source_placement, Where)
+    ).
+
+open_file(Emacs, File:file, How:[{as_arranged,here,tab,split,window}]) :->
     "Open a file"::
+    get(Emacs, source_placement, How, Where),
     new(B, emacs_buffer(File)),
-    send(B, open, How).
+    send(B, open, Where).
 
 
 find_file(Emacs, Dir:[directory]) :->
@@ -171,7 +218,7 @@ find_file(Emacs, Dir:[directory]) :->
 
 goto_source_location(Emacs,
                      Location:source_location,
-                     Where:where=[{here,tab,window}],
+                     Where:where=[{as_arranged,here,tab,split,window}],
                      Title:title=[char_array]*) :->
     "Visit the indicated source-location"::
     (   Title == @nil
@@ -180,10 +227,11 @@ goto_source_location(Emacs,
     ),
     get(Location, file_name, File),
     send(Emacs, ensure_source_file, File),
+    get(Emacs, source_placement, Where, Placement),
     new(B, emacs_buffer(File)),
-    get(B, open, Where, Frame),
+    get(B, open, Placement, View),
     send(B, check_modified_file),
-    get(Frame, editor, Editor),
+    get(View, editor, Editor),
     get(Editor, mode, Mode),
     (   get(Location, line_no, Line),
         Line \== @nil
@@ -222,24 +270,30 @@ ensure_source_file(_Emacs, File) :->
         fail
     ).
 
+%       The pane the user is in need not be a source: a window of the IDE
+%       holds the tools as well, and a tool has no editor to remember a
+%       place in.  ->open_file works from the same view -- see
+%       editor_view/2 -- so this is the location it is leaving.
+
 location_history(Emacs, Title:title=[char_array]) :->
     "Save current location into history"::
     (   get(Emacs, current_frame, Frame),
-        get(Frame, editor, Editor),
+        editor_view(Frame, View),
+        get(View, editor, Editor),
         get(Editor, mode, Mode)
     ->  send(Mode, location_history, title := Title)
     ;   true
     ).
 
 goto_history(Emacs, HE:emacs_history_entry,
-             Where:where=[{here,tab,window}]) :->
+             Where:where=[{as_arranged,here,tab,split,window}]) :->
     "Go back to an old history location"::
     get(HE, get_hyper, fragment, text_buffer, TB),
     get(HE, get_hyper, fragment, start, Start),
     get(HE, get_hyper, fragment, length, Len),
-    get(TB, open, Where, Frame),
+    get(TB, open, Where, View),
     send(TB, check_modified_file),
-    get(Frame, editor, Editor),
+    get(View, editor, Editor),
     End is Start+Len,
     send(Editor, caret, Start),
     send(Editor, selection, End, Start, highlight),
@@ -339,18 +393,166 @@ check_saved_at_exit(BM) :->
 
 :- pce_group(window).
 
-current_frame(Emacs, Frame:emacs_frame) :<-
+%       PceEmacs used to have a frame class of its own, and then an
+%       application of its own.  A window of the IDE belongs to
+%       @prolog_ide whoever opened it; what makes this one PceEmacs's is
+%       the editor in it -- see emacs_view, which answers the pane
+%       protocol.
+
+frame(_Emacs, For:'emacs_buffer|emacs_view', Frame:pane_frame) :<-
+    "A new frame showing For"::
+    (   send(For, instance_of, emacs_view)
+    ->  View = For
+    ;   new(View, emacs_view(For))
+    ),
+    new(Frame, pane_frame(@prolog_ide, 'PceEmacs',
+                          emacs_pane(View), @on)),
+    send(View?text_buffer, update_label),
+    send(Frame, open),
+    get(View, editor, E),
+    get(E, mode, Mode),
+    ignore(send(Mode, new_buffer)).
+
+%       A window of the IDE holds terminals and tools as well as views,
+%       so `here' -- show the buffer in the editor the user is in -- can
+%       only be done where there is one.  Everything else goes to the
+%       editor of the window, which holds a tab per source of its own
+%       (see `emacs_pane'), and a window that has no editor yet is given
+%       one where the user's arrangements say an editor goes.
+
+show_buffer(_Emacs, Frame:pane_frame, B:emacs_buffer,
+            How:[{as_arranged,here,tab,split}]) :->
+    "Show B in Frame, here, in a tab of the editor or beside what is there"::
+    (   reuses_a_view(How),
+        view_on_buffer(Frame, B, View)
+    ->  send(Frame, current_pane, View)         % it is already open
+    ;   How == here,
+        editor_view(Frame, View)
+    ->  send(View?editor, text_buffer, B),      % this very editor
+        send(Frame, current_pane, View)
+    ;   How == split,
+        editor_view(Frame, View)
+    ->  get(View, pane_tab, Tab),               % beside it, in its own tab
+        send(Tab, split, new(New, emacs_view(B)), View, horizontally),
+        send(Frame, current_pane, New),
+        setup_view(B, New)
+    ;   editor_pane(Frame, Editor)              % `tab' and `as_arranged'
+    ->  send(Editor, append_view, new(New, emacs_view(B)), B?name),
+        setup_view(B, New)
+    ;   new_editor(Frame, B, How, New)          % no editor in this window
+    ->  setup_view(B, New)
+    ).
+
+%!  new_editor(+Frame, +Buffer, +How, -View) is semidet.
+%
+%   Give a window with no editor in it one, showing Buffer: where the
+%   user's arrangements say an editor goes, beside what is there, or in a
+%   tab of the window, as they asked for.
+
+new_editor(Frame, B, How, New) :-
+    new(Editor, emacs_pane(new(New, emacs_view(B)))),
+    (   How == as_arranged
+    ->  send(@prolog_ide, place_pane, Editor, Frame, @default, B?name)
+    ;   How == split,
+        get(Frame, current_pane, Rel)
+    ->  send(Frame, split, Editor, Rel, horizontally),
+        send(Frame, current_pane, New)
+    ;   send(Frame, append_pane, Editor, B?name, @on)
+    ).
+
+%       A source the user asks to see goes in the editor that is already
+%       showing it, whether they asked for a tab or left it to the way
+%       they arrange their windows.
+
+reuses_a_view(tab).
+reuses_a_view(as_arranged).
+
+setup_view(B, View) :-
+    send(B, update_label),
+    send(View, setup_mode).
+
+%!  editor_view(+Frame, -View) is semidet.
+%
+%   An emacs_view of Frame to work in: the pane the user is in if that is
+%   one, otherwise the first there is.
+
+editor_view(Frame, View) :-
+    get(Frame, current_pane, Current),
+    send(Current, instance_of, emacs_view),
+    !,
+    View = Current.
+editor_view(Frame, View) :-
+    frame_pane(Frame, View),
+    send(View, instance_of, emacs_view),
+    !.
+
+%!  editor_pane(+Frame, -Editor) is semidet.
+%
+%   The editor of Frame: the pane its views live in.  There is at most
+%   one per tab of the window and normally one per window; the one the
+%   user is in comes first, as with editor_view/2.
+
+editor_pane(Frame, Editor) :-
+    editor_view(Frame, View),
+    get(Frame, pane_group, View, Editor),
+    send(Editor, instance_of, emacs_pane).
+
+%!  view_on_buffer(+Frame, +Buffer, -View) is semidet.
+
+view_on_buffer(Frame, B, View) :-
+    frame_pane(Frame, View),
+    send(View, instance_of, emacs_view),
+    get(View, text_buffer, TB),
+    TB == B,
+    !.
+
+%       <-panes answers the panes a tab of the window tiles, and the
+%       editor is one of those: the views are inside it.  Every window a
+%       source could be showing in is therefore a pane or a window of one.
+
+frame_pane(Frame, Pane) :-
+    get(Frame, panes, Panes),
+    chain_list(Panes, List),
+    member(P, List),
+    pane_window(P, Pane).
+
+pane_window(P, Window) :-
+    (   send(P, instance_of, emacs_pane)
+    ->  get(P, members, Chain),
+        chain_list(Chain, Windows),
+        member(Window, Windows)
+    ;   Window = P
+    ).
+
+%       Every window of the IDE belongs to @prolog_ide, so being a member
+%       no longer says a window is one of PceEmacs's.  Holding an editor
+%       does.  <-members is in most-recently-worked-in order -- see
+%       `pane_frame ->input_focus' -- so the first that qualifies is the
+%       one to use.
+
+current_frame(_Emacs, Frame:pane_frame) :<-
     "PceEmacs frame the user is working in"::
     (   send(@event, instance_of, event),
         get(@event, window, Window),
         get(Window, frame, Frame),
-        send(Frame, instance_of, emacs_frame)
+        send(Frame, instance_of, pane_frame),
+        shows_an_editor(Frame)
     ->  true
-    ;   get(Emacs?members, find,
-            and(message(@arg1, instance_of, emacs_frame),
-                message(@arg1, on_current_desktop)),
-            Frame)
+    ;   get(@prolog_ide, members, Members),
+        chain_list(Members, Frames),
+        member(Frame, Frames),
+        send(Frame, instance_of, pane_frame),
+        send(Frame, on_current_desktop),
+        shows_an_editor(Frame)
+    ->  true
     ).
+
+%!  shows_an_editor(+Frame) is semidet.
+%
+%   True when Frame holds a view a buffer can be shown in.
+
+shows_an_editor(Frame) :-
+    editor_view(Frame, _).
 
 
                  /*******************************
@@ -431,9 +633,23 @@ chrome_server(_Emacs) :->
                  *       USER EXTENSIONS        *
                  *******************************/
 
+%!  user_customisation is semidet.
+%
+%   True when PceEmacs may load the files of whoever is running it: the
+%   mode extensions of ->load_user_extension and the init file of
+%   ->load_user_init_file.  The `xpce_defaults' flag set to `none' says
+%   it may not; see user_pce_defaults/1 of library(pce).  That is what a
+%   test wants: a mode extension of theirs is no more a reason for the
+%   suite to fail than a preference of theirs is.
+
+user_customisation :-
+    \+ current_prolog_flag(xpce_defaults, none),
+    \+ current_prolog_flag(xpce_defaults, false).
+
 load_user_extension(_Emacs, Base:name) :->
     "Load Prolog user file with this base-name"::
-    (   absolute_file_name(emacs_user_library(Base),
+    (   user_customisation,
+        absolute_file_name(emacs_user_library(Base),
                            [ access(read),
                              file_type(prolog),
                              file_errors(fail)
@@ -450,7 +666,8 @@ load_user_init_file(_Emacs) :->
     ->  Base = 'pceemacs.ini'
     ;   Base = '.pceemacsrc'
     ),
-    (   absolute_file_name(user_profile(Base),
+    (   user_customisation,
+        absolute_file_name(user_profile(Base),
                            [ access(read),
                              file_errors(fail)
                            ],

@@ -101,7 +101,7 @@ locking is required.
 #include <stdarg.h>
 #include <ctype.h>
 #include <sys/stat.h>
-#if defined(HAVE_POLL_H)
+#if defined(HAVE_POLL)
 #include <poll.h>
 #elif defined(HAVE_SYS_SELECT_H)
 #include <sys/select.h>
@@ -169,6 +169,8 @@ extern Sunicode_atoms_t		initUnicodeAtoms(void);
 extern bool			reportStreamError(IOSTREAM *s);
 extern record_t			PL_record(term_t t);
 extern int			PL_thread_self(void);
+extern ssize_t			writeAtomText(IOSTREAM *s, const char *text,
+					      size_t len, IOENC enc);
 
 
 		 /*******************************
@@ -730,12 +732,106 @@ S__fillbuf(IOSTREAM *s)
 		 *******************************/
 
 
+/* Supdatepos() maintains the *display* column of the position: `linepos`
+ * counts terminal columns, not characters.  `charno` and `byteno` are the
+ * faithful counters.  Non-printable characters therefore take 0 columns,
+ * a wide character takes 2 and an ANSI escape sequence takes none at all.
+ *
+ * The escape sequences recognised are
+ *
+ *   CSI	ESC [ <0x20..0x3f>* <0x40..0x7e>	e.g. ESC [ 1 m
+ *   OSC	ESC ] <any>* (BEL | ESC \)		e.g. hyperlinks
+ *   Other	ESC <0x20..0x2f>* <any>			e.g. ESC ( B
+ *
+ * The state lives in the low IOPOS_ESC_SHIFT bits of IOPOS.esc_state; the
+ * remaining bits count the characters consumed so far.  A control
+ * character that cannot appear in a sequence, or a run longer than
+ * IOPOS_ESC_MAX, aborts the sequence and the character is counted
+ * normally.  Without that a stray ESC would stop all column tracking.
+ */
+
+#define ANSI_ESC	  0x1b		/* \e */
+#define ANSI_BEL	  0x07
+
+#define IOPOS_ESC_NONE	  0		/* not in a sequence */
+#define IOPOS_ESC_ESC	  1		/* seen ESC */
+#define IOPOS_ESC_CSI	  2		/* seen ESC [ */
+#define IOPOS_ESC_OSC	  3		/* seen ESC ] */
+#define IOPOS_ESC_OSC_ESC 4		/* seen ESC inside OSC; expect \ */
+#define IOPOS_ESC_SHIFT	  3
+#define IOPOS_ESC_MASK	  ((1<<IOPOS_ESC_SHIFT)-1)
+#define IOPOS_ESC_MAX	  256
+
+static bool
+Supdateesc(IOPOS *p, int c)
+{ int state = (int)(p->esc_state & IOPOS_ESC_MASK);
+  intptr_t len;
+
+  if ( likely(state == IOPOS_ESC_NONE) )
+  { if ( likely(c != ANSI_ESC) )
+      return false;
+    p->esc_state = IOPOS_ESC_ESC | ((intptr_t)1<<IOPOS_ESC_SHIFT);
+    return true;
+  }
+
+  if ( (len=(p->esc_state>>IOPOS_ESC_SHIFT)) >= IOPOS_ESC_MAX )
+    goto abort;
+
+  switch(state)
+  { case IOPOS_ESC_ESC:
+      if ( c == '[' )
+	state = IOPOS_ESC_CSI;
+      else if ( c == ']' )
+	state = IOPOS_ESC_OSC;
+      else if ( c >= 0x20 && c <= 0x2f )
+	;				/* intermediate byte */
+      else if ( c >= 0x20 )
+	state = IOPOS_ESC_NONE;		/* final byte */
+      else
+	goto abort;
+      break;
+    case IOPOS_ESC_CSI:
+      if ( c >= 0x20 && c <= 0x3f )
+	;				/* parameter/intermediate byte */
+      else if ( c >= 0x40 && c <= 0x7e )
+	state = IOPOS_ESC_NONE;		/* final byte */
+      else
+	goto abort;
+      break;
+    case IOPOS_ESC_OSC:
+      if ( c == ANSI_BEL )
+	state = IOPOS_ESC_NONE;
+      else if ( c == ANSI_ESC )
+	state = IOPOS_ESC_OSC_ESC;
+      else if ( c < 0x20 )
+	goto abort;
+      break;
+    case IOPOS_ESC_OSC_ESC:
+      if ( c == '\\' )			/* ST */
+	state = IOPOS_ESC_NONE;
+      else
+	goto abort;
+      break;
+  }
+
+  p->esc_state = state ? (state | ((len+1)<<IOPOS_ESC_SHIFT)) : 0;
+  return true;
+
+abort:
+  p->esc_state = 0;
+  return Supdateesc(p, c);		/* c may start a new sequence */
+}
+
+
 bool
 Supdatepos(IOPOS *p, int c)
-{ if ( likely(c > '\r' && c < 0x300) )	/* speedup the 99% case a bit */
-  { p->linepos++;
+{ if ( likely(c >= ' ' && c < 0x7f) && likely(p->esc_state == 0) )
+  { p->linepos++;			/* speedup the 99% case a bit */
     return false;
   }
+
+  if ( Supdateesc(p, c) )
+    return false;
 
   switch(c)
   { case '\n':
@@ -745,20 +841,34 @@ Supdatepos(IOPOS *p, int c)
     case '\r':
       p->linepos = 0;
       return true;			/* linepos is reliable again */
-      break;
     case '\b':
       if ( p->linepos > 0 )
 	p->linepos--;
       break;
     case '\t':
-      p->linepos |= 7;
-      /*FALLTHROUGH*/
+      p->linepos = (p->linepos|7) + 1;	/* next multiple of 8 */
+      break;
     default:
-      p->linepos += PL_wcwidth(c);
+    { int w = PL_wcwidth(c);		/* -1 if not printable */
+
+      if ( w > 0 )
+	p->linepos += w;
+    }
   }
 
   return false;
 }
+
+/* Sresetesc() discards a partially seen escape sequence.  Call this
+ * whenever the position is assigned from outside rather than derived from
+ * the characters that passed by.
+ */
+
+void
+Sresetesc(IOPOS *p)
+{ p->esc_state = 0;
+}
+
 
 static inline void
 update_linepos(IOSTREAM *s, int c)
@@ -859,6 +969,7 @@ unget_byte(int c, IOSTREAM *s)
     p->byteno--;
     if ( c == '\n' )
       p->lineno--;
+    Sresetesc(p);
     s->flags |= SIO_NOLINEPOS;
   }
 }
@@ -1971,6 +2082,7 @@ update:
 
   if ( s->position )
   { s->flags |= (SIO_NOLINENO|SIO_NOLINEPOS); /* no update this */
+    Sresetesc(s->position);
     s->position->byteno = pos;
     s->position->charno = pos/Sunit_size(s); /* compatibility */
   }
@@ -2308,34 +2420,6 @@ Svprintf(const char *fm, va_list args)
 { return Svfprintf(Soutput, fm, args);
 }
 
-static int
-next_chr(const char **s, IOENC enc)
-{ switch(enc)
-  { case ENC_ANSI:
-    case ENC_ISO_LATIN_1:
-    { unsigned char c = (unsigned char)**s;
-      ++(*s);
-      return c;
-    }
-    case ENC_UTF8:
-    { int c;
-      PL_utf8_code_point(s, NULL, &(c));
-      return c;
-    }
-    case ENC_WCHAR:
-    { const wchar_t *w = (const wchar_t*)*s;
-      int c;
-
-      w = get_wchar(w, &c);
-      *s = (const char*)w;
-      return c;
-    }
-    default:
-      assert(0);
-      return -1;
-  }
-}
-
 #define OUTCHR(s, c)	do { printed++; \
 			     if ( Sputcode((c), (s)) < 0 ) goto error; \
 			   } while(0)
@@ -2343,12 +2427,12 @@ next_chr(const char **s, IOENC enc)
 	do \
 	{ if ( fs == fbuf ) \
 	  { while(fs < fe) \
-	    { int c = next_chr((const char**)&fs, enc); \
+	    { int c = text_next_char((const char**)&fs, enc); \
 	      OUTCHR(s, c); \
 	    } \
 	  } else \
 	  { for(;;) \
-	    { int c = next_chr((const char**)&fs, enc); \
+	    { int c = text_next_char((const char**)&fs, enc); \
 	      if ( c ) \
 		OUTCHR(s, c); \
 	      else \
@@ -2451,6 +2535,7 @@ Svfprintf(IOSTREAM *s, const char *fm, va_list args)
 	  fm++;
 	  if ( *fm == '*' )
 	  { arg2 = va_arg(args, int);
+	    fm++;
 	  } else
 	  { arg2 = 0;
 	    for( ; isdigit(char_to_int(*fm)); fm++)
@@ -2489,6 +2574,34 @@ Svfprintf(IOSTREAM *s, const char *fm, va_list args)
 	    break;
 	}
 
+	/* %As, %UAs, ...: write the string as a Prolog atom, i.e., quote
+	   and escape it if that is needed to read it back.  The precision
+	   gives the length in elements of the string; without it the string
+	   must be 0-terminated.  Writes to `s` directly, so the field width
+	   does not apply.  See writeAtomText() and section "BLOBS" in the
+	   manual.
+	*/
+
+	if ( *fm == 'A' && fm[1] == 's' )
+	{ const char *str = va_arg(args, char *);
+	  size_t len = (size_t)-1;
+	  ssize_t n;
+
+	  if ( !str )
+	  { str = "(null)";
+	    enc = ENC_ISO_LATIN_1;
+	  } else if ( has_arg2 && arg2 >= 0 )
+	  { len = (size_t)arg2;
+	    if ( enc == ENC_WCHAR )
+	      len *= sizeof(wchar_t);
+	  }
+	  if ( (n=writeAtomText(s, str, len, enc)) < 0 )
+	    goto error;
+	  printed += (int)n;
+	  fm += 2;
+	  continue;
+	}
+
 	switch(*fm)
 	{ case 'c':
 	  { int c = va_arg(args, int);
@@ -2498,13 +2611,15 @@ Svfprintf(IOSTREAM *s, const char *fm, va_list args)
 	  }
 	  case 'p':
 	  { void *ptr = va_arg(args, void*);
-	    char fmbuf[8], *fp=fmbuf;
-	    *fp++ = '%';
-	    if ( modified )
-	      *fp++ = '#';
-	    *fp++ = 'p';
-	    *fp   = '\0';
-	    SNPRINTF3(fmbuf, ptr);
+
+	    /* Do not use the platform %p: it is not portable and not
+	       readable as a Prolog number.  The MSVC runtime prints
+	       uppercase hex without the 0x prefix and glibc prints NULL
+	       as "(nil)".  Blob write() callbacks print their handle
+	       with %p and that output must be acceptable to read_term/2,3
+	       using blob(dead).  See section "BLOBS" in the manual.
+	    */
+	    SNPRINTF3("0x%llx", (unsigned long long)(uintptr_t)ptr);
 
 	    break;
 	  }
@@ -3764,6 +3879,27 @@ Swinhandle(IOSTREAM *s)
     return (HANDLE)_get_osfhandle(fd);
 
   return NULL;
+}
+
+HANDLE
+Swinpseudoconsole(IOSTREAM *s)
+{ HANDLE h = NULL;
+
+  if ( s && s->functions->control &&
+       (*s->functions->control)(s->handle,
+				SIO_GETWINPSEUDOCONSOLE,
+				(void *)&h) == 0 )
+    return h;
+
+  return NULL;
+}
+
+void
+Swinrelease_pseudoconsole(IOSTREAM *s)
+{ if ( s && s->functions->control )
+    (void)(*s->functions->control)(s->handle,
+				   SIO_RELWINPSEUDOCONSOLE,
+				   NULL);
 }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

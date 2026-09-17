@@ -87,8 +87,8 @@ uncreate_window_frame(PceWindow sw)
 { ASSERT_SDL_MAIN();
   WsWindow wsw = sw->ws_ref;
 
-  if ( wsw->texture )
-  { SDL_DestroyTexture(wsw->texture);
+  if ( wsw && wsw->texture )		/* ws_ref is gone if the window was */
+  { SDL_DestroyTexture(wsw->texture);	/* uncreated before the frame */
     wsw->texture = NULL;
   }
 
@@ -321,6 +321,31 @@ frame_displayed(FrameObj fr, BoolObj val)
 }
 
 /**
+ * Say that `sub` sits in the <-subwindows of `sw` while its <-device
+ * chain says otherwise, naming what it does hang under.  A window that
+ * is erased from its device, or moved to one held by another window,
+ * should be uncreated and taken out of the chain; that it was not is a
+ * bug in whoever moved it, but the drawing code is the wrong place to
+ * die over one.  Reported once per window: this runs on every repaint.
+ */
+
+static void
+report_stray_subwindow(PceWindow sw, PceWindow sub, PceWindow me)
+{ static PceWindow reported;
+
+  if ( sub == reported )
+    return;
+  reported = sub;
+
+  Cprintf("xpce: %s is in the <-subwindows of %s, but its <-device "
+	  "chain ends at %s (<-parent = %s).  Not drawing it.\n",
+	  pp(sub), pp(sw), pp(me), pp(sub->parent));
+  for(Graphical gr = (Graphical)sub; notNil(gr->device); gr = (Graphical)gr->device)
+    Cprintf("\t%s is displayed on %s\n", pp(gr), pp(gr->device));
+}
+
+
+/**
  * Find  the x,y  offset of  a window,  possibly the  frame itself,  a
  * direct window, a  window inside a decorator or a  subwindow of some
  * other window, relative to the frame.
@@ -352,7 +377,10 @@ ws_window_frame_position_(Any window, FrameObj fr, float *ox, float *oy)
     { PceWindow me = DEFAULT;
       Int x, y;
       get_absolute_xy_graphical((Graphical)sw, (Device *)&me, &x, &y);
-      assert(me == sw->parent);
+      if ( me != sw->parent )
+      { report_stray_subwindow(sw->parent, sw, me);
+	return false;
+      }
       *ox += valNum(x);
       *oy += valNum(y);
       return ws_window_frame_position_(sw->parent, fr, ox, oy);
@@ -363,6 +391,25 @@ ws_window_frame_position_(Any window, FrameObj fr, float *ox, float *oy)
       *oy += valNum(sw->area->y);
 
       return ws_window_frame_position_(sw->device, fr, ox, oy);
+    }
+
+    /* A pane lives on a device inside another window -- see class
+     * tab_frame in library(tab_frame) -- and <-parent only says which
+     * window it was created inside, which is nothing until it has been.
+     * Walk the device chain to the window it is drawn in and go on from
+     * there.
+     */
+    if ( notNil(sw->device) )
+    { PceWindow me = DEFAULT;
+      Int x, y;
+
+      if ( get_absolute_xy_graphical((Graphical)sw, (Device *)&me, &x, &y) &&
+	   instanceOfObject(me, ClassWindow) )
+      { *ox += valNum(x);
+	*oy += valNum(y);
+
+	return ws_window_frame_position_(me, fr, ox, oy);
+      }
     }
   }
 
@@ -453,14 +500,85 @@ ws_draw_resize_frame(FrameObj fr)
 }
 
 
+/**
+ * Where the coordinate system of `sub`, a subwindow of `sw`, starts
+ * relative to the origin of `sw`.
+ *
+ * get_absolute_xy_graphical() answers the position of `sub` itself,
+ * which already includes its <-area.  The routines below add the area
+ * again when they place the window, so take it out here.  The two are
+ * the same only while a subwindow sits in the top-left corner of its
+ * device, which is what class window_tab does and class tab_frame (see
+ * library(tab_frame)) does not.
+ *
+ * @param sw  Window holding `sub` in its <-subwindows
+ * @param sub The subwindow
+ * @return `false` if `sub` does not hang under `sw` after all, in which
+ *         case there is no offset to be had and it must not be drawn.
+ */
+
+static bool
+subwindow_offset(PceWindow sw, PceWindow sub, float *ox, float *oy)
+{ PceWindow me = DEFAULT;
+  Int x, y;
+
+  get_absolute_xy_graphical((Graphical)sub, (Device *)&me, &x, &y);
+  if ( me != sw )
+  { report_stray_subwindow(sw, sub, me);
+    return false;
+  }
+
+  *ox = (float)(valInt(x) - valInt(sub->area->x));
+  *oy = (float)(valInt(y) - valInt(sub->area->y));
+
+  return true;
+}
+
+
+/* How far a window and everything drawn inside it is faded.  A window
+ * that has scrollbars or a label is wrapped in a window_decorator and
+ * the two are one thing to the user, so <-opacity of either fades both:
+ * library(pane_frame) sets it on the pane, which is the window inside.
+ * See ws_draw_window().
+ */
+
+static double
+window_group_opacity(PceWindow sw)
+{ double op = valNum(sw->opacity);
+
+  if ( instanceOfObject(sw, ClassWindowDecorator) )
+    op *= valNum(((WindowDecorator)sw)->window->opacity);
+
+  return op;
+}
+
+
+/**
+ * Draw one window of `fr` and the windows it holds.
+ *
+ * @param off Where the window sits in the frame.
+ * @param opacity Alpha to draw this window and its children with; see
+ *        window_group_opacity().
+ */
+
 static void
-ws_draw_window(FrameObj fr, PceWindow sw, foffset *off)
+ws_draw_window(FrameObj fr, PceWindow sw, foffset *off, double opacity)
 { WsFrame  wfr = fr->ws_ref;
   WsWindow wsw = sw->ws_ref;
 
   if ( wsw )
   { ASSERT_SDL_MAIN();
     Area a = sw->area;
+
+    /* A window may be laid out with no room at all: a dialog holding
+     * only a menu_bar that is shown natively asks for no height -- see
+     * the comment at non_empty_tiles() in src/win/tile.c.  It has
+     * nothing to show, and drawing it anyway shows something.
+     */
+
+    if ( valInt(a->w) <= 0 || valInt(a->h) <= 0 )
+      return;
+
     SDL_FRect dstrect = Area2FRect(a);
     float scale = SDL_GetWindowPixelDensity(wfr->ws_window);
 
@@ -472,27 +590,39 @@ ws_draw_window(FrameObj fr, PceWindow sw, foffset *off)
 		  pp(sw), pp(fr),
 		  valInt(a->x), valInt(a->y), valInt(a->w), valInt(a->h)));
 
-    SDL_Color  bg = pceColour2SDL_Color(sw->background);
-    SDL_SetRenderDrawColor(wfr->ws_renderer, bg.r, bg.g, bg.b, bg.a);
-    SDL_RenderRect(wfr->ws_renderer, &dstrect);
+    SDL_Color bg = pceColour2SDL_Color(sw->background);
 
     cairo_surface_flush(wsw->backing);
     int width    = cairo_image_surface_get_width(wsw->backing);
     int height   = cairo_image_surface_get_height(wsw->backing);
     int stride   = cairo_image_surface_get_stride(wsw->backing);
-    Uint32 *data = (Uint32 *)cairo_image_surface_get_data(wsw->backing);
-    SDL_Surface *sdl_surf = SDL_CreateSurfaceFrom(width, height,
-						  SDL_PIXELFORMAT_ARGB8888,
-						  data, stride);
+    Uint8 *data  = cairo_image_surface_get_data(wsw->backing);
+
+    /* Uploading the  backing is  the expensive part  of drawing  a frame.
+     * A new texture must be filled completely; an existing one only needs
+     * the region the redraw changed.  See ws_dirty_window().
+     */
+
     if ( !wsw->texture )
-      wsw->texture = SDL_CreateTexture(wfr->ws_renderer,
+    { wsw->texture = SDL_CreateTexture(wfr->ws_renderer,
 				       SDL_PIXELFORMAT_ARGB8888,
 				       SDL_TEXTUREACCESS_STREAMING,
 				       width, height);
+      SDL_SetTextureBlendMode(wsw->texture, SDL_BLENDMODE_BLEND);
+      SDL_UpdateTexture(wsw->texture, NULL, data, stride);
+    } else
+    { for(int i=0; i<wsw->ndirty; i++)
+      { SDL_Rect *r = &wsw->dirty[i];
 
-    SDL_UpdateTexture(wsw->texture, NULL, data, stride);
+	SDL_UpdateTexture(wsw->texture, r,
+			  data + (size_t)r->y*stride + (size_t)r->x*4,
+			  stride);
+      }
+    }
+    wsw->ndirty = 0;
+
+    SDL_SetTextureAlphaModFloat(wsw->texture, (float)opacity);
     SDL_RenderTexture(wfr->ws_renderer, wsw->texture, NULL, &dstrect);
-    SDL_DestroySurface(sdl_surf);
     if ( wfr->flash_end_ms && SDL_GetTicks() < wfr->flash_end_ms )
     { int lum = (int)(0.299f*bg.r + 0.587f*bg.g + 0.114f*bg.b);
       Uint8 v = lum > 128 ? 0 : 255;		/* dark on light, light on dark */
@@ -513,35 +643,91 @@ ws_draw_window(FrameObj fr, PceWindow sw, foffset *off)
       off2.x = off->x + valNum(sw->area->x);
       off2.y = off->y + valNum(sw->area->y);
       WindowDecorator dw = (WindowDecorator)sw;
-      ws_draw_window(fr, dw->window, &off2);
+      ws_draw_window(fr, dw->window, &off2, opacity);
     }
     if ( notNil(sw->subwindows) && !emptyChain(sw->subwindows) )
     { Cell cell;
 
       for_cell(cell, sw->subwindows)
       { PceWindow sub = cell->value;
-	PceWindow me = DEFAULT;
-	Int x, y;
-	get_absolute_xy_graphical((Graphical)sub, (Device *)&me, &x, &y);
-	assert(me == sw);
+	float sx, sy;
+
+	if ( !subwindow_offset(sw, sub, &sx, &sy) )
+	  continue;
 
 	foffset off2;
-	off2.x = off->x + (float)(valInt(sw->area->x) + valInt(x));
-	off2.y = off->y + (float)(valInt(sw->area->y) + valInt(y));
+	off2.x = off->x + (float)valInt(sw->area->x) + sx;
+	off2.y = off->y + (float)valInt(sw->area->y) + sy;
 	DEBUG(NAME_sdl,
 	      Cprintf("Drawing subwindow %s of %s at %f,%f\n",
-		      pp(sub), pp(sw), pp(me), off2.x, off2.y));
+		      pp(sub), pp(sw), off2.x, off2.y));
 
-	ws_draw_window(fr, sub, &off2);
+	ws_draw_window(fr, sub, &off2, opacity*window_group_opacity(sub));
       }
     }
   }
 }
 
+/* The renderer lost the contents of its textures
+ * (SDL_EVENT_RENDER_TARGETS_RESET) or the device holding them
+ * (SDL_EVENT_RENDER_DEVICE_RESET).  We normally upload no more than
+ * what a redraw changed, so the textures must be thrown away and
+ * filled from the backing surfaces again.
+ */
+
+static void
+reset_texture_window(PceWindow sw)
+{ WsWindow wsw = sw->ws_ref;
+
+  if ( wsw )
+  { if ( wsw->texture )
+    { ASSERT_SDL_MAIN();
+      SDL_DestroyTexture(wsw->texture);
+      wsw->texture = NULL;
+    }
+    ws_dirty_all_window(sw);
+  }
+
+  if ( instanceOfObject(sw, ClassWindowDecorator) )
+    reset_texture_window(((WindowDecorator)sw)->window);
+  if ( notNil(sw->subwindows) )
+  { Cell cell;
+
+    for_cell(cell, sw->subwindows)
+      reset_texture_window(cell->value);
+  }
+}
+
+
+static void
+ws_reset_textures(void)
+{ DisplayManager dm = TheDisplayManager();
+  Cell c1;
+
+  for_cell(c1, dm->members)
+  { DisplayObj d = c1->value;
+    Cell c2;
+
+    for_cell(c2, d->frames)
+    { FrameObj fr = c2->value;
+      Cell c3;
+
+      if ( !ws_created_frame(fr) )
+	continue;
+
+      for_cell(c3, fr->members)
+	reset_texture_window(c3->value);
+
+      ws_draw_frame(fr);
+    }
+  }
+}
+
+
 bool
 ws_draw_frame(FrameObj fr)
 { if ( !ws_created_frame(fr) )
-    false;
+    return false;
 
   WsFrame wfr = fr->ws_ref;
   ASSERT_SDL_MAIN();
@@ -555,7 +741,9 @@ ws_draw_frame(FrameObj fr)
   Cell cell;
   for_cell(cell, fr->members)
   { foffset off = {0.0f,0.0f};
-    ws_draw_window(fr, cell->value, &off);
+    PceWindow sw = cell->value;
+
+    ws_draw_window(fr, sw, &off, window_group_opacity(sw));
   }
   ws_draw_resize_frame(fr);
   SDL_RenderPresent(wfr->ws_renderer);
@@ -604,13 +792,124 @@ ws_redraw_changed_frames(void)
 }
 
 
+		 /*******************************
+		 *	    LIVE RESIZE		*
+		 *******************************/
+
+/* On MacOS and Windows the OS runs a modal event loop while the user
+ * drags a window border (Cocoa's resize tracking loop, Win32's
+ * WM_ENTERSIZEMOVE loop).  Our main loop is blocked inside
+ * SDL_WaitEvent() (see ws_dispatch()) for the whole drag, so the
+ * SDL_EVENT_WINDOW_RESIZED and SDL_EVENT_WINDOW_EXPOSED events SDL
+ * generates from inside that loop are queued but not processed: the
+ * window only gets its new content after the user releases the mouse.
+ * MacOS meanwhile stretches the last Metal drawable and Windows pads
+ * with black.  X11 and Wayland have no modal loop, so there resizing
+ * is immediate.
+ *
+ * SDL_AddEventWatch() callbacks run at SDL_PushEvent() time, i.e., on
+ * the main thread from inside the modal loop, which is our only chance
+ * to react.  SDL meets us half way: while a live resize is in progress
+ * it runs a ~60Hz timer calling SDL_OnWindowLiveResizeUpdate(), which
+ * posts SDL_EVENT_WINDOW_EXPOSED for applications that (like us) do not
+ * use the SDL_AppIterate() callback API.
+ *
+ * Note that events handled here are still added to the queue.  We
+ * record the timestamp of the last one we processed in the frame so
+ * that sdl_live_resize_handled() can drop them when the main loop gets
+ * to run again.  Without that, a three second drag ends in a replay of
+ * some 200 full repaints.
+ */
+
+static int in_live_resize = 0;		/* do not recurse */
+
+static bool
+live_resize_event(const SDL_Event *ev)
+{ return ( ev->type == SDL_EVENT_WINDOW_RESIZED ||
+	   ev->type == SDL_EVENT_WINDOW_EXPOSED );
+}
+
+
+static bool SDLCALL
+live_resize_watch(void *closure, SDL_Event *ev)
+{ (void)closure;
+
+  if ( !live_resize_event(ev) ||
+       !SDL_IsMainThread() ||	/* watches may be called from any thread */
+       in_live_resize )
+    return true;
+
+  in_live_resize++;
+  if ( pceMTTryLock() )		/* blocking would freeze the modal loop */
+  { FrameObj fr = wsid_to_frame(ev->window.windowID);
+    WsFrame wfr = fr ? fr->ws_ref : NULL;
+
+    if ( wfr && ws_created_frame(fr) )
+    { AnswerMark mark;
+      DisplayManager dm = TheDisplayManager();
+      BoolObj test_queue = dm->test_queue;
+
+      markAnswerStack(mark);
+      if ( ev->type == SDL_EVENT_WINDOW_RESIZED )
+	sdl_frame_event(ev);	/* update the area and run the tile layout */
+      dm->test_queue = OFF;	/* the queue cannot drain in the modal loop */
+      RedrawDisplayManager(dm);
+      dm->test_queue = test_queue;
+      if ( ChangedFrames )
+	deleteChain(ChangedFrames, fr);	/* paint it here and now, rather */
+      ws_draw_frame(fr);		/* than through WM_PAINT on Windows */
+      ws_redraw_changed_frames();	/* other frames, if any */
+      rewindAnswerStack(mark, NIL);
+      wfr->live_ts = ev->common.timestamp;
+    }
+    pceMTUnlock();
+  }
+  in_live_resize--;
+
+  return true;			/* ignored for event watches */
+}
+
+
+void
+sdl_start_live_resize_watch(void)
+{ SDL_AddEventWatch(live_resize_watch, NULL);
+}
+
+
+/**
+ * Did live_resize_watch() already deal with this event?  Called from
+ * the normal dispatch loop with the xpce lock held.
+ *
+ * @return true if the event may be discarded.
+ */
+
+bool
+sdl_live_resize_handled(const SDL_Event *ev)
+{ if ( live_resize_event(ev) )
+  { FrameObj fr = wsid_to_frame(ev->window.windowID);
+    WsFrame wfr = fr ? fr->ws_ref : NULL;
+
+    if ( wfr && wfr->live_ts && ev->common.timestamp <= wfr->live_ts )
+      return true;
+  }
+
+  return false;
+}
+
+
 /**
  * @see https://wiki.libsdl.org/SDL3/SDL_WindowEvent
  */
 
 bool				/* true when processed */
 sdl_frame_event(SDL_Event *ev)
-{ FrameObj fr = wsid_to_frame(ev->window.windowID);
+{ if ( ev->type == SDL_EVENT_RENDER_TARGETS_RESET ||
+       ev->type == SDL_EVENT_RENDER_DEVICE_RESET )
+  { ws_reset_textures();
+    return true;
+  }
+
+  FrameObj fr = wsid_to_frame(ev->window.windowID);
 
   if ( fr )
   { switch(ev->type)
@@ -679,6 +978,8 @@ sdl_frame_event(SDL_Event *ev)
       }
       case SDL_EVENT_WINDOW_FOCUS_GAINED:
       { PceWindow sw = ws_grabbing_window();
+
+	ws_menubar_activate_frame(fr);	/* show this frame's native menu */
 	if ( sw )
 	{ FrameObj fr2 = getFrameWindow(sw, OFF);
 
@@ -709,6 +1010,9 @@ sdl_frame_event(SDL_Event *ev)
 	}
 	return send(fr, NAME_inputFocus, OFF, EAV);
       }
+      case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+	ws_pointer_left_frame(fr);
+	return true;
       case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
       { DisplayObj new_display = dsp_id_to_display(ev->window.data1);
 	DEBUG(NAME_display, Cprintf("%s moved to %s\n",
@@ -736,6 +1040,28 @@ ws_raise_frame(FrameObj fr)
 }
 
 /**
+ * Does the window system consider this frame to have the keyboard?
+ *
+ * `frame <-input_focus' is kept up to date from the FOCUS_GAINED and
+ * FOCUS_LOST events, which can be missed: they are not sent when the
+ * window that has the focus already had it.  This is the truth to fall
+ * back on.
+ *
+ * @param fr Pointer to the FrameObj to test.
+ * @return true if the frame holds the keyboard focus.
+ */
+bool
+ws_frame_has_input_focus(FrameObj fr)
+{ WsFrame wfr = fr->ws_ref;
+
+  if ( !SDL_IsMainThread() )	/* only the main thread may ask; taking */
+    return false;		/* our own word for it is the safe answer */
+
+  return ( wfr && wfr->ws_window &&
+	   SDL_GetKeyboardFocus() == wfr->ws_window );
+}
+
+/**
  * Set the cursor  shape for the specified window. In  SDL, the cursor
  * is global for the application, i.e., it is _not_ set for a window.
  *
@@ -744,11 +1070,12 @@ ws_raise_frame(FrameObj fr)
  */
 void
 ws_frame_cursor(FrameObj fr, CursorObj cursor)
-{ SDL_Cursor *c = pceCursor2SDL_Cursor(cursor);
-  if ( c )
-  { ASSERT_SDL_MAIN();
-    SDL_SetCursor(c);
-  }
+{ if ( ws_busy_cursor() )               /* covers every frame */
+    return;
+
+  SDL_Cursor *c = pceCursor2SDL_Cursor(cursor);
+  ASSERT_SDL_MAIN();
+  SDL_SetCursor(c ? c : SDL_GetDefaultCursor()); /* the frame may have none */
 }
 
 /**
@@ -991,7 +1318,10 @@ ws_geometry_frame(FrameObj fr, Int x, Int y, Int w, Int h, DisplayObj dsp)
  */
 void
 ws_busy_cursor_frame(FrameObj fr, CursorObj c)
-{
+{ if ( isDefault(c) )
+    c = getClassVariableValueObject(fr, NAME_busyCursor);
+
+  ws_set_busy_cursor(c);
 }
 
 /**
@@ -1045,40 +1375,94 @@ ws_set_label_frame(FrameObj fr)
  */
 static void
 composite_window_to_cairo(cairo_t *cr, PceWindow sw,
-			   float ox, float oy, float scale)
+			   float ox, float oy, float scale, double opacity)
 { WsWindow wsw = sw->ws_ref;
   if ( !wsw || !wsw->backing )
+    return;
+  if ( valInt(sw->area->w) <= 0 ||	/* nothing to show: see */
+       valInt(sw->area->h) <= 0 )	/* ws_draw_window() */
     return;
 
   float wx = (ox + valInt(sw->area->x)) * scale;
   float wy = (oy + valInt(sw->area->y)) * scale;
   cairo_surface_flush(wsw->backing);
   cairo_set_source_surface(cr, wsw->backing, wx, wy);
-  cairo_paint(cr);
+  cairo_paint_with_alpha(cr, opacity);
 
   if ( instanceOfObject(sw, ClassWindowDecorator) )
   { WindowDecorator dw = (WindowDecorator)sw;
     composite_window_to_cairo(cr, dw->window,
 			      ox + valNum(sw->area->x),
 			      oy + valNum(sw->area->y),
-			      scale);
+			      scale, opacity);
   }
   if ( notNil(sw->subwindows) && !emptyChain(sw->subwindows) )
   { Cell cell;
     for_cell(cell, sw->subwindows)
     { PceWindow sub = cell->value;
-      PceWindow me  = DEFAULT;
-      Int x, y;
-      get_absolute_xy_graphical((Graphical)sub, (Device *)&me, &x, &y);
-      assert(me == sw);
+      float sx, sy;
+
+      if ( !subwindow_offset(sw, sub, &sx, &sy) )
+	continue;
       composite_window_to_cairo(cr, sub,
-				ox + valNum(sw->area->x) + valNum(x),
-				oy + valNum(sw->area->y) + valNum(y),
-				scale);
+				ox + valNum(sw->area->x) + sx,
+				oy + valNum(sw->area->y) + sy,
+				scale, opacity*window_group_opacity(sub));
     }
   }
 }
 
+
+/**
+ * A cairo surface of `pw' x `ph' device pixels to composite an image
+ * of a frame or of a window onto, filled with `background'.  The two
+ * <-image methods differ only in what they put on it and how big it
+ * is; pixel_image_start() and pixel_image_finish() are the rest.
+ *
+ * @return The context to draw on, or NULL if the surface could not be
+ *         created.  `surf' is set to the surface it draws on, which
+ *         pixel_image_finish() hands to the Image.
+ */
+static cairo_t *
+pixel_image_start(cairo_surface_t **surf, int pw, int ph, Any background)
+{ cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, pw, ph);
+
+  if ( !s )
+    return NULL;
+
+  d_init_surface(s, background);
+  cairo_t *cr = cairo_create(s);
+  if ( !cr )
+  { cairo_surface_destroy(s);
+    return NULL;
+  }
+
+  *surf = s;
+  return cr;
+}
+
+/**
+ * Wrap the surface drawn by pixel_image_start() in an xpce Image,
+ * which takes it over.  Destroys the context either way.
+ *
+ * @return The Image, or NULL if it could not be created.
+ */
+static Image
+pixel_image_finish(cairo_surface_t *surf, cairo_t *cr, int pw, int ph)
+{ cairo_destroy(cr);
+
+  Image image = newObject(ClassImage, NIL, EAV);
+  if ( !image )
+  { cairo_surface_destroy(surf);
+    return NULL;
+  }
+  assign(image, kind,    NAME_pixmap);
+  assign(image->size, w, toInt(pw));
+  assign(image->size, h, toInt(ph));
+  image->ws_ref = surf;
+
+  return image;
+}
 
 /**
  * Retrieve the image representation of the specified frame.
@@ -1098,27 +1482,59 @@ ws_image_of_frame(FrameObj fr)
   int     fw    = (int)(valInt(fr->area->w) * scale);
   int     fh    = (int)(valInt(fr->area->h) * scale);
 
-  cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, fw, fh);
-  if ( !surf )
+  cairo_surface_t *surf;
+  cairo_t *cr = pixel_image_start(&surf, fw, fh, fr->background);
+  if ( !cr )
     return NULL;
 
-  d_init_surface(surf, fr->background);
-
-  cairo_t *cr = cairo_create(surf);
   Cell cell;
   for_cell(cell, fr->members)
-    composite_window_to_cairo(cr, cell->value, 0.0f, 0.0f, scale);
-  cairo_destroy(cr);
+  { PceWindow member = cell->value;
 
-  Image image = newObject(ClassImage, NIL, EAV);
-  if ( !image )
-  { cairo_surface_destroy(surf);
-    return NULL;
+    composite_window_to_cairo(cr, member, 0.0f, 0.0f, scale,
+			      window_group_opacity(member));
   }
-  assign(image, kind,    NAME_pixmap);
-  assign(image->size, w, toInt(fw));
-  assign(image->size, h, toInt(fh));
-  image->ws_ref = surf;
 
-  return image;
+  return pixel_image_finish(surf, cr, fw, fh);
+}
+
+/**
+ * Retrieve the image representation of the specified window: the same
+ * pixels <-image of its frame holds for it, on a surface of the
+ * window's own size and with the window at its origin.  A window
+ * decorator and any subwindows come along, as they do for the frame.
+ *
+ * @param sw Pointer to the PceWindow.
+ * @return Pointer to the Image object representing the window, or NULL
+ *         on failure.
+ */
+Image
+ws_image_of_window(PceWindow sw)
+{ FrameObj fr;
+
+  if ( !ws_created_window(sw) ||
+       !(fr=getFrameWindow(sw, OFF)) ||
+       !ws_created_frame(fr) )
+    return NULL;
+
+  WsFrame wfr   = fr->ws_ref;
+  float   scale = SDL_GetWindowPixelDensity(wfr->ws_window);
+  int     ww    = (int)(valInt(sw->area->w) * scale);
+  int     wh    = (int)(valInt(sw->area->h) * scale);
+
+  cairo_surface_t *surf;
+  cairo_t *cr = pixel_image_start(&surf, ww, wh, sw->background);
+  if ( !cr )
+    return NULL;
+
+  /* composite_window_to_cairo() places the window at its position in
+   * the frame; the offset below takes that back out, so the window
+   * lands on the origin of a surface of its own size.
+   */
+  composite_window_to_cairo(cr, sw,			/* an image of a window */
+			    -(float)valInt(sw->area->x),	/* is not faded */
+			    -(float)valInt(sw->area->y),
+			    scale, 1.0);
+
+  return pixel_image_finish(surf, cr, ww, wh);
 }

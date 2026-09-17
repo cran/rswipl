@@ -267,8 +267,9 @@ kill(B) :->
     ).
 
 
-properties(B) :->
-    get(B, properties, V),
+properties(B, V:view) :<-
+    "Say what I am running as well"::
+    get_super(B, properties, V),
     get(B, process, Process),
     send(V, appendf, 'Command:\t%s\n', Process?name),
     send(V, appendf, 'Arguments:\t'),
@@ -298,10 +299,10 @@ start_process(B) :->
     ).
 
 
-open(B, Where:[{here,tab,window}]) :->
+open(B, Where:[{as_arranged,here,tab,split,window}]) :->
     "Create window for buffer"::
-    get(B, open, Where, Frame),
-    send(Frame?editor, caret, @default),
+    get(B, open, Where, View),
+    send(View?editor, caret, @default),
     send(B, update_label).
 
 :- pce_end_class.
@@ -423,14 +424,14 @@ insert_history(N, Chain, E) :-
     insert_history(NN, Chain, E).
 
 
-backward_history(E, Id:event_id) :->
+backward_history(E, _Id:event_id) :->
     "Insert last command"::
     send(E, current_history, 0),
     send(E, focus_function, '_history'),
-    send(E, '_history', Id).
+    send(E, '_history', @event).        % the id has lost the meta key
 
 
-'_history'(E, Id:event_id) :->
+'_history'(E, Id:'event|event_id') :->
     get(E?bindings, function, Id, Func),
     get(E, text_buffer, B),
     get(B, history, Chain),
@@ -659,7 +660,7 @@ link(F, F2:emacs_link_fragment) :->
     send(F2, slot, link, F).
 
 
-follow(F, Where:[{here,tab,window}]) :->
+follow(F, Where:[{as_arranged,here,tab,split,window}]) :->
     "Goto other end of link"::
     get(F, link, F2),
     get(F2, text_buffer, B),

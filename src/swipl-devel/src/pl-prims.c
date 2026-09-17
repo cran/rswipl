@@ -127,7 +127,7 @@ initvisited(DECL_LD)
 
 #ifdef O_DEBUG
 #define empty_visited(_) LDFUNC(empty_visited, _)
-static int
+static bool
 empty_visited(DECL_LD)
 { return emptySegStack(&LD->cycle.vstack);
 }
@@ -135,7 +135,7 @@ empty_visited(DECL_LD)
 
 
 #define visitedWord(p) LDFUNC(visitedWord, p)
-static inline int
+static inline bool
 visitedWord(DECL_LD Word p)
 { if ( is_marked(p) )
     succeed;
@@ -147,7 +147,7 @@ visitedWord(DECL_LD Word p)
 
 
 #define visited(f) LDFUNC(visited, f)
-static inline int
+static inline bool
 visited(DECL_LD Functor f)
 { Word p = &f->definition;
 
@@ -217,8 +217,8 @@ exitCyclic(DECL_LD)
 
 #else /*O_CYCLIC*/
 
-static inline visited(DECL_LD Functor f) { fail; }
-static inline unvisit(DECL_LD Word *base) { }
+static inline bool visited(DECL_LD Functor f) { fail; }
+static inline void unvisit(DECL_LD Word *base) { }
 static inline void initCyclic(DECL_LD) {}
 static inline void exitCyclic(DECL_LD) {}
 static inline void linkTermsCyclic(DECL_LD Functor f1, Functor f2) {}
@@ -423,7 +423,7 @@ do_unify(DECL_LD Word t1, Word t2)
 
 
 #define raw_unify_ptrs(t1, t2) LDFUNC(raw_unify_ptrs, t1, t2)
-static int
+static boolex_t
 raw_unify_ptrs(DECL_LD Word t1, Word t2)
 { switch(LD->prolog_flag.occurs_check)
   { case OCCURS_CHECK_FALSE:
@@ -511,7 +511,7 @@ Return:
 boolex_t
 unify_ptrs(DECL_LD Word t1, Word t2, int flags)
 { for(;;)
-  { int rc;
+  { boolex_t rc;
 
     rc = raw_unify_ptrs(t1, t2);
     if ( rc >= 0 )
@@ -521,10 +521,8 @@ unify_ptrs(DECL_LD Word t1, Word t2, int flags)
     { if ( rc == MEMORY_OVERFLOW )
       { return PL_no_memory();
       } else				/* Stack overflow */
-      { int rc2;
-
-	PushPtr(t1); PushPtr(t2);
-	rc2 = makeMoreStackSpace(rc, flags);
+      { PushPtr(t1); PushPtr(t2);
+	bool rc2 = makeMoreStackSpace(rc, flags);
 	PopPtr(t2); PopPtr(t1);
 	if ( !rc2 )
 	  return false;
@@ -1241,7 +1239,7 @@ PRED_IMPL("acyclic_term", 1, acyclic_term, PL_FA_ISO)
 static
 PRED_IMPL("cyclic_term", 1, cyclic_term, 0)
 { PRED_LD
-  int rc;
+  boolex_t rc;
 
   if ( (rc=is_acyclic(valTermRef(A1))) == true )
     return false;
@@ -1669,7 +1667,9 @@ compareAtoms(atom_t w1, atom_t w2)
   Atom a2 = atomValue(w2);
 
   if ( a1->type == a2->type )
-  { if ( a1->type->compare )
+  { if ( !a1->name || !a2->name )	/* released by PL_free_blob(): */
+    { return SCALAR_TO_CMP(a1, a2);	/* compare() would dereference */
+    } else if ( a1->type->compare )	/* the object that is gone */
     { return (*a1->type->compare)(w1, w2);
     } else
     { size_t l = (a1->length <= a2->length ? a1->length : a2->length);
@@ -2574,10 +2574,8 @@ setarg(DECL_LD size_t argn, term_t term, term_t value, unsigned int flags)
     { return unify_ptrs(valTermRef(value), a, ALLOW_GC|ALLOW_SHIFT);
     } else
     { if ( !hasGlobalSpace(0) )
-      { int rc;
-
-	if ( (rc=ensureGlobalSpace(0, ALLOW_GC)) != true )
-	  return raiseStackOverflow(rc);
+      { if ( !ensureGlobalSpace(0, ALLOW_GC) )
+	  return false;
 	a = valTermRef(term);
 	deRef(a);
 	a = argTermP(*a, argn-1);
@@ -3892,7 +3890,7 @@ also needs support in garbageCollect() and growStacks().
 static bool
 unify_all_trail_ptrs(DECL_LD term_t t1, term_t t2, mark *m)
 { for(;;)
-  { int rc;
+  { boolex_t rc;
 
     Mark(*m);
     LD->mark_bar = NO_MARK_BAR;
@@ -3905,12 +3903,9 @@ unify_all_trail_ptrs(DECL_LD term_t t1, term_t t2, mark *m)
       DiscardMark(*m);
       return rc;
     } else				/* Stack overflow */
-    { int rc2;
-
-      Undo(*m);
+    { Undo(*m);
       DiscardMark(*m);
-      rc2 = makeMoreStackSpace(rc, ALLOW_GC|ALLOW_SHIFT);
-      if ( !rc2 )
+      if ( !makeMoreStackSpace(rc, ALLOW_GC|ALLOW_SHIFT) )
 	return false;
     }
   }
@@ -4135,8 +4130,22 @@ x_chars(DECL_LD const char *pred, term_t atom, term_t string, int how)
     return PL_error(pred, 2, NULL, ERR_TYPE, type, atom);
   }
 
-  if ( PL_get_text(string, &stext, flags2) != true )
-    return false;
+  /* A complicated way to get the proper error message :( */
+  if ( how & X_STRING )
+  { int noerr_flags = flags2 & (~CVT_EXCEPTION);
+    get_text_t rc = PL_get_text(string, &stext, noerr_flags);
+    switch(rc)
+    { case GT_TRUE:
+        break;
+      case GT_FALSE:
+	return PL_get_text(string, &stext, CVT_STRING|CVT_EXCEPTION);
+      case GT_ISVAR:
+	return false;
+    }
+  } else
+  { if ( PL_get_text(string, &stext, flags2) != GT_TRUE )
+      return false;
+  }
 
   switch(how&X_MASK)
   { case X_ATOM:
@@ -4164,7 +4173,7 @@ x_chars(DECL_LD const char *pred, term_t atom, term_t string, int how)
 
 	if ( (nrc=str_number((const unsigned char*)s, &q, &n, 0)) == NUM_OK )
 	{ if ( (char*)q == stext.text.t + stext.length )
-	  { int rc = PL_unify_number(atom, &n);
+	  { bool rc = PL_unify_number(atom, &n);
 	    clearNumber(&n);
 	    PL_free_text(&stext);
 	    return rc;
@@ -4307,7 +4316,7 @@ PRED_IMPL("char_code", 2, char_code, PL_FA_ISO)
 }
 
 
-static int
+static bool
 is_code(word w)
 { if ( isTaggedInt(w) )
   { sword code = valInt(w);
@@ -4318,7 +4327,7 @@ is_code(word w)
   return false;
 }
 
-static int
+static bool
 is_char(word w)
 { PL_chars_t text;
 
@@ -4350,8 +4359,8 @@ PRED_IMPL("$is_char", 1, is_char, 0)
 
 
 #define is_text_list(text, lent, test) LDFUNC(is_text_list, text, lent, test)
-static int
-is_text_list(DECL_LD term_t text, term_t lent, int (*test)(word))
+static bool
+is_text_list(DECL_LD term_t text, term_t lent, bool (*test)(word))
 { Word p = valTermRef(text);
   intptr_t len = 0;
 
@@ -4404,7 +4413,7 @@ PRED_IMPL("atom_number", 2, atom_number, 0)
 
     if ( (rc=str_number((unsigned char *)s, &q, &n, 0) == NUM_OK) )
     { if ( *q == EOS )
-      { int rc = PL_unify_number(A2, &n);
+      { bool rc = PL_unify_number(A2, &n);
 	clearNumber(&n);
 
 	return rc;
@@ -4456,7 +4465,7 @@ PRED_IMPL("collation_key", 2, collation_key, 0)
     fail;
   for(;;)
   { if ( (n=wcsxfrm(o, s, buflen)) < buflen )
-    { int rc = PL_unify_wchars(A2, PL_STRING, n, o);
+    { bool rc = PL_unify_wchars(A2, PL_STRING, n, o);
 
       if ( o != buf )
 	free(o);
@@ -4858,7 +4867,7 @@ PRED_IMPL("sub_atom_icasechk", 3, sub_atom_icasechk, 0)
 
     for (; s2<=es-l1; s2++)
     { for(q=needleW, s=s2; q<eq && s<es; q++, s++)
-      { if ( *q != *s && *q != (pl_wchar_t)towlower(*s) )
+      { if ( *q != *s && *q != (pl_wchar_t)PL_tolower(*s) )
 	  break;
       }
       if ( q == eq )
@@ -5508,13 +5517,37 @@ PRED_IMPL("$depth_limit_except", 3, depth_limit_except, 0)
 
 #define INFERENCE_LIMIT_OVERHEAD 2
 
+#define get_inference_limit(t, l) LDFUNC(get_inference_limit, t, l)
+static bool
+get_inference_limit(DECL_LD term_t t, int64_t *limit)
+{ atom_t a;
+
+  if ( PL_get_atom(t, &a) )
+  { if ( a == ATOM_infinite )
+    { *limit = INFERENCE_NO_LIMIT;
+      return true;
+    }
+    return PL_domain_error("inference_limit", t);
+  }
+  return PL_get_int64_ex(t, limit);
+}
+
+#define unify_inference_limit(t, l) LDFUNC(unify_inference_limit, t, l)
+static bool
+unify_inference_limit(DECL_LD term_t t, int64_t limit)
+{ if ( limit == INFERENCE_NO_LIMIT )
+    return PL_unify_atom(t, ATOM_infinite);
+  return PL_unify_int64(t, limit);
+}
+
+
 static
 PRED_IMPL("$inference_limit", 2, pl_inference_limit, 0)
 { PRED_LD
   int64_t limit;
 
-  if ( PL_get_int64_ex(A1, &limit) &&
-       PL_unify_int64(A2, LD->inference_limit.limit) )
+  if ( get_inference_limit(A1, &limit) &&
+       unify_inference_limit(A2, LD->inference_limit.limit) )
   { int64_t nlimit = LD->statistics.inferences + limit + INFERENCE_LIMIT_OVERHEAD;
 
     if ( limit < 0 )
@@ -5561,7 +5594,7 @@ PRED_IMPL("$inference_limit_true", 3, pl_inference_limit_true,
       if ( !PL_is_variable(A3) )
 	return true;
 
-      if ( PL_get_int64_ex(A2, &olimit) )
+      if ( get_inference_limit(A2, &olimit) )
       { DEBUG(MSG_INFERENCE_LIMIT, Sdprintf("true (det) --> %lld\n", olimit));
 	LD->inference_limit.limit = olimit;
 	updateAlerted(LD);
@@ -5574,7 +5607,7 @@ PRED_IMPL("$inference_limit_true", 3, pl_inference_limit_true,
     case FRG_REDO:
     { int64_t limit;
 
-      if ( PL_get_int64_ex(A1, &limit) )
+      if ( get_inference_limit(A1, &limit) )
       { LD->inference_limit.limit =
 		LD->statistics.inferences + limit + INFERENCE_LIMIT_OVERHEAD;
 	DEBUG(MSG_INFERENCE_LIMIT,
@@ -5600,7 +5633,7 @@ PRED_IMPL("$inference_limit_false", 1, inference_limit_false, 0)
 { PRED_LD
   int64_t olimit;
 
-  if ( PL_get_int64_ex(A1, &olimit) )
+  if ( get_inference_limit(A1, &olimit) )
   { LD->inference_limit.limit = olimit;
     DEBUG(MSG_INFERENCE_LIMIT, Sdprintf("false --> %lld\n", olimit));
     updateAlerted(LD);
@@ -5621,7 +5654,7 @@ PRED_IMPL("$inference_limit_except", 3, inference_limit_except, 0)
 { PRED_LD
   int64_t olimit;
 
-  if ( PL_get_int64_ex(A1, &olimit) )
+  if ( get_inference_limit(A1, &olimit) )
   { atom_t a;
 
     DEBUG(MSG_INFERENCE_LIMIT, Sdprintf("except --> %lld\n", olimit));

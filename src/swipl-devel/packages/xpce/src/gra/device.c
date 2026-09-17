@@ -172,6 +172,8 @@ updatePointedDevice(Device dev, EventObj ev)
   Graphical active[MAX_ACTIVE];
   int n, an = 0;
   Int x, y;
+  Int fx = ZERO, fy = ZERO;		/* the same, in view coordinates */
+  Chain fixed = NIL;
   Name enter, exit;
 
   if ( allButtonsUpEvent(ev) )
@@ -182,10 +184,15 @@ updatePointedDevice(Device dev, EventObj ev)
     exit  = NAME_areaCancel;
   }
 
-					/* Exit event: leave all children */
+					/* Exit event: leave all children.
+					 * for_chain (snapshot+reference):
+					 * generateEventGraphical may dispatch
+					 * Prolog handlers that mutate
+					 * dev->pointed. */
   if ( isAEvent(ev, NAME_areaExit) )
-  { for_cell(cell, dev->pointed)
-      generateEventGraphical(cell->value, exit);
+  { Graphical gr;
+    for_chain(dev->pointed, gr,
+      generateEventGraphical(gr, exit));
 
     clearChain(dev->pointed);
     succeed;
@@ -193,36 +200,83 @@ updatePointedDevice(Device dev, EventObj ev)
 
   get_xy_event(ev, dev, OFF, &x, &y);
 
-					/* See which graphicals are left */
-  for_cell(cell, dev->pointed)
-  { register Graphical gr = cell->value;
+					/* A window's fixed graphicals are
+					 * placed against the viewport rather
+					 * than the content (see `window
+					 * ->display_fixed'), so they are
+					 * pointed at like any other, but
+					 * hit against a second X,Y. */
+  if ( instanceOfObject(dev, ClassWindow) )
+  { PceWindow sw = (PceWindow)dev;
 
-    if ( gr->displayed == OFF || !inEventAreaGraphical(gr, x, y) )
-    { DEBUG(NAME_event, Cprintf("Leaving %s\n", pp(gr)));
-      deleteChain(dev->pointed, gr);
-      generateEventGraphical(gr, exit);
+    if ( notNil(sw->fixed_graphicals) && !emptyChain(sw->fixed_graphicals) )
+    { fixed = sw->fixed_graphicals;
+      get_xy_event(ev, dev, ON, &fx, &fy);
     }
   }
 
-					/* See which graphicals are entered */
-  for_cell(cell, dev->graphicals)
-  { register Graphical gr = cell->value;
+					/* See which graphicals are left.
+					 * for_chain for the same reason as
+					 * above. */
+  { Graphical gr;
+    for_chain(dev->pointed, gr,
+      { Int gx = x;
+	Int gy = y;
 
-    if ( gr->displayed == ON && inEventAreaGraphical(gr, x, y) )
-    { active[an++] = gr;
+	if ( notNil(fixed) && memberChain(fixed, gr) )
+	{ gx = fx;
+	  gy = fy;
+	}
 
-      if ( memberChain(dev->pointed, gr) != SUCCEED )
-      { DEBUG(NAME_event, Cprintf("Entering %s\n", pp(gr)));
-        generateEventGraphical(gr, enter);
-      }
+	if ( gr->displayed == OFF || !inEventAreaGraphical(gr, gx, gy) )
+	{ DEBUG(NAME_event, Cprintf("Leaving %s\n", pp(gr)));
+	  deleteChain(dev->pointed, gr);
+	  generateEventGraphical(gr, exit);
+	}
+      });
+  }
 
-      if ( an == MAX_ACTIVE )		/* Shift to keep top ones */
-      { int n;
-        for( n = 0; n < MAX_ACTIVE-1; n++ )
-	  active[n] = active[n+1];
-	an--;
-      }
-    }
+					/* See which graphicals are entered.
+					 * for_chain (snapshot+reference) is
+					 * required: generateEventGraphical may
+					 * mutate dev->graphicals via Prolog
+					 * handlers (e.g. ->expose). */
+  { Graphical gr;
+    for_chain(dev->graphicals, gr,
+      { if ( gr->displayed == ON && inEventAreaGraphical(gr, x, y) )
+	{ active[an++] = gr;
+
+	  if ( memberChain(dev->pointed, gr) != SUCCEED )
+	  { DEBUG(NAME_event, Cprintf("Entering %s\n", pp(gr)));
+	    generateEventGraphical(gr, enter);
+	  }
+
+	  if ( an == MAX_ACTIVE )	/* Shift to keep top ones */
+	  { int n;
+	    for( n = 0; n < MAX_ACTIVE-1; n++ )
+	      active[n] = active[n+1];
+	    an--;
+	  }
+	}
+      });
+  }
+
+					/* And the fixed layer, which is over
+					 * the content and so comes last. */
+  if ( notNil(fixed) )
+  { Graphical gr;
+
+    for_chain(fixed, gr,
+      { if ( gr->displayed == ON && inEventAreaGraphical(gr, fx, fy) )
+	{ if ( an < MAX_ACTIVE )
+	    active[an++] = gr;
+
+	  if ( memberChain(dev->pointed, gr) != SUCCEED )
+	  { DEBUG(NAME_event, Cprintf("Entering %s\n", pp(gr)));
+	    generateEventGraphical(gr, enter);
+	  }
+	}
+      });
   }
 
 					/* Update the ->pointed chain */
@@ -539,7 +593,10 @@ computeGraphicalsDevice(Device dev)
     ArgVector(array, size);
 
     for(i=0, cell = ch->head; notNil(cell); cell = cell->next)
-      array[i++] = cell->value;
+    { array[i] = cell->value;
+      addCodeReference(array[i]);	/* clearChain() may hold the last */
+      i++;				/* reference to them */
+    }
 
     clearChain(ch);
     for(i=0; i<size; i++)
@@ -549,6 +606,7 @@ computeGraphicalsDevice(Device dev)
       { qadSendv(gr, NAME_compute, 0, NULL);
 	assign(gr, request_compute, NIL);
       }
+      delCodeReference(gr);
     }
   }
 
@@ -846,6 +904,8 @@ eraseDevice(Device dev, Graphical gr)
 { if ( gr->device == dev )
   { PceWindow sw = getWindowGraphical((Graphical) dev);
 
+    addCodeReference(gr);		/* the device may hold the last */
+					/* reference to gr */
     if ( sw )
     { if ( subGraphical(gr, sw->keyboard_focus) )
 	keyboardFocusWindow(sw, NIL);
@@ -856,12 +916,16 @@ eraseDevice(Device dev, Graphical gr)
     if ( gr->displayed == ON )
       displayedGraphicalDevice(dev, gr, OFF);
 
-    deleteChain(dev->recompute, gr);
-    deleteChain(dev->pointed, gr);
+    if ( notNil(dev->recompute) )
+      deleteChain(dev->recompute, gr);
+    if ( notNil(dev->pointed) )
+      deleteChain(dev->pointed, gr);
     assign(gr, device, NIL);
-    GcProtect(dev, deleteChain(dev->graphicals, gr));
+    if ( notNil(dev->graphicals) )
+      GcProtect(dev, deleteChain(dev->graphicals, gr));
     if ( !isFreedObj(gr) )
       qadSendv(gr, NAME_reparent, 0, NULL);
+    delCodeReference(gr);
   }
 
   succeed;
@@ -2266,7 +2330,7 @@ static char *T_find[] =
 static char *T_pointedObjects[] =
         { "at=point|event", "append_to=[chain]" };
 static char *T_typed[] =
-        { "event_id", "[bool]" };
+        { "event|event_id", "[bool]" };
 static char *T_format[] =
         { "format*|name", "[any]" };
 static char *T_layout[] =

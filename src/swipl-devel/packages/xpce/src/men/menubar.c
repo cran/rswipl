@@ -45,6 +45,9 @@ initialiseMenuBar(MenuBar mb, Name name)
   assign(mb, members, newObject(ClassChain, EAV));
   assign(mb, buttons, newObject(ClassChain, EAV));
 
+  if ( ws_has_native_menubar(mb) )	/* MacOS shows it at the top of the */
+    assign(mb, displayed, OFF);		/* screen; do not draw it here */
+
   succeed;
 }
 
@@ -94,6 +97,9 @@ static status
 RedrawAreaMenuBar(MenuBar mb, Area a)
 { Cell cell;
   Int x = mb->area->x;
+
+  if ( ws_has_native_menubar(mb) )
+    succeed;
 
   for_cell(cell, mb->buttons)
   { Button b = cell->value;
@@ -186,6 +192,14 @@ computeMenuBar(MenuBar mb)
   int x = 0;
   int gap;
   int h = 0;
+
+  if ( ws_has_native_menubar(mb) )	/* no geometry and no Alt-x mnemonics */
+  { CHANGING_GRAPHICAL(mb,
+	  assign(mb->area, w, ZERO);
+	  assign(mb->area, h, ZERO));
+    assign(mb, request_compute, NIL);
+    succeed;
+  }
 
   if ( hasSendMethodObject(mb, NAME_assignAccelerators) ) /* TBD */
     send(mb, NAME_assignAccelerators, EAV);
@@ -493,10 +507,15 @@ getHorStretchMenuBar(MenuBar mb)
 static status
 geometryMenuBar(MenuBar mb, Int x, Int y, Int w, Int h)
 { Cell cell;
-  int gap = valInt(mb->gap);
+  int gap;
   int wtot = 0;
   int extragap, cx = 0;
   int htot = 0;
+
+  if ( ws_has_native_menubar(mb) )
+    return geometryGraphical(mb, x, y, ZERO, ZERO);
+
+  gap = valInt(mb->gap);
 
   for_cell(cell, mb->buttons)
   { Graphical b = cell->value;
@@ -538,65 +557,81 @@ geometryMenuBar(MenuBar mb, Int x, Int y, Int w, Int h)
 		********************************/
 
 static status
+unlinkMenuBar(MenuBar mb)
+{ ws_menubar_destroyed(mb);
+
+  return unlinkDialogItem((DialogItem)mb);
+}
+
+
+static status
 clearMenuBar(MenuBar mb)
 { clearChain(mb->members);
   clearChain(mb->buttons);
+  ws_menubar_changed(mb);
 
   return requestComputeGraphical(mb, DEFAULT);
 }
 
 
+/* The bar keeps two chains: <-buttons, which it draws, and <-members,
+   which the native menu bar walks (see pce_menubar_popup()) and which
+   ->key uses to step from one popup to the next.  Both must come out in
+   the same order, so the insertion point is worked out once and used
+   for both.
+*/
+
 static status
 appendMenuBar(MenuBar mb, PopupObj p, Name alignment, Any before)
 { Button bbutton = NIL;
+  Button b;
+
+  if ( memberChain(mb->members, p) )
+    succeed;
 
   if ( notDefault(before) )
   { Cell cell;
 
     for_cell(cell, mb->buttons)
-    { Button b = cell->value;
-      if ( before == b->popup ||
-	   before == b->popup->name )
-      { bbutton = b;
+    { Button b2 = cell->value;
+      if ( before == b2->popup ||
+	   before == b2->popup->name )
+      { bbutton = b2;
 	break;
       }
     }
   }
 
-  if ( !memberChain(mb->members, p) )
-  { Button b = newObject(ClassButton, p->name, NIL, EAV);
+  if ( isNil(bbutton) && alignment != NAME_right )
+  { Cell cell;				/* a left menu stays left of the */
+					/* right-aligned ones */
+    for_cell(cell, mb->buttons)
+    { Button b2 = cell->value;
 
-    labelDialogItem((DialogItem)b, p->label);
-    appendChain(mb->members, p);
-    assign(p, context, mb);
-
-    if ( alignment == NAME_right )
-    { insertBeforeChain(mb->buttons, b, bbutton);
-      assign(b, alignment, NAME_right);
-    } else
-    { if ( isNil(bbutton) )
-      { Cell cell;
-
-	for_cell(cell, mb->buttons)
-	{ Button b2 = cell->value;
-
-	  if ( b2->alignment == NAME_right )
-	  { bbutton = b2;
-	    break;
-	  }
-	}
+      if ( b2->alignment == NAME_right )
+      { bbutton = b2;
+	break;
       }
-      insertBeforeChain(mb->buttons, b, bbutton);
     }
-
-    assign(b, popup, p);
-    obtainClassVariablesObject(mb);
-    assign(b, label_font, mb->label_font);
-    assign(b, pen,        mb->pen);
-    assign(b, radius,     mb->radius);
-    send(p, NAME_format, getSlotObject(mb, NAME_format), EAV);
-    requestComputeGraphical(mb, DEFAULT);
   }
+
+  b = newObject(ClassButton, p->name, NIL, EAV);
+  labelDialogItem((DialogItem)b, p->label);
+  insertBeforeChain(mb->members, p, isNil(bbutton) ? NIL : bbutton->popup);
+  assign(p, context, mb);
+
+  insertBeforeChain(mb->buttons, b, bbutton);
+  if ( alignment == NAME_right )
+    assign(b, alignment, NAME_right);
+
+  assign(b, popup, p);
+  obtainClassVariablesObject(mb);
+  assign(b, label_font, mb->label_font);
+  assign(b, pen,        mb->pen);
+  assign(b, radius,     mb->radius);
+  send(p, NAME_format, getSlotObject(mb, NAME_format), EAV);
+  ws_menubar_changed(mb);
+  requestComputeGraphical(mb, DEFAULT);
 
   succeed;
 }
@@ -622,7 +657,25 @@ getMemberMenuBar(MenuBar mb, Any obj)
 
 static status
 deleteMenuBar(MenuBar mb, PopupObj p)
-{ deleteChain(mb->members, p);
+{ Cell cell;
+
+  deleteChain(mb->members, p);
+
+  for_cell(cell, mb->buttons)		/* the button drawn for it goes too */
+  { Button b = cell->value;
+
+    if ( b->popup == p )
+    { deleteChain(mb->buttons, b);
+      break;
+    }
+  }
+
+  if ( mb->current == p )
+    assign(mb, current, NIL);
+  if ( p->context == (Any)mb )
+    assign(p, context, NIL);
+
+  ws_menubar_changed(mb);
   requestComputeGraphical(mb, DEFAULT);
 
   succeed;
@@ -635,6 +688,7 @@ activeMemberMenuBar(MenuBar mb, PopupObj p, BoolObj val)
   { CHANGING_GRAPHICAL(mb,
 	assign(p, active, val);
         changedMenuBarButton(mb, p));
+    ws_menubar_changed(mb);
   }
 
   succeed;
@@ -651,6 +705,7 @@ allActiveMenuBar(MenuBar mb, BoolObj val)
 	  assign(p, active, val);
 	}
 	changedDialogItem(mb));
+  ws_menubar_changed(mb);
 
   succeed;
 }
@@ -736,6 +791,10 @@ lookMenuBar(MenuBar mb, Name look)
   succeed;
 }
 
+static BoolObj
+getNativeMenuBar(MenuBar mb)
+{ return ws_has_native_menubar(mb) ? ON : OFF;
+}
 
 		 /*******************************
 		 *	   ACCELERATORS		*
@@ -810,6 +869,8 @@ static senddecl send_menuBar[] =
      DEFAULT, "Process an event"),
   SM(NAME_initialise, 1, "name=[name]", initialiseMenuBar,
      DEFAULT, "Create from a label"),
+  SM(NAME_unlink, 0, NULL, unlinkMenuBar,
+     DEFAULT, "Drop the native menu bar, if any"),
   SM(NAME_reset, 0, NULL, resetMenuBar,
      NAME_abort, "Reset menubar after an abort"),
   SM(NAME_key, 1, "key=name", keyMenuBar,
@@ -852,7 +913,9 @@ static getdecl get_menuBar[] =
   GM(NAME_horStretch, 0, "0..", NULL, getHorStretchMenuBar,
      NAME_layout, "Stetchability (1)"),
   GM(NAME_member, 1, "popup", "name|popup", getMemberMenuBar,
-     NAME_organisation, "Find popup from name")
+     NAME_organisation, "Find popup from name"),
+  GM(NAME_native, 0, "bool", NULL, getNativeMenuBar,
+     NAME_look, "True if we use	native menu bars")
 };
 
 /* Resources */
@@ -871,7 +934,9 @@ static classvardecl rc_menuBar[] =
   RC(NAME_radius, "int", "0",
      "Rounding radius of the buttons"),
   RC(NAME_size, "size", "size(80,20)",
-     "Minimum size for labels")
+     "Minimum size for labels"),
+  RC(NAME_native, "bool", UXWINMAC("@off", "@off", "@on"),
+     "Use the native (MacOS) menu bar")
 };
 
 /* Class Declaration */

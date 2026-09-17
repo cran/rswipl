@@ -102,7 +102,6 @@
 
 :- autoload(library(pldoc/doc_process), [comment_modes/2]).
 
-resource(mode_pl_icon, image, image('32x32/doc_pl.png')).
 resource(breakpoint,   image, library('trace/icons/stop.svg')).
 
 :- emacs_begin_mode(prolog, language,
@@ -122,17 +121,11 @@ resource(breakpoint,   image, library('trace/icons/stop.svg')).
           compile                      = -button(compile),
 
                                         % extend the menus
-          prolog_manual                = button(help),
           (spy)                        = button(prolog),
           trace                        = button(prolog),
           break_at                     = key('\\C-cb') + button(prolog),
           set_breakpoint_condition     = button(prolog),
           delete_breakpoint            = button(prolog),
-          -                            = button(prolog),
-          edit_breakpoints             = button(prolog),
-          edit_exceptions              = button(prolog),
-          view_threads                 = button(prolog),
-          view_debug_messages          = button(prolog),
           -                            = button(prolog),
           make_module                  = key('\\C-c\\C-o') + button(prolog),
           export	               = key('\\C-c\\C-e') + button(prolog),
@@ -156,9 +149,6 @@ resource(breakpoint,   image, library('trace/icons/stop.svg')).
           backward_clause              = key('\\ea'),
           backward_predicate           = key('\\e['),
           forward_predicate            = key('\\e]'),
-
-          -                            = button(browse),
-          prolog_navigator             = button(browse) + key('\\C-c\\C-n'),
 
           colourise_or_recenter        = key('\\C-l'),
           colourise_buffer             = key('<f5>')
@@ -233,10 +223,6 @@ class_variable(cond_indentation,      int,   4).
 class_variable(dict_indentation,      int,   2).
 class_variable(indent_tabs,           bool,  @off,
                "Use tabs for indentation").
-
-icon(_, I:image) :<-
-    "Return icon for mode"::
-    catch(new(I, image(resource(mode_pl_icon))), _, fail).
 
 setup_mode(M) :->
     "Attach styles for errors, warnings, etc."::
@@ -331,7 +317,10 @@ setup_auto_indent(E) :->
         ),
         send(E, indent_tabs, IndentTabs),
         send(E, body_indentation, Indent),
-        send(E, report, inform,
+        %  A remark, not something to acknowledge: `inform' with no bar
+        %  to say it on -- a view is made before the window it goes in --
+        %  becomes a message box the user has to click away.
+        send(E, report, status,
              'Detected: body_indentation=%s, indent_tabs=%s',
              Indent, IndentTabs).
 
@@ -708,8 +697,11 @@ make(E) :->                             % SWI-Prolog specific
     "Run `make/0' in the Prolog window"::
     send(E, close_warning_window),
     send(@emacs, save_some_buffers),
-    make,
-    send(E, report, status, 'Make done').
+    (   get(@prolog_ide, current_epilog, PT)
+    ->  send(PT, inject, make, @on, signal)
+    ;   make,
+        send(E, report, status, 'Make done')
+    ).
 
 compile_buffer(E) :->
     "Save current buffer and (re)consult its file"::
@@ -720,13 +712,24 @@ compile_buffer(E) :->
         get(File, absolute_path, Path0),
         absolute_file_name(Path0, Path),
         master_load_file(Path, [], ToLoad),
-        print_message(silent, emacs(consult(user:ToLoad))),
-        make:reload_file(ToLoad),
-        print_message(silent, emacs(consulted(user:ToLoad))),
-        send(E, report, status, '%s compiled', ToLoad)
+        emacs_reload_file(E, ToLoad)
     ;   send(E, report, error,
              'Buffer is not connected to a file')
     ).
+
+emacs_reload_file(_E, ToLoad) :-
+    get(@prolog_ide, current_epilog, PT),
+    !,
+    (   source_file(ToLoad)
+    ->  Command = consult(ToLoad)
+    ;   Command = make_reload_file(ToLoad)
+    ),
+    send(PT, inject, Command, @on, signal).
+emacs_reload_file(E, ToLoad) :-
+    print_message(silent, emacs(consult(user:ToLoad))),
+    make:reload_file(ToLoad),
+    print_message(silent, emacs(consulted(user:ToLoad))),
+    send(E, report, status, '%s compiled', ToLoad).
 
 %!  master_load_file(+File, +Seen, -MasterFile) is det.
 %
@@ -790,7 +793,7 @@ qualify(PI0, PI),
 qualify(PI0, PI) =>
     PI = PI0.
 
-find_definition(M, For:prolog_predicate, Where:[{here,tab,window}]) :->
+find_definition(M, For:prolog_predicate, Where:[{as_arranged,here,tab,split,window}]) :->
     "Find definition of predicate [in new window]"::
     get(M, text_buffer, TB),
     get(For, head, @off, Head),
@@ -799,20 +802,20 @@ find_definition(M, For:prolog_predicate, Where:[{here,tab,window}]) :->
         ;   xref_defined(TB, Head, constraint(Location))
         ;   xref_defined(TB, Head, foreign(Location))
         )
-    ->  get(TB, open, Where, Frame),
-        get(Frame, editor, Editor),
+    ->  get(TB, open, Where, View),
+        get(View, editor, Editor),
         (   integer(Location)
         ->  send(Editor, goto_line, Location, title := For?print_name)
         ;   Location = (File:Line)
         ->  send(@emacs, goto_source_location,
-                 source_location(File, Line), tab)
+                 source_location(File, Line), Where)
         )
     ;   \+ is_foreign(For),
         xref_defined(TB, Head, imported(File))      % imported
     ->  send(@emacs, ensure_source_file, File),
         new(B, emacs_buffer(File)),
-        get(B, open, Where, EmacsFrame),
-        get(EmacsFrame, mode, Mode),
+        get(B, open, Where, View),
+        get(View, mode, Mode),
         send(Mode, instance_of, emacs_prolog_mode),
         send(Mode, find_local_definition, For)
     ;   get(For, source, SourceLocation)            % From Prolog DB
@@ -843,7 +846,7 @@ find_local_definition(M, For:prolog_predicate) :->
         ->  send(M, goto_line, Location, title := For?print_name)
         ;   Location = (File:Line)
         ->  send(@emacs, goto_source_location,
-                 source_location(File, Line), tab)
+                 source_location(File, Line))
         )
     ;   send(M, report, warning, 'Cannot find %N', For)
     ).
@@ -915,7 +918,7 @@ add_reference(_BM, _Len, Ref) =>
 
 loaded_from(_M, LoadedFrom:source_location) :->
     "Jump to position I'm loaded from"::
-    send(@emacs, goto_source_location, LoadedFrom, tab).
+    send(@emacs, goto_source_location, LoadedFrom).
 
 loaded_from_chain(M, LoadedFrom:chain) :<-
     "Chain with files and locations I'm loaded from"::
@@ -1051,25 +1054,10 @@ prolog_navigator(M) :->
     ).
 
 
-edit_breakpoints(_M) :->
-    "Open Prolog debug settings window"::
-    prolog_ide(open_debug_status).
-
-
-edit_exceptions(_M) :->
-    "Open Prolog Exception editor"::
-    prolog_ide(open_exceptions(@on)).
-
-
-view_threads(_M) :->
-    "View running threads"::
-    prolog_ide(thread_monitor).
-
-
-view_debug_messages(_M) :->
-    "View debug/3 messages"::
-    prolog_ide(debug_monitor).
-
+%       Editing breakpoints and exceptions, viewing the threads and the
+%       debug messages are on the Tools menu of every window of the IDE
+%       -- see `prolog_ide ->fill_menu_bar' -- which an editor is a pane
+%       of.  They are not the editor's to offer as well.
 
 		 /*******************************
 		 *           DABBREV		*
@@ -1114,16 +1102,31 @@ consult_region(M, From:[int], To:[int]) :->
     send(File, append, ?(M, contents, Start, Size)),
     send(File, newline),            % make sure it ends with a newline
     send(File, close),
-    get(File, name, TmpNam),
-    consult(user:TmpNam),
-    send(M, report, status, 'Region consulted'),
-    send(File, remove).
-
+    send(M, consult_tmp_file(File)).
 
 consult_selection(M) :->
     "Consult selected text"::
     get(M, selection, point(From, To)),
     send(M, consult_region, From, To).
+
+consult_tmp_file(E, File:file) :->
+    "Consult File and remove it"::
+    send(E, close_warning_window),
+    get(File, name, TmpNam),
+    (   get(@prolog_ide, current_epilog, PT)
+    ->  send(PT, inject, emacs_consult_and_remove(TmpNam), @on, signal)
+    ;   consult(user:TmpNam),
+        send(E, report, status, 'Region consulted'),
+        send(File, remove)
+    ).
+
+:- meta_predicate
+    system:emacs_consult_and_remove(:).
+
+system:emacs_consult_and_remove(M:File) :-
+    call_cleanup(
+        consult(M:File),
+        delete_file(File)).
 
 
 		 /*******************************
@@ -1511,7 +1514,10 @@ pce_check_require(M, File:file) :->
     ->  true
     ;   get(File, name, Name),
         send(M, report, status, 'Checking %s', Name),
-        send(M, synchronise),
+        (   get(M, window, W)
+        ->  send(W, flush)
+        ;   true
+        ),
         auto_call(pce_require(Name, _Directive, Message)),
         (   send(Message, sub, 'up-to-date')
         ->  true
@@ -2074,9 +2080,10 @@ setup_margin(M) :->
 
 forward_clause(M, Start:int, EOC:int) :<-
     "Find end of first clause after Start"::
-    new(Here, number(Start)),
+    get(M, text_buffer, TB),            % a mode is not a text_buffer: it
+    new(Here, number(Start)),           % only delegates to the editor
     repeat,
-    (   send(@prolog_full_stop, search, M, Here)
+    (   send(@prolog_full_stop, search, TB, Here)
     ->  get(@prolog_full_stop, register_start, 1, Stop),
         (   get(M, scan_syntax, 0, Stop, tuple(code,_))
         ->  !,
@@ -2706,7 +2713,7 @@ has_source(F) :->
 %       Find the predicate and invoke ->find_definition on the
 %       @emacs_mode, which is the mode object of the current editor.
 
-edit(F, Where:[{here,tab,window}]) :->
+edit(F, Where:[{as_arranged,here,tab,split,window}]) :->
     "Open Prolog predicate [in new window]"::
     get(F, predicate, Pred),
     send(@emacs_mode, find_definition, Pred, Where).
@@ -3060,15 +3067,18 @@ class_source(_, ClassName, Source) :-
     pce_library_class(ClassName, _, _Summary, Source).
 
 
-edit(F, Where:[{here,tab,window}]) :->
+edit(F, Where:[{as_arranged,here,tab,split,window}]) :->
     "Open XPCE class"::
     get(F, referenced_class, ClassName),
     get(F, text_buffer, TB),
     class_source(TB, ClassName, Source),
     (   Source = line(Line)
     ->  get(F, text_buffer, TB),
-        get(TB, open, Where, Frame),
-        send(Frame?editor, goto_line, Line)
+        get(TB, open, Where, View),
+        send(View?editor, goto_line, Line)
+    ;   object(Source),
+        send(Source, instance_of, source_location)
+    ->  send(@emacs, goto_source_location, Source, Where)
     ;   ensure_loaded(library(edit)),
         prolog_edit:locate(Source, _, Location),
         File = Location.get(file),

@@ -116,6 +116,7 @@ initialisePce(Pce pce)
 
   assign(pce, home,		      DEFAULT);
   assign(pce, defaults,		      CtoString("$PCEHOME/Defaults"));
+  assign(pce, user_defaults,	      CtoString("$PCEAPPDATA/Defaults"));
   assign(pce, version,                CtoName(PCE_VERSION));
   assign(pce, machine,                CtoName(PCE_MACHINE));
   assign(pce, operating_system,       CtoName(PCE_OS));
@@ -144,8 +145,14 @@ writePcev(Pce pce, int argc, Any *argv)
 
     if ( instanceOfObject(argv[i], ClassCharArray) )
       Cprintf("%Us", charArrayToUTF8(argv[i]));
-    else if ( isInteger(argv[i]) )
-      Cprintf("%" PRIdPTR , valInt(argv[i]));
+    else if ( isNum(argv[i]) )
+    { double d = valNum(argv[i]);
+      intptr_t l = (intptr_t)d;
+      if ( (double)l == d )
+	Cprintf("%" PRIdPTR , l);
+      else
+	Cprintf("%g", d);
+    }
     else if ( instanceOfObject(argv[i], ClassReal) )
       Cprintf("%g", valReal(argv[i]));
     else
@@ -213,15 +220,19 @@ getUnresolvedTypesPce(Pce pce)
   for_hash_table(TypeTable, s,
 		 { Type t = s->value;
 		   if ( t->kind == NAME_class )
-		   { Class class = t->context;
-		     if ( isNil(class->super_class) )
-		       appendChain(ch, t);
-		     if ( isName(class) )
-		     { if ( (class = getMemberHashTable(classTable, class)) )
-			 assign(t, context, class);
-		       else
-			 appendChain(ch, t);
+		   { Any ctx = t->context;	/* a class or its name */
+		     Class class;
+
+		     if ( isName(ctx) &&
+			  (class = getMemberHashTable(classTable, ctx)) &&
+			  instanceOfObject(class, ClassClass) )
+		     { assign(t, context, class);
+		       ctx = class;
 		     }
+
+		     if ( isName(ctx) ||
+			  isNil(((Class)ctx)->super_class) )
+		       appendChain(ch, t);
 		   }
 		 });
 
@@ -1069,20 +1080,16 @@ defineClassPce(Pce pce, Name name, Name super, StringObj summary, Code msg)
 		*           REFERENCES		*
 		********************************/
 
+/* Only named references resolve.  An object's address, which
+   `object<-object_reference' reports for an anonymous object, is not
+   accepted: after the object is freed and its memory reused it would
+   denote whatever was created in its place.
+*/
+
 Any
 getObjectFromReferencePce(Pce pce, Any ref)
-{ Any rval;
-
-  if ( isInteger(ref) )
-  { rval = IntToPointer(ref);
-
-    if ( isProperObject(rval) && !isFreedObj(rval) )
-      answer(rval);
-  } else
-  { assert(isName(ref));
-
+{ if ( isName(ref) )
     answer(findGlobal(ref));
-  }
 
   fail;
 }
@@ -1199,6 +1206,8 @@ static vardecl var_pce[] =
      NAME_environment, "PCE's home directory"),
   IV(NAME_defaults, "source_sink|char_array", IV_BOTH,
      NAME_environment, "File/rc from which to load defaults"),
+  IV(NAME_userDefaults, "source_sink|char_array*", IV_BOTH,
+     NAME_environment, "... and the user's own (@nil: read none)"),
   IV(NAME_applicationData, "directory", IV_BOTH,
      NAME_environment, "Directory for application data"),
   IV(NAME_version, "name", IV_NONE,
@@ -1282,6 +1291,8 @@ static senddecl send_pce[] =
      NAME_report, "Write arguments, separated by spaces"),
   SM(NAME_writeLn, 1, "argument=any ...", writeLnPcev,
      NAME_report, "Write arguments, separated by spaces, add nl"),
+  SM(NAME_writeln, 1, "argument=any ...", writeLnPcev,
+     NAME_report, "Write arguments, separated by spaces, add nl"),
   SM(NAME_openUrl, 1, "url=char_array", openUrlPce,
      NAME_environment, "Open a URL using the platform defaults"),
   SM(NAME_feature, 1, "any", featurePce,
@@ -1322,9 +1333,9 @@ static getdecl get_pce[] =
      NAME_limit, "Lowest representable integer"),
   GM(NAME_instance, 2, "created=object|function", T_instance, getInstancePcev,
      NAME_oms, "Create instance of any class"),
-  GM(NAME_objectFromReference, 1, "object=unchecked", "reference=int|name",
+  GM(NAME_objectFromReference, 1, "object=unchecked", "reference=name",
      getObjectFromReferencePce,
-     NAME_oms, "Convert object-name or integer reference into object"),
+     NAME_oms, "Convert object-name into object"),
   GM(NAME_pid, 0, "identifier=int", NULL, getPidPce,
      NAME_process, "Process id of this process"),
   GM(NAME_osError, 0, "identifier=name", NULL, getOsErrorPce,
@@ -1538,7 +1549,7 @@ pceInitialise(int handles, const char *home, const char *appdata,
 	      sizeof(struct hash_table),
 	      1,
 	      initialiseHashTable,
-	      1, "[int]");
+	      2, "[int]", "[{none,name,value,both}]");
 
   ClassBehaviour =
     bootClass(NAME_behaviour,

@@ -69,7 +69,7 @@ handling times must be cleaned, but that not only holds for this module.
 #include "../pl-trace.h"
 #include <errno.h>
 
-#if defined(HAVE_POLL_H) && defined(HAVE_POLL)
+#if defined(HAVE_POLL)
 #include <poll.h>
 #elif defined(HAVE_SYS_SELECT_H)
 #include <sys/select.h>
@@ -370,9 +370,7 @@ Note that we  keep reference counts on the stream,  so replacing it is
 safe.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define restoreStandardStream(i) LDFUNC(restoreStandardStream, i)
-
-static IOSTREAM *
+IOSTREAM *
 restoreStandardStream(DECL_LD int i)
 { IOSTREAM *s;
 
@@ -384,9 +382,15 @@ restoreStandardStream(DECL_LD int i)
     case SNO_USER_ERROR:
       s = Serror;
       break;
-    default:
+    case SNO_USER_OUTPUT:
+    case SNO_CURRENT_OUTPUT:
       s = Soutput;
       break;
+    case SNO_PROTOCOL:
+      return NULL;
+    default:
+      assert(0);
+      return NULL;
   }
 
   setStandardStream(i, s);
@@ -635,30 +639,42 @@ symbol_no_stream(atom_t symbol)
 { GET_LD
   term_t t;
 
-  if ( (t = PL_new_term_ref()) )
-  { PL_put_atom(t, symbol);
-    return no_stream(t, 0);
-  } else
-    return false;
+  return ( (t=PL_new_term_ref()) &&
+	   PL_put_atom(t, symbol) &&
+	   no_stream(t, 0) );
 }
 
 static bool
 symbol_not_a_stream(atom_t symbol)
 { GET_LD
-  term_t t = PL_new_term_ref();
-  PL_put_atom(t, symbol);
-  return not_a_stream(t, SH_ALIAS);
+  term_t t;
+
+  return ( (t=PL_new_term_ref()) &&
+	   PL_put_atom(t, symbol) &&
+	   not_a_stream(t, SH_ALIAS) );
 }
 
 
 static bool
 symbol_stream_pair_not_allowed(atom_t symbol)
 { GET_LD
-  term_t t = PL_new_term_ref();
-  PL_put_atom(t, symbol);
+  term_t t;
 
-  return PL_error(NULL, 0, "operation is ambiguous on a stream pair",
-		  ERR_TYPE, ATOM_stream, t);
+  return ( (t=PL_new_term_ref()) &&
+	   PL_put_atom(t, symbol) &&
+	   PL_error(NULL, 0, "operation is ambiguous on a stream pair",
+		    ERR_TYPE, ATOM_stream, t) );
+}
+
+static bool
+symbol_stream_wrong_mode(atom_t symbol, atom_t action)
+{ GET_LD
+  term_t t;
+
+  return ( (t=PL_new_term_ref()) &&
+	   PL_put_atom(t, symbol) &&
+	   PL_error(NULL, 0, "requested stream has wrong mode",
+		    ERR_PERMISSION, action, ATOM_stream, t) );
 }
 
 
@@ -786,6 +802,25 @@ static PL_blob_t stream_blob =
 };
 
 
+static bool
+check_stream_mode(atom_t a, IOSTREAM *s, int flags)
+{ atom_t action = 0;
+
+  if ( (flags&(SH_INPUT|SH_OUTPUT)) == SH_INPUT && !(s->flags&SIO_INPUT) )
+    action = ATOM_read;
+  else if ( (flags&(SH_INPUT|SH_OUTPUT)) == SH_OUTPUT && !(s->flags&SIO_OUTPUT) )
+    action = ATOM_write;
+
+  if ( action )
+  { if ( flags&SH_ERRORS )
+      return symbol_stream_wrong_mode(a, action);
+    else
+      return false;
+  }
+
+  return true;
+}
+
 #define get_stream_handle(a, sp, flags) LDFUNC(get_stream_handle, a, sp, flags)
 static bool
 get_stream_handle(DECL_LD atom_t a, IOSTREAM **sp, int flags)
@@ -829,6 +864,9 @@ get_stream_handle(DECL_LD atom_t a, IOSTREAM **sp, int flags)
     if ( s->erased )
        goto noent;
 
+    if ( !check_stream_mode(a, s, flags) )
+      return false;
+
     if ( flags & SH_UNLOCKED )
     { assert( s->magic == SIO_MAGIC || s->magic == SIO_CMAGIC );
       *sp = s;
@@ -856,7 +894,7 @@ get_stream_handle(DECL_LD atom_t a, IOSTREAM **sp, int flags)
 
       if ( n <= SNO_MAX )		/* standard stream! */
       { stream = LD->IO.streams[n];	/* TBD: No need to lock for std-streams */
-	if ( stream->magic == SIO_CMAGIC )
+	if ( stream && stream->magic == SIO_CMAGIC )
 	  stream = restoreStandardStream((int)n);
       } else
 	stream = s0;
@@ -868,16 +906,16 @@ get_stream_handle(DECL_LD atom_t a, IOSTREAM **sp, int flags)
       { if ( (flags & SH_UNLOCKED) )
 	{ if ( stream->magic == SIO_MAGIC )
 	  { *sp = stream;
-	    return true;
+	    return check_stream_mode(a, stream, flags);
 	  }
 	} else if ( flags & SH_TRYLOCK )
 	{ if ( (s=tryGetStream(stream)) )
 	  { *sp = s;
-	    return true;
+	    return check_stream_mode(a, stream, flags);
 	  } else
 	    return false;		/* exception? */
 	} else if ( (*sp = getStream(stream)) )
-	  return true;
+	  return check_stream_mode(a, stream, flags);
 	goto noent;
       }
     }
@@ -2066,33 +2104,33 @@ PRED_IMPL("noprotocol", 0, noprotocol, 0)
 		 *	 STREAM ATTRIBUTES	*
 		 *******************************/
 
-static int
-setCloseOnExec(IOSTREAM *s, int val)
+static bool
+setCloseOnExec(IOSTREAM *s, term_t stream, bool val)
 { int fd;
 
   if ( (fd = Sfileno(s)) < 0)
-    return false;
+    return PL_permission_error("close_on_exec", "stream", stream);
 
 #if defined(F_SETFD) && defined(FD_CLOEXEC)
   { int fd_flags = fcntl(fd, F_GETFD);
 
     if ( fd_flags == -1 )
-      return false;
+      return PL_error(NULL, 0, MSG_ERRNO, ERR_SYSCALL, "fcntl");
     if ( val )
       fd_flags |= FD_CLOEXEC;
     else
       fd_flags &= ~FD_CLOEXEC;
 
     if ( fcntl(fd, F_SETFD, fd_flags) == -1 )
-      return false;
+      return PL_error(NULL, 0, MSG_ERRNO, ERR_SYSCALL, "fcntl");
   }
 #elif defined __WINDOWS__
   { if ( !SetHandleInformation((HANDLE)_get_osfhandle(fd),
 			       HANDLE_FLAG_INHERIT, !val) )
-      return false;
+      return PL_error(NULL, 0, MSG_ERRNO, ERR_SYSCALL, "SetHandleInformation");
   }
 #else
-  return -1;
+  return PL_error(NULL, 0, NULL, ERR_NOT_IMPLEMENTED, "close_on_exec");
 #endif
 
   return true;
@@ -2237,9 +2275,9 @@ set_stream(DECL_LD IOSTREAM *s, term_t stream, atom_t aname, term_t a)
 
     return true;
   } else if ( aname == ATOM_close_on_abort ) /* close_on_abort(Bool) */
-  { int close;
+  { bool close;
 
-    if ( !PL_get_bool_ex(a, &close) )
+    if ( !PL_get_stdbool_ex(a, &close) )
       return false;
 
     if ( close )
@@ -2249,9 +2287,9 @@ set_stream(DECL_LD IOSTREAM *s, term_t stream, atom_t aname, term_t a)
 
     return true;
   } else if ( aname == ATOM_record_position )
-  { int rec;
+  { bool rec;
 
-    if ( !PL_get_bool_ex(a, &rec) )
+    if ( !PL_get_stdbool_ex(a, &rec) )
       return false;
 
     if ( rec ) {
@@ -2269,8 +2307,9 @@ set_stream(DECL_LD IOSTREAM *s, term_t stream, atom_t aname, term_t a)
       return false;
 
     if ( s->position )
-      s->position->linepos = lpos;
-    else
+    { s->position->linepos = lpos;
+      Sresetesc(s->position);
+    } else
       return PL_error(NULL, 0, NULL, ERR_PERMISSION,
 		      ATOM_line_position, ATOM_stream, stream);
 
@@ -2303,9 +2342,9 @@ set_stream(DECL_LD IOSTREAM *s, term_t stream, atom_t aname, term_t a)
       return true;
     return PL_permission_error("timeout", "stream", stream);
   } else if ( aname == ATOM_tty )	/* tty(bool) */
-  { int val;
+  { bool val;
 
-    if ( !PL_get_bool_ex(a, &val) )
+    if ( !PL_get_stdbool_ex(a, &val) )
       return false;
 
     if ( val )
@@ -2411,12 +2450,12 @@ set_stream(DECL_LD IOSTREAM *s, term_t stream, atom_t aname, term_t a)
       return false;
 
   } else if ( aname == ATOM_close_on_exec ) /* close_on_exec(bool) */
-  { int val;
+  { bool val;
 
-    if ( !PL_get_bool_ex(a, &val) )
+    if ( !PL_get_stdbool_ex(a, &val) )
       return false;
 
-    return setCloseOnExec(s, val);
+    return setCloseOnExec(s, stream, val);
   } else
   { assert(0);
     return false;
@@ -3313,7 +3352,7 @@ PRED_IMPL("peek_string", 3, peek_string, 0)
 	  return false;
 	}
 	if ( text.length >= len )
-	{ int rc = PL_unify_text_range(A3, &text, 0, len, PL_STRING);
+	{ bool rc = PL_unify_text_range(A3, &text, 0, len, PL_STRING);
 	  PL_free_text(&text);
 	  releaseStream(s);
 	  return rc;
@@ -5559,6 +5598,7 @@ PRED_IMPL("set_stream_position", 2, set_stream_position, PL_FA_ISO)
   s->position->charno  = charno;
   s->position->lineno  = (int)lineno;
   s->position->linepos = (int)linepos;
+  Sresetesc(s->position);
 
   releaseStream(s);
 

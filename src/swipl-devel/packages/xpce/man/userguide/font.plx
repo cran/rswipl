@@ -73,6 +73,10 @@ be easy to read.
 Same as \const{fixed}.
     \fontalias{boldtt}{font(mono, bold, 14)}
 Bold terminal font.
+    \fontalias{itt}{font(mono, italic, 14)}
+Slanted terminal font.
+    \fontalias{bitt}{font(mono, italic, 14, bold)}
+Bold slanted terminal font.
 \end{itemize}
 
 The end-user of an \product{} application can define the class-variable

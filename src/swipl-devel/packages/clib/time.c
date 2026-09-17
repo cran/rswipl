@@ -169,8 +169,6 @@ print_trace (void)
 static void	on_alarm(int sig);
 
 static module_t	   MODULE_user;
-static atom_t	   ATOM_remove;
-static atom_t	   ATOM_install;
 static atom_t	   ATOM_done;
 static atom_t	   ATOM_next;
 static atom_t	   ATOM_scheduled;
@@ -728,7 +726,7 @@ int
 alarm_error(term_t alarm, int err)
 { switch(err)
   { case ERR_RESOURCE:
-      return pl_error(NULL, 0, NULL, ERR_RESOURCE, "timers");
+      return PL_resource_error("timers");
     case ERR_PERMISSION:
       return pl_error(NULL, 0, "already installed", ERR_PERMISSION,
 		      alarm, "install", "alarm");
@@ -742,7 +740,7 @@ alarm_error(term_t alarm, int err)
 static int
 unify_timer(term_t t, Event ev)
 { if ( !PL_is_variable(t) )
-    return pl_error(NULL, 0, NULL, ERR_ARGTYPE, 0, t, "unbound");
+    return PL_type_error("unbound", t);
 
   return PL_unify_term(t,
 		       PL_FUNCTOR, FUNCTOR_alarm1,
@@ -778,14 +776,11 @@ get_timer(term_t t, Event *ev)
 }
 
 
-static int
-pl_get_bool_ex(term_t arg, int *val)
-{ if ( PL_get_bool(arg, val) )
-    return TRUE;
-
-  return pl_error(NULL, 0, NULL, ERR_ARGTYPE, 0, arg, "bool");
-}
-
+static PL_option_t alarm_options[] =
+{ PL_OPTION("remove",  OPT_BOOL),
+  PL_OPTION("install", OPT_BOOL),
+  PL_OPTIONS_END
+};
 
 static foreign_t
 alarm4_gen(time_abs_rel abs_rel, term_t time, term_t callable,
@@ -796,44 +791,19 @@ alarm4_gen(time_abs_rel abs_rel, term_t time, term_t callable,
   unsigned long flags = 0L;
 
   if ( options )
-  { term_t tail = PL_copy_term_ref(options);
-    term_t head = PL_new_term_ref();
+  { int remove = FALSE, install = TRUE;
 
-    while( PL_get_list(tail, head, tail) )
-    { atom_t name;
-      size_t arity;
-
-      if ( PL_get_name_arity(head, &name, &arity) )
-      { if ( arity == 1 )
-	{ term_t arg = PL_new_term_ref();
-
-	  _PL_get_arg(1, head, arg);
-
-	  if ( name == ATOM_remove )
-	  { int t = FALSE;
-
-	    if ( !pl_get_bool_ex(arg, &t) )
-	      return FALSE;
-	    if ( t )
-	      flags |= EV_REMOVE;
-	  } else if ( name == ATOM_install )
-	  { int t = TRUE;
-
-	    if ( !pl_get_bool_ex(arg, &t) )
-	      return FALSE;
-	    if ( !t )
-	      flags |= EV_NOINSTALL;
-	  }
-	}
-      }
-    }
-    if ( !PL_get_nil(tail) )
-      return pl_error(NULL, 0, NULL, ERR_ARGTYPE, 4, options, "list");
+    if ( !PL_scan_options(options, 0, "alarm_option", alarm_options,
+			  &remove, &install) )
+      return FALSE;
+    if ( remove )
+      flags |= EV_REMOVE;
+    if ( !install )
+      flags |= EV_NOINSTALL;
   }
 
   if ( !PL_get_float(time, &t) )
-    return pl_error(NULL, 0, NULL, ERR_ARGTYPE, 1,
-		    time, "number");
+    return PL_type_error("number", time);
   if ( !PL_strip_module(callable, &m, callable) )
     return FALSE;
 
@@ -912,8 +882,7 @@ install_alarm2(term_t alarm, term_t time)
     return FALSE;
 
   if ( !PL_get_float(time, &t) )
-    return pl_error(NULL, 0, NULL, ERR_ARGTYPE, 1,
-		    time, "number");
+    return PL_type_error("number", time);
 
   setTimeEvent(ev, t);
   if ( (rc=installEvent(ev)) != TRUE )
@@ -1056,8 +1025,6 @@ install_time(void)
   FUNCTOR_alarm4  = PL_new_functor(PL_new_atom("alarm"), 4);
   FUNCTOR_module2 = PL_new_functor(PL_new_atom(":"), 2);
 
-  ATOM_remove	  = PL_new_atom("remove");
-  ATOM_install	  = PL_new_atom("install");
   ATOM_done	  = PL_new_atom("done");
   ATOM_next	  = PL_new_atom("next");
   ATOM_scheduled  = PL_new_atom("scheduled");

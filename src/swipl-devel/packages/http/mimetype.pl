@@ -144,7 +144,7 @@ ext_mimetype(ttl,  application/turtle).
 ext_mimetype(nt,   application/'n-triples').
 ext_mimetype(nq,   application/'n-quads').
                                         % Prolog source
-ext_mimetype(pl,   text/plain).
+ext_mimetype(pl,   text/'x-prolog').
                                         % Other languages
 ext_mimetype(c,    text/'x-c').
 ext_mimetype(h,    text/'x-c').

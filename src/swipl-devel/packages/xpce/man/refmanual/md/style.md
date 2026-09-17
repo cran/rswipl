@@ -33,7 +33,8 @@ updated.  It is adviced to use styles in a read-only fashion.
 ## Instance variables {#class-style-instvars}
 
 - style-attributes: alien:long
-    Or'ed bits for ->underline, ->highlight, ->grey, ->closed and ->bold.
+    Or'ed bits for ->underline, ->highlight, ->grey, ->closed, ->bold
+    and ->italic.
 
 - style<->background: [colour|pixmap|elevation]
     Background for the characters.  If it is an instance of class
@@ -103,7 +104,10 @@ updated.  It is adviced to use styles in a read-only fashion.
 - style->highlight: bool
     *Inherits description from*: style<-bold
 
-- style->initialise: icon=[image]*, font=[font], colour=[colour], highlight=[bool], underline=[bool|texture_name|colour], bold=[bool], grey=[bool], background=[colour|pixmap|elevation], hidden=[bool], left_margin=[int], right_margin=[int], strikethrough=[bool|texture_name|colour]
+- style->italic: bool
+    *Inherits description from*: style<-bold
+
+- style->initialise: icon=[image]*, font=[font], colour=[colour], highlight=[bool], underline=[bool|texture_name|colour], bold=[bool], grey=[bool], background=[colour|pixmap|elevation], hidden=[bool], left_margin=[int], right_margin=[int], strikethrough=[bool|texture_name|colour], italic=[bool]
     Create a style object from its (margin-)image, font and text-attributes.
     For example:
 
@@ -123,6 +127,7 @@ updated.  It is adviced to use styles in a read-only fashion.
     	| ->hidden       | If true, text is invisible        |
     	| ->left_margin  | Left margin (pixels)              |
     	| ->right_margin | Right margin (pixels from right)  |
+    	| ->italic       | Print slanted                     |
 
     NOTE: this method defines a large number of arguments.  It is
     advised to use the `keyword := value` construct for specifying
@@ -150,11 +155,14 @@ updated.  It is adviced to use styles in a read-only fashion.
 
 - style<-underline: -> [bool|texture_name|colour]
 
+- style<-italic: -> bool
+
 - style<-bold: -> bool
     These methods set/query the appropriate field from the style -attributes
     slot.   The attributes are:
 
     	| ->bold      | bold-face using double-strike (see also ->font) |
+    	| ->italic    | slanted text (see also ->font)                  |
     	| ->underline | underlined text.                                |
     	| ->highlight | inverted background and foreground.             |
     	| ->grey      | greyed-out by and'ing with @grey50_image.       |

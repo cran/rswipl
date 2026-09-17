@@ -192,7 +192,10 @@ typedef struct io_position
   int64_t		charno;		/* character position in file */
   int			lineno;		/* lineno in file */
   int			linepos;	/* position in line */
-  intptr_t		reserved[2];	/* future extensions */
+  intptr_t		esc_state;	/* ANSI escape sequence state.  Claims
+					   what was reserved[0]; see
+					   Supdatepos() and Sresetesc() */
+  intptr_t		reserved[1];	/* future extensions */
 } IOPOS;
 
 					/* NOTE: check with encoding_names */
@@ -356,6 +359,8 @@ PL_EXPORT_DATA(IOSTREAM)	S__iob[3];		/* Libs standard streams */
 #define SIO_GETREPOSITION (8)		/* Test if stream is repositionable */
 #ifdef __WINDOWS__
 #define SIO_GETWINHANDLE  (9)		/* Get underlying handle */
+#define SIO_GETWINPSEUDOCONSOLE (10)	/* Claim the HPCON the stream runs on */
+#define SIO_RELWINPSEUDOCONSOLE (11)	/* Hand it back */
 #endif
 
 /* Sread_pending() */
@@ -511,6 +516,10 @@ PL_EXPORT(int)		Sfileno(IOSTREAM *s);
 PL_EXPORT(int)		Swin_open_osfhandle(HANDLE h, int flags);
 PL_EXPORT(IOSTREAM *)	Swin_open_handle(HANDLE h, const char *mode);
 PL_EXPORT(HANDLE)	Swinhandle(IOSTREAM *s);
+PL_EXPORT(HANDLE)	Swinpseudoconsole(IOSTREAM *s);
+PL_EXPORT(void)		Swinrelease_pseudoconsole(IOSTREAM *s);
+PL_EXPORT(void *)	Swinpseudoconsole_attributes(HANDLE hpcon);
+PL_EXPORT(void)		Swinfree_pseudoconsole_attributes(void *attributes);
 #if defined(_WINSOCKAPI_) || defined(NEEDS_SWINSOCK) /* have SOCKET */
 PL_EXPORT(SOCKET)	Swinsock(IOSTREAM *s);
 #endif

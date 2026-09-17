@@ -42,125 +42,7 @@
 typedef uint32_t uchar_t;
 #endif
 
-/* Marks a location in the line buffer
- */
-typedef struct
-{ int		mark_x;
-  int		mark_y;
-} rlc_mark, *RlcMark;
-
 typedef struct rlc_data * rlc_console; /* they are the same; rename! */
-
-typedef void	(*RlcUpdateHook)(void);	/* Graphics update hook */
-typedef void	(*RlcTimerHook)(int);	/* Timer fireing hook */
-typedef void	(*RlcRenderAllHook)(void); /* Render all formats */
-typedef int	(*RlcMain)(rlc_console c, int, uchar_t**); /* main() */
-typedef void	(*RlcInterruptHook)(rlc_console, int); /* Hook for Control-C */
-typedef void	(*RlcResizeHook)(int, int); /* Hook for window change */
-typedef void	(*RlcMenuHook)(rlc_console, const uchar_t *id); /* Hook for menu-selection */
-typedef void	(*RlcFreeDataHook)(uintptr_t data); /* release data */
-typedef bool	(*RlcLinkHook)(rlc_console, const uchar_t *); /* link href */
-
-RlcUpdateHook	rlc_update_hook(RlcUpdateHook updatehook);
-RlcTimerHook	rlc_timer_hook(RlcTimerHook timerhook);
-#if TODO
-RlcRenderHook   rlc_render_hook(RlcRenderHook renderhook);
-#endif
-RlcRenderAllHook rlc_render_all_hook(RlcRenderAllHook renderallhook);
-RlcInterruptHook rlc_interrupt_hook(RlcInterruptHook interrupthook);
-RlcResizeHook	rlc_resize_hook(RlcResizeHook resizehook);
-RlcMenuHook	rlc_menu_hook(RlcMenuHook menuhook);
-RlcLinkHook	rlc_link_hook(RlcLinkHook linkhook);
-int		rlc_copy_output_to_debug_output(int docopy);
-
-void		rlc_yield(void);
-void		rlc_word_char(int chr, int isword);
-
-size_t		rlc_read(rlc_console c, uchar_t *buf, size_t cnt);
-size_t		rlc_write(rlc_console c, uchar_t *buf, size_t cnt);
-int		rlc_close(rlc_console c);
-int		rlc_flush_output(rlc_console c);
-
-wchar_t	       *rlc_clipboard_text(rlc_console c);
-
-int		getch(rlc_console c);
-int		getche(rlc_console c);
-int		getkey(rlc_console c);
-int		kbhit(rlc_console c);
-void		ScreenGetCursor(rlc_console c, int *row, int *col);
-void		ScreenSetCursor(rlc_console c, int row, int col);
-int		ScreenCols(rlc_console c);
-int		ScreenRows(rlc_console c);
-
-		 /*******************************
-		 *	 LINE EDIT STUFF	*
-		 *******************************/
-
-/* Represent the line currently being typed in "cooked" mode
- */
-typedef struct _line
-{ rlc_mark	origin;			/* origin of edit */
-  size_t	point;			/* location of the caret */
-  size_t	size;			/* # characters in buffer */
-  size_t	allocated;		/* # characters allocated */
-  size_t	change_start;		/* start of change */
-  int		complete;		/* line is completed */
-  int		reprompt;		/* repeat the prompt */
-  uchar_t	       *data;			/* the data (malloc'ed) */
-  rlc_console	console;		/* console I belong to */
-} rlc_line, *RlcLine;
-
-#define COMPLETE_MAX_WORD_LEN 256
-#define COMPLETE_MAX_MATCHES 100
-
-#define COMPLETE_INIT	   0
-#define COMPLETE_ENUMERATE 1
-#define COMPLETE_CLOSE	   2
-
-struct _complete_data;
-
-typedef int (*RlcCompleteFunc)(struct _complete_data *);
-
-typedef struct _complete_data
-{ RlcLine	line;			/* line we are completing */
-  int		call_type;		/* COMPLETE_* */
-  int		replace_from;		/* index to start replacement */
-  int		quote;			/* closing quote */
-  int		case_insensitive;	/* if true: insensitive match */
-  uchar_t		candidate[COMPLETE_MAX_WORD_LEN];
-  uchar_t		buf_handle[COMPLETE_MAX_WORD_LEN];
-  RlcCompleteFunc function;		/* function for continuation */
-  void	       *ptr_handle;		/* pointer handle for client */
-  intptr_t	num_handle;		/* numeric handle for client */
-} rlc_complete_data, *RlcCompleteData;
-
-RlcCompleteFunc rlc_complete_hook(RlcCompleteFunc func);
-
-uchar_t	*read_line(rlc_console console);
-int	rlc_complete_file_function(RlcCompleteData data);
-void	rlc_init_history(rlc_console c, int size);
-void	rlc_add_history(rlc_console c, const uchar_t *line);
-bool	rlc_bind(int chr, const char *fname);
-int	rlc_for_history(
-		    rlc_console b,
-		    int (*handler)(void *ctx, int no, const uchar_t *line),
-		    void *ctx);
-
-		 /*******************************
-		 *	       HISTORY		*
-		 *******************************/
-
-/* a ring buffer that stores the history of commands typed into
- * the terminal
- */
-typedef struct _history
-{ int		size;			/* size of the history */
-  int		tail;			/* oldest position */
-  int		head;			/* newest position */
-  int		current;		/* for retrieval */
-  uchar_t **	lines;			/* the lines */
-} history, *History;
-
 
 		 /*******************************
 		 *	    TERMINAL DATA	*
@@ -168,14 +50,6 @@ typedef struct _history
 
 #define ANSI_MAX_ARGC     10		/* Ansi-escape sequence argv */
 #define ANSI_MAX_LINK	4096		/* 4-K max URL length */
-#define MAXPROMPT         80		/* max size of prompt */
-#define OQSIZE		4096		/* output queue size */
-#define MAX_USER_VALUES	  10		/* max user data-handles */
-
-typedef struct lqueued
-{ uchar_t *	  line;			/* Lines in queue */
-  struct lqueued* next;			/* Next in queue */
-} lqueued, *LQueued;
 
 /* Packed per-cell metadata (32 bits).  Indices `fg` and `bg` reference
  * the per-buffer color palette (see `palette` in rlc_data).  The sentinel
@@ -187,7 +61,7 @@ typedef struct lqueued
  *   - inverse    : 1
  *   - link       : 1   inside a hyperlink
  *   - strike     : 1   strikethrough (SGR 9 / crossed_out)
- *   - reserved   : 1   future: italic
+ *   - italic     : 1   slanted (SGR 3 / sitm)
  *   - fg         : 12  palette index, 4096 entries
  *   - bg         : 12  palette index, 4096 entries
  */
@@ -200,7 +74,7 @@ typedef union text_flags
     unsigned inverse   : 1;
     unsigned link      : 1;
     unsigned strike    : 1;
-    unsigned reserved  : 1;
+    unsigned italic    : 1;
     unsigned fg        : 12;
     unsigned bg        : 12;
   };
@@ -231,13 +105,30 @@ typedef struct
   unsigned	 adjusted : 1;		/* line has been adjusted? */
   unsigned	 changed : 1;		/* line needs redraw */
   unsigned	 softreturn : 1;	/* wrapped line */
+  unsigned	 eol_erased : 1;	/* paint the tail using eol_flags */
+  unsigned	 folded : 1;		/* inside a closed fold: not painted */
+  unsigned	 fold_head : 1;		/* the line that carries its marker */
+  text_flags	 eol_flags;		/* background colour erase (bce) */
   int		 line_no;		/* The number of the line */
 } rlc_text_line, *RlcTextLine;
 
-typedef struct
-{ uintptr_t	data;			/* the data itself */
-  RlcFreeDataHook hook;			/* call when destroying console */
-} user_data;
+/* Where the OSC 133 marks of one command landed.  A position is a ring
+ * line and a cell on it; -1 for a mark that has not arrived.  This hangs
+ * off a terminal_block (see ../h/text.h) rather than living in the ring,
+ * because it must outlive the lines being rewrapped under it: rlc_resize()
+ * carries it across as an rlc_textpos, exactly as it does the caret and
+ * the selection.
+ */
+
+typedef struct rlc_anchors
+{ int	prompt_line, prompt_char;	/* `A': the prompt starts here */
+  int	input_line,  input_char;	/* `B': and the line the user edits */
+  int	output_line, output_char;	/* `C': it was entered; output follows */
+  int	end_line,    end_char;		/* `D': and the output ends here */
+  bool	continued;			/* `A;k=s': typed over several lines */
+  int	cont_char;			/* where its later lines start */
+  int	hidden_lines;			/* rows the fold hides, if folded */
+} rlc_anchors, *RlcAnchors;
 
 typedef enum
 { CMD_INITIAL = 0,
@@ -248,9 +139,10 @@ typedef enum
   CMD_OSC,			/* \e] */
   CMD_OSCARG,			/* \e]<digit> */
   CMD_OSCTEXT,			/* \e]param; */
-  CMD_LINK,			/* \e]8 */
-  CMD_LINKARG,
-  CMD_DEC_PRIVATE
+  CMD_DEC_PRIVATE,
+  CMD_CSI_INTERMEDIATE,		/* CSI param ... <intermediate 0x20-0x2F>+ */
+  CMD_DCS,			/* \eP <body> ST */
+  CMD_DCS_ESC			/* saw ESC inside DCS, waiting for '\\' */
 } ansi_state;
 
 typedef enum
@@ -275,6 +167,8 @@ typedef struct rlc_data
   int		caret_y;		/* its line */
   int		window_start;		/* start line of the window */
   int		window_size;		/* #lines on the window */
+  int		scroll_top;		/* DECSTBM: first row of the */
+  int		scroll_bottom;		/* scrolling region and its last */
   RlcTextLine	lines;			/* the actual lines */
   struct				/* ESC ? 1049 [hl] */
   { RlcTextLine	lines;			/* The saved lines */
@@ -283,34 +177,61 @@ typedef struct rlc_data
     int		caret_y;
   } saved;
   int		sel_unit;		/* SEL_CHAR, SEL_WORD, SEL_LINE */
+  bool		sel_word;		/* Match this selection as a word */
   int		sel_org_line;		/* line origin of the selection */
   int		sel_org_char;		/* char origin of the selection */
   int		sel_start_line;		/* starting line for selection */
   int		sel_start_char;		/* starting char for selection */
   int		sel_end_line;		/* ending line for selection */
   int		sel_end_char;		/* ending char for selection */
+  int		drag_x;			/* last pointer position of a */
+  int		drag_y;			/* selection drag */
+  struct				/* Incremental search; the hit is */
+  { int	origin_line;			/* the selection, so all we keep is */
+    int	origin_char;			/* where the search started ... */
+    int	base_line;			/* ... where changing the string */
+    int	base_char;			/* looks from ... */
+    int	window_start;			/* ... and the view it started from */
+    bool seeded;			/* Started from a selection, which */
+    int	held_start_line;		/* ^G gives back along with the */
+    int	held_start_char;		/* view */
+    int	held_end_line;
+    int	held_end_char;
+  } isearch;
   bool		app_escape;		/* Send ESC 0 instead of ESC [ */
   bool		app_keypad_mode;	/* Send ESC <N> p from keypad */
+  bool		insert_mode;		/* ANSI mode 4 (IRM) */
+  bool		autowrap;		/* DEC Private Mode 7 (DECAWM) */
+  int		last_char;		/* last printed char, for REP */
   ansi_state    cmdstat;		/* for parsing ANSI escape */
   int		argstat;		/* argument status ANSI */
-  char const   *must_see;		/* \e]8;; link decoding */
+  int		csi_intermediate;	/* CSI intermediate byte, 0 if none */
+  int		csi_private;		/* CSI private marker ? or >, 0 if none */
   int		argc;			/* argument count for ANSI */
   int		argv[ANSI_MAX_ARGC];	/* argument vector for ANSI */
   uchar_t		link[ANSI_MAX_LINK];	/* Max URL length */
+  uchar_t      *link_url;		/* Open OSC 8 hyperlink or NULL */
   href	       *armed_href;		/* href the mouse is hovering, or NULL */
   bool		shift_in;		/* select G1 */
+					/* HTS/TBC tab stops.  Columns past
+					   the map (a line holds at most
+					   MAXLINE of them) stop every 8 */
+  unsigned char	tabs[128];
   G_state	G0;			/* Character set slot 0 */
   G_state	G1;			/* Character set slot 1 */
   int		link_len;		/* # chars in `link` */
-  int		scaret_x;		/* saved-caret X */
+  int		scaret_x;		/* saved-caret X (CSI s/u) */
   int		scaret_y;		/* saved-caret Y */
+  struct				/* ESC 7 / ESC 8 (DECSC/DECRC) */
+  { int		x;			/* visual column */
+    int		y;			/* row in the window */
+    text_flags	sgr;			/* SGR in effect */
+    G_state	G0;			/* character set slots */
+    G_state	G1;
+    bool	shift_in;		/* G1 selected */
+    bool	saved;			/* ESC 7 was seen */
+  } cursor;
   bool		has_focus;		/* Application has the focus */
-  bool		fixedfont;		/* Font is fixed */
-  COLORRGBA	foreground;		/* Foreground (text) color */
-  COLORRGBA	background;		/* Background color */
-  COLORRGBA	sel_foreground;		/* Selection foreground */
-  COLORRGBA	sel_background;		/* Selection background */
-  COLORRGBA	ansi_color[16];		/* ANSI colors (8 normal + 8 bright) */
   COLORRGBA    *palette;		/* per-buffer color palette */
   struct colour **palette_obj;		/* owned locked Colour per slot >=16 */
   uint32_t	palette_size;		/* live entries (>= PAL_ANSI_RESERVED) */
@@ -322,12 +243,22 @@ typedef struct rlc_data
   int		ch;			/* character height */
   int		cb;			/* baseline */
   int		changed;		/* changes to the whole screen */
-  int		sb_lines;		/* #lines the scrollbar thinks */
-  int		sb_start;		/* start-line scrollbar thinks */
   bool		caret_is_shown;		/* is caret in the window? */
   bool		hide_caret;		/* DEC Private Mode 25 */
   bool		bracketed_paste_mode;	/* DEC Private Mode 2004 */
+  bool		prompt_marks;		/* client marks its prompts */
+  bool		input_active;		/* OSC 133: between B and C */
+  bool		input_continued;	/* OSC 133: the last A was k=s */
+  int		input_line;		/* OSC 133 B: where the input */
+  int		input_char;		/* the user edits starts */
+  int		next_block_id;		/* <-id of the next terminal_block */
+  int		folds;			/* # closed folds; 0 is the fast path */
   bool		focus_inout_events;	/* Dec Private Mode 1004 */
+  bool		alt_scroll;		/* DEC Private Mode 1007 */
+  int		mouse_tracking;		/* DEC Private Mode 9/1000/1002/1003 */
+  int		mouse_encoding;		/* DEC Private Mode 1005/1006/1015 */
+  int		mouse_col;		/* cell the last motion reported */
+  int		mouse_row;
   int		caret_px;		/* Position of the caret in pixels */
   int		caret_py;		/* Position of the caret in pixels */
   unsigned char	incomplete_cnt;		/* # incomplete chars */
@@ -338,6 +269,7 @@ typedef struct rlc_data
     int       master_fd;		/* Terminal side */
     int       slave_fd;			/* Client side */
     char      slave_name[128];		/* PTY name */
+    int	      client_fd[3];		/* Client stdin/stdout/stderr */
     FDWatch  *watch;			/* Watch for write to terminal */
     bool      has_client_thread;
     pthread_t client_thread;		/* Thread that opened this terminal */
@@ -345,6 +277,8 @@ typedef struct rlc_data
 #else
   struct
   { HANDLE hPC;				/* The pseudo console */
+    int	   hPC_refs;			/* Clients that claimed hPC */
+    bool   hPC_ours;			/* ... and we made it for them */
     HANDLE hIn;				/* For reading from the process */
     HANDLE hOut;			/* For writing to the process */
     HANDLE hTaskIn;			/* The client read handle */
@@ -356,25 +290,6 @@ typedef struct rlc_data
   } ptycon;
 #endif
 } rlc_data, *RlcData;
-
-
-		 /*******************************
-		 *	    FUNCTIONS		*
-		 *******************************/
-
-int		rlc_at_head_history(RlcData b);
-const uchar_t *	rlc_bwd_history(RlcData b);
-const uchar_t *	rlc_fwd_history(RlcData b);
-void		rlc_get_mark(rlc_console c, RlcMark mark);
-void		rlc_goto_mark(rlc_console c, RlcMark mark,
-			      const uchar_t *data, size_t offset);
-void		rlc_erase_from_caret(rlc_console c);
-void		rlc_putchar(rlc_console c, int chr);
-uchar_t *		rlc_read_screen(rlc_console c,
-				RlcMark from, RlcMark to);
-const uchar_t *	rlc_prompt(rlc_console c, const uchar_t *prompt);
-void		rlc_clearprompt(rlc_console c);
-
 
 		 /*******************************
 		 *	 INLINE FUNCTIONS	*

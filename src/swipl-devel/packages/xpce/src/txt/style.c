@@ -39,12 +39,13 @@
 static status	highlightStyle(Style s, BoolObj on);
 static status	greyStyle(Style s, BoolObj on);
 static status	hiddenStyle(Style s, BoolObj on);
+static status	italicStyle(Style s, BoolObj on);
 
 static status
 initialiseStyle(Style s, Image icon, FontObj font, Colour colour,
 		BoolObj highlight, BoolObj underline, BoolObj bold, BoolObj grey,
 		Any background, BoolObj hidden, Int lm, Int rm,
-		Any strikethrough)
+		Any strikethrough, BoolObj italic)
 { if ( isDefault(icon) )      icon      = NIL;
   if ( isDefault(lm) )        lm        = ZERO;
   if ( isDefault(rm) )        rm        = ZERO;
@@ -63,6 +64,7 @@ initialiseStyle(Style s, Image icon, FontObj font, Colour colour,
   if ( notDefault(bold) )      boldStyle(s, bold);
   if ( notDefault(grey) )      greyStyle(s, grey);
   if ( notDefault(hidden) )    hiddenStyle(s, hidden);
+  if ( notDefault(italic) )    italicStyle(s, italic);
 
   succeed;
 }
@@ -93,11 +95,11 @@ loadStyle(Style s, IOSTREAM *fd, ClassDef def)
 static status
 attribute_style(Style s, unsigned char att, BoolObj on)
 { if ( on == ON )
-  { if ( s->attributes && att )
+  { if ( s->attributes & att )
       succeed;
     s->attributes |= att;
   } else
-  { if ( !(s->attributes && att) )
+  { if ( !(s->attributes & att) )
       succeed;
     s->attributes &= ~att;
   }
@@ -121,6 +123,12 @@ greyStyle(Style s, BoolObj on)
 status
 boldStyle(Style s, BoolObj on)
 { return attribute_style(s, TXT_BOLDEN, on);
+}
+
+
+static status
+italicStyle(Style s, BoolObj on)
+{ return attribute_style(s, TXT_ITALIC, on);
 }
 
 
@@ -155,6 +163,12 @@ getBoldStyle(Style s)
 
 
 static BoolObj
+getItalicStyle(Style s)
+{ return get_attribute_style(s, TXT_ITALIC);
+}
+
+
+static BoolObj
 getHiddenStyle(Style s)
 { return get_attribute_style(s, TXT_HIDDEN);
 }
@@ -167,7 +181,7 @@ getHiddenStyle(Style s)
 /* Type declarations */
 
 static char *T_initialise[] =
-        { "icon=[image]*", "font=[font]", "colour=[colour]", "highlight=[bool]", "underline=[bool|texture_name|colour]", "bold=[bool]", "grey=[bool]", "background=[colour|pixmap|elevation]", "hidden=[bool]", "left_margin=[int]", "right_margin=[int]", "strikethrough=[bool|texture_name|colour]" };
+        { "icon=[image]*", "font=[font]", "colour=[colour]", "highlight=[bool]", "underline=[bool|texture_name|colour]", "bold=[bool]", "grey=[bool]", "background=[colour|pixmap|elevation]", "hidden=[bool]", "left_margin=[int]", "right_margin=[int]", "strikethrough=[bool|texture_name|colour]", "italic=[bool]" };
 
 /* Instance Variables */
 
@@ -195,7 +209,7 @@ static vardecl var_style[] =
 /* Send Methods */
 
 static senddecl send_style[] =
-{ SM(NAME_initialise, 12, T_initialise, initialiseStyle,
+{ SM(NAME_initialise, 13, T_initialise, initialiseStyle,
      DEFAULT, "Create from icon, font, colour and attributes"),
   SM(NAME_bold, 1, "bool", boldStyle,
      NAME_appearance, "Bold text"),
@@ -204,7 +218,9 @@ static senddecl send_style[] =
   SM(NAME_hidden, 1, "bool", hiddenStyle,
      NAME_appearance, "Make text invisible"),
   SM(NAME_highlight, 1, "bool", highlightStyle,
-     NAME_appearance, "Inverse video")
+     NAME_appearance, "Inverse video"),
+  SM(NAME_italic, 1, "bool", italicStyle,
+     NAME_appearance, "Slanted text")
 };
 
 /* Get Methods */
@@ -217,7 +233,9 @@ static getdecl get_style[] =
   GM(NAME_hidden, 0, "bool", NULL, getHiddenStyle,
      NAME_appearance, "Boolean to indicate invisible text"),
   GM(NAME_highlight, 0, "bool", NULL, getHighlightStyle,
-     NAME_appearance, "Boolean to indicate inverse video")
+     NAME_appearance, "Boolean to indicate inverse video"),
+  GM(NAME_italic, 0, "bool", NULL, getItalicStyle,
+     NAME_appearance, "Boolean to indicate slanted text")
 };
 
 /* Resources */

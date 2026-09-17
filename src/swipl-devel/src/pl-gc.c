@@ -1762,12 +1762,12 @@ static life_count counts;
 
 static
 PRED_IMPL("gc_counts", 1, gc_counts, 0)
-{ int rc = PL_unify_term(A1,
-			 PL_FUNCTOR_CHARS, "gc", 4,
-			   PL_INT64, counts.marked_envs,
-			   PL_INT64, counts.marked_cont,
-			   PL_INT64, counts.c_scanned,
-			   PL_INT64, counts.vm_scanned);
+{ bool rc = PL_unify_term(A1,
+			  PL_FUNCTOR_CHARS, "gc", 4,
+			    PL_INT64, counts.marked_envs,
+			    PL_INT64, counts.marked_cont,
+			    PL_INT64, counts.c_scanned,
+			    PL_INT64, counts.vm_scanned);
 
   memset(&counts, 0, sizeof(counts));
 
@@ -4341,9 +4341,9 @@ given vm-state.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 #define gcEnsureSpace(state) LDFUNC(gcEnsureSpace, state)
-static int
+static boolex_t
 gcEnsureSpace(DECL_LD vm_state *state)
-{ int rc = true;
+{ boolex_t rc = true;
   size_t lneeded = 0;
 
   if ( LD->gvar.grefs )
@@ -4359,7 +4359,7 @@ gcEnsureSpace(DECL_LD vm_state *state)
 
   if ( (char*)lTop + lneeded > (char*)lMax )
   { if ( (char*)lTop + lneeded > (char*)lMax + LD->stacks.local.spare )
-    { int rc2;
+    { boolex_t rc2;
 
       restore_vmi_state(state);
       if ( (rc2=growLocalSpace(lneeded, ALLOW_SHIFT)) != true )
@@ -4641,7 +4641,7 @@ makeMoreStackSpace(boolex_t overflow, int flags)
   if ( (flags & (ALLOW_SHIFT|ALLOW_GC)) )
   { size_t l=0, g=0, t=0;
     size_t oldsize;
-    int rc;
+    boolex_t rc;
 
     switch(overflow)
     { case LOCAL_OVERFLOW:  l = 1; break;
@@ -4698,7 +4698,7 @@ f_ensureStackSpace(DECL_LD size_t gcells, size_t tcells, int flags)
   if ( flags )
   { size_t gmin;
     size_t tmin;
-    int rc;
+    boolex_t rc;
 
     if ( (flags & ALLOW_GC) && considerGarbageCollect(NULL) )
     { if ( (rc=garbageCollect(GC_GLOBAL_OVERFLOW)) != true )
@@ -5786,12 +5786,21 @@ markAtomsOnGlobalStack(PL_local_data_t *ld)
   }
 }
 
+/* A call builds its frame just above lTop, the header and then the
+   arguments, before lTop is moved past it.  So we also scan that much
+   above lTop.  This is in words: LOCAL_MARGIN is in bytes.
+*/
+
+#define AGC_LOCAL_MARGIN \
+	((sizeof(struct localFrame) + MAXARITY*sizeof(word))/sizeof(word))
+
 static void
 markAtomsOnLocalStack(PL_local_data_t *ld)
 { Word lbase = (Word)ld->stacks.local.base;
   Word ltop  = (Word)ld->stacks.local.top;
   Word lmax  = (Word)ld->stacks.local.max;
-  Word lend  = ltop+LOCAL_MARGIN < lmax ? ltop+LOCAL_MARGIN : lmax;
+  Word lend  = (size_t)(lmax-ltop) > AGC_LOCAL_MARGIN ? ltop+AGC_LOCAL_MARGIN
+						      : lmax;
   Word current;
 
   for(current = lbase; current < lend; current++ )

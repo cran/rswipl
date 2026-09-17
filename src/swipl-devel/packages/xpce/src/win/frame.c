@@ -51,6 +51,7 @@ static status	informTransientsFramev(FrameObj fr, Name selector,
 				       int argc, Any *argv);
 static status	cursorFrame(FrameObj fr, CursorObj cursor);
 static status   statusFrame(FrameObj fr, Name stat);
+static status	uncreateFrame(FrameObj fr);
 
 #define isOpenFrameStatus(s) ((s) == NAME_window || (s) == NAME_fullScreen)
 
@@ -60,7 +61,13 @@ initialiseFrame(FrameObj fr, Name label, Name kind,
 { if ( isDefault(kind) )
     kind = NAME_toplevel;
   if ( isDefault(display) )
-    display = CurrentDisplay(NIL);
+  { /* There is none if the window system could not be initialised.  Say
+     * so here: a frame without a display crashes on the first thing that
+     * looks at its <-display, which is ->create.
+     */
+    if ( !(display = CurrentDisplay(NIL)) )
+      return errorPce(fr, NAME_noDisplay);
+  }
   if ( isDefault(label) )
     label = CtoName("Untitled");
   if ( isDefault(app) )
@@ -101,6 +108,14 @@ destroyTransientFrame(FrameObj fr)
 }
 
 
+/* (*) Uncreate the members before the frame rather than calling
+   ws_uncreate_frame() directly.  ws_created_window() is false as soon
+   as the frame is uncreated, so uncreateWindow() -- reached below from
+   freeObject() -- would skip ws_uncreate_window() for every member.
+   That leaks the backing store and, worse, leaves the pointer grab
+   pointing at a window that is about to be freed.
+*/
+
 static status
 unlinkFrame(FrameObj fr)
 { if ( fr->status != NAME_unlinking )
@@ -121,7 +136,7 @@ unlinkFrame(FrameObj fr)
     if ( notNil(fr->transient_for) && notNil(fr->transient_for->transients) )
       send(fr->transient_for, NAME_detachTransient, fr, EAV);
 
-    ws_uncreate_frame(fr);
+    uncreateFrame(fr);			/* (*) */
     deleteChain(fr->display->frames, fr);
     if ( notNil(fr->application) )
       send(fr->application, NAME_delete, fr, EAV);
@@ -373,7 +388,7 @@ wmDeleteFrame(FrameObj fr)
     fail;
 
   if ( fr->confirm_done == ON )
-  { TRY(send(fr->display, NAME_confirm,
+  { TRY(send(fr->display, NAME_confirm, fr, DEFAULT,
 	     CtoName("Delete window ``%s''"), fr->label, EAV));
   }
 
@@ -478,7 +493,7 @@ fitFrame(FrameObj fr)
     send(cell->value, NAME_ComputeDesiredSize, EAV);
 
   enforceTile(t, ON);
-  border = mul(t->border, TWO);
+  border = mul(t->border_root, TWO);
 
   assign(fr->area, w, ZERO);		/* ensure ->resize */
 
@@ -674,6 +689,16 @@ ensure_on_display(FrameObj fr, DisplayObj dsp, int *x, int *y)
 static Size
 getSizeFrame(FrameObj fr)
 { answer(getSizeArea(fr->area));
+}
+
+
+/* Subclasses refine this, e.g., to keep the application alive while
+   they hold a terminal or unsaved data.
+*/
+
+static BoolObj
+getKeepAliveFrame(FrameObj fr)
+{ answer(fr->keep_alive);
 }
 
 
@@ -942,7 +967,44 @@ SdlSetLabelFrame(FrameObj fr)
 
 static status
 appendFrame(FrameObj fr, PceWindow sw)
+{ Any manager;
+
+  if ( (manager=tileManagerWindow(sw)) && manager != (Any)fr )
+    send(manager, NAME_detachWindow, sw, EAV); /* take it from its old owner */
+
+  return frameWindow(sw, fr);
+}
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->attach_window and ->detach_window are the frame's half of the protocol
+that makes `window ->below' and friends work regardless of who manages a
+tile hierarchy.  See tile <-manager and relateWindow().  The other
+implementation is class tab_frame in library(tab_frame).
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static status
+attachWindowFrame(FrameObj fr, PceWindow sw)
 { return frameWindow(sw, fr);
+}
+
+
+static status
+detachWindowFrame(FrameObj fr, PceWindow sw)
+{ /* A window that carries scrollbars or a label is a member of mine
+     through its decorator, and is displayed on that decorator.  Letting
+     go of it must take the decorator out of whatever holds it, and must
+     not take the window out of its own decorator.
+  */
+  while ( notNil(sw->decoration) )
+    sw = sw->decoration;
+
+  DeviceGraphical((Graphical)sw, NIL);
+
+  if ( createdWindow(sw) && sw->frame == fr )
+    return send(fr, NAME_delete, sw, EAV);
+
+  succeed;
 }
 
 
@@ -967,6 +1029,8 @@ getMembersFrame(FrameObj fr)
 status
 AppendFrame(FrameObj fr, PceWindow sw)
 { appendChain(fr->members, sw);
+  if ( notNil(sw->tile) )
+    setManagerTile(sw->tile, fr);		/* see tile <-manager */
 
   if ( createdFrame(fr) )
   { TRY(send(sw, NAME_create, EAV));
@@ -993,17 +1057,21 @@ DeleteFrame(FrameObj fr, PceWindow sw)
     return errorPce(fr, NAME_noMember, sw);
 
   addCodeReference(fr);
+  if ( createdFrame(fr) )		/* ->uncreate while sw is still a */
+    send(sw, NAME_uncreate, EAV);	/* member: ws_created_window() needs */
+					/* the frame to release the window */
   deleteChain(fr->members, sw);
   assign(sw, frame, NIL);		/* may kill the frame */
 
   if ( !isFreedObj(fr) && createdFrame(fr) )
-  { send(sw, NAME_uncreate, EAV);
-    unrelateTile(sw->tile);
+  { unrelateTile(sw->tile);
     if ( getClassVariableValueObject(fr, NAME_fitAfterAppend) == ON )
       send(fr, NAME_fit, EAV);
     else
       send(fr, NAME_resize, EAV);
   }
+  if ( notNil(sw->tile) && managerTile(sw->tile) == (Any)fr )
+    assign(getRootTile(sw->tile), manager, NIL);
   delCodeReference(fr);
 
   succeed;
@@ -1080,24 +1148,47 @@ applicationFrame(FrameObj fr, Application app)
 		 *	   EVENT HANDLING	*
 		 *******************************/
 
+/* Does this frame move the keyboard focus to the window under the
+ * pointer?  If not (the default), only ->keyboard_focus, i.e., normally
+ * a click in a window, moves the focus.
+ */
+
+bool
+focusFollowsMouseFrame(FrameObj fr)
+{ return getClassVariableValueObject(fr, NAME_focusFollowsMouse) == ON;
+}
+
+
 static status
 keyboardFocusFrame(FrameObj fr, PceWindow sw)
-{ if ( getHyperedObject(fr, NAME_keyboardFocus, DEFAULT) != sw )
-    freeHypersObject(fr, NAME_keyboardFocus, DEFAULT);
-
-  if ( instanceOfObject(sw, ClassWindowDecorator) )
+{ if ( instanceOfObject(sw, ClassWindowDecorator) )
   { WindowDecorator dw = (WindowDecorator)sw;
     sw = dw->window;
   }
 
-  if ( instanceOfObject(sw, ClassWindow) )
-  { newObject(ClassHyper, fr, sw, NAME_keyboardFocus, NAME_KeyboardFocus, EAV);
-    if ( fr->input_focus == ON )
-      send(fr, NAME_inputWindow, sw, EAV);
-  } else if ( fr->input_focus == ON )
-  { PceWindow iw = getPointerWindowFrame(fr);
+  if ( getHyperedObject(fr, NAME_keyboardFocus, DEFAULT) != sw )
+  { freeHypersObject(fr, NAME_keyboardFocus, DEFAULT);
 
-    send(fr, NAME_inputWindow, iw, EAV);
+    if ( instanceOfObject(sw, ClassWindow) )
+      newObject(ClassHyper, fr, sw, NAME_keyboardFocus, NAME_KeyboardFocus,
+		EAV);
+  }
+
+  /* A click that lands here says the window system gave us the keyboard,
+   * whatever we last heard.  FOCUS_GAINED is not sent again to a window
+   * that already had the focus, so a frame that came to believe it has
+   * none stays that way -- and then a click moves the focus between its
+   * panes without activating any of them.
+   */
+  if ( fr->input_focus != ON && ws_frame_has_input_focus(fr) )
+    send(fr, NAME_inputFocus, ON, EAV);
+
+  if ( fr->input_focus == ON )
+  { PceWindow iw = ( instanceOfObject(sw, ClassWindow) ? sw
+						       : getPointerWindowFrame(fr) );
+
+    if ( iw )
+      send(fr, NAME_inputWindow, iw, EAV);
   }
 
   succeed;
@@ -1106,8 +1197,16 @@ keyboardFocusFrame(FrameObj fr, PceWindow sw)
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Find the window  for  redirecting  keyboard   strokes.  If  there  is an
-explicit focus, this is easy.  Otherwise,  use   the  window  that has a
-keyboard-focus or the window that has a focus (in this order).
+explicit focus, this is easy.  Otherwise, use  the window that holds the
+input focus, the window that has a  keyboard-focus or the window that has
+a focus (in this order).
+
+Consulting <-input_window before scanning  the   members  is what keeps a
+frame with multiple windows consistent: ->input_window is set when the
+pointer enters a window (see postEventWindow()) and is what draws the
+active caret.  Without it, a frame  with   e.g.  two terminals sends the
+keys to the first member that has  a   keyboard  focus, regardless of the
+window the user selected.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 PceWindow
@@ -1117,6 +1216,14 @@ getKeyboardFocusFrame(FrameObj fr)
 
   if ( (sw = getHyperedObject(fr, NAME_keyboardFocus, DEFAULT)) )
     answer(sw);
+
+  if ( (sw = getHyperedObject(fr, NAME_inputWindow, DEFAULT)) )
+  { if ( instanceOfObject(sw, ClassWindowDecorator) )
+    { WindowDecorator dw = (WindowDecorator)sw;
+      sw = dw->window;
+    }
+    answer(sw);
+  }
 
   if ( getSizeChain(fr->members) == ONE )
   { sw = getHeadChain(fr->members);
@@ -1143,11 +1250,57 @@ getKeyboardFocusFrame(FrameObj fr)
 }
 
 
+/* ->release_focus: window
+ *
+ * Let go of a window that is leaving me.  A window can change frame
+ * without ever changing its `frame' slot: a pane lives on a device --
+ * see class tab_frame -- so its <-frame is whatever frame the device
+ * tree it hangs in ends up in, and dragging it into another window's tab
+ * is enough to change that.
+ *
+ * Two things then have to be undone here, or the window is lost to both
+ * frames.  I would go on naming it my keyboard focus, so keys typed in
+ * me are forwarded to a window that is somewhere else.  And it would
+ * keep the ->input_focus it had: that is edge triggered, so a window
+ * still holding `@on' is never armed again, and ws_enable_text_input()
+ * is never re-issued for the window-system window it has moved to.  That
+ * is why such a pane could not be revived by clicking it -- only by
+ * taking the focus off the frame and putting it back.
+ */
+
+static status
+releaseFocusFrame(FrameObj fr, PceWindow sw)
+{ if ( instanceOfObject(sw, ClassWindowDecorator) )
+  { WindowDecorator dw = (WindowDecorator)sw;
+    sw = dw->window;
+  }
+
+  if ( !instanceOfObject(sw, ClassWindow) )
+    succeed;
+
+  if ( getHyperedObject(fr, NAME_keyboardFocus, DEFAULT) == sw )
+    freeHypersObject(fr, NAME_keyboardFocus, DEFAULT);
+  if ( getHyperedObject(fr, NAME_inputWindow, DEFAULT) == sw )
+    freeHypersObject(fr, NAME_inputWindow, DEFAULT);
+
+  send(sw, NAME_inputFocus, OFF, EAV);
+
+  succeed;
+}
+
+
 static status
 inputWindowFrame(FrameObj fr, PceWindow iw)
-{ PceWindow ow;
+{ PceWindow ow = getHyperedObject(fr, NAME_inputWindow, DEFAULT);
 
-  if ( (ow=getHyperedObject(fr, NAME_inputWindow, DEFAULT)) && ow != iw )
+  if ( ow == iw )			/* no change; do not duplicate */
+  { if ( fr->input_focus == ON && notNil(iw) )
+      send(iw, NAME_inputFocus, ON, EAV);
+
+    succeed;
+  }
+
+  if ( ow )
   { send(ow, NAME_inputFocus, OFF, EAV);
     freeHypersObject(fr, NAME_inputWindow, DEFAULT);
   }
@@ -1177,6 +1330,22 @@ inputFocusFrame(FrameObj fr, BoolObj val)
       forwardFocusDisplayManager(fr);
     } else
     { Cell cell;
+      PceWindow iw = getHyperedObject(fr, NAME_inputWindow, DEFAULT);
+
+      /* The window holding the focus need not be a member of mine.  A
+	 pane lives on a device somewhere in my tree (see class
+	 pane_frame), and the branch above did not find it by scanning
+	 members either: it asked <-keyboard_focus.  Scanning members
+	 here therefore misses it, and the pane goes on claiming the
+	 keyboard -- drawing an active caret, telling its client the
+	 focus is in -- while the window system has given it to another
+	 window.  Turning the focus over between panes still worked,
+	 because that goes through ->input_window rather than here.
+
+	 The hyper is left in place: it is how I find the pane again
+	 when the focus comes back (see getKeyboardFocusFrame()). */
+      if ( iw )
+	send(iw, NAME_inputFocus, OFF, EAV);
       for_cell(cell, fr->members)
 	send(cell->value, NAME_inputFocus, OFF, EAV);
     }
@@ -1322,7 +1491,10 @@ tileResizeEvent(EventObj ev)
       }
 
       if ( ev->id == NAME_msLeftUp )
+      { rebalanceTile(getRootTile(sub));	/* keep the new proportions
+						   when the frame is resized */
 	resizingTile = NIL;
+      }
 
       succeed;
     }
@@ -1614,7 +1786,7 @@ utf8_to_canonical_file(const char *in)
 {
 #if O_XOS
   char file[PATH_MAX];
-  if ( _xos_canonical_filename(in, file, sizeof(file), 0) )
+  if ( _xos_canonical_filename(in, file, sizeof(file)) )
     return UTF8ToName(file);
   fail;
 #else
@@ -1826,6 +1998,8 @@ static vardecl var_frame[] =
      NAME_permission, "Frame can be resized by user"),
   IV(NAME_confirmDone, "bool", IV_BOTH,
      NAME_permission, "Ask confirmation on user-delete"),
+  IV(NAME_keepAlive, "bool", IV_SEND,
+     NAME_organisation, "@on: application must not end while I am visible"),
   IV(NAME_fitting, "bool", IV_BOTH,
      NAME_internal, "We are running ->fit"),
   IV(NAME_wmProtocols, "sheet", IV_GET,
@@ -1881,6 +2055,8 @@ static senddecl send_frame[] =
      NAME_event, "Define (temporary) cursor for all windows in the frame"),
   SM(NAME_inputWindow, 1, "window", inputWindowFrame,
      NAME_focus, "Input is directed to this window"),
+  SM(NAME_releaseFocus, 1, "window", releaseFocusFrame,
+     NAME_event, "Let go of a window that is leaving me"),
   SM(NAME_keyboardFocus, 1, "[window]*", keyboardFocusFrame,
      NAME_focus, "Redirect (default) keyboard input here"),
   SM(NAME_closed, 1, "open=bool", closedFrame,
@@ -1915,6 +2091,10 @@ static senddecl send_frame[] =
      NAME_open, "SDL main thread helper for frame<-confirm"),
   SM(NAME_append, 1, "subwindow=window", appendFrame,
      NAME_organisation, "Append a window to the frame"),
+  SM(NAME_attachWindow, 1, "window", attachWindowFrame,
+     NAME_tile, "Take a window into my tile hierarchy"),
+  SM(NAME_detachWindow, 1, "window", detachWindowFrame,
+     NAME_tile, "Release a window from my tile hierarchy"),
   SM(NAME_delete, 1, "member:window", deleteFrame,
      NAME_organisation, "Delete window from the frame"),
   SM(NAME_bell, 1, "volume=[int]", bellFrame,
@@ -1974,7 +2154,9 @@ static getdecl get_frame[] =
      NAME_area, "Position on the display"),
   GM(NAME_size, 0, "size", NULL, getSizeFrame,
      NAME_area, "Size on the display"),
-  GM(NAME_image, 1, "image", "[{bitmap,pixmap}]", getImageFrame,
+  GM(NAME_keepAlive, 0, "bool", NULL, getKeepAliveFrame,
+     NAME_organisation, "@on if the application must not end while I am visible"),
+  GM(NAME_image, 0, "image", NULL, getImageFrame,
      NAME_conversion, "Image with the pixels of the frame"),
   GM(NAME_keyboardFocus, 0, "window", NULL, getKeyboardFocusFrame,
      NAME_focus, "Window for default keyboard input"),
@@ -2012,6 +2194,8 @@ static classvardecl rc_frame[] =
      "Default cursor displayed by ->busy_cursor"),
   RC(NAME_confirmDone, "bool", "@off",
      "Show confirmer on `Delete'"),
+  RC(NAME_keepAlive, "bool", "@off",
+     "Keep the application alive while visible"),
   RC(NAME_geometry, "name*", "@nil",
      "Position/size of the frame"),
   RC(NAME_iconLabel, "name*", "@nil",
@@ -2024,6 +2208,8 @@ static classvardecl rc_frame[] =
      "Cursor for vertically resizing tile"),
   RC(NAME_fitAfterAppend, "bool", "@off",
      "Automatically ->fit the frame after a subwindow was added"),
+  RC(NAME_focusFollowsMouse, "bool", "@off",
+     "Move the keyboard focus to the window under the pointer"),
   RC(NAME_decorateTransient, "bool", "@on",
      "Decorate transient windows (if possible)")
 };

@@ -45,6 +45,8 @@ AC_CHECK_FUNCS(EVP_sha3_224 EVP_sha3_256 EVP_sha3_384 EVP_sha3_512)
 AC_CHECK_FUNCS(HMAC_CTX_new HMAC_CTX_free)
 AC_CHECK_FUNCS(EVP_PKEY_new EVP_PKEY_free EVP_PKEY_get_bn_param EVP_PKEY_get_octet_string_param EVP_PKEY_get_size EVP_PKEY_decrypt EVP_PKEY_encrypt EVP_PKEY_sign EVP_PKEY_verify)
 AC_CHECK_FUNCS(EVP_PKEY_Q_keygen)
+AC_CHECK_FUNCS(EVP_PKEY_new_raw_private_key EVP_PKEY_new_raw_public_key EVP_PKEY_get_raw_private_key EVP_PKEY_get_raw_public_key)
+AC_CHECK_FUNCS(EVP_DigestSign EVP_DigestVerify)
 AC_CHECK_FUNCS(OSSL_PARAM_construct_utf8_string)
 AC_CHECK_FUNCS(BN_check_prime)
 AC_CHECK_FUNCS(OSSL_PARAM_BLD_new)
@@ -61,19 +63,26 @@ endif()
 
 
 if(NOT DEFINED SYSTEM_CACERT_FILENAME)
-  set(CERT_CANDIDATES
-      /data/data/com.termux/files/usr/etc/tls/cert.pem
-      /etc/ssl/certs/ca-certificates.crt
-      /etc/pki/tls/certs/ca-bundle.crt
-      /etc/ssl/ca-bundle.pem
-      /etc/ssl/cert.pem)
+  if(APPLE)
+    # Do not probe: the probe runs on the build host, while the only
+    # trusted certificate file on macOS is /etc/ssl/cert.pem.  If it is
+    # not there we fall back to the keychain at runtime.
+    set(SYSTEM_CACERT_FILENAME /etc/ssl/cert.pem)
+  else()
+    set(CERT_CANDIDATES
+	/data/data/com.termux/files/usr/etc/tls/cert.pem
+	/etc/ssl/certs/ca-certificates.crt
+	/etc/pki/tls/certs/ca-bundle.crt
+	/etc/ssl/ca-bundle.pem
+	/etc/ssl/cert.pem)
 
-  set(SYSTEM_CACERT_FILENAME /etc/ssl/certs/ca-certificates.crt)
-  foreach(f ${CERT_CANDIDATES})
-    if(EXISTS ${f})
-      set(SYSTEM_CACERT_FILENAME ${f})
-    endif()
-  endforeach()
+    set(SYSTEM_CACERT_FILENAME /etc/ssl/certs/ca-certificates.crt)
+    foreach(f ${CERT_CANDIDATES})
+      if(EXISTS ${f})
+	set(SYSTEM_CACERT_FILENAME ${f})
+      endif()
+    endforeach()
+  endif()
   set(SYSTEM_CACERT_FILENAME ${SYSTEM_CACERT_FILENAME}
       CACHE STRING
       "Location of the system TLS root certificate file")

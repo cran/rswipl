@@ -417,29 +417,29 @@ break_at_line(M) :->
 break_at_function(M, Function:[name]) :->
     "Set GDB breakpoint at function"::
     get(M, expand_tag, Function, TheFunction),
-    send(M, tell_gdb, warning, 'break %s\n', TheFunction).
+    send(M, tell_gdb_warn, warning, 'break %s\n', TheFunction).
 
 gdb_go(M) :->
     "Send `run' to GDB"::
-    send(M, tell_gdb, warning, 'run\n').
+    send(M, tell_gdb_warn, warning, 'run\n').
 
 gdb_step(M, Times:[int]) :->
     "Send `run' to GDB"::
     (   Times == @default
-    ->  send(M, tell_gdb, warning, 'step\n')
-    ;   send(M, tell_gdb, warning, 'step %d\n', Times)
+    ->  send(M, tell_gdb_warn, warning, 'step\n')
+    ;   send(M, tell_gdb_warn, warning, 'step %d\n', Times)
     ).
 
 gdb_next(M, Times:[int]) :->
     "Send `run' to GDB"::
     (   Times == @default
-    ->  send(M, tell_gdb, warning, 'next\n')
-    ;   send(M, tell_gdb, warning, 'next %d\n', Times)
+    ->  send(M, tell_gdb_warn, warning, 'next\n')
+    ;   send(M, tell_gdb_warn, warning, 'next %d\n', Times)
     ).
 
 gdb_print(M, Expression:expresion=string) :->
     "Print value of expression"::
-    send(M, tell_gdb, warning, 'print %s\n', Expression).
+    send(M, tell_gdb_warn, warning, 'print %s\n', Expression).
 
 
                  /*******************************

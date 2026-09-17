@@ -1,9 +1,10 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker and Matt Lilley
-    E-mail:        J.Wielemaker@cs.vu.nl
-    WWW:           http://www.swi-prolog.org
-    Copyright (c)  2012-2019, VU University Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2012-2026, VU University Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -48,12 +49,11 @@
             archive_data_stream/3,      % +Archive, -DataStream, +Options
             archive_foldl/4             % :Goal, +Archive, +State0, -State
           ]).
-:- autoload(library(error),
-	    [existence_error/2,domain_error/2,must_be/2]).
-:- autoload(library(filesex),
-	    [directory_file_path/3,make_directory_path/1]).
-:- autoload(library(lists),[member/2]).
-:- autoload(library(option),[option/3,option/2]).
+:- autoload(library(error), [existence_error/2, domain_error/2, must_be/2]).
+:- autoload(library(filesex), [directory_file_path/3, make_directory_path/1]).
+:- autoload(library(lists), [member/2, append/3, selectchk/3]).
+:- autoload(library(apply), [maplist/3, partition/4]).
+:- autoload(library(option), [option/3, option/2, merge_options/3]).
 
 :- meta_predicate
     archive_foldl(4, +, +, -).
@@ -119,10 +119,16 @@ archive_open(Stream, Archive, Options) :-
 
 :- predicate_options(archive_open/4, 4,
                      [ close_parent(boolean),
+                       filters(list(oneof([all,bzip2,compress,gzip,grzip,lrzip,
+                                     lzip,lzma,lzop,none,rpm,uu,xz]))),
+                       formats(list(oneof([all,'7zip',ar,cab,cpio,empty,gnutar,
+                                     iso9660,lha,mtree,rar,raw,tar,xar,zip]))),
                        filter(oneof([all,bzip2,compress,gzip,grzip,lrzip,
                                      lzip,lzma,lzop,none,rpm,uu,xz])),
                        format(oneof([all,'7zip',ar,cab,cpio,empty,gnutar,
-                                     iso9660,lha,mtree,rar,raw,tar,xar,zip]))
+                                     iso9660,lha,mtree,rar,raw,tar,xar,zip])),
+                       compression(oneof([all,bzip2,compress,gzip,grzip,lrzip,
+                                     lzip,lzma,lzop,none,rpm,uu,xz]))
                      ]).
 :- predicate_options(archive_create/3, 3,
                      [ directory(atom),
@@ -152,29 +158,29 @@ archive_open(Stream, Archive, Options) :-
 %     when archive_close/1 is called on Archive. If Data is a file name,
 %     the default is =true=.
 %
-%     * compression(+Compression)
-%     Synomym for filter(Compression).  Deprecated.
+%     * filters(+Filters)
+%     Support the filters in the list Filters.  In read mode, if no
+%     filter is provided, =all= is assumed.  In write mode, =none= is
+%     assumed and at most one filter is allowed.  Supported values are
+%     =all=, =bzip2=, =compress=, =gzip=, =grzip=, =lrzip=, =lzip=,
+%     =lzma=, =lzop=, =none=, =rpm=, =uu= and =xz=.
+%
+%     * formats(+Formats)
+%     Support the formats in the list Formats.  In write mode, you must
+%     supply a single format.  If no format is provided, =all= is
+%     assumed for read mode.  Note that =all= does *not* include =raw=
+%     and =mtree=.  To open both archive and non-archive files, =all=
+%     together with =raw= and/or =mtree= must be specified.  Supported
+%     values are =all=, =7zip=, =ar=, =cab=, =cpio=, =empty=, =gnutar=,
+%     =iso9660=, =lha=, =mtree=, =rar=, =raw=, =tar=, =xar= and =zip=.
 %
 %     * filter(+Filter)
-%     Support the indicated filter. This option may be
-%     used multiple times to support multiple filters. In read mode,
-%     If no filter options are provided, =all= is assumed. In write
-%     mode, =none= is assumed.
-%     Supported values are =all=, =bzip2=, =compress=, =gzip=,
-%     =grzip=, =lrzip=, =lzip=, =lzma=, =lzop=, =none=, =rpm=, =uu=
-%     and =xz=. The value =all= is default for read, =none= for write.
-%
 %     * format(+Format)
-%     Support the indicated format.  This option may be used
-%     multiple times to support multiple formats in read mode.
-%     In write mode, you must supply a single format. If no format
-%     options are provided, =all= is assumed for read mode. Note that
-%     =all= does *not* include =raw= and =mtree=. To open both archive
-%     and non-archive files, _both_ format(all) and
-%     format(raw) and/or format(mtree) must be specified. Supported
-%     values are: =all=, =7zip=, =ar=, =cab=, =cpio=, =empty=, =gnutar=,
-%     =iso9660=, =lha=, =mtree=, =rar=, =raw=, =tar=, =xar= and =zip=.
-%     The value =all= is default for read.
+%     * compression(+Filter)
+%     Deprecated.  Add a single filter or format.  Repeating these
+%     options to support multiple filters/formats is deprecated in
+%     favour of filters/1 and formats/1.  compression/1 is a synonym for
+%     filter/1.
 %
 %   Note that the  actually supported compression types  and formats may
 %   vary  depending  on the  version  and  installation options  of  the
@@ -198,8 +204,54 @@ archive_open(Stream, Mode, Archive, Options) :-
     archive_open_stream(Stream, Mode, Archive, Options).
 archive_open(File, Mode, Archive, Options) :-
     open(File, Mode, Stream, [type(binary)]),
-    catch(archive_open_stream(Stream, Mode, Archive, [close_parent(true)|Options]),
+    merge_options([close_parent(true)], Options, Options1),
+    catch(archive_open_stream(Stream, Mode, Archive, Options1),
           E, (close(Stream, [force(true)]), throw(E))).
+
+%!  archive_open_stream(+Stream, +Mode, -Archive, +Options) is det.
+%
+%   Wrapper around the foreign '$archive_open_stream'/4 that canonicalises
+%   the options: multiple filter/compression and format options are folded
+%   into a single filters(List) and formats(List) option.
+
+archive_open_stream(Stream, Mode, Archive, Options0) :-
+    archive_options(Options0, Options),
+    '$archive_open_stream'(Stream, Mode, Archive, Options).
+
+%!  archive_options(+Options0, -Options) is det.
+%
+%   Fold the (possibly repeated) filter/1, compression/1 and format/1
+%   options into a single filters/1 and formats/1 list option, as
+%   expected by the foreign code.  Repeating filter or format is
+%   deprecated in favour of the list form.
+
+archive_options(Options0, Options) :-
+    fold_options([filter,compression], filters, Options0, Options1),
+    fold_options([format], formats, Options1, Options).
+
+fold_options(Names, ListName, Options0, Options) :-
+    partition(option_of(Names), Options0, Singulars, Rest),
+    (   Singulars == []
+    ->  Options = Options0
+    ;   maplist(arg(1), Singulars, Values),
+        (   Singulars = [_,_|_]
+        ->  print_message(warning, archive(deprecated_repeat(ListName)))
+        ;   true
+        ),
+        (   ListOpt =.. [ListName, Old],
+            selectchk(ListOpt, Rest, Rest1)
+        ->  append(Old, Values, All)
+        ;   Rest1 = Rest,
+            All = Values
+        ),
+        Merged =.. [ListName, All],
+        Options = [Merged|Rest1]
+    ).
+
+option_of(Names, Option) :-
+    compound(Option),
+    functor(Option, Name, 1),
+    memberchk(Name, Names).
 
 
 %!  archive_close(+Archive) is det.
@@ -628,7 +680,11 @@ archive_foldl_(Goal, Handle, State0, State) :-
 		 *           MESSAGES		*
 		 *******************************/
 
-:- multifile prolog:error_message//1.
+:- multifile prolog:error_message//1, prolog:message//1.
 
 prolog:error_message(archive_error(Code, Message)) -->
     [ 'Archive error (code ~p): ~w'-[Code, Message] ].
+
+prolog:message(archive(deprecated_repeat(ListName))) -->
+    [ 'archive_open/4: repeating the filter/format option is deprecated; \c
+       use ~w(List) instead'-[ListName] ].

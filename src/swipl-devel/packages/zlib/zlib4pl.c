@@ -44,10 +44,6 @@
 
 install_t install_zlib4pl(void);
 
-static atom_t ATOM_format;		/* format(Format) */
-static atom_t ATOM_level;		/* level(Int) */
-static atom_t ATOM_close_parent;	/* close_parent(Bool) */
-static atom_t ATOM_multi_part;		/* multi_part(Bool) */
 static atom_t ATOM_gzip;
 static atom_t ATOM_deflate;
 static atom_t ATOM_raw_deflate;
@@ -407,54 +403,47 @@ static IOFUNCTIONS zfunctions =
 		    SIO_REPXML|SIO_REPPL|\
 		    SIO_RECORDPOS)
 
+static PL_option_t zopen_options[] =
+{ PL_OPTION("format",       OPT_TERM),
+  PL_OPTION("level",        OPT_TERM),
+  PL_OPTION("close_parent", OPT_BOOL),
+  PL_OPTION("multi_part",   OPT_BOOL),
+  PL_OPTIONS_END
+};
+
 static foreign_t
 pl_zopen(term_t org, term_t new, term_t options)
-{ term_t tail = PL_copy_term_ref(options);
-  term_t head = PL_new_term_ref();
-  z_context *ctx;
+{ z_context *ctx;
   zformat fmt = F_UNKNOWN;
   int level = Z_DEFAULT_COMPRESSION;
   IOSTREAM *s, *s2;
   int close_parent = TRUE;
   int multi_part = -1;			/* default */
+  term_t fmt_opt = 0, level_opt = 0;
 
-  while(PL_get_list(tail, head, tail))
-  { atom_t name;
-    size_t arity;
-    term_t arg = PL_new_term_ref();
-
-    if ( !PL_get_name_arity(head, &name, &arity) || arity != 1 )
-      return PL_type_error("option", head);
-    _PL_get_arg(1, head, arg);
-
-    if ( name == ATOM_format )
-    { atom_t a;
-
-      if ( !PL_get_atom_ex(arg, &a) )
-	return FALSE;
-      if ( a == ATOM_gzip )
-	fmt = F_GZIP;
-      else if ( a == ATOM_deflate )
-	fmt = F_DEFLATE;
-      else if ( a == ATOM_raw_deflate )
-        fmt = F_RAW_DEFLATE;
-      else
-	return PL_domain_error("compression_format", arg);
-    } else if ( name == ATOM_level )
-    { if ( !PL_get_integer_ex(arg, &level) )
-	return FALSE;
-      if ( level < 0 || level > 9 )
-	return PL_domain_error("compression_level", arg);
-    } else if ( name == ATOM_close_parent )
-    { if ( !PL_get_bool_ex(arg, &close_parent) )
-	return FALSE;
-    } else if ( name == ATOM_multi_part )
-    { if ( !PL_get_bool_ex(arg, &multi_part) )
-	return FALSE;
-    }
-  }
-  if ( !PL_get_nil_ex(tail) )
+  if ( !PL_scan_options(options, 0, "zoption", zopen_options,
+			&fmt_opt, &level_opt, &close_parent, &multi_part) )
     return FALSE;
+  if ( fmt_opt )
+  { atom_t a;
+
+    if ( !PL_get_atom_ex(fmt_opt, &a) )
+      return FALSE;
+    if ( a == ATOM_gzip )
+      fmt = F_GZIP;
+    else if ( a == ATOM_deflate )
+      fmt = F_DEFLATE;
+    else if ( a == ATOM_raw_deflate )
+      fmt = F_RAW_DEFLATE;
+    else
+      return PL_domain_error("compression_format", fmt_opt);
+  }
+  if ( level_opt )
+  { if ( !PL_get_integer_ex(level_opt, &level) )
+      return FALSE;
+    if ( level < 0 || level > 9 )
+      return PL_domain_error("compression_level", level_opt);
+  }
 
   if ( !PL_get_stream_handle(org, &s) )
     return FALSE;			/* Error */
@@ -516,13 +505,9 @@ zdebug(term_t level)
 
 install_t
 install_zlib4pl(void)
-{ ATOM_format       = PL_new_atom("format");
-  ATOM_level        = PL_new_atom("level");
-  ATOM_close_parent = PL_new_atom("close_parent");
-  ATOM_gzip	    = PL_new_atom("gzip");
+{ ATOM_gzip	    = PL_new_atom("gzip");
   ATOM_deflate	    = PL_new_atom("deflate");
   ATOM_raw_deflate  = PL_new_atom("raw_deflate");
-  ATOM_multi_part   = PL_new_atom("multi_part");
 
   PL_register_foreign("zopen",  3, pl_zopen,  0);
 #ifdef O_DEBUG

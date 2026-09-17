@@ -117,9 +117,9 @@ server_action(edit(File, Line, CharPos), Socket) :-
 server_action(edit(File, Line, CharPos, Wait), Socket) :-
     !,
     new(B, emacs_buffer(File)),
-    get(B, open, tab, Frame),
-    send(Frame, expose),
-    get(Frame, editor, Editor),
+    get(B, open, tab, View),
+    send(View, expose),
+    get(View, editor, Editor),
     (   Wait == wait
     ->  new(H, hyper(Socket, Editor, editor, server)),
         send(H, send_method, @emacs_server_method)
@@ -146,7 +146,7 @@ server_action(gdb(File, Pid), Socket) :-
         send(X, directory, Dir)
     ;   true
     ),
-    new(W, emacs_frame(X)),
+    get(@emacs, frame, X, W),
     get(W, editor, Editor),
     new(H, hyper(Socket, Editor, editor, server)),
     send(H, send_method, @emacs_server_method),

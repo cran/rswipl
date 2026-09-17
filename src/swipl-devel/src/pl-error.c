@@ -851,7 +851,7 @@ PL_uninstantiation_error(term_t actual)
 bool
 PL_representation_error(const char *representation)
 { atom_t r = PL_new_atom(representation);
-  int rc = PL_error(NULL, 0, NULL, ERR_REPRESENTATION, r);
+  bool rc = PL_error(NULL, 0, NULL, ERR_REPRESENTATION, r);
   PL_unregister_atom(r);
 
   return rc;
@@ -869,7 +869,7 @@ bool
 PL_domain_error(const char *expected, term_t actual)
 { valid_term_t(actual);
   atom_t a = PL_new_atom(expected);
-  int rc = PL_error(NULL, 0, NULL, ERR_DOMAIN, a, actual);
+  bool rc = PL_error(NULL, 0, NULL, ERR_DOMAIN, a, actual);
   PL_unregister_atom(a);
 
   return rc;
@@ -880,7 +880,7 @@ bool
 PL_existence_error(const char *type, term_t actual)
 { valid_term_t(actual);
   atom_t a = PL_new_atom(type);
-  int rc = PL_error(NULL, 0, NULL, ERR_EXISTENCE, a, actual);
+  bool rc = PL_error(NULL, 0, NULL, ERR_EXISTENCE, a, actual);
   PL_unregister_atom(a);
 
   return rc;
@@ -892,7 +892,7 @@ PL_permission_error(const char *op, const char *type, term_t obj)
 { valid_term_t(obj);
   atom_t t = PL_new_atom(type);
   atom_t o = PL_new_atom(op);
-  int rc = PL_error(NULL, 0, NULL, ERR_PERMISSION, o, t, obj);
+  bool rc = PL_error(NULL, 0, NULL, ERR_PERMISSION, o, t, obj);
 
   PL_unregister_atom(t);
   PL_unregister_atom(o);
@@ -903,7 +903,7 @@ PL_permission_error(const char *op, const char *type, term_t obj)
 bool
 PL_resource_error(const char *resource)
 { atom_t r = PL_new_atom(resource);
-  int rc = PL_error(NULL, 0, NULL, ERR_RESOURCE, r);
+  bool rc = PL_error(NULL, 0, NULL, ERR_RESOURCE, r);
 
   PL_unregister_atom(r);
 
@@ -1283,11 +1283,25 @@ API_STUB(bool)
   return PL_get_size_ex(t, i);
 )
 
+API_STUB(bool)
+(PL_get_stdbool_ex)(term_t t, bool *i)
+( valid_term_t(t);
+  return PL_get_stdbool_ex(t, i);
+)
+
+bool
+PL_get_stdbool_ex(DECL_LD term_t t, bool *i)
+{ if ( PL_get_stdbool(t, i) )
+    return true;
+
+  return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_bool, t);
+}
+
 bool
 PL_get_bool_ex(term_t t, int *i)
 { valid_term_t(t);
   if ( PL_get_bool(t, i) )
-    succeed;
+    return true;
 
   return PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_bool, t);
 }

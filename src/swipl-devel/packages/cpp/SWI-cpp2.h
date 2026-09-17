@@ -1446,7 +1446,7 @@ class PlRegister
 {
 public:
   PlRegister(const char *module, const char *name, int arity,
-	    foreign_t (f)(term_t t0, int a, control_t ctx))
+	    foreign_t (f)(term_t t0, size_t a, control_t ctx))
   { PlEx<bool>(PL_register_foreign_in_module(module, name, arity, reinterpret_cast<pl_function_t>(f), PL_FA_VARARGS));
   }
 
@@ -1467,7 +1467,7 @@ public:
 
   // for non-deterministic calls
   PlRegister(const char *module, const char *name, int arity,
-	     foreign_t (f)(term_t t0, int a, control_t ctx), short flags)
+	     foreign_t (f)(term_t t0, size_t a, control_t ctx), short flags)
   { PlEx<bool>(PL_register_foreign_in_module(module, name, arity, reinterpret_cast<pl_function_t>(f), flags));
   }
 
@@ -1861,7 +1861,7 @@ private:
 	static foreign_t \
 	pl_ ## name ## __ ## arity(PlTermv PL_av); \
 	static foreign_t \
-	_pl_ ## name ## __ ## arity(term_t t0, int a, control_t c) \
+	_pl_ ## name ## __ ## arity(term_t t0, size_t a, control_t c) \
 	{ (void)a; (void)c; \
           foreign_t rc; \
 	  try \
@@ -1879,7 +1879,7 @@ private:
 	static foreign_t \
 	pl_ ## name ## __0(void); \
 	static foreign_t \
-	_pl_ ## name ## __0(term_t t0, int a, control_t c) \
+	_pl_ ## name ## __0(term_t t0, size_t a, control_t c) \
 	{ (void)t0; (void)a; (void)c; \
           foreign_t rc; \
 	  try \
@@ -1897,7 +1897,7 @@ private:
 	static foreign_t \
 	pl_ ## name ## __ ## arity(PlTermv PL_av, PlControl handle); \
 	static foreign_t \
-	_pl_ ## name ## __ ## arity(term_t t0, int a, control_t c) \
+	_pl_ ## name ## __ ## arity(term_t t0, size_t a, control_t c) \
 	{ (void)a; \
           foreign_t rc; \
 	  try \

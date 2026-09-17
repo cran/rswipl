@@ -1,9 +1,9 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
-    WWW:           http://www.swi-prolog.org
-    Copyright (c)  1985-2024, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  1985-2026, University of Amsterdam
 			      VU University Amsterdam
 			      CWI, Amsterdam
 			      SWI-Prolog Solutions b.v.
@@ -850,12 +850,52 @@ in_branch(const branch_var *from, const branch_var *to, const Word v)
 #define analyseVariables2(head, nvars, argn, ci, depth, control) \
 	LDFUNC(analyseVariables2, head, nvars, argn, ci, depth, control)
 
+#if O_TIGHT_CSTACK
+#define CYCLE_CHECK_AT 1000
+#else
+#define CYCLE_CHECK_AT 10000
+#endif
+
+/* Iterative variant: the shape of analyseVariables2() is folded into an
+   explicit segstack state machine to avoid C-stack overflow on deeply
+   nested terms (typically left-heavy commas or disjunctions).  Each
+   descent pushes an av_frame carrying the state to resume with when the
+   sub-term is finished.  On segstack allocation failure the outer
+   analyse_variables() layer converts MEMORY_OVERFLOW into an ERR_NOMEM
+   resource_error. */
+
+typedef enum
+{ AV_ARG_LOOP,		/* general N-arg descent (default term) */
+  AV_SUBCLAUSE_LOOP,	/* islocal && !subclausearg && !CONTROL_F */
+  AV_SEMI_AFTER_LEFT,	/* (A;B) after A: middle-work then B */
+  AV_SEMI_AFTER_RIGHT,	/* (A;B) after B: branch-var analysis */
+  AV_NOT_AFTER		/* (\+ A) after A: singleton marking */
+} av_kind;
+
+typedef struct av_frame
+{ av_kind    kind;
+  Word       head_next;		/* &arg[i] for the next iteration */
+  ssize_t    argn_next;		/* argn to pass for the next iteration */
+  size_t     remaining;		/* args still to process (incl. current) */
+  int	     control;		/* control flag to pass down */
+  int	     depth_before_entry;/* depth to restore on final pop */
+  Functor    f;			/* enclosing term (for SEMI/NOT) */
+  Buffer     obv;		/* previous ci->branch_vars (SEMI/NOT) */
+  ssize_t    start_vars;	/* entries when frame was pushed (SEMI/NOT) */
+  ssize_t    at_branch_vars;	/* entries after left branch (SEMI only) */
+} av_frame;
+
 static ssize_t
 analyseVariables2(DECL_LD Word head, ssize_t nvars, ssize_t argn,
 		  CompileInfo ci, int depth, int control)
-{
-right_recursion:
+{ segstack  stack;
+  double    sbuf[512];
+  av_frame  frame;
+  av_frame *top;
 
+  initSegStack(&stack, sizeof(av_frame), sizeof(sbuf), sbuf);
+
+next_head:
   deRef(head);
 
   if ( isVar(*head) || (isAttVar(*head) && !ci->islocal) )
@@ -867,8 +907,8 @@ right_recursion:
     } else
     { if ( nvars >= MAX_VARIABLES )
       { LD->comp.filledVars = ci->arity+nvars;
-	resetVars();
-	return AVARS_MAX;
+	nvars = AVARS_MAX;
+	goto error_unwind;
       }
 
       index = ci->arity + nvars++;
@@ -884,7 +924,7 @@ right_recursion:
     if ( ci->branch_vars )
       pushBranchVar(ci, vd);
 
-    return nvars;
+    goto resume;
   }
 
   if ( isVarInfo(*head) )
@@ -910,7 +950,7 @@ right_recursion:
       }
     }
 
-    return nvars;
+    goto resume;
   }
 
   if ( isTerm(*head) )
@@ -918,21 +958,14 @@ right_recursion:
     FunctorDef fd = valueFunctor(f->definition);
     ssize_t rc;
 
-#if O_TIGHT_CSTACK
-#define CYCLE_CHECK_AT 1000
-#else
-#define CYCLE_CHECK_AT 10000
-#endif
-
     if ( ++depth == CYCLE_CHECK_AT && (rc=is_acyclic(head)) != true )
     { LD->comp.filledVars = ci->arity+nvars;
-      resetVars();
-
-      return rc == false ? AVARS_CYCLIC : rc;
+      nvars = rc == false ? AVARS_CYCLIC : rc;
+      goto error_unwind;
     }
     if ( (++ci->progress%32768) == 0 && is_signalled() && !LD->critical )
-    { resetVars();
-      return CHECK_INTERRUPT;
+    { nvars = CHECK_INTERRUPT;
+      goto error_unwind;
     }
 
     if ( ci->islocal )
@@ -942,19 +975,27 @@ right_recursion:
 		       functorName(word2functor(f->definition))));
 	ci->argvars++;
 
-	return nvars;
+	depth--;			/* term done, no args processed */
+	goto resume;
       } else if ( isoff(fd, CONTROL_F) )
-      { size_t ar = fd->arity;
+      { if ( fd->arity == 0 )
+	{ depth--;
+	  goto resume;
+	}
 
 	ci->subclausearg = true;
-	for(head = f->arguments, argn = ci->arity; ar-- > 0; head++, argn++)
-	{ nvars = analyseVariables2(head, nvars, argn, ci, depth, false);
-	  if ( nvars < 0 )
-	    break;			/* error */
+	frame.kind		 = AV_SUBCLAUSE_LOOP;
+	frame.head_next		 = &f->arguments[0];
+	frame.argn_next		 = ci->arity;
+	frame.remaining		 = fd->arity;
+	frame.control		 = false;
+	frame.depth_before_entry = depth - 1;
+	if ( !pushSegStack(&stack, frame, av_frame) )
+	{ LD->comp.filledVars = ci->arity+nvars;
+	  nvars = MEMORY_OVERFLOW;
+	  goto error_unwind;
 	}
-	ci->subclausearg = false;
-
-	return nvars;
+	goto resume;
       } /* ci->local && control functor --> fall through to normal case */
     }
 
@@ -965,7 +1006,7 @@ right_recursion:
 
     if ( f->definition == FUNCTOR_semicolon2 && control && !ci->islocal )
     { Buffer obv;
-      ssize_t start_vars, at_branch_vars, at_end_vars;
+      ssize_t start_vars;
 
       ci->head_unify = false;
 
@@ -978,22 +1019,143 @@ right_recursion:
 
       DEBUG(MSG_COMP_VARS, Sdprintf("Branch; start_vars = %d\n", start_vars));
 
-      nvars = analyseVariables2(&f->arguments[0], nvars, argn,
-				ci, depth, control);
-      if ( nvars < 0 )
-	goto error;
+      frame.kind		 = AV_SEMI_AFTER_LEFT;
+      frame.f			 = f;
+      frame.obv			 = obv;
+      frame.start_vars		 = start_vars;
+      frame.argn_next		 = argn;
+      frame.control		 = control;
+      frame.depth_before_entry = depth - 1;
+      if ( !pushSegStack(&stack, frame, av_frame) )
+      { LD->comp.filledVars = ci->arity+nvars;
+	nvars = MEMORY_OVERFLOW;
+	goto error_unwind;
+      }
 
-      at_branch_vars = entriesBuffer(ci->branch_vars, branch_var);
+      head = &f->arguments[0];
+      goto next_head;
+    }
 
-      if ( at_branch_vars > start_vars )
+    /* check \+ Goal for singletons on Goal.  These are variables introduced
+       inside the goal and only used once.
+    */
+
+    if ( f->definition == FUNCTOR_not_provable1 && control && !ci->islocal)
+    { Buffer obv;
+      ssize_t start_vars;
+
+      ci->head_unify = false;
+
+      if ( (obv=ci->branch_vars) == NULL )
+      { initBuffer(&ci->branch_varbuf);
+	ci->branch_vars = (Buffer)&ci->branch_varbuf;
+	start_vars = 0;
+      } else
+	start_vars = entriesBuffer(ci->branch_vars, branch_var);
+
+      frame.kind		 = AV_NOT_AFTER;
+      frame.f			 = f;
+      frame.obv			 = obv;
+      frame.start_vars		 = start_vars;
+      frame.argn_next		 = argn;
+      frame.control		 = control;
+      frame.depth_before_entry = depth - 1;
+      if ( !pushSegStack(&stack, frame, av_frame) )
+      { LD->comp.filledVars = ci->arity+nvars;
+	nvars = MEMORY_OVERFLOW;
+	goto error_unwind;
+      }
+
+      head = &f->arguments[0];
+      goto next_head;
+    }
+
+    /* Find leading unifications against head arguments */
+
+    if ( control && ci->head_unify )
+    { if ( f->definition == FUNCTOR_equals2 )
+	annotate_unification(f, ci);
+      else if ( f->definition != FUNCTOR_comma2 )
+	ci->head_unify = false;
+    }
+
+    /* The default term processing case */
+
+    if ( fd->arity > 0 )
+    { int	new_control  = control;
+      ssize_t	next_argn    = ( argn < 0 ? 0 : ci->arity );
+
+      if ( new_control && isoff(fd, CONTROL_F) )
+	new_control = false;
+
+      frame.kind		 = AV_ARG_LOOP;
+      frame.head_next		 = &f->arguments[0];
+      frame.argn_next		 = next_argn;
+      frame.remaining		 = fd->arity;
+      frame.control		 = new_control;
+      frame.depth_before_entry = depth - 1;
+      if ( !pushSegStack(&stack, frame, av_frame) )
+      { LD->comp.filledVars = ci->arity+nvars;
+	nvars = MEMORY_OVERFLOW;
+	goto error_unwind;
+      }
+      goto resume;
+    }
+
+    depth--;				/* arity 0: term done */
+  }
+
+  if ( control && *head != ATOM_true )	  /* e.g. atomic goals */
+    ci->head_unify = false;
+
+  if ( ci->subclausearg && (isString(*head) || isAttVar(*head)) )
+  { DEBUG(MSG_COMP_ARGVAR,
+	  Sdprintf("argvar for %s\n", isString(*head) ? "string" : "attvar"));
+    ci->argvars++;
+  }
+  /*FALLTHROUGH*/
+
+resume:
+  if ( nvars < 0 )
+    goto error_unwind;
+
+  top = topOfSegStack(&stack);
+  if ( top == NULL )
+    goto exit;
+
+  switch( top->kind )
+  { case AV_ARG_LOOP:
+    case AV_SUBCLAUSE_LOOP:
+      if ( top->remaining > 0 )
+      { head    = top->head_next;
+	argn    = top->argn_next;
+	control = top->control;
+	depth   = top->depth_before_entry + 1;
+	top->head_next++;
+	top->argn_next++;
+	top->remaining--;
+	goto next_head;
+      } else
+      { depth = top->depth_before_entry;
+	if ( top->kind == AV_SUBCLAUSE_LOOP )
+	  ci->subclausearg = false;
+	popTopOfSegStack(&stack);
+	goto resume;
+      }
+
+    case AV_SEMI_AFTER_LEFT:
+    { Functor f		     = top->f;
+      ssize_t at_branch_vars = entriesBuffer(ci->branch_vars, branch_var);
+
+      if ( at_branch_vars > top->start_vars )
       { branch_var *bv = baseBuffer(ci->branch_vars, branch_var);
 	branch_var *bve;
 
 	DEBUG(MSG_COMP_VARS, Sdprintf("Reset %d vars after left branch\n",
-				      at_branch_vars - start_vars));
+				      at_branch_vars - top->start_vars));
 
 	bve = bv + at_branch_vars;
-	for(bv += start_vars; bv < bve; bv++)
+	for(bv += top->start_vars; bv < bve; bv++)
 	{ bv->saved_times = bv->vdef->times;
 	  bv->saved_flags = bv->vdef->flags;
 	  DEBUG(MSG_COMP_VARS, Sdprintf("times=%d, flags = 0x%x\n",
@@ -1005,22 +1167,29 @@ right_recursion:
       { DEBUG(MSG_COMP_VARS, Sdprintf("No vars in left branch\n"));
       }
 
-      nvars = analyseVariables2(&f->arguments[1], nvars, argn,
-				ci, depth, control);
-      if ( nvars < 0 )
-	goto error;
+      top->kind	         = AV_SEMI_AFTER_RIGHT;
+      top->at_branch_vars = at_branch_vars;
 
-      at_end_vars = entriesBuffer(ci->branch_vars, branch_var);
+      head    = &f->arguments[1];
+      argn    = top->argn_next;
+      control = top->control;
+      depth   = top->depth_before_entry + 1;
+      goto next_head;
+    }
 
-      if ( at_end_vars > start_vars )
+    case AV_SEMI_AFTER_RIGHT:
+    { ssize_t at_end_vars = entriesBuffer(ci->branch_vars, branch_var);
+      Buffer  obv         = top->obv;
+
+      if ( at_end_vars > top->start_vars )
       { branch_var *bv0 = baseBuffer(ci->branch_vars, branch_var);
 	branch_var *bv, *bve;
 
 	DEBUG(MSG_COMP_VARS, Sdprintf("Analyse %d vars\n",
-				      at_end_vars - start_vars));
+				      at_end_vars - top->start_vars));
 
 	bve = bv0 + at_end_vars;
-	for(bv = bv0+start_vars; bv < bve; bv++)
+	for(bv = bv0+top->start_vars; bv < bve; bv++)
 	{ VarDef vd = bv->vdef;
 
 	  DEBUG(MSG_COMP_VARS,
@@ -1033,7 +1202,8 @@ right_recursion:
 	  { if ( bv->saved_times > 0 && vd->times == 0 )
 	      set(vd, VD_MAYBE_UNBALANCED); /* in left, not in right */
 	    if ( vd->times > 0 &&
-		 !in_branch(bv0+start_vars, bv0+at_branch_vars, vd->address) )
+		 !in_branch(bv0+top->start_vars,
+			    bv0+top->at_branch_vars, vd->address) )
 	      set(vd, VD_MAYBE_UNBALANCED); /* in right, not in left */
 	  }
 	  if ( (debugstatus.styleCheck&SEMSINGLETON_CHECK) )
@@ -1054,44 +1224,26 @@ right_recursion:
 	}
       }
 
-    error:
       if ( obv == NULL )
       { discardBuffer(ci->branch_vars);
 	ci->branch_vars = NULL;
       }
 
-      return nvars;
+      depth = top->depth_before_entry;
+      popTopOfSegStack(&stack);
+      goto resume;
     }
 
-    /* check \+ Goal for singletons on Goal.  These are variables introduced
-       inside the goal and only used once.
-    */
+    case AV_NOT_AFTER:
+    { ssize_t at_end_vars = entriesBuffer(ci->branch_vars, branch_var);
+      Buffer  obv         = top->obv;
 
-    if ( f->definition == FUNCTOR_not_provable1 && control && !ci->islocal)
-    { Buffer obv;
-      ssize_t start_vars, at_end_vars;
-
-      ci->head_unify = false;
-
-      if ( (obv=ci->branch_vars) == NULL )
-      { initBuffer(&ci->branch_varbuf);
-	ci->branch_vars = (Buffer)&ci->branch_varbuf;
-	start_vars = 0;
-      } else
-	start_vars = entriesBuffer(ci->branch_vars, branch_var);
-
-      nvars = analyseVariables2(&f->arguments[0], nvars, argn,
-				ci, depth, control);
-      if ( nvars < 0 )
-	goto error_in_not;
-
-      at_end_vars = entriesBuffer(ci->branch_vars, branch_var);
-      if ( at_end_vars > start_vars )
+      if ( at_end_vars > top->start_vars )
       { branch_var *bv = baseBuffer(ci->branch_vars, branch_var);
 	branch_var *bve;
 
 	bve = bv + at_end_vars;
-	for(bv += start_vars; bv < bve; bv++)
+	for(bv += top->start_vars; bv < bve; bv++)
 	{ VarDef vd = bv->vdef;
 
 	  if ( vd->times == 1 )
@@ -1101,56 +1253,51 @@ right_recursion:
 	}
       }
 
-    error_in_not:
       if ( obv == NULL )
       { discardBuffer(ci->branch_vars);
 	ci->branch_vars = NULL;
       } else
-      { seekBuffer(ci->branch_vars, start_vars, branch_var);
+      { seekBuffer(ci->branch_vars, top->start_vars, branch_var);
       }
 
-      return nvars;
-    }
-
-    /* Find leading unifications against head arguments */
-
-    if ( control && ci->head_unify )
-    { if ( f->definition == FUNCTOR_equals2 )
-	annotate_unification(f, ci);
-      else if ( f->definition != FUNCTOR_comma2 )
-	ci->head_unify = false;
-    }
-
-    /* The default term processing case */
-
-    if ( fd->arity > 0 )
-    { size_t ar = fd->arity;
-
-      head = f->arguments;
-      argn = ( argn < 0 ? 0 : ci->arity );
-
-      if ( control && isoff(fd, CONTROL_F) )
-	control = false;
-
-      for(; --ar > 0; head++, argn++)
-      { nvars = analyseVariables2(head, nvars, argn, ci, depth, control);
-	if ( nvars < 0 )
-	  return nvars;
-      }
-
-      goto right_recursion;
+      depth = top->depth_before_entry;
+      popTopOfSegStack(&stack);
+      goto resume;
     }
   }
 
-  if ( control && *head != ATOM_true )	  /* e.g. atomic goals */
-    ci->head_unify = false;
+  assert(0);				/* unreachable */
 
-  if ( ci->subclausearg && (isString(*head) || isAttVar(*head)) )
-  { DEBUG(MSG_COMP_ARGVAR,
-	  Sdprintf("argvar for %s\n", isString(*head) ? "string" : "attvar"));
-    ci->argvars++;
+error_unwind:
+  resetVars();				/* undoes setVarInfo() on stack cells */
+  while( (top = topOfSegStack(&stack)) != NULL )
+  { switch( top->kind )
+    { case AV_SUBCLAUSE_LOOP:
+	ci->subclausearg = false;
+	break;
+      case AV_SEMI_AFTER_LEFT:
+      case AV_SEMI_AFTER_RIGHT:
+	if ( top->obv == NULL )
+	{ discardBuffer(ci->branch_vars);
+	  ci->branch_vars = NULL;
+	}
+	break;
+      case AV_NOT_AFTER:
+	if ( top->obv == NULL )
+	{ discardBuffer(ci->branch_vars);
+	  ci->branch_vars = NULL;
+	} else
+	{ seekBuffer(ci->branch_vars, top->start_vars, branch_var);
+	}
+	break;
+      case AV_ARG_LOOP:
+	break;
+    }
+    popTopOfSegStack(&stack);
   }
 
+exit:
+  clearSegStack(&stack);
   return nvars;
 }
 
@@ -1468,25 +1615,38 @@ setVars() marks all variables that appear in the argument term.
 #define setVars(t, vt) LDFUNC(setVars, t, vt)
 static void
 setVars(DECL_LD Word t, VarTable vt)
-{ int index;
+{ segstack stack;
+  Word     sbuf[512];
+  int      index;
 
-last_arg:
+  initSegStack(&stack, sizeof(Word), sizeof(sbuf), sbuf);
 
-  deRef(t);
-  if ( (index = isIndexedVarTerm(*t)) >= 0 )
-  { isFirstVarSet(vt, index);
-    return;
+  for(;;)
+  { deRef(t);
+    if ( (index = isIndexedVarTerm(*t)) >= 0 )
+    { isFirstVarSet(vt, index);
+    } else if ( isTerm(*t) )
+    { ssize_t arity = arityTerm(*t);
+
+      if ( arity > 0 )
+      { Word a = argTermP(*t, 0);
+	ssize_t i;
+
+	for(i = arity-1; i >= 1; i--)
+	{ Word ap = a + i;
+	  if ( !pushSegStack(&stack, ap, Word) )
+	    outOfCore();
+	}
+	t = a;
+	continue;
+      }
+    }
+
+    if ( !popSegStack(&stack, &t, Word) )
+      break;
   }
 
-  if ( isTerm(*t) )
-  { ssize_t arity;
-
-    arity = arityTerm(*t);
-
-    for(t = argTermP(*t, 0); --arity > 0; t++)
-      setVars(t, vt);
-    goto last_arg;
-  }
+  clearSegStack(&stack);
 }
 
 
@@ -1834,48 +1994,19 @@ goal-term and therefore initialised. This implies   there  is no need to
 play around with variable tables.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define compileClauseGuarded(ci, cp, head, body, proc, module, warnings, flags) \
-	LDFUNC(compileClauseGuarded, ci, cp, head, body, proc, module, warnings, flags)
-static ssize_t compileClauseGuarded(DECL_LD CompileInfo ci, Clause *cp, Word head, Word body,
-				Procedure proc, Module module, term_t warnings,
-				int flags);
-
-#ifdef O_C_STACK_GUARDED
-#define cleanupCompile(ci) LDFUNC(cleanupCompile, ci)
-
-static void
-cleanupCompile(DECL_LD CompileInfo ci)
-{ resetVars();
-  discardBuffer(&ci->codes);
-}
-#endif
-
 ssize_t
 compileClause(DECL_LD Clause *cp, Word head, Word body,
 	      Procedure proc, Module module, term_t warnings,
 	      int flags)
-{ compileInfo ci;			/* data base for the compiler */
-  ssize_t rc;
-
-  ci.progress = 0;
-  initBuffer(&ci.codes);
-
-  C_STACK_OVERFLOW_GUARDED(
-      rc,
-      compileClauseGuarded(&ci, cp, head, body, proc, module, warnings, flags),
-      cleanupCompile(&ci));
-
-  return rc;
-}
-
-static ssize_t
-compileClauseGuarded(DECL_LD CompileInfo ci, Clause *cp, Word head, Word body,
-		     Procedure proc, Module module, term_t warnings,
-		     int flags)
-{ struct clause clause = {0};
+{ compileInfo   _ci;			/* data base for the compiler */
+  CompileInfo   ci = &_ci;
+  struct clause clause = {0};
   Clause cl;
   Definition def = getProcDefinition(proc);
   ssize_t rc;
+
+  ci->progress = 0;
+  initBuffer(&ci->codes);
 
   if ( head )
   { ci->islocal       = false;
@@ -2008,9 +2139,9 @@ that have an I_CONTEXT because we need to reset the context.
 
     bi = PC(ci);
     if ( (rc=compileBody(body, I_DEPART, ci)) != true )
-    { if ( rc <= NOT_CALLABLE )
-      {	resetVars();
-	switch(rc)
+    { if ( rc == MEMORY_OVERFLOW || rc <= NOT_CALLABLE )
+      {	resetVars();		/* reset stack cells before any allocating */
+	switch(rc)		/* call that might GC/stack-shift */
 	{ case NOT_CALLABLE:
 	    rc = PL_error(NULL, 0, NULL, ERR_TYPE,
 			  ATOM_callable, pushWordAsTermRef(body));
@@ -2019,6 +2150,9 @@ that have an I_CONTEXT because we need to reset the context.
 	  case MAX_ARITY_OVERFLOW:
 	    rc = PL_error(NULL, 0, NULL,
 			  ERR_REPRESENTATION, ATOM_max_procedure_arity);
+	    break;
+	  case MEMORY_OVERFLOW:
+	    rc = PL_error(NULL, 0, NULL, ERR_NOMEM);
 	    break;
 	  default:
 	    assert(0);
@@ -2273,10 +2407,55 @@ A ; B, A -> B, A -> B ; C, \+ A
     uninitialised variables ...
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+/* The recursive shape of compileBody() is folded into an explicit
+   segmented-stack state machine.  Each recursive call becomes a frame
+   describing (a) the state to restore and (b) the post-processing
+   step to run when the sub-compilation finishes.  This avoids a C
+   stack overflow on deeply nested terms such as left-heavy commas or
+   deep disjunctions.  On stack allocation failure a resource_error
+   exception is raised. */
+
+typedef enum
+{ CB_COMMA_RHS,		/* (A, B): compile B after A */
+  CB_SEMI_A,		/* (A ; B): resume after A */
+  CB_SEMI_B,		/* (A ; B): resume after B */
+  CB_ITE_COND,		/* (A -> B ; C) / (A *-> B ; C): resume after A */
+  CB_ITE_THEN,		/* (A -> B ; C) / (A *-> B ; C): resume after B */
+  CB_ITE_ELSE,		/* (A -> B ; C) / (A *-> B ; C): resume after C */
+  CB_IT_COND,		/* (A -> B) / (A *-> B): resume after A */
+  CB_IT_THEN,		/* (A -> B) / (A *-> B): resume after B */
+  CB_NOT_INNER,		/* (\+ A) / ($ A): resume after A */
+  CB_COLON,		/* (M:G): restore colon_context */
+  CB_ATSIGN		/* (G@M): restore at_context */
+} cb_kind;
+
+typedef struct cb_frame
+{ cb_kind        kind;
+  code           call;		/* 'call' passed to the pending sub-compilation */
+  Word           body;		/* pointer to enclosing control term */
+  Word           a0;		/* dereffed pointer to (A -> B) inside (;) */
+  size_t         var;		/* choice-point variable */
+  size_t         tc_or;		/* patch offset of C_OR / C_IFTHENELSE / ... */
+  size_t         tc_jmp;	/* patch offset of forward C_JMP */
+  VarTable       vsave;
+  VarTable       valt1;
+  VarTable       valt2;
+  cutInfo        cutsave;
+  target_module  tmsave;
+  bool           hard;		/* -> vs *-> */
+  bool           isnot;		/* \+ vs $ */
+} cb_frame;
+
 static boolex_t
 compileBody(DECL_LD Word body, code call, compileInfo *ci)
-{
-right_argument:
+{ segstack   stack;
+  double     sbuf[512];		/* ~4 KB initial in-line chunk */
+  cb_frame   frame;
+  boolex_t   rc;
+
+  initSegStack(&stack, sizeof(cb_frame), sizeof(sbuf), sbuf);
+
+next_body:
   deRef(body);
 
   if ( isTerm(*body) )
@@ -2285,18 +2464,21 @@ right_argument:
 
     if ( ison(fdef, CONTROL_F) )
     { if ( fd == FUNCTOR_comma2 )			/* A , B */
-      { int rv;
-
-	if ( (rv=compileBody(argTermP(*body, 0), I_CALL, ci)) != true )
-	  return rv;
-	body = argTermP(*body, 1);
-	goto right_argument;
+      { frame.kind = CB_COMMA_RHS;
+	frame.call = call;
+	frame.body = argTermP(*body, 1);
+	if ( !pushSegStack(&stack, frame, cb_frame) )
+	{ rc = MEMORY_OVERFLOW;
+	  goto resume;
+	}
+	body = argTermP(*body, 0);
+	call = I_CALL;
+	goto next_body;
 #if O_COMPILE_OR
       } else if ( fd == FUNCTOR_semicolon2 ||
 		  fd == FUNCTOR_bar2 )		/* A ; B and (A -> B ; C) */
       { Word a0 = argTermP(*body, 0);
 	VarTable vsave, valt1, valt2;
-	int hard;
 
 	if ( !ci->islocal )
 	{ vsave = mkCopiedVarTable(ci->used_var);
@@ -2309,105 +2491,98 @@ right_argument:
 	  vsave = valt1 = valt2 = NULL;
 
 	deRef(a0);
-	if ( (hard=hasFunctor(*a0, FUNCTOR_ifthen2)) || /* A  -> B ; C */
-	     hasFunctor(*a0, FUNCTOR_softcut2) )        /* A *-> B ; C */
-	{ size_t var;
-	  size_t tc_or, tc_jmp;
-	  int rv;
-	  cutInfo cutsave = ci->cut;
-	  bool fast = false;
+	if ( hasFunctor(*a0, FUNCTOR_ifthen2) ||	/* A  -> B ; C */
+	     hasFunctor(*a0, FUNCTOR_softcut2) )	/* A *-> B ; C */
+	{ bool hard = hasFunctor(*a0, FUNCTOR_ifthen2);
+	  size_t var;
 
 	  if ( !(var=allocChoiceVar(ci)) )
-	    return false;
+	  { rc = false;
+	    goto resume;
+	  }
 
 	  Output_2(ci, hard ? C_IFTHENELSE : C_SOFTIF, var, (code)0);
-	  tc_or = PC(ci);
-	  ci->cut.var = var;		/* Cut locally in the condition */
+
+	  frame.kind    = CB_ITE_COND;
+	  frame.call    = call;
+	  frame.body    = body;
+	  frame.a0      = a0;
+	  frame.var     = var;
+	  frame.tc_or   = PC(ci);
+	  frame.cutsave = ci->cut;
+	  frame.vsave   = vsave;
+	  frame.valt1   = valt1;
+	  frame.valt2   = valt2;
+	  frame.hard    = hard;
+	  if ( !pushSegStack(&stack, frame, cb_frame) )
+	  { rc = MEMORY_OVERFLOW;
+	    goto resume;
+	  }
+
+	  ci->cut.var         = var;	/* Cut locally in the condition */
 	  ci->cut.instruction = hard ? C_LCUT : C_LSCUT;
-	  if ( (rv=compileBody(argTermP(*a0, 0), I_CALL, ci)) != true )
-	    return rv;
-	  if ( hard )
-	    fast = try_fast_condition(ci, tc_or);
-	  ci->cut = cutsave;
-	  Output_1(ci, fast ? C_FASTCUT : hard ? C_CUT : C_SOFTCUT, var);
-	  if ( (rv=compileBody(argTermP(*a0, 1), call, ci)) != true )
-	    return rv;
-	  if ( !ci->islocal )
-	    balanceVars(valt1, valt2, ci);
-	  Output_1(ci, C_JMP, (code)0);
-	  tc_jmp = PC(ci);
-	  OpCode(ci, tc_or-1) = (code)(PC(ci) - tc_or);
-	  if ( !ci->islocal )
-	    copyVarTable(ci->used_var, vsave);
-	  if ( (rv=compileBody(argTermP(*body, 1), call, ci)) != true )
-	    return rv;
-	  if ( !ci->islocal )
-	    balanceVars(valt2, valt1, ci);
-	  OpCode(ci, tc_jmp-1) = (code)(PC(ci) - tc_jmp);
+
+	  body = argTermP(*a0, 0);
+	  call = I_CALL;
+	  goto next_body;
 	} else					/* A ; B */
-	{ size_t tc_or, tc_jmp;
-	  boolex_t rv;
+	{ Output_1(ci, C_OR, (code)0);
 
-	  Output_1(ci, C_OR, (code)0);
-	  tc_or = PC(ci);
-	  if ( (rv=compileBody(argTermP(*body, 0), I_CALL, ci)) != true )
-	    return rv;
-	  if ( !ci->islocal )
-	    balanceVars(valt1, valt2, ci);
-	  Output_1(ci, C_JMP, (code)0);
-	  tc_jmp = PC(ci);
-	  OpCode(ci, tc_or-1) = (code)(PC(ci) - tc_or);
-	  if ( !ci->islocal )
-	    copyVarTable(ci->used_var, vsave);
-	  if ( (rv=compileBody(argTermP(*body, 1), call, ci)) != true )
-	    return rv;
-	  if ( !ci->islocal )
-	    balanceVars(valt2, valt1, ci);
-	  OpCode(ci, tc_jmp-1) = (code)(PC(ci) - tc_jmp);
+	  frame.kind  = CB_SEMI_A;
+	  frame.call  = call;
+	  frame.body  = body;
+	  frame.tc_or = PC(ci);
+	  frame.vsave = vsave;
+	  frame.valt1 = valt1;
+	  frame.valt2 = valt2;
+	  if ( !pushSegStack(&stack, frame, cb_frame) )
+	  { rc = MEMORY_OVERFLOW;
+	    goto resume;
+	  }
+
+	  body = argTermP(*body, 0);
+	  call = I_CALL;
+	  goto next_body;
 	}
-
-	if ( !ci->islocal )
-	{ orVars(valt1, valt2);
-	  copyVarTable(ci->used_var, valt1);
-	}
-
-	succeed;
       } else if ( fd == FUNCTOR_ifthen2 ||		/* A -> B */
 		  fd == FUNCTOR_softcut2 )		/* A *-> B */
-      { size_t var;
-	boolex_t rv;
-	int hard = (fd == FUNCTOR_ifthen2);
-	cutInfo cutsave = ci->cut;
+      { bool hard = (fd == FUNCTOR_ifthen2);
+	size_t var;
 
 	if ( !(var=allocChoiceVar(ci)) )
-	  return false;
+	{ rc = false;
+	  goto resume;
+	}
 
 	Output_1(ci, hard ? C_IFTHEN : C_SOFTIFTHEN, var);
-	ci->cut.var = var;		/* Cut locally in the condition */
-	ci->cut.instruction = C_LCUTIFTHEN;
-	if ( (rv=compileBody(argTermP(*body, 0), I_CALL, ci)) != true )
-	  return rv;
-	ci->cut = cutsave;
-	if ( hard )
-	  Output_1(ci, C_CUT, var);
-	else
-	  Output_0(ci, C_SCUT);
-	if ( (rv=compileBody(argTermP(*body, 1), call, ci)) != true )
-	  return rv;
-	Output_0(ci, C_END);
 
-	succeed;
+	frame.kind    = CB_IT_COND;
+	frame.call    = call;
+	frame.body    = body;
+	frame.var     = var;
+	frame.cutsave = ci->cut;
+	frame.hard    = hard;
+	if ( !pushSegStack(&stack, frame, cb_frame) )
+	{ rc = MEMORY_OVERFLOW;
+	  goto resume;
+	}
+
+	ci->cut.var         = var;		/* Cut locally in the condition */
+	ci->cut.instruction = C_LCUTIFTHEN;
+
+	body = argTermP(*body, 0);
+	call = I_CALL;
+	goto next_body;
       } else if ( fd == FUNCTOR_not_provable1 ||	/* \+/1 */
 		  fd == FUNCTOR_dollar1 )		/* $/1 */
-      { size_t var;
-	size_t tc_or, tc_det;
+      { bool isnot = (fd == FUNCTOR_not_provable1);
+	size_t var;
 	VarTable vsave;
-	boolex_t rv;
-	cutInfo cutsave = ci->cut;
-	int isnot = (fd == FUNCTOR_not_provable1);
 
 	if ( !(var=allocChoiceVar(ci)) )
-	  return false;
+	{ rc = false;
+	  goto resume;
+	}
 
 	if ( !ci->islocal )
 	  vsave = mkCopiedVarTable(ci->used_var);
@@ -2415,78 +2590,260 @@ right_argument:
 	  vsave = NULL;
 
 	Output_2(ci, isnot ? C_NOT : C_DET, var, (code)0);
-	tc_or = PC(ci);
-	ci->cut.var = var;
+
+	frame.kind    = CB_NOT_INNER;
+	frame.call    = call;
+	frame.var     = var;
+	frame.tc_or   = PC(ci);
+	frame.vsave   = vsave;
+	frame.cutsave = ci->cut;
+	frame.isnot   = isnot;
+	if ( !pushSegStack(&stack, frame, cb_frame) )
+	{ rc = MEMORY_OVERFLOW;
+	  goto resume;
+	}
+
+	ci->cut.var         = var;
 	ci->cut.instruction = C_LCUT;
-	if ( (rv=compileBody(argTermP(*body, 0), I_CALL, ci)) != true )
-	  return rv;
-	ci->cut = cutsave;
-	if ( isnot )
-	{ Output_1(ci, C_CUT, var);
-	  Output_0(ci, C_FAIL);
-	  tc_det = 0;			/* silence compiler */
-	} else
-	{ Output_1(ci, C_DETTRUE, var);
-	  Output_1(ci, C_JMP, (code)0);
-	  tc_det = PC(ci);
-	}
-	if ( ci->islocal )
-	{ OpCode(ci, tc_or-1) = (code)(PC(ci) - tc_or);
-	} else if ( isnot )
-	{ size_t tc_jmp;
 
-	  Output_1(ci, C_JMP, (code)0);
-	  tc_jmp = PC(ci);
-	  OpCode(ci, tc_or-1) = (code)(PC(ci) - tc_or);
-	  if ( balanceVars(vsave, ci->used_var, ci) > 0 )
-	  { /*copyVarTable(ci->used_var, vsave);   see comment above */
-	    OpCode(ci, tc_jmp-1) = (code)(PC(ci) - tc_jmp);
-	  } else			/* delete the jmp */
-	  { seekBuffer(&ci->codes, tc_jmp-2, code);
-	    OpCode(ci, tc_or-1) = (code)(PC(ci) - tc_or);
-	  }
-	} else				/* $(Goal) */
-	{ balanceVars(vsave, ci->used_var, ci);
-	  OpCode(ci, tc_or-1) = (code)(PC(ci) - tc_or);
-	}
-
-	if ( !isnot )
-	{ Output_0(ci, C_DETFALSE);
-	  OpCode(ci, tc_det-1) = (code)(PC(ci) - tc_det);
-	}
-
-	succeed;
+	body = argTermP(*body, 0);
+	call = I_CALL;
+	goto next_body;
 #endif /* O_COMPILE_OR */
       } else if ( fd == FUNCTOR_colon2 )	/* Module:Goal */
       { target_module tmsave = ci->colon_context;
-	boolex_t rc;
 
 	if ( (rc=getTargetModule(&ci->colon_context,
 				 argTermP(*body, 0), ci)) != true )
-	  return rc;
-	rc = compileBody(argTermP(*body, 1), call, ci);
-	ci->colon_context = tmsave;
+	  goto resume;
 
-	return rc;
+	frame.kind   = CB_COLON;
+	frame.tmsave = tmsave;
+	if ( !pushSegStack(&stack, frame, cb_frame) )
+	{ ci->colon_context = tmsave;
+	  rc = MEMORY_OVERFLOW;
+	  goto resume;
+	}
+
+	body = argTermP(*body, 1);
+	goto next_body;
 #ifdef O_CALL_AT_MODULE
       } else if ( fd == FUNCTOR_at_sign2 )	/* Call@Module */
       { target_module atsave = ci->at_context;
-	boolex_t rc;
 
 	if ( (rc=getTargetModule(&ci->at_context,
 				 argTermP(*body, 1), ci)) != true )
-	  return rc;
-	rc = compileBody(argTermP(*body, 0), call, ci);
-	ci->at_context = atsave;
+	  goto resume;
 
-	return rc;
+	frame.kind   = CB_ATSIGN;
+	frame.tmsave = atsave;
+	if ( !pushSegStack(&stack, frame, cb_frame) )
+	{ ci->at_context = atsave;
+	  rc = MEMORY_OVERFLOW;
+	  goto resume;
+	}
+
+	body = argTermP(*body, 0);
+	goto next_body;
 #endif /*O_CALL_AT_MODULE*/
       }
       assert(0);
     }
   }
 
-  return compileSubClause(body, call, ci);
+  rc = compileSubClause(body, call, ci);
+
+resume:
+  if ( rc != true )
+  { /* Restore contexts saved on outer frames so the caller observes
+       consistent state, mirroring the original recursive unwind. */
+    while( popSegStack(&stack, &frame, cb_frame) )
+    { if ( frame.kind == CB_COLON )
+	ci->colon_context = frame.tmsave;
+#ifdef O_CALL_AT_MODULE
+      else if ( frame.kind == CB_ATSIGN )
+	ci->at_context = frame.tmsave;
+#endif
+    }
+    goto exit;
+  }
+
+  if ( !popSegStack(&stack, &frame, cb_frame) )
+    goto exit;					/* rc is true */
+
+  switch( frame.kind )
+  { case CB_COMMA_RHS:
+      body = frame.body;
+      call = frame.call;
+      goto next_body;
+
+#if O_COMPILE_OR
+    case CB_SEMI_A:				/* (A ; B) after A */
+    { size_t tc_jmp;
+
+      if ( !ci->islocal )
+	balanceVars(frame.valt1, frame.valt2, ci);
+      Output_1(ci, C_JMP, (code)0);
+      tc_jmp = PC(ci);
+      OpCode(ci, frame.tc_or-1) = (code)(PC(ci) - frame.tc_or);
+      if ( !ci->islocal )
+	copyVarTable(ci->used_var, frame.vsave);
+
+      frame.kind   = CB_SEMI_B;
+      frame.tc_jmp = tc_jmp;
+      if ( !pushSegStack(&stack, frame, cb_frame) )
+      { rc = MEMORY_OVERFLOW;
+	goto resume;
+      }
+
+      body = argTermP(*frame.body, 1);
+      call = frame.call;
+      goto next_body;
+    }
+
+    case CB_SEMI_B:				/* (A ; B) after B */
+      if ( !ci->islocal )
+	balanceVars(frame.valt2, frame.valt1, ci);
+      OpCode(ci, frame.tc_jmp-1) = (code)(PC(ci) - frame.tc_jmp);
+      if ( !ci->islocal )
+      { orVars(frame.valt1, frame.valt2);
+	copyVarTable(ci->used_var, frame.valt1);
+      }
+      goto resume;
+
+    case CB_ITE_COND:				/* (A -> B ; C) after A */
+    { bool fast = false;
+
+      if ( frame.hard )
+	fast = try_fast_condition(ci, frame.tc_or);
+      ci->cut = frame.cutsave;
+      Output_1(ci, fast ? C_FASTCUT : frame.hard ? C_CUT : C_SOFTCUT,
+	       frame.var);
+
+      frame.kind = CB_ITE_THEN;
+      if ( !pushSegStack(&stack, frame, cb_frame) )
+      { rc = MEMORY_OVERFLOW;
+	goto resume;
+      }
+
+      body = argTermP(*frame.a0, 1);
+      call = frame.call;
+      goto next_body;
+    }
+
+    case CB_ITE_THEN:				/* (A -> B ; C) after B */
+    { size_t tc_jmp;
+
+      if ( !ci->islocal )
+	balanceVars(frame.valt1, frame.valt2, ci);
+      Output_1(ci, C_JMP, (code)0);
+      tc_jmp = PC(ci);
+      OpCode(ci, frame.tc_or-1) = (code)(PC(ci) - frame.tc_or);
+      if ( !ci->islocal )
+	copyVarTable(ci->used_var, frame.vsave);
+
+      frame.kind   = CB_ITE_ELSE;
+      frame.tc_jmp = tc_jmp;
+      if ( !pushSegStack(&stack, frame, cb_frame) )
+      { rc = MEMORY_OVERFLOW;
+	goto resume;
+      }
+
+      body = argTermP(*frame.body, 1);
+      call = frame.call;
+      goto next_body;
+    }
+
+    case CB_ITE_ELSE:				/* (A -> B ; C) after C */
+      if ( !ci->islocal )
+	balanceVars(frame.valt2, frame.valt1, ci);
+      OpCode(ci, frame.tc_jmp-1) = (code)(PC(ci) - frame.tc_jmp);
+      if ( !ci->islocal )
+      { orVars(frame.valt1, frame.valt2);
+	copyVarTable(ci->used_var, frame.valt1);
+      }
+      goto resume;
+
+    case CB_IT_COND:				/* (A -> B) after A */
+      ci->cut = frame.cutsave;
+      if ( frame.hard )
+	Output_1(ci, C_CUT, frame.var);
+      else
+	Output_0(ci, C_SCUT);
+
+      frame.kind = CB_IT_THEN;
+      if ( !pushSegStack(&stack, frame, cb_frame) )
+      { rc = MEMORY_OVERFLOW;
+	goto resume;
+      }
+
+      body = argTermP(*frame.body, 1);
+      call = frame.call;
+      goto next_body;
+
+    case CB_IT_THEN:				/* (A -> B) after B */
+      Output_0(ci, C_END);
+      goto resume;
+
+    case CB_NOT_INNER:				/* (\+ A) / ($ A) after A */
+    { size_t tc_det = 0;
+
+      ci->cut = frame.cutsave;
+      if ( frame.isnot )
+      { Output_1(ci, C_CUT, frame.var);
+	Output_0(ci, C_FAIL);
+      } else
+      { Output_1(ci, C_DETTRUE, frame.var);
+	Output_1(ci, C_JMP, (code)0);
+	tc_det = PC(ci);
+      }
+      if ( ci->islocal )
+      { OpCode(ci, frame.tc_or-1) = (code)(PC(ci) - frame.tc_or);
+      } else if ( frame.isnot )
+      { size_t tc_jmp;
+
+	Output_1(ci, C_JMP, (code)0);
+	tc_jmp = PC(ci);
+	OpCode(ci, frame.tc_or-1) = (code)(PC(ci) - frame.tc_or);
+	if ( balanceVars(frame.vsave, ci->used_var, ci) > 0 )
+	{ /*copyVarTable(ci->used_var, vsave);   see comment above */
+	  OpCode(ci, tc_jmp-1) = (code)(PC(ci) - tc_jmp);
+	} else				/* delete the jmp */
+	{ seekBuffer(&ci->codes, tc_jmp-2, code);
+	  OpCode(ci, frame.tc_or-1) = (code)(PC(ci) - frame.tc_or);
+	}
+      } else				/* $(Goal) */
+      { balanceVars(frame.vsave, ci->used_var, ci);
+	OpCode(ci, frame.tc_or-1) = (code)(PC(ci) - frame.tc_or);
+      }
+
+      if ( !frame.isnot )
+      { Output_0(ci, C_DETFALSE);
+	OpCode(ci, tc_det-1) = (code)(PC(ci) - tc_det);
+      }
+      goto resume;
+    }
+#endif /*O_COMPILE_OR*/
+
+    case CB_COLON:
+      ci->colon_context = frame.tmsave;
+      goto resume;
+
+#ifdef O_CALL_AT_MODULE
+    case CB_ATSIGN:
+      ci->at_context = frame.tmsave;
+      goto resume;
+#endif
+
+    default:
+      assert(0);
+      rc = false;
+      goto exit;
+  }
+
+exit:
+  clearSegStack(&stack);
+  return rc;
 }
 
 
@@ -2595,14 +2952,51 @@ is no need as they are  held  by   the  term  anyway). For `big' objects
 (strings and compounds) the system should create `argvar' references.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+/* Iterative variant.  The recursion walked compound arguments left-to-
+   right; on left-heavy compounds the C stack grew with the tree depth.
+   The state machine below keeps a segstack of resume frames:
+
+   - CA_MIDDLE tracks progress through args[0..N-2] of a compound: on
+     resume it advances to the next arg, or (once the middle is
+     exhausted) transitions to the last-arg handling.
+   - CA_LAST_POP emits the closing H_POP / B_POP after the last-arg
+     sub-compilation in the non-right, non-var branch.
+
+   The list right-chain tail-jump (was `goto right_recursion`) becomes
+   a `goto next_arg` with the same `arg`.  Deep arg-tree walks now cost
+   heap frames on the segstack rather than C-stack frames.
+*/
+
+typedef enum
+{ CA_MIDDLE,				/* iterating args[0..N-2] */
+  CA_LAST_POP				/* emit H_POP/B_POP after last arg */
+} ca_kind;
+
+typedef struct ca_frame
+{ ca_kind    kind;
+  int        where;			/* args' where flag (A_ARG set) */
+  bool       isright;			/* isright from OLD where */
+  Word       args_base;			/* for CA_MIDDLE: &args[0] */
+  ssize_t    next_idx;			/* for CA_MIDDLE: next arg index */
+  ssize_t    last_idx;			/* for CA_MIDDLE: arity-1 */
+} ca_frame;
+
 static boolex_t
 compileArgument(DECL_LD Word arg, int where, compileInfo *ci)
-{ int index;
-  bool first;
+{ segstack  stack;
+  double    sbuf[256];
+  ca_frame  frame;
+  boolex_t  rc;
+  int       index;
+  bool      first;
+  int       isright;
+  int       voffset;
+  Word      k;
 
+  initSegStack(&stack, sizeof(ca_frame), sizeof(sbuf), sbuf);
+
+next_arg:
   deRef(arg);
-
-right_recursion:
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 A void.  Generate either B_VOID or H_VOID.
@@ -2613,18 +3007,13 @@ A void.  Generate either B_VOID or H_VOID.
       if ( isVarInfo(*arg) )
 	goto isvar;
     var:
-      if (where & A_BODY)
-      { Output_0(ci, B_VOID);
-	return true;
-      }
-      Output_0(ci, H_VOID);
-      return true;
+      Output_0(ci, (where & A_BODY) ? B_VOID : H_VOID);
+      rc = true;
+      goto resume;
     case TAG_ATTVAR:
       if ( ci->islocal )
-      { goto argvar;
-      } else
-      { goto var;
-      }
+	goto argvar;
+      goto var;
     case TAG_INTEGER:
       if ( storage(*arg) == STG_INLINE )
       { sword i = valInt(*arg);
@@ -2648,7 +3037,8 @@ A void.  Generate either B_VOID or H_VOID.
 
 	output_indirect(ci, op, addressIndirect(*arg));
       }
-      return true;
+      rc = true;
+      goto resume;
     case TAG_ATOM:
       if ( isNil(*arg) )
       {	Output_0(ci, (where & A_BODY) ? B_NIL : H_NIL);
@@ -2657,22 +3047,25 @@ A void.  Generate either B_VOID or H_VOID.
 	  PL_register_atom(word2atom(*arg));
 	Output_1(ci, (where & A_BODY) ? B_ATOM : H_ATOM, word2code(*arg));
       }
-      return true;
+      rc = true;
+      goto resume;
     case TAG_FLOAT:
     { Word p = valIndirectP(*arg);
       int c =  (where & A_BODY) ? B_FLOAT : H_FLOAT;
 
       Output_n(ci, c, p, CODES_PER_DOUBLE);
-      return true;
+      rc = true;
+      goto resume;
     }
     case TAG_STRING:
-    if ( ci->islocal )
-    { goto argvar;
-    } else
-    { return output_indirect(ci,
+      if ( ci->islocal )
+      { goto argvar;
+      } else
+      { rc = output_indirect(ci,
 			     (where & A_HEAD) ? H_STRING : B_STRING,
 			     addressIndirect(*arg));
-    }
+	goto resume;
+      }
   }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2682,10 +3075,12 @@ Non-void variables. There are many cases for this.
 isvar:
   if ( (index = isIndexedVarTerm(*arg)) >= 0 )
   { if ( ci->islocal )
-    { int rc;
+    { boolex_t lrc;
 
-      if ( (rc=link_local_var(arg, index, ci)) != true )
-	return rc;
+      if ( (lrc=link_local_var(arg, index, ci)) != true )
+      { rc = lrc;
+	goto exit_unwind;
+      }
 
       if ( index < 3 )
       { Output_0(ci, B_VAR0 + index);
@@ -2693,7 +3088,8 @@ isvar:
       { Output_1(ci, B_VAR, VAROFFSET(index));
       }
 
-      return true;
+      rc = true;
+      goto resume;
     }
 
     first = isFirstVarSet(ci->used_var, index);
@@ -2708,7 +3104,8 @@ isvar:
 	} else
 	{ if ( index < 3 )
 	  { Output_0(ci, B_VAR0 + index);
-	    return true;
+	    rc = true;
+	    goto resume;
 	  }
 	  Output_0(ci, B_VAR);
 	}
@@ -2717,10 +3114,13 @@ isvar:
 	{ Word p;
 
 	  if ( (p=argMoveUnify(*arg)) )
-	    return compileArgument(p, where, ci);
+	  { arg = p;
+	    goto next_arg;		/* tail-call */
+	  }
 	  if ( first )
 	  { Output_0(ci, H_VOID);
-	    return true;
+	    rc = true;
+	    goto resume;
 	  }
 	}
 	if ( argUnifiedTo(*arg) )
@@ -2730,7 +3130,8 @@ isvar:
       }
       Output_a(ci, VAROFFSET(index));
 
-      return true;
+      rc = true;
+      goto resume;
     }
 
     /* normal variable (i.e. not shared in the head and non-void) */
@@ -2740,7 +3141,8 @@ isvar:
       } else
       { if ( index < 3 && !first )
 	{ Output_0(ci, B_VAR0 + index);
-	  return true;
+	  rc = true;
+	  goto resume;
 	}
 	Output_0(ci, first ? B_FIRSTVAR : B_VAR);
       }
@@ -2750,21 +3152,22 @@ isvar:
 
     Output_a(ci, VAROFFSET(index));
 
-    return true;
+    rc = true;
+    goto resume;
   }
 
   assert(isTerm(*arg));
 
   if ( ci->islocal && !(where&A_NOARGVAR) )
-  { int voffset;
-    Word k;
-
+  {
   argvar:
     voffset = VAROFFSET(ci->argvar);
     k = varFrameP(lTop, voffset);
 
     if ( k >= (Word)lMax )
-      return LOCAL_OVERFLOW;
+    { rc = LOCAL_OVERFLOW;
+      goto exit_unwind;
+    }
 
     if ( isAttVar(*arg) )		/* attributed variable: must make */
       *k = makeRefG(arg);		/* a reference to avoid binding a */
@@ -2779,19 +3182,22 @@ isvar:
 	  Sdprintf("Using argvar %d\n", ci->argvar));
     ci->argvar++;
 
-    return true;
+    rc = true;
+    goto resume;
   } else
   { ssize_t ar;
     functor_t fdef;
-    int isright = (where & A_RIGHT);
+    code c;
+    Word args;
 
+    isright = (where & A_RIGHT);
     fdef = functorTerm(*arg);
     if ( fdef == FUNCTOR_dot2 )
-    { code c;
-
-      if ( (where & A_HEAD) )		/* index in array! */
+    { if ( (where & A_HEAD) )		/* index in array! */
       { if ( compileListFF(*arg, ci) )
-	  return true;
+	{ rc = true;
+	  goto resume;
+	}
 	c = (isright ? H_RLIST : H_LIST);
       } else
       { c = (isright ? B_RLIST : B_LIST);
@@ -2799,9 +3205,7 @@ isvar:
 
       Output_0(ci, c);
     } else
-    { code c;
-
-      if ( (where & A_HEAD) )		/* index in array! */
+    { if ( (where & A_HEAD) )		/* index in array! */
 	c = (isright ? H_RFUNCTOR : H_FUNCTOR);
       else
 	c = (isright ? B_RFUNCTOR : B_FUNCTOR);
@@ -2811,38 +3215,99 @@ isvar:
     ar = arityFunctor(fdef);
     where &= ~(A_RIGHT|A_NOARGVAR);
     where |= A_ARG;
+    args = argTermP(*arg, 0);
 
-    for(arg = argTermP(*arg, 0); --ar > 0; arg++)
-    { int rc;
-
-      if ( (rc=compileArgument(arg, where, ci)) < 0 )
-	return rc;
-    }
-
-    where |= A_RIGHT;
-    deRef(arg);
-
-    if ( isVar(*arg) && !(where & (A_BODY|A_ARG)) )
-    { if ( !isright )
-	Output_0(ci, H_POP);
-      return true;
-    }
-
-    if ( isright )
-    { if ( ar == 0 )
-	goto right_recursion;
-    } else
-    { int rc;
-
-      if ( ar == 0 )			/* ar == -1 on a() */
-      { if ( (rc=compileArgument(arg, where, ci)) < 0 )
-	  return rc;
+    if ( ar >= 2 )
+    { frame.kind      = CA_MIDDLE;
+      frame.where     = where;
+      frame.isright   = isright;
+      frame.args_base = args;
+      frame.next_idx  = 1;		/* args[0] handled inline */
+      frame.last_idx  = ar - 1;
+      if ( !pushSegStack(&stack, frame, ca_frame) )
+      { rc = MEMORY_OVERFLOW;
+	goto exit_unwind;
       }
-      Output_0(ci, (where & A_HEAD) ? H_POP : B_POP);
+      arg = args;			/* recurse on args[0] */
+      goto next_arg;
     }
 
+    if ( ar == 1 )			/* only one arg = last arg */
+    { arg = args;
+      goto last_arg;
+    }
+
+    /* ar <= 0: skip loop and last-arg handling; mirror the original
+       code that only emitted the closing pop in the non-right branch. */
+    if ( !isright )
+      Output_0(ci, (where & A_HEAD) ? H_POP : B_POP);
+    rc = true;
+    goto resume;
+  }
+
+last_arg:
+  /* arg is args[N-1].  where has A_ARG (no A_RIGHT).  isright is
+     from the ORIGINAL where before it was masked. */
+  where |= A_RIGHT;
+  deRef(arg);
+
+  if ( isVar(*arg) && !(where & (A_BODY|A_ARG)) )
+  { if ( !isright )
+      Output_0(ci, H_POP);
+    rc = true;
+    goto resume;
+  }
+
+  if ( isright )
+    goto next_arg;			/* tail-jump on last arg */
+
+  /* Non-right: recurse on the last arg, then emit the pop. */
+  frame.kind  = CA_LAST_POP;
+  frame.where = where;
+  if ( !pushSegStack(&stack, frame, ca_frame) )
+  { rc = MEMORY_OVERFLOW;
+    goto exit_unwind;
+  }
+  goto next_arg;
+
+resume:
+  if ( rc < 0 )
+    goto exit_unwind;
+  if ( !popSegStack(&stack, &frame, ca_frame) )
+  { clearSegStack(&stack);
     return true;
   }
+
+  switch( frame.kind )
+  { case CA_MIDDLE:
+    { ssize_t idx = frame.next_idx;
+
+      arg     = frame.args_base + idx;
+      where   = frame.where;
+      isright = frame.isright;
+      if ( idx < frame.last_idx )	/* still a middle arg */
+      { frame.next_idx = idx + 1;
+	if ( !pushSegStack(&stack, frame, ca_frame) )
+	{ rc = MEMORY_OVERFLOW;
+	  goto exit_unwind;
+	}
+	goto next_arg;
+      }
+      /* idx == last_idx: this is the last arg */
+      goto last_arg;
+    }
+
+    case CA_LAST_POP:
+      Output_0(ci, (frame.where & A_HEAD) ? H_POP : B_POP);
+      rc = true;
+      goto resume;
+  }
+
+  assert(0);				/* unreachable */
+
+exit_unwind:
+  clearSegStack(&stack);
+  return rc;
 }
 
 
@@ -3462,11 +3927,36 @@ arithVarOffset(DECL_LD Word arg, compileInfo *ci, int *offp)
 }
 
 
+/* Iterative variant.  Each function-application pushes an aa_frame
+   that captures the operator to emit and how many operand
+   sub-compilations are still pending.  Operands are pushed
+   right-to-left just like the original loop; when the last operand
+   has been compiled the frame emits A_ADD / A_MUL / A_FUNCn.
+   For FUNCTOR_roundtoward2, only the first arg is recursed on (the
+   second, the rounding mode, is emitted inline) and — matching the
+   original — a failure of that sub-compilation is swallowed. */
+
+typedef struct aa_frame
+{ Word       next_arg;		/* next operand to compile (decremented) */
+  ssize_t    remaining;		/* operands still to compile, incl. current */
+  functor_t  fdef;
+  int	     func_index;	/* indexArithFunction(fdef) */
+  size_t     ar;		/* total arity (for A_FUNCn switch) */
+  bool	     ignore_error;	/* true for roundtoward2's lone operand */
+} aa_frame;
+
 static bool
 compileArithArgument(DECL_LD Word arg, compileInfo *ci)
-{ int index;
-  int rc;
+{ segstack  stack;
+  double    sbuf[128];
+  aa_frame  frame;
+  bool      rc;
+  int       index;
+  int       vrc;
 
+  initSegStack(&stack, sizeof(aa_frame), sizeof(sbuf), sbuf);
+
+next_arg:
   deRef(arg);
 
   if ( isRational(*arg) )
@@ -3486,29 +3976,33 @@ compileArithArgument(DECL_LD Word arg, compileInfo *ci)
 
       output_indirect(ci, op, addressIndirect(*arg));
     }
-    succeed;
+    rc = true;
+    goto resume;
   }
   if ( isFloat(*arg) )
   { Word p = valIndirectP(*arg);
 
     Output_n(ci, A_DOUBLE, p, CODES_PER_DOUBLE);
-    succeed;
+    rc = true;
+    goto resume;
   }
 
-  if ( (rc=arithVarOffset(arg, ci, &index)) == true )
+  if ( (vrc=arithVarOffset(arg, ci, &index)) == true )
   { if ( index < 3 )
       Output_0(ci, A_VAR0 + index);
     else
       Output_1(ci, A_VAR, VAROFFSET(index));
 
-    return true;
-  } else if ( rc < 0 )
-  { return false;
+    rc = true;
+    goto resume;
+  } else if ( vrc < 0 )
+  { rc = false;
+    goto exit;
   }
 
 						/* callable (function) */
   { functor_t fdef;
-    size_t n, ar;
+    size_t ar;
     Word a;
 
     if ( isTextAtom(*arg) )
@@ -3524,13 +4018,17 @@ compileArithArgument(DECL_LD Word arg, compileInfo *ci)
 
     case_char_constant:
       if ( !getCharExpression(arg, &n) )
-	return false;
+      { rc = false;
+	goto exit;
+      }
       Output_1(ci, A_INTEGER, (code)n.value.i);
-      return true;
+      rc = true;
+      goto resume;
     } else
     { PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_evaluable, pushWordAsTermRef(arg));
       popTermRef();
-      return false;
+      rc = false;
+      goto exit;
     }
 
     if ( fdef == FUNCTOR_dot2 )		/* "char" */
@@ -3540,7 +4038,8 @@ compileArithArgument(DECL_LD Word arg, compileInfo *ci)
     { PL_error(NULL, 0, "No such arithmetic function",
 	       ERR_TYPE, ATOM_evaluable, pushWordAsTermRef(arg));
       popTermRef();
-      return false;
+      rc = false;
+      goto exit;
     }
 
     if ( fdef == FUNCTOR_roundtoward2 )
@@ -3551,46 +4050,86 @@ compileArithArgument(DECL_LD Word arg, compileInfo *ci)
       deRef2(a+1, m);
       if ( isAtom(*m) && atom_to_rounding(word2atom(*m), &mode) )
       { Output_1(ci, A_ROUNDTOWARDS_A, mode);
-      } else if ( (rc=arithVarOffset(m, ci, &vindex)) == true )
+      } else if ( (vrc=arithVarOffset(m, ci, &vindex)) == true )
       { Output_1(ci, A_ROUNDTOWARDS_V, VAROFFSET(vindex));
-      } else if ( rc < 0 )
-      { return false;
+      } else if ( vrc < 0 )
+      { rc = false; goto exit;
       } else if ( isAtom(*m) )
       { PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_round, pushWordAsTermRef(m));
 	popTermRef();
-	return false;
+	rc = false; goto exit;
       } else
       { PL_error(NULL, 0, NULL, ERR_TYPE, ATOM_atom, pushWordAsTermRef(m));
 	popTermRef();
-	return false;
+	rc = false; goto exit;
       }
 
-      compileArithArgument(a, ci);
-    } else if ( ar )
-    { for(a+=ar-1, n=ar; n-- > 0; a--)	/* pushed right to left */
-      { if ( !compileArithArgument(a, ci) )
-	  return false;
-      }
+      frame.next_arg     = a;		/* recurse on args[0] only */
+      frame.remaining    = 1;
+      frame.fdef	 = fdef;
+      frame.func_index   = index;
+      frame.ar		 = ar;
+      frame.ignore_error = true;
+      if ( !pushSegStack(&stack, frame, aa_frame) )
+	outOfCore();
+      arg = a;
+      goto next_arg;
     }
 
-    if ( fdef == FUNCTOR_plus2 )
-    { Output_0(ci, A_ADD);
-      succeed;
-    }
-    if ( fdef == FUNCTOR_star2 )
-    { Output_0(ci, A_MUL);
-      succeed;
-    }
-
-    switch(ar)
-    { case 0:	Output_1(ci, A_FUNC0, index); break;
-      case 1:	Output_1(ci, A_FUNC1, index); break;
-      case 2:	Output_1(ci, A_FUNC2, index); break;
-      default:  Output_2(ci, A_FUNC,  index, (code) ar); break;
+    if ( ar )
+    { frame.next_arg     = a + ar - 1;	/* right-to-left over all args */
+      frame.remaining    = ar;
+      frame.fdef	 = fdef;
+      frame.func_index   = index;
+      frame.ar		 = ar;
+      frame.ignore_error = false;
+      if ( !pushSegStack(&stack, frame, aa_frame) )
+	outOfCore();
+      arg = frame.next_arg;
+      goto next_arg;
     }
 
-    succeed;
+    /* ar == 0: no operands; emit the nullary function directly. */
+    Output_1(ci, A_FUNC0, index);
+    rc = true;
+    goto resume;
   }
+
+resume:
+  if ( !popSegStack(&stack, &frame, aa_frame) )
+    goto exit;				/* stack empty: return rc */
+
+  if ( rc != true && !frame.ignore_error )
+    goto exit;
+
+  frame.remaining--;
+  if ( frame.remaining > 0 )
+  { frame.next_arg--;
+    if ( !pushSegStack(&stack, frame, aa_frame) )
+      outOfCore();
+    arg = frame.next_arg;
+    goto next_arg;
+  }
+
+  /* All operands compiled; emit the operator. */
+  if ( frame.fdef == FUNCTOR_plus2 )
+  { Output_0(ci, A_ADD);
+  } else if ( frame.fdef == FUNCTOR_star2 )
+  { Output_0(ci, A_MUL);
+  } else
+  { switch( frame.ar )
+    { case 0: Output_1(ci, A_FUNC0, frame.func_index); break;
+      case 1: Output_1(ci, A_FUNC1, frame.func_index); break;
+      case 2: Output_1(ci, A_FUNC2, frame.func_index); break;
+      default: Output_2(ci, A_FUNC,  frame.func_index, (code) frame.ar); break;
+    }
+  }
+  rc = true;
+  goto resume;
+
+exit:
+  clearSegStack(&stack);
+  return rc;
 }
 #endif /* O_COMPILE_ARITH */
 
@@ -3980,10 +4519,10 @@ compileBodyArg3(DECL_LD Word arg, compileInfo *ci)
 #endif /*O_COMPILE_IS*/
 
 #define always(val, pred, arg, ci) LDFUNC(always, val, pred, arg, ci)
-static int
+static boolex_t
 always(DECL_LD atom_t val, const char *pred, Word arg, compileInfo *ci)
 { if ( (debugstatus.styleCheck&NOEFFECT_CHECK) )
-  { int rc;
+  { boolex_t rc;
 
     if ( (rc=compiler_warning(ci, "always", val, pred, arg)) != true )
       return rc;
@@ -4051,7 +4590,7 @@ compileBodyNonVar1(DECL_LD Word arg, compileInfo *ci)
 
 static boolex_t
 compileTypeTest(DECL_LD Word arg,
-		code instruction, const char *name, int (*test)(word),
+		code instruction, const char *name, bool (*test)(word),
 		compileInfo *ci)
 { Word a1;
   int i1;
@@ -4066,7 +4605,7 @@ compileTypeTest(DECL_LD Word arg,
   { int f1 = isFirstVar(ci->used_var, i1);
 
     if ( f1 )
-    { int rc;
+    { boolex_t rc;
 
       if ( (rc=always(ATOM_false, name, a1, ci)) == true )
       { isFirstVarSet(ci->used_var, i1);
@@ -4090,22 +4629,22 @@ typedef struct type_test
 { functor_t	functor;
   code		instruction;
   const char *  name;
-  int		(*test)(word);
+  bool		(*test)(word);
 } type_test;
 
 #if O_BIGNUM
-static int fisInteger(word w)  { GET_LD return isInteger(w);  }
+static bool fisInteger(word w)  { GET_LD return isInteger(w);  }
 #else
-static int fisInteger(word w)  { return isInteger(w);  }
+static bool fisInteger(word w)  { return isInteger(w);  }
 #endif
-static int fisRational(word w) { return isRational(w);  }
-static int fisFloat(word w)    { return isFloat(w);    }
-static int fisNumber(word w)   { return isNumber(w);   }
-static int fisAtomic(word w)   { return isAtomic(w);   }
-static int fisAtom(word w)     { return isTextAtom(w); }
-static int fisString(word w)   { return isString(w);   }
-static int fisCompound(word w) { return isTerm(w);     }
-static int fisCallable(word w) { GET_LD return isCallable(w); }
+static bool fisRational(word w) { return isRational(w);  }
+static bool fisFloat(word w)    { return isFloat(w);    }
+static bool fisNumber(word w)   { return isNumber(w);   }
+static bool fisAtomic(word w)   { return isAtomic(w);   }
+static bool fisAtom(word w)     { return isTextAtom(w); }
+static bool fisString(word w)   { return isString(w);   }
+static bool fisCompound(word w) { return isTerm(w);     }
+static bool fisCallable(word w) { GET_LD return isCallable(w); }
 
 const type_test type_tests[] =
 { { FUNCTOR_integer1,  I_INTEGER,  "integer",  fisInteger  },
@@ -8545,11 +9084,11 @@ PRED_IMPL("$break_at", 3, break_at, 0)
 { PRED_LD
   Clause clause = NULL;
   size_t offset;
-  int doit;
+  bool doit;
   bool rc;
 
   if ( (PL_get_clref(A1, &clause) != true) ||
-       !PL_get_bool_ex(A3, &doit) ||
+       !PL_get_stdbool_ex(A3, &doit) ||
        !PL_get_size_ex(A2, &offset) )
     fail;
   if ( offset >= (size_t)clause->code_size )

@@ -34,17 +34,24 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-#define _XOPEN_SOURCE 600	/* Get PTY API */
+#define _XOPEN_SOURCE 700	/* Get PTY API and O_CLOEXEC */
 #undef _WIN32_WINNT
 #define _WIN32_WINNT 0x0B00	/* Get PseudoConsole API */
 #define SWIPL_WINDOWS_NATIVE_ACCESS 1
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE 1		/* _XOPEN_SOURCE hides u_short, etc. */
+#include <libproc.h>			/* <-foreground_directory.  Must be
+					   included before kernel.h, which
+					   #defines send() */
+#endif
 #include <h/kernel.h>
 #include <h/text.h>
 #include <h/charwidth.h>
 #include "terminal.h"
 #include "../sdl/sdlevent.h"
-#ifdef HAVE_POLL
-#include <poll.h>
+#if defined(__FreeBSD__) || defined(__DragonFly__)
+#include <sys/sysctl.h>
+#include <sys/user.h>
 #endif
 #include <SWI-Stream.h>
 
@@ -53,17 +60,14 @@
  *
  * ## I/O Handling
  *
- * Typed  characters are  added to  the terminal's  input queue  using
- * rlc_add_queue().   The _client_  reads input  using getch().   This
- * returns the  next character  from the input  queue or  blocks until
- * input  becomes available.   The blocking  mechanism depends  on the
- * platform.   On Unix  systems we  use a  pipe as  this allows  us to
- * process signals.  On Windows we use an event (TBD).
+ * Typed characters  are encoded as  UTF-8 and written to  the client
+ * using rlc_send().  On  Unix systems that is the  master side of the
+ * pty; on Windows the input handle of the pseudo console.  The client
+ * reads them  as a normal  terminal, so the  line discipline (or  the
+ * ConPTY) does the echoing and line editing.
  */
 
 #define MAXLINE	     1024		/* max chars per line */
-
-#define GWL_DATA	0		/* offset for client data */
 
 #define CHG_RESET	0		/* unchanged */
 #define CHG_CHANGED	1		/* changed, but no clear */
@@ -80,9 +84,6 @@
 
 #define ESC 27				/* the escape character */
 #define S_ESC "\033"
-
-#define IMODE_RAW	1		/* char-by-char */
-#define IMODE_COOKED	2		/* line-by-line */
 
 #define NextLine(b, i) ((i) < (b)->height-1 ? (i)+1 : 0)
 #define PrevLine(b, i) ((i) > 0 ? (i)-1 : (b)->height-1)
@@ -129,9 +130,6 @@ tlog(const char *fmt, ...)
 # define tlog(...) ((void)0)
 #endif
 
-#define OPT_SIZE	0x01
-#define OPT_POSITION	0x02
-
 		 /*******************************
 		 *	  UNICODE WIDTH		*
 		 *******************************/
@@ -173,6 +171,38 @@ tc_display_width(const text_char *tc)
   if ( tc->flags.width == 2 )
     return 1;				/* left half of a wide char */
   return tc->flags.width;		/* 0 for combining marks, 1 for normal */
+}
+
+/* The Block Elements are drawn as rectangles of the cell rather than as
+ * glyphs of the font; see block_element_rects() below for why and for
+ * which ones.
+ */
+
+typedef struct
+{ int x, y, w, h;			/* eighths of the cell */
+} cell_rect;
+
+#define MAX_CELL_RECTS 4
+
+static int	block_element_rects(int code, cell_rect *r);
+
+/** Cells occupied by `c` in the terminal's column grid.
+ *
+ * The grid is a contract with whatever writes to the pty.  That program
+ * lays its output out with its own wcwidth() — EastAsianWidth W/F is
+ * two columns, everything else printable is one — and then positions
+ * the cursor by counting those columns.  It cannot see our font, so the
+ * only classification we may use is the same static Unicode one, which
+ * is what uchar_display_width() gives.
+ *
+ * A font that draws a glyph wider than the cells Unicode allots it is
+ * therefore a *painting* problem, never a width problem: widening the
+ * grid slot instead puts us a column ahead of the client for the rest
+ * of the line.  paint_chunks() condenses such a glyph into its cells.
+ */
+static inline int
+terminal_char_cells(uchar_t c)
+{ return uchar_display_width(c);
 }
 
 
@@ -300,6 +330,8 @@ rlc_cluster_prev(const RlcTextLine tl, int pos)
 		 *	     FUNCTIONS		*
 		 *******************************/
 
+static void	assign_variant_fonts(TerminalImage ti, FontObj bold,
+				     FontObj italic, FontObj bold_italic);
 static void	rlc_destroy_buffer(RlcData b);
 static bool	rlc_caret_xy(RlcData b, int *x, int *y);
 static void	rlc_resize_pixel_units(RlcData b, int w, int h);
@@ -307,6 +339,13 @@ static RlcData	rlc_make_buffer(int w, int h);
 static int	rlc_count_lines(RlcData b, int from, int to);
 static void	rlc_add_line(RlcData b);
 static void	rlc_open_line(RlcData b);
+static RlcTextLine rlc_prepare_line(RlcData b, int y);
+static text_flags rlc_eol_flags(const RlcTextLine tl);
+static void	rlc_caret_down(RlcData b, int arg);
+static void	rlc_init_tabs(RlcData b);
+static void	rlc_erase_display(RlcData b);
+static void	rlc_restore_screen(RlcData b);
+static void	rlc_save_screen(RlcData b);
 static void	rlc_update_scrollbar(RlcData b);
 static void	rlc_init_text_dimensions(RlcData b, FontObj f);
 static int	rlc_add_lines(RlcData b, int here, int add);
@@ -318,24 +357,38 @@ static bool	rlc_has_selection(RlcData b);
 static void	rlc_select_all(RlcData b);
 static uchar_t   *rlc_selection(RlcData b);
 static uchar_t   *rlc_read_from_window(RlcData b, int sl, int sc,
-				       int el, int ec);
+				       int el, int ec, const char *sep,
+				       int skip);
 static void	rlc_free(void *ptr);
+static void   *rlc_malloc(size_t bytes);
 static void	rlc_set_selection(RlcData b, int sl, int sc, int el, int ec);
+static void	rlc_update_selection_string(RlcData b);
+static bool	rlc_match_word(RlcData b);
+static void	reportSelectionTerminalImage(TerminalImage ti);
+static bool	rlc_alt_screen(RlcData b);
 static const uchar_t *rlc_clicked_link(RlcData b, int x, int y);
 static const uchar_t *rlc_over_link(RlcData b, int x, int y);
 static href    *rlc_href_at(RlcData b, int x, int y, int *l, int *c);
 static status	refreshTerminalImage(TerminalImage ti);
+static status	promptMarkTerminalImage(TerminalImage ti, Name kind,
+					BoolObj continuation);
+static status	endIsearchTerminalImage(TerminalImage ti, BoolObj keep);
+static status	executeIsearchTerminalImage(TerminalImage ti, Int chr,
+					    bool repeat);
+static bool	rlc_isearching(RlcData b);
+static bool	rlc_is_word_char(RlcData b, int chr);
 static href    *rlc_add_link(RlcTextLine tl, const uchar_t *link,
 			     int start, int len);
 static void	rlc_free_link(RlcData b, href *hr);
 static void	rlc_free_links(RlcData b, href *links);
 static void	rlc_check_links(RlcTextLine tl);
+static void	rlc_link_cells(RlcData b, RlcTextLine tl, int start, int len);
+static void	rlc_link_end(RlcData b);
 static bool	rlc_copy(RlcData b, Name to);
 static void	rlc_request_redraw(RlcData b);
 static void	rlc_redraw(RlcData b, int x, int y, int w, int h);
 static void	rlc_resize(RlcData b, int w, int h);
 static void	rlc_adjust_line(RlcData b, int line);
-static int	text_width(RlcData b, const text_char *text, int len);
 static int	chars_columns(const text_char *chars, int len);
 static void     rlc_reinit_line(RlcData b, int line);
 static void	rlc_free_line(RlcData b, int line);
@@ -345,16 +398,86 @@ static void	typed_char(RlcData b, int chr);
 static void	rlc_putansi(RlcData b, int chr);
 static void	rlc_update(rlc_console c);
 static void	changed_caret(RlcData b);
-static bool	rlc_open_pty_pair(RlcData b, int cols, int rows);
+static bool	rlc_open_pty_pair(RlcData b);
 static void	rlc_close_connection(RlcData b);
 static ssize_t	rlc_send(RlcData b, const char *buffer, size_t count);
+static int	rlc_foreground_process(RlcData b);
+static int	rlc_tty_echo(RlcData b);
+static bool	rlc_client_owns_terminal(RlcData b);
+static bool	rlc_foreground_directory(RlcData b, char *buf, size_t size);
+static int	rlc_interrupt_char(RlcData b);
+static int	rlc_suspend_char(RlcData b);
+static bool	rlc_caret_to_click(RlcData b, int x, int y);
+static void	rlc_caret_to(RlcData b, int line, int chr);
+static int	rlc_cluster_distance(RlcData b, int l1, int c1,
+				     int l2, int c2);
+static bool	rlc_selection_in_input(RlcData b, int *sl, int *sc,
+				       int *el, int *ec);
+static bool	rlc_selection_on_input(RlcData b);
+static bool	rlc_first_input(RlcData b, int *sl, int *sc,
+					int *el, int *ec);
+static status	clearSelectionTerminalImage(TerminalImage ti);
+static void	dropInputSelectionTerminalImage(TerminalImage ti);
 static void	rlc_resize_pty(RlcData b, int cols, int rows);
+static void	rlc_translate_mouse(RlcData b, int x, int y,
+				   int *line, int *chr);
 static Name	TCHAR2Name(const uchar_t *str);
 static StringObj TCHAR2String(const uchar_t *str);
 static void	rlc_scroll_bubble(RlcData b,
 				  int *length, int *start, int *view);
 static void	rlc_scroll_lines(RlcData b, int lines);
 static void	rlc_shift_up(RlcData b, int shift);
+static void	rlc_drop_blocks(RlcData b);
+static void	rlc_expire_blocks(RlcData b, int dying);
+static void	rlc_sweep_blocks(RlcData b);
+static TerminalBlock rlc_last_block(RlcData b);
+static void	rlc_restamp_folds(RlcData b);
+static void	rlc_keep_end_in_view(RlcData b, bool at_end);
+static int	rlc_last_window_start(RlcData b);
+static int	rlc_clamp_window_start(RlcData b, int here);
+static bool	rlc_fold_lines(RlcData b, TerminalBlock tb,
+			       int *headp, int *fromp, int *top);
+static TerminalBlock rlc_fold_head_block(RlcData b, int line);
+static bool	rlc_unfold_line(RlcData b, int line);
+static Any	rlc_fold_colour(TerminalImage ti);
+static bool	rlc_folded(RlcData b, int line);
+static int	rlc_view_next(RlcData b, int line);
+static int	rlc_view_count(RlcData b, int from, int to);
+static int	rlc_view_add(RlcData b, int here, int add);
+static int	rlc_view_line_at_row(RlcData b, int row);
+static int	rlc_logical_start(RlcData b, int line);
+static bool	rlc_sel_lt(RlcData b, int l1, int c1, int l2, int c2);
+
+typedef struct				/* Where a character is; see the */
+{ int line;				/* comment above rlc_buffer_text() */
+  int cell;
+} rlc_pos;
+
+static rlc_pos	rlc_pos_start(RlcData b, const uchar_t *text,
+			      const rlc_pos *pos, size_t len, size_t index);
+
+static uchar_t *rlc_buffer_text(RlcData b, size_t *lenp, rlc_pos **posp);
+static rlc_pos	rlc_pos_start(RlcData b, const uchar_t *text,
+			      const rlc_pos *pos, size_t len, size_t index);
+static rlc_pos	rlc_pos_end(const rlc_pos *pos, size_t index);
+static ssize_t	ucs_find(RlcData b, const uchar_t *text, size_t len,
+			 ssize_t here, PceString s, ssize_t times, char az,
+			 bool exact_case, bool word);
+
+typedef struct				/* A range of cells on a line; see */
+{ int line;				/* rlc_match_spans() */
+  int from;
+  int to;
+} rlc_span;
+
+#define MAX_MATCH_SPANS 512
+
+static int	rlc_overlay_width(RlcData b);
+static bool	rlc_line_in_selection(RlcData b, int line);
+static int	rlc_match_spans(RlcData b, rlc_span *spans, int max);
+static void	rlc_line_overlay(RlcData b, int line, RlcTextLine tl,
+				 bool insel, const rlc_span *spans,
+				 int nspans, Style *overlay);
 
 
 		 /*******************************
@@ -372,7 +495,13 @@ rlc_check_assertions(RlcData b)
 { int window_last = rlc_add_lines(b, b->window_start, b->window_size-1);
   int y;
 
-  assert(b->last != b->first || b->first == 0);
+  /* An empty buffer sits at the start of the ring: rlc_restart_buffer()
+   * is what empties one and it puts it there.  The alternate screen is
+   * the exception: it takes the window over where it stands, as the
+   * normal screen comes back to the very same slots, so the one line it
+   * starts from can be anywhere.
+   */
+  assert(b->last != b->first || b->first == 0 || rlc_alt_screen(b));
   assert(b->caret_x >= 0 && b->caret_x < LINE_CELL_CAPACITY(b));
 					/* TBD: debug properly */
 /*assert(rlc_between(b, b->window_start, window_last, b->caret_y));*/
@@ -393,6 +522,7 @@ rlc_check_assertions(RlcData b)
 #ifdef __WINDOWS__
 static status launchTerminalImage(TerminalImage ti, CharArray cmdline);
 #endif
+static void	stopDragScrollTerminalImage(TerminalImage ti);
 
 static status
 initialiseTerminalImage(TerminalImage ti, Int w, Int h)
@@ -403,7 +533,20 @@ initialiseTerminalImage(TerminalImage ti, Int w, Int h)
   initialiseGraphical(ti, ZERO, ZERO, w, h);
   assign(ti, bindings, newObject(ClassKeyBinding, NIL, NAME_terminal, EAV));
   assign(ti, armed_link, OFF);
+  assign(ti, armed_fold, OFF);
+  assign(ti, focus_function, NIL);
+  assign(ti, search_string, NIL);
+  assign(ti, selection_string, NIL);
+  assign(ti, search_direction, NAME_backward);
+  assign(ti, search_wrapped_warned, OFF);
+  assign(ti, working_directory, NIL);
+  assign(ti, blocks, newObject(ClassChain, EAV));
+  assign(ti, drag_scroll_timer, NIL);
   obtainClassVariablesObject(ti);
+  /* The class variables name the variant fonts by alias; they need the
+     same pitch check as the ones ->font derives. */
+  assign_variant_fonts(ti, ti->bold_font, ti->italic_font,
+		       ti->bold_italic_font);
 
   // compute width in characters from w
   int cw = (double)valInt(w)/c_width('m', ti->font);
@@ -420,7 +563,8 @@ static status
 unlinkTerminalImage(TerminalImage ti)
 { ScrollBar sb = ti->scroll_bar;
 
-  if ( sb )
+  stopDragScrollTerminalImage(ti);
+  if ( sb && notNil(sb) )
   { assign(ti, scroll_bar, NIL);
     send(sb, NAME_destroy, EAV);
   }
@@ -428,6 +572,13 @@ unlinkTerminalImage(TerminalImage ti)
   { ti->data->object = NULL;
     rlc_destroy_buffer(ti->data);
     ti->data = NULL;
+  }
+  if ( notNil(ti->blocks) )
+  { Cell cl;
+
+    for_cell(cl, ti->blocks)		/* they point back at us */
+      assign((TerminalBlock)cl->value, terminal, NIL);
+    clearChain(ti->blocks);
   }
 
   return unlinkGraphical((Graphical)ti);
@@ -477,6 +628,19 @@ geometryTerminalImage(TerminalImage ti, Int x, Int y, Int w, Int h)
   succeed;
 }
 
+/** True while the alternate screen (DEC private mode 1049) is up.
+ *
+ * The alternate screen has no scrollback: the lines it replaced belong
+ * to the normal screen and a full screen application owns the window
+ * until it gives them back.  Scrolling the ring buffer there shows the
+ * text under the application, which is never what the user asked for.
+ */
+
+static bool
+rlc_alt_screen(RlcData b)
+{ return b->saved.lines != NULL;
+}
+
 static status
 bubbleScrollBarTerminalImage(TerminalImage ti, ScrollBar sb)
 { int length, start, view;
@@ -492,10 +656,14 @@ scrollVerticalTerminalImage(TerminalImage ti,
 			    Name dir, Name unit, Int amount)
 { RlcData b = ti->data;
 
+  if ( rlc_alt_screen(b) )		/* the application owns the window */
+    fail;
+
   if ( unit == NAME_file )
-  { int lines = rlc_count_lines(b, b->first, b->last);
+  { int lines = rlc_view_count(b, b->first, b->last);
     int start = lines*valInt(amount)/1000;
-    b->window_start = rlc_add_lines(b, b->first, start);
+    b->window_start = rlc_clamp_window_start(b,
+			  rlc_view_add(b, b->first, start));
     b->changed |= CHG_CARET|CHG_CLEAR|CHG_CHANGED;
     rlc_request_redraw(b);
   } else if ( unit == NAME_line )
@@ -523,12 +691,447 @@ clickedLinkTerminalImage(TerminalImage ti, Name href)
   succeed;
 }
 
+/** Lines the window scrolls per notch of the wheel.  Both xpce (see
+ * mapWheelMouseEvent()) and VTE use three; the wheel must move the
+ * same distance whether we scroll ourselves or the application does.
+ */
+
+#define WHEEL_LINES 3
+
+/** How far the wheel turned, in notches.  Negative is towards the
+ * user, i.e. forwards through the text.  Fails on an event that
+ * carries no rotation, which is not a wheel event at all.
+ */
+
+static bool
+rlc_wheel_notches(EventObj ev, int *notches)
+{ Int rot = ev->rotation;
+
+  if ( isNil(rot) )
+    return false;
+
+  int deg = valInt(rot);		/* a notch is 15 degrees */
+  int n   = deg/15;
+  if ( n == 0 )				/* a fraction of a notch still moves */
+    n = deg > 0 ? 1 : deg < 0 ? -1 : 0;
+
+  *notches = n;
+  return n != 0;
+}
+
+/** Alternate scroll (DEC private mode 1007, on by default as in xterm
+ * and VTE): while the alternate screen is up there is no scroll back
+ * to scroll, so the wheel is sent to the application as cursor keys.
+ * That is what makes the wheel scroll `less', `man' and any other full
+ * screen application that never asked for a mouse.
+ *
+ * Shift is the user's way out: it keeps the wheel on this side, where
+ * the alternate screen leaves it with nothing to do.
+ */
+
+static bool
+rlc_alt_scroll(TerminalImage ti, EventObj ev)
+{ RlcData b = ti->data;
+  int notches;
+
+  if ( !b->alt_scroll || !rlc_alt_screen(b) ||
+       (valInt(ev->buttons) & BUTTON_shift) ||
+       !rlc_wheel_notches(ev, &notches) )
+    return false;
+
+  const char *seq = notches > 0
+	  ? (b->app_escape ? S_ESC"OA" : S_ESC"[A")
+	  : (b->app_escape ? S_ESC"OB" : S_ESC"[B");
+
+  for(int i=abs(notches)*WHEEL_LINES; i-- > 0; )
+    rlc_send(b, seq, strlen(seq));
+
+  return true;
+}
+
+		 /*******************************
+		 *        MOUSE REPORTING       *
+		 *******************************/
+
+/** Mouse reporting, DEC private modes 9, 1000, 1002 and 1003, in the
+ * encoding of DEC private mode 1005, 1006 or 1015.  An application
+ * that asked for it gets the mouse: `emacs -nw', `less --mouse', vim,
+ * mc and tmux all do, and the wheel is a button to them like any
+ * other.
+ *
+ * Shift is the user's way out, as in xterm: a shifted event is never
+ * reported, so selecting, pasting and scrolling back keep working
+ * whatever the application asked for.  That is also why shift is not
+ * among the modifiers we encode.
+ */
+
+#define MOUSE_BUTTON_NONE  3		/* release, or motion with no button */
+#define MOUSE_META	0x08
+#define MOUSE_CONTROL	0x10
+#define MOUSE_MOTION	0x20
+#define MOUSE_WHEEL_UP	  64
+#define MOUSE_WHEEL_DOWN  65
+#define MOUSE_MAX_X10	 223		/* 255-32: what one byte can hold */
+
+typedef enum
+{ MOUSE_PRESS,
+  MOUSE_RELEASE,
+  MOUSE_DRAG,				/* motion with a button down */
+  MOUSE_MOVE				/* motion without */
+} mouse_kind;
+
+static int
+rlc_mouse_modifiers(EventObj ev)
+{ int bts  = valInt(ev->buttons);
+  int mods = 0;
+
+  if ( bts & BUTTON_meta )
+    mods |= MOUSE_META;
+  if ( bts & BUTTON_control )
+    mods |= MOUSE_CONTROL;
+
+  return mods;
+}
+
+/** The cell the event points at, as a 0-based column and row in the
+ * visible window.
+ *
+ * This is the grid the terminal draws on rather than what
+ * rlc_translate_mouse() finds: that one maps to a character in a line
+ * and so stops where the line does, while an application wants the
+ * cell the pointer is over, text or no text.
+ */
+
+static bool
+rlc_event_cell(TerminalImage ti, EventObj ev, int *colp, int *rowp)
+{ RlcData b = ti->data;
+  Int x, y;
+
+  if ( !get_xy_event(ev, ti, ON, &x, &y) )
+    return false;
+
+  int col = (int)((valInt(x) - b->cw)/b->cw); /* a cell of left margin */
+  int row = valInt(y)/b->ch;
+
+  *colp = Bounds(col, 0, b->width-1);
+  *rowp = Bounds(row, 0, b->window_size-1);
+
+  return true;
+}
+
+/** The xterm button number of a mouse event and what kind of report it
+ * makes.  Fails on any other event.
+ */
+
+static bool
+rlc_mouse_kind(EventObj ev, int *button, mouse_kind *kind)
+{ Name id = ev->id;
+
+  if ( id == NAME_msLeftDown )
+  { *button = 0; *kind = MOUSE_PRESS;
+  } else if ( id == NAME_msMiddleDown )
+  { *button = 1; *kind = MOUSE_PRESS;
+  } else if ( id == NAME_msRightDown )
+  { *button = 2; *kind = MOUSE_PRESS;
+  } else if ( id == NAME_msLeftUp )
+  { *button = 0; *kind = MOUSE_RELEASE;
+  } else if ( id == NAME_msMiddleUp )
+  { *button = 1; *kind = MOUSE_RELEASE;
+  } else if ( id == NAME_msRightUp )
+  { *button = 2; *kind = MOUSE_RELEASE;
+  } else if ( id == NAME_msLeftDrag )
+  { *button = 0; *kind = MOUSE_DRAG;
+  } else if ( id == NAME_msMiddleDrag )
+  { *button = 1; *kind = MOUSE_DRAG;
+  } else if ( id == NAME_msRightDrag )
+  { *button = 2; *kind = MOUSE_DRAG;
+  } else if ( id == NAME_locMove )
+  { *button = MOUSE_BUTTON_NONE; *kind = MOUSE_MOVE;
+  } else
+    return false;
+
+  return true;
+}
+
+/** Write one report.  `cb' is the button with its modifiers and the
+ * motion flag; in every encoding but 1006 a release says only that a
+ * button came up, not which one.
+ */
+
+static void
+rlc_mouse_report(RlcData b, int cb, int col, int row, bool release)
+{ char buf[32];
+  int len;
+
+  col++; row++;				/* the wire format is 1-based */
+
+  if ( b->mouse_encoding == 1006 )	/* CSI < Cb ; Cx ; Cy M or m */
+  { len = snprintf(buf, sizeof(buf), S_ESC"[<%d;%d;%d%c",
+		   cb, col, row, release ? 'm' : 'M');
+  } else
+  { if ( release )
+      cb = (cb & ~0x3) | MOUSE_BUTTON_NONE;
+
+    if ( b->mouse_encoding == 1015 )	/* urxvt: CSI Cb ; Cx ; Cy M */
+    { len = snprintf(buf, sizeof(buf), S_ESC"[%d;%d;%dM",
+		     cb+32, col, row);
+    } else if ( b->mouse_encoding == 1005 ) /* CSI M and three code points */
+    { char *o = buf;
+
+      *o++ = ESC; *o++ = '['; *o++ = 'M';
+      o = utf8_put_char(o, cb+32);
+      o = utf8_put_char(o, col+32);
+      o = utf8_put_char(o, row+32);
+      len = (int)(o-buf);
+    } else				/* the default: three bytes, and
+					   nothing past column 223 fits */
+    { if ( col > MOUSE_MAX_X10 || row > MOUSE_MAX_X10 )
+	return;
+
+      len = snprintf(buf, sizeof(buf), S_ESC"[M%c%c%c",
+		     cb+32, col+32, row+32);
+    }
+  }
+
+  rlc_send(b, buf, len);
+}
+
+/** A wheel event is a button press per notch and has no release. */
+
+static bool
+rlc_mouse_wheel(TerminalImage ti, EventObj ev)
+{ RlcData b = ti->data;
+  int notches, col, row;
+
+  if ( !rlc_wheel_notches(ev, &notches) ||
+       !rlc_event_cell(ti, ev, &col, &row) )
+    return false;
+
+  int cb = (notches > 0 ? MOUSE_WHEEL_UP : MOUSE_WHEEL_DOWN) |
+	   rlc_mouse_modifiers(ev);
+
+  for(int i=abs(notches); i-- > 0; )
+    rlc_mouse_report(b, cb, col, row, false);
+
+  return true;
+}
+
+/** Report the event to the application if it asked for this kind of
+ * report.  True if it did, in which case the event was the
+ * application's: it is not ours to select, paste or scroll with.
+ */
+
+static bool
+rlc_mouse_event(TerminalImage ti, EventObj ev)
+{ RlcData b = ti->data;
+  int button, col, row;
+  mouse_kind kind;
+
+  if ( !b->mouse_tracking || (valInt(ev->buttons) & BUTTON_shift) )
+    return false;
+
+  if ( ev->id == NAME_wheel )
+    return rlc_mouse_wheel(ti, ev);
+
+  if ( !rlc_mouse_kind(ev, &button, &kind) )
+    return false;
+
+  switch(kind)				/* what did it ask for? */
+  { case MOUSE_PRESS:
+      break;
+    case MOUSE_RELEASE:
+      if ( b->mouse_tracking == 9 )	/* X10 reports presses only */
+	return false;
+      break;
+    case MOUSE_DRAG:
+      if ( b->mouse_tracking < 1002 )
+	return false;
+      break;
+    case MOUSE_MOVE:
+      if ( b->mouse_tracking < 1003 )
+	return false;
+      break;
+  }
+
+  if ( !rlc_event_cell(ti, ev, &col, &row) )
+    return false;
+
+  int cb = button | rlc_mouse_modifiers(ev);
+  if ( kind == MOUSE_DRAG || kind == MOUSE_MOVE )
+  { if ( col == b->mouse_col && row == b->mouse_row )
+      return true;			/* still in the cell it reported */
+    cb |= MOUSE_MOTION;
+  }
+  b->mouse_col = col;
+  b->mouse_row = row;
+
+  rlc_mouse_report(b, cb, col, row, kind == MOUSE_RELEASE);
+
+  return true;
+}
+
+/* The fold whose marker is under the pointer, if the pointer is in the
+ * one column of margin the marker is drawn in.  A plain click there
+ * opens or closes it: the marker is ours rather than the client's, so
+ * unlike a hyperlink it needs no modifier to tell it from the text.
+ */
+
+static TerminalBlock
+rlc_fold_at_gutter(TerminalImage ti, int x, int y)
+{ RlcData b = ti->data;
+  int line, chr;
+
+  if ( x < 0 || x >= (int)b->cw || rlc_alt_screen(b) || !rlc_fold_colour(ti) )
+    return NULL;
+
+  rlc_translate_mouse(b, x, y, &line, &chr);
+  if ( !b->lines[line].fold_head )
+    return NULL;
+
+  return rlc_fold_head_block(b, line);
+}
+
+
+/* ->input_focus: bool
+ *
+ * The terminal gained (@on) or lost (@off) the keyboard focus.  This is
+ * called from ->event on the activate_keyboard_focus and
+ * deactivate_keyboard_focus events.  It may be refined to react on focus
+ * changes.  A refinement should call the super method to keep the caret,
+ * the platform text input state and the client's focus in/out reporting
+ * (CSI ? 1004 h) in sync.
+ */
+
+static status
+inputFocusTerminalImage(TerminalImage ti, BoolObj val)
+{ RlcData b = ti->data;
+
+  if ( val == ON )
+  { ws_enable_text_input((Graphical)ti, ON);
+    b->has_focus = true;
+    if ( b->focus_inout_events )
+    { const char *focus_in = S_ESC"[I";
+      rlc_send(b, focus_in, strlen(focus_in));
+    }
+  } else
+  { ws_enable_text_input((Graphical)ti, OFF);
+    b->has_focus = false;
+    endIsearchTerminalImage(ti, ON);	/* it lives off the keyboard */
+    if ( b->focus_inout_events )
+    { const char *focus_out = S_ESC"[O";
+      rlc_send(b, focus_out, strlen(focus_out));
+    }
+  }
+  changed_caret(b);
+
+  succeed;
+}
+
+
+/* Drag-scrolling.  Dragging the selection above or below the window
+ * scrolls towards the pointer and extends the selection over what comes
+ * into view.  A timer does the steps, so the pointer need not move to
+ * keep it going; the further out it is, the more lines a step takes.
+ */
+
+#define DRAG_SCROLL_INTERVAL 0.05	/* seconds between steps */
+
+static int
+rlc_drag_scroll_lines(TerminalImage ti, int y)
+{ RlcData b = ti->data;
+  int h = valInt(ti->area->h);
+  int lines;
+
+  if ( rlc_alt_screen(b) )		/* no scroll-back to scroll */
+    return 0;
+  if ( y < 0 )
+    lines = -(1 - y/b->ch);
+  else if ( y >= h )
+    lines = 1 + (y-h)/b->ch;
+  else
+    return 0;
+
+  if ( abs(lines) > b->window_size )
+    lines = lines < 0 ? -b->window_size : b->window_size;
+
+  return lines;
+}
+
+static void
+stopDragScrollTerminalImage(TerminalImage ti)
+{ if ( notNil(ti->drag_scroll_timer) )
+  { stopTimer(ti->drag_scroll_timer);
+    assign(ti, drag_scroll_timer, NIL);
+  }
+}
+
+/* Extend the selection to the pointer.  Outside the window that is the
+ * nearest row inside it: rlc_translate_mouse() would take the row below
+ * the last one, which is out of view.
+ */
+
+static void
+rlc_drag_extend_selection(TerminalImage ti)
+{ RlcData b = ti->data;
+  int h = valInt(ti->area->h);
+  int y = b->drag_y;
+
+  if ( y < 0 )
+    y = 0;
+  else if ( y >= h )
+    y = h-1;
+
+  rlc_extend_selection(b, b->drag_x, y);
+}
+
+static void
+dragSelectionTerminalImage(TerminalImage ti, int x, int y)
+{ RlcData b = ti->data;
+
+  b->drag_x = x;
+  b->drag_y = y;
+  rlc_drag_extend_selection(ti);
+
+  if ( !rlc_drag_scroll_lines(ti, y) )
+  { stopDragScrollTerminalImage(ti);
+  } else if ( isNil(ti->drag_scroll_timer) )
+  { assign(ti, drag_scroll_timer,
+	   newObject(ClassTimer, CtoReal(DRAG_SCROLL_INTERVAL),
+		     newObject(ClassMessage, ti, NAME_dragScroll, EAV), EAV));
+    startTimer(ti->drag_scroll_timer, NAME_repeat, DEFAULT);
+  }
+}
+
+static status
+dragScrollTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+  int lines;
+
+  if ( !b || !(lines = rlc_drag_scroll_lines(ti, b->drag_y)) )
+  { stopDragScrollTerminalImage(ti);
+    succeed;
+  }
+
+  rlc_scroll_lines(b, lines);
+  rlc_drag_extend_selection(ti);
+
+  succeed;
+}
+
 static status
 eventTerminalImage(TerminalImage ti, EventObj ev)
-{ if ( ev->id == NAME_locMove && notNil(ti->link_message) )
+{ if ( ev->id == NAME_locMove )
   { Int x, y;
     get_xy_event(ev, ti, ON, &x, &y);
     RlcData b = ti->data;
+    TerminalBlock fold = rlc_fold_at_gutter(ti, valInt(x), valInt(y));
+
+    if ( isNil(ti->link_message) )
+    { assign(ti, armed_fold, fold ? ON : OFF);
+      fail;				/* nothing else here is ours */
+    }
+
+    assign(ti, armed_fold, fold ? ON : OFF);
     href *hr = rlc_href_at(b, valInt(x), valInt(y), NULL, NULL);
     if ( hr != b->armed_href )
     { b->armed_href = hr;
@@ -536,32 +1139,30 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
       refreshTerminalImage(ti);		/* repaint old + new armed run */
     }
 
+    if ( rlc_mouse_event(ti, ev) )	/* the link is ours, the motion */
+      succeed;				/* may be the application's */
+
     fail;
   }
 
   DEBUG(NAME_event, Cprintf("Event: %s\n", pp(ev->id)));
 
+  if ( rlc_mouse_event(ti, ev) )
+    succeed;
+
+  if ( ev->id == NAME_wheel && rlc_alt_scroll(ti, ev) )
+    succeed;
+
   if ( mapWheelMouseEvent(ev, ti) )
     succeed;
 
   if ( isAEvent(ev, NAME_focus) )
-  { RlcData b = ti->data;
-    if ( isAEvent(ev, NAME_activateKeyboardFocus) )
-    { ws_enable_text_input((Graphical)ti, ON);
-      b->has_focus = true;
-      if ( b->focus_inout_events )
-      { const char *focus_in = S_ESC"[I";
-	rlc_send(b, focus_in, strlen(focus_in));
-      }
-    } else if ( isAEvent(ev, NAME_deactivateKeyboardFocus) )
-    { ws_enable_text_input((Graphical)ti, OFF);
-      b->has_focus = false;
-      if ( b->focus_inout_events )
-      { const char *focus_out = S_ESC"[O";
-	rlc_send(b, focus_out, strlen(focus_out));
-      }
-    }
-    changed_caret(b);
+  { if ( isAEvent(ev, NAME_activateKeyboardFocus) )
+      send(ti, NAME_inputFocus, ON, EAV);
+    else if ( isAEvent(ev, NAME_deactivateKeyboardFocus) )
+      send(ti, NAME_inputFocus, OFF, EAV);
+    else
+      changed_caret(ti->data);
 
     succeed;
   }
@@ -573,7 +1174,18 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
   if ( isAEvent(ev, NAME_msLeftDown) )
   { RlcData b = ti->data;
     Int x, y;
+    endIsearchTerminalImage(ti, OFF);	/* the mouse takes the selection */
     get_xy_event(ev, ti, ON, &x, &y);
+    if ( rlc_fold_at_gutter(ti, valInt(x), valInt(y)) )
+      succeed;				/* ->msLeftUp does the folding */
+    stopDragScrollTerminalImage(ti);
+    /* Keep the drag ours when the pointer leaves the terminal, so
+     * dragging past its edge can scroll.  The window drops the focus
+     * again on the button going up.
+     */
+    if ( instanceOfObject(ev->window, ClassWindow) )
+      focusWindow(ev->window, (Graphical)ti, NIL, DEFAULT,
+		  getButtonEvent(ev));
     if ( valInt(ev->buttons) & BUTTON_shift )
     { rlc_extend_selection(b, valInt(x), valInt(y));
     } else
@@ -591,23 +1203,34 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
   if ( isAEvent(ev, NAME_msLeftUp) )
   { RlcData b = ti->data;
     Int x, y;
+    TerminalBlock fold;
+    stopDragScrollTerminalImage(ti);
     get_xy_event(ev, ti, ON, &x, &y);
+    if ( (fold=rlc_fold_at_gutter(ti, valInt(x), valInt(y))) )
+      return send(fold, NAME_toggleFold, EAV);
     static const uchar_t *lnk;
     if ( (valInt(ev->buttons) & BUTTON_control) &&
 	 (lnk=rlc_clicked_link(b, valInt(x), valInt(y))) &&
 	 notNil(ti->link_message) )
     { Name href = TCHAR2Name(lnk);
       clickedLinkTerminalImage(ti, href);
-    } else if ( rlc_has_selection(b) &&
-		isOn(getClassVariableValueObject(ti, NAME_autoCopy)) )
-      send(ti, NAME_copy, EAV);
+    } else if ( rlc_has_selection(b) )
+    { if ( isOn(getClassVariableValueObject(ti, NAME_autoCopy)) )
+	send(ti, NAME_copy, EAV);
+    } else				/* a click, not a drag */
+      rlc_caret_to_click(b, valInt(x), valInt(y));
+    /* Not from rlc_set_selection(): the tally is over the whole
+     * scroll-back, which is too much to count for every motion event of
+     * a drag, and a number that flickers while the selection is still
+     * being made is not one to read anyway.
+     */
+    reportSelectionTerminalImage(ti);
     succeed;
   }
   if ( isAEvent(ev, NAME_msLeftDrag) )
-  { RlcData b = ti->data;
-    Int x, y;
+  { Int x, y;
     get_xy_event(ev, ti, ON, &x, &y);
-    rlc_extend_selection(b, valInt(x), valInt(y));
+    dragSelectionTerminalImage(ti, valInt(x), valInt(y));
     succeed;
   }
   if ( isAEvent(ev, NAME_msRightUp) )
@@ -620,6 +1243,7 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
       if ( rlc_has_selection(b) &&
 	   getClassVariableValueObject(ti, NAME_autoCopy) )
 	send(ti, NAME_copy, EAV);
+      reportSelectionTerminalImage(ti);
       succeed;
     }
   }
@@ -627,64 +1251,230 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
   fail;
 }
 
+/* 1..12 if `id' is a function key event, else 0. */
+
+static int
+function_key_number(Any id)
+{ const Name fkeys[] =
+  { NAME_f1, NAME_f2, NAME_f3,  NAME_f4,  NAME_f5,  NAME_f6,
+    NAME_f7, NAME_f8, NAME_f9,  NAME_f10, NAME_f11, NAME_f12
+  };
+
+  for(size_t i=0; i<sizeof(fkeys)/sizeof(*fkeys); i++)
+  { if ( fkeys[i] == id )
+      return (int)i+1;
+  }
+
+  return 0;
+}
+
+/* While a process group of another session owns the pty, control
+ * characters belong to that process: it is the tty line discipline,
+ * not this window, that decides whether ^C raises a signal or is
+ * plain input.  Passing them on is what makes ^C, ^X, ^V and friends
+ * work in a program started by shell/1 or process_create/3.
+ *
+ * The function keys go the same way.  They are epilog's debugger keys
+ * at the prompt, but they belong to `mc', `vim' or whatever else the
+ * user started: a key the window keeps for itself is one that program
+ * can never be given.
+ *
+ * Meta combinations do not produce a control character, so the
+ * window's own bindings keep working throughout.  Ctrl+Shift does
+ * produce one -- the keymap ignores the shift -- and is dealt with in
+ * ->typed, which keeps such a key for the window when it has a
+ * binding for it.
+ */
+
+static bool
+clientOwnsKeyTerminalImage(TerminalImage ti, EventObj ev)
+{ if ( !rlc_client_owns_terminal(ti->data) )
+    return false;
+
+  return ( (isInteger(ev->id) && valInt(ev->id) < 32) ||
+	   function_key_number(ev->id) != 0 );
+}
+
+/* The xterm modifier parameter: 1 plus a bit for each modifier held.
+ * Zero if none are, in which case the sequence carries no parameter.
+ */
+
+static int
+xterm_modifier(EventObj ev)
+{ int b = valInt(ev->buttons);
+  int m = 0;
+
+  if ( b & BUTTON_shift )   m |= 0x1;
+  if ( b & BUTTON_meta )    m |= 0x2;		/* Alt */
+  if ( b & BUTTON_control ) m |= 0x4;
+
+  return m ? m+1 : 0;
+}
+
+/* Keys xterm reports as a lone final character: the cursor keys (A..D)
+ * and F1..F4 (P..S).  Unmodified they use SS3 in application mode and
+ * CSI otherwise; F1..F4 always use SS3.  With a modifier they are
+ * always `CSI 1 ; <mod> <final>'.
+ */
+
+static const char *
+final_seq(char *buf, size_t size, int final, int mod, bool app)
+{ if ( mod )
+    snprintf(buf, size, S_ESC"[1;%d%c", mod, final);
+  else if ( app )
+    snprintf(buf, size, S_ESC"O%c", final);
+  else
+    snprintf(buf, size, S_ESC"[%c", final);
+
+  return buf;
+}
+
+/* Keys xterm reports as `CSI <num> ~': Delete and F5..F12.  With a
+ * modifier the number is followed by `; <mod>'.
+ */
+
+static const char *
+tilde_seq(char *buf, size_t size, int num, int mod)
+{ if ( mod )
+    snprintf(buf, size, S_ESC"[%d;%d~", num, mod);
+  else
+    snprintf(buf, size, S_ESC"[%d~", num);
+
+  return buf;
+}
+
 static status
 typedTerminalImage(TerminalImage ti, EventObj ev)
 { int chr;
+  int fn;
   const char *seq = NULL;
-  char buf[10];
+  char buf[16];
   RlcData b = ti->data;
+  int mod = xterm_modifier(ev);
 
-  if ( typedKeyBinding(ti->bindings, ev, (Graphical)ti) )
+  /* An incremental search owns the keyboard until it lets go, ahead of
+   * everything below: the accelerators would fire on their keys and a
+   * process on the terminal would be handed the very letters the user
+   * is typing at the window.
+   */
+  if ( notNil(ti->focus_function) )
+  { if ( send(ti, ti->focus_function, ev, EAV) )
+      succeed;
+    assign(ti, focus_function, NIL);
+  }
+
+  /* Command (the GUI key) and Ctrl+Shift are the window's own
+   * modifiers: they run our bindings ahead of everything below, and
+   * the client never sees them.  A key we have a binding for is ours
+   * even when the binding declines -- ->copy without a selection must
+   * not leave Command-C to insert a `c' in whatever is reading, nor
+   * Ctrl+Shift-C to reach it as the ^C the keymap made of it.  Command
+   * is ours whether or not it is bound: it is not terminal input on
+   * any platform that has it.
+   */
+  int btns = valInt(ev->buttons);
+  bool ours = ( (btns & BUTTON_gui) ||
+		((btns & (BUTTON_shift|BUTTON_control)) ==
+		 (BUTTON_shift|BUTTON_control)) );
+
+  if ( ours )
+  { bool bound = !!getFunctionKeyBinding(ti->bindings, ev);
+
+    if ( typedKeyBinding(ti->bindings, ev, (Graphical)ti) )
+      succeed;
+    if ( bound || (btns & BUTTON_gui) )
+      succeed;
+  }
+
+  if ( !clientOwnsKeyTerminalImage(ti, ev) &&
+       typedKeyBinding(ti->bindings, ev, (Graphical)ti) )
+    succeed;
+
+  /* Backspace or Delete with a selection in the line being edited takes
+   * the selection, as it would in any editor, rather than one character
+   * next to the caret.  ->delete_selection fails when the selection is
+   * elsewhere on the screen, and the key then does its usual work.
+   */
+  if ( (ev->id == NAME_BS || ev->id == NAME_DEL ||
+	ev->id == NAME_delete) &&
+       send(ti, NAME_deleteSelection, EAV) )
     succeed;
 
   if ( isInteger(ev->id) )
   { chr = valInt(ev->id);
   } else if ( ev->id == NAME_BS )
   { chr = 127;
-    if ( valInt(ev->buttons) & BUTTON_meta )
-      chr += META_OFFSET;
   } else if ( ev->id == NAME_DEL )
-  { seq = S_ESC"[3~";
+  { seq = tilde_seq(buf, sizeof(buf), 3, mod);
   } else if ( ev->id == NAME_TAB )
-  { chr = '\t';
-    if ( valInt(ev->buttons) & BUTTON_meta )
-      chr += META_OFFSET;
+  { /* Shift+Tab is the back-tab (CBT), which xterm reports as `CSI Z'
+     * and every client that walks a form backwards reads as that.  A
+     * plain tab is what the shift-less key sends, and what Shift+Tab
+     * used to send: indistinguishable from Tab, so the client only
+     * ever went forwards.
+     */
+    if ( (valInt(ev->buttons) & (BUTTON_shift|BUTTON_meta)) == BUTTON_shift )
+    { if ( mod > 2 )			/* shift and something else */
+	snprintf(buf, sizeof(buf), S_ESC"[1;%dZ", mod);
+      else
+	strcpy(buf, S_ESC"[Z");
+      seq = buf;
+    } else
+    { chr = '\t';
+    }
   } else if ( ev->id == NAME_RET )
   { chr = '\r';
-    if ( valInt(ev->buttons) & BUTTON_meta )
-      chr += META_OFFSET;
   } else if ( ev->id == NAME_ESC )
   { chr = ESC;
   } else if ( ev->id == NAME_cursorUp )
-  { seq = b->app_escape ? S_ESC"0A" : S_ESC"[A";
+  { seq = final_seq(buf, sizeof(buf), 'A', mod, b->app_escape);
   } else if ( ev->id == NAME_cursorDown )
-  { seq = b->app_escape ? S_ESC"0B" : S_ESC"[B";
-  } else if ( ev->id == NAME_cursorLeft )
-  { if ( valInt(ev->buttons) & BUTTON_control )
-      seq = S_ESC"[1;5D";		/* xterm-style Ctrl+Left */
-    else
-      seq = b->app_escape ? S_ESC"0D" : S_ESC"[D";
+  { seq = final_seq(buf, sizeof(buf), 'B', mod, b->app_escape);
   } else if ( ev->id == NAME_cursorRight )
-  { if ( valInt(ev->buttons) & BUTTON_control )
-      seq = S_ESC"[1;5C";		/* xterm-style Ctrl+Right */
-    else
-      seq = b->app_escape ? S_ESC"0C" : S_ESC"[C";
+  { seq = final_seq(buf, sizeof(buf), 'C', mod, b->app_escape);
+  } else if ( ev->id == NAME_cursorLeft )
+  { seq = final_seq(buf, sizeof(buf), 'D', mod, b->app_escape);
+  } else if ( ev->id == NAME_end )	/* unmodified: ->cursor_end */
+  { seq = final_seq(buf, sizeof(buf), 'F', mod, b->app_escape);
+  } else if ( ev->id == NAME_cursorHome ) /* unmodified: ->cursor_home */
+  { seq = final_seq(buf, sizeof(buf), 'H', mod, b->app_escape);
   } else if ( ev->id == NAME_delete )
-  { seq = S_ESC"[3~";
+  { seq = tilde_seq(buf, sizeof(buf), 3, mod);
+  } else if ( (fn=function_key_number(ev->id)) )
+  { static const int tilde[] = {15,17,18,19,20,21,23,24}; /* F5..F12 */
+
+    if ( fn <= 4 )
+      seq = final_seq(buf, sizeof(buf), 'P'+fn-1, mod, true);
+    else
+      seq = tilde_seq(buf, sizeof(buf), tilde[fn-5], mod);
   } else
     fail;
 
-  if ( !seq && chr >= META_OFFSET )
+  /* Alt sends ESC ahead of the key, as xterm's metaSendsEscape */
+  if ( !seq && (btns & BUTTON_meta) && chr >= 0 && chr < 128 )
   { buf[0] = ESC;
-    buf[1] = chr-META_OFFSET;
+    buf[1] = chr;
     buf[2] = 0;
     seq = buf;
   }
 
   if ( seq )
+  { dropInputSelectionTerminalImage(ti);
     rlc_send(ti->data, seq, strlen(seq));
-  else
+  } else
+  { /* Typing over a selection replaces it, as it would in any editor.
+     * Only for a character that inserts itself: a control key is a
+     * command, and the meta keys became a sequence above.
+     * ->delete_selection declines a selection that is not in the input,
+     * so this costs nothing anywhere else on the screen.  What it
+     * declines is dropped instead: the line is about to look different
+     * either way.
+     */
+    if ( chr < ' ' || chr == DEL ||
+	 !send(ti, NAME_deleteSelection, EAV) )
+      dropInputSelectionTerminalImage(ti);
     typed_char(ti->data, chr);
+  }
 
   succeed;
 }
@@ -718,7 +1508,7 @@ getURLTerminalImage(TerminalImage ti, Any from)
 
 static CursorObj
 getDisplayedCursorTerminalImage(TerminalImage ti)
-{ if ( isOn(ti->armed_link) )
+{ if ( isOn(ti->armed_link) || isOn(ti->armed_fold) )
     return getClassVariableValueObject(ti, NAME_linkCursor);
   else
     return ti->cursor;
@@ -734,6 +1524,7 @@ static status
 selectAllTerminalImage(TerminalImage ti)
 { RlcData b = ti->data;
   rlc_select_all(b);
+  reportSelectionTerminalImage(ti);
   succeed;
 }
 
@@ -753,6 +1544,813 @@ getSelectedTerminalImage(TerminalImage ti)
 }
 
 
+		 /*******************************
+		 *            SEARCH            *
+		 *******************************/
+
+/* The methods below address the buffer as a flat sequence of
+ * characters; see the comment above rlc_buffer_text() for what an
+ * index is and how long it stays valid.
+ */
+
+static Int
+getLengthTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+  size_t len;
+  rlc_pos *pos;
+  uchar_t *text = rlc_buffer_text(b, &len, &pos);
+
+  if ( !text )
+    fail;
+  rlc_free(text);
+  rlc_free(pos);
+
+  answer(toInt(len));
+}
+
+static StringObj
+getContentsTerminalImage(TerminalImage ti, Int from, Int size)
+{ RlcData b = ti->data;
+  size_t len;
+  rlc_pos *pos;
+  uchar_t *text = rlc_buffer_text(b, &len, &pos);
+
+  if ( !text )
+    fail;
+
+  size_t f = isDefault(from) ? 0 : (size_t)max(0, valInt(from));
+  if ( f > len )
+    f = len;
+  size_t n = isDefault(size) ? len-f : (size_t)max(0, valInt(size));
+  if ( n > len-f )
+    n = len-f;
+
+  text[f+n] = 0;
+  StringObj str = TCHAR2String(&text[f]);
+  rlc_free(text);
+  rlc_free(pos);
+  if ( str )
+  { pushAnswerObject(str);
+    answer(str);
+  }
+
+  fail;
+}
+
+/* Search for a string, as text_buffer<-find does and with the same
+ * defaults: the search is case sensitive, ignores word boundaries and
+ * reports the end of a match going forwards and its start going back.
+ * `from` outside the buffer is clamped to the nearest end.  Fails if
+ * there is no match.
+ */
+
+static Int
+getFindTerminalImage(TerminalImage ti, Int from, StringObj str, Int times,
+		     Name start, BoolObj exactcase, BoolObj wordmode)
+{ RlcData b = ti->data;
+  size_t len;
+  rlc_pos *pos;
+  uchar_t *text = rlc_buffer_text(b, &len, &pos);
+
+  if ( !text )
+    fail;
+  rlc_free(pos);
+
+  ssize_t n  = isDefault(times) ? 1 : valInt(times);
+  char az    = ( isDefault(start) ? (n >= 0 ? 'z' : 'a')
+				  : start == NAME_start ? 'a' : 'z' );
+  bool ec    = isDefault(exactcase) || exactcase == ON;
+  bool wm    = notDefault(wordmode) && wordmode == ON;
+  ssize_t f  = valInt(from);
+  if ( f < 0 )
+    f = 0;
+  else if ( (size_t)f > len )
+    f = len;
+
+  ssize_t hit = ucs_find(b, text, len, f, &str->data, n, az, ec, wm);
+  rlc_free(text);
+
+  if ( hit < 0 )
+    fail;
+
+  answer(toInt(hit));
+}
+
+/* Make [from, to) the selection.  Both @default clears it, as does an
+ * empty region; a single @default reaches to that end of the buffer.
+ * The endpoints are clamped and swapped if they arrive the wrong way
+ * round: the paint path walks the ring from the start of the selection
+ * to its end and draws nothing sensible if the start comes last.
+ */
+
+static status
+selectionTerminalImage(TerminalImage ti, Int from, Int to)
+{ RlcData b = ti->data;
+
+  b->sel_word = false;			/* an index says characters */
+
+  if ( isDefault(from) && isDefault(to) )
+  { rlc_set_selection(b, 0, 0, 0, 0);
+    reportSelectionTerminalImage(ti);
+    succeed;
+  }
+
+  size_t len;
+  rlc_pos *pos;
+  uchar_t *text = rlc_buffer_text(b, &len, &pos);
+  if ( !text )
+    fail;
+
+  ssize_t f = isDefault(from) ? 0            : valInt(from);
+  ssize_t t = isDefault(to)   ? (ssize_t)len : valInt(to);
+
+  f = min(max(f, 0), (ssize_t)len);
+  t = min(max(t, 0), (ssize_t)len);
+  if ( f > t )
+  { ssize_t tmp = f; f = t; t = tmp;
+  }
+
+  if ( f == t )
+  { rlc_set_selection(b, 0, 0, 0, 0);
+  } else
+  { rlc_pos ps = rlc_pos_start(b, text, pos, len, f);
+    rlc_pos pe = rlc_pos_end(pos, t);
+
+    rlc_set_selection(b, ps.line, ps.cell, pe.line, pe.cell);
+  }
+
+  rlc_free(text);
+  rlc_free(pos);
+  reportSelectionTerminalImage(ti);
+  succeed;
+}
+
+/* Scroll the line holding `index` into view, moving as little as we
+ * can: an incremental search asks for this on every keystroke, and a
+ * window that recentres each time is one the eye cannot follow.  Does
+ * nothing while the line is already on the screen.
+ */
+
+static status
+scrollToTerminalImage(TerminalImage ti, Int index)
+{ RlcData b = ti->data;
+
+  if ( rlc_alt_screen(b) )		/* the application owns the window */
+    fail;
+
+  size_t len;
+  rlc_pos *pos;
+  uchar_t *text = rlc_buffer_text(b, &len, &pos);
+  if ( !text )
+    fail;
+
+  ssize_t i = valInt(index);
+  status rc = FAIL;
+
+  if ( i >= 0 && (size_t)i <= len )
+  { rlc_pos p = rlc_pos_start(b, text, pos, len, i);
+
+    rlc_unfold_line(b, p.line);		/* show what was asked for */
+
+    /* Both counts run from b->first: rlc_view_count() cannot return a
+     * negative, so asking it directly how far the line is from the top
+     * of the window reports a line above the window as far below it.
+     */
+    int row = ( rlc_view_count(b, b->first, p.line) -
+		rlc_view_count(b, b->first, b->window_start) );
+
+    if ( row < 0 )
+      rlc_scroll_lines(b, row-1);	/* a line of context above */
+    else if ( row >= b->window_size )
+      rlc_scroll_lines(b, row - (b->window_size-1));
+    rc = SUCCEED;
+  }
+
+  rlc_free(text);
+  rlc_free(pos);
+  return rc;
+}
+
+
+		 /*******************************
+		 *     INCREMENTAL SEARCH       *
+		 *******************************/
+
+/* Emacs-style incremental search over the buffer, as class editor does
+ * it: ->isearch_backward puts a focus function in the way of ->typed,
+ * which then sees every key until the search ends.
+ *
+ * Backward, because a terminal's history lies behind the caret: there
+ * is nothing ahead of a prompt to find.
+ *
+ * The hit is the selection.  The ring already carries the selection
+ * through everything that can happen to it -- a rewrap moves it, a
+ * recycled line clears it -- so the search has nothing of its own to
+ * keep up to date except where it started from, which it needs to give
+ * back the caret and the view when the user gives up.
+ */
+
+static bool
+rlc_isearching(RlcData b)
+{ TerminalImage ti = b->object;
+
+  return ti && notNil(ti->focus_function);
+}
+
+/* Index of a ring position in the text rlc_buffer_text() handed out,
+ * or -1 if the position is not in the buffer (any more).
+ */
+
+static ssize_t
+rlc_index_at(const rlc_pos *pos, size_t len, int line, int cell)
+{ for(size_t i=0; i<=len; i++)
+  { if ( pos[i].line == line && pos[i].cell >= cell )
+      return i;
+  }
+
+  return -1;
+}
+
+/* Where the next search step starts.
+ *
+ * A repeat steps one character off the hit it is on, which is what
+ * makes it move on rather than find what it is standing on.  Off the
+ * *start* of the hit: a match going backwards begins before its end
+ * and would be found all over again.
+ *
+ * Everything that changes the search string starts from the base
+ * instead, which is where the search began or, once it has been
+ * repeated, the hit that repeat landed on.  So the hit for a string is
+ * the first one from the base, whatever order the characters were
+ * typed and deleted in.  Looking from the current hit instead would
+ * make deleting a character keep whatever the search had walked to:
+ * type `fora' over `format ... forall ... format' and the hit leaves
+ * the format it was narrowing down for the forall behind it; deleting
+ * the `a' has to give that format back.
+ */
+
+static ssize_t
+rlc_isearch_start(RlcData b, const rlc_pos *pos, size_t len,
+		  bool fwd, bool repeat)
+{ ssize_t start;
+
+  if ( repeat )				/* one on from the hit we are on */
+  { start = ( rlc_has_selection(b)
+	      ? rlc_index_at(pos, len, b->sel_start_line, b->sel_start_char)
+	      : rlc_index_at(pos, len,
+			     b->isearch.base_line, b->isearch.base_char) );
+  } else				/* the first hit from the base */
+  { start = rlc_index_at(pos, len,
+			 b->isearch.base_line, b->isearch.base_char);
+  }
+
+  if ( start < 0 )			/* scrolled out from under us */
+    return fwd ? 0 : (ssize_t)len;
+
+  /* After the fallback, not before it: stepping off the far end of the
+   * buffer is how a repeat runs out of places to look, and turning
+   * that into "start over at the other end" here would wrap on the
+   * first failure rather than on the attempt after it.
+   */
+  if ( repeat )
+    start += fwd ? 1 : -1;
+
+  return start;
+}
+
+static void
+reportIsearchTerminalImage(TerminalImage ti, int index, int total)
+{ StringObj s = ti->search_string;
+
+  if ( total > 0 )
+    send(ti, NAME_report, NAME_status, CtoName("ISearch %s: %s (%d/%d)"),
+	 ti->search_direction, s, toInt(index), toInt(total), EAV);
+  else
+    send(ti, NAME_report, NAME_status, CtoName("ISearch %s: %s"),
+	 ti->search_direction, isNil(s) ? (Any)CtoName("") : (Any)s, EAV);
+}
+
+/* Which of the buffer's matches `hit' is, and how many there are.
+ * Counted from the start of the buffer whichever way the search is
+ * going, so that `3/4' says the third of four places rather than the
+ * third one looked at, and walking back through them counts down.
+ *
+ * Every position the string occurs at counts, overlapping ones
+ * included: a repeat steps a single character, so those are places the
+ * user can get to and would otherwise be missing from the tally.
+ *
+ * The whole buffer, not the page: what the number is for is knowing
+ * how much there is to walk through, and most of it is off the screen.
+ */
+
+static int
+rlc_match_count(RlcData b, const uchar_t *text, size_t len, PceString str,
+		bool exact_case, bool word, ssize_t hit, int *index)
+{ int total = 0;
+  ssize_t at = 0;
+
+  *index = 0;
+  for(;;)
+  { at = ucs_find(b, text, len, at, str, 1, 'a', exact_case, word);
+    if ( at < 0 )
+      break;
+    total++;
+    if ( at == hit )
+      *index = total;
+    at++;
+  }
+
+  return total;
+}
+
+/* Say on the bar how many other places the selection occurs, in the
+ * shape an incremental search reports its hit in and counted the same
+ * way: over the whole buffer, most of which is off the screen, while
+ * what is highlighted is the page.
+ *
+ * A selection that occurs nowhere else says nothing at all -- there is
+ * nothing to walk to, and a plain selection is what the user asked for
+ * by making it.  Neither does one we do not look for (see
+ * rlc_selection_needle()); both take the bar down again, as leaving a
+ * tally up for a selection that is gone would be worse than saying
+ * nothing.
+ *
+ * Whole-word matching can put the selection itself outside the matches
+ * -- it is not a word where it sits, but the same letters are a word
+ * elsewhere -- and then there is no `n of' to give.
+ */
+
+static void
+reportSelectionTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+  StringObj s = ti->selection_string;
+
+  if ( notNil(s) )
+  { size_t len;
+    rlc_pos *pos;
+    uchar_t *text = rlc_buffer_text(b, &len, &pos);
+
+    if ( text )
+    { ssize_t hit = rlc_index_at(pos, len,
+				 b->sel_start_line, b->sel_start_char);
+      int index;
+      int total = rlc_match_count(b, text, len, &s->data,
+				  ti->exact_case == ON,
+				  rlc_match_word(b), hit, &index);
+
+      rlc_free(text);
+      rlc_free(pos);
+
+      if ( total > 1 )
+      { if ( index > 0 )
+	  send(ti, NAME_report, NAME_status,
+	       CtoName("Selection: %s (%d/%d)"),
+	       s, toInt(index), toInt(total), EAV);
+	else
+	  send(ti, NAME_report, NAME_status,
+	       CtoName("Selection: %s (%d matches)"), s, toInt(total), EAV);
+	return;
+      }
+    }
+  }
+
+  send(ti, NAME_report, NAME_status, CtoName(""), EAV);
+}
+
+/* Start a search.  `seed' is what to look for, or `@nil' to start with
+ * nothing and take what the user types.
+ *
+ * A seeded search starts from the selection the seed came from rather
+ * than from the caret, and keeps that selection: the next thing it does
+ * is a repeat, and a repeat steps off the hit it is on, which is what
+ * makes the first ^R over a selection land on the match before it.  The
+ * selection is put back if the search is abandoned, so ^G gives back
+ * what was picked as well as the view it was picked in.
+ */
+
+static status
+startIsearchTerminalImage(TerminalImage ti, Name direction, StringObj seed)
+{ RlcData b = ti->data;
+
+  if ( rlc_alt_screen(b) )
+  { send(ti, NAME_report, NAME_warning,
+	 CtoName("Cannot search the alternate screen"), EAV);
+    fail;
+  }
+
+  assign(ti, search_direction,      direction);
+  assign(ti, search_wrapped_warned, OFF);
+  assign(ti, focus_function,        NAME_Isearch);
+
+  b->isearch.window_start = b->window_start;
+  b->isearch.seeded       = notNil(seed);
+
+  if ( isNil(seed) )
+  { assign(ti, search_string, NIL);
+
+    b->isearch.origin_line = b->caret_y;
+    b->isearch.origin_char = b->caret_x;
+
+    b->sel_word = false;		/* it starts without a selection, */
+    rlc_set_selection(b, 0, 0, 0, 0);	/* so without one to take this from */
+  } else
+  { /* A copy: the search edits its string as the user types and
+     * backspaces, and <-selection_string is not its to edit.
+     */
+    assign(ti, search_string,
+	   newObject(ClassString, name_procent_s, seed, EAV));
+
+    b->isearch.origin_line     = b->sel_start_line;
+    b->isearch.origin_char     = b->sel_start_char;
+    b->isearch.held_start_line = b->sel_start_line;
+    b->isearch.held_start_char = b->sel_start_char;
+    b->isearch.held_end_line   = b->sel_end_line;
+    b->isearch.held_end_char   = b->sel_end_char;
+  }
+
+  b->isearch.base_line = b->isearch.origin_line;
+  b->isearch.base_char = b->isearch.origin_char;
+
+  reportIsearchTerminalImage(ti, 0, 0);
+
+  succeed;
+}
+
+static status
+beginIsearchTerminalImage(TerminalImage ti, Name direction)
+{ return startIsearchTerminalImage(ti, direction, NIL);
+}
+
+/* Search on from the selection for what it holds: the matches that are
+ * already lit up (see rlc_selection_needle()) are the ones this walks,
+ * and it is the ordinary incremental search from there on.  Fails when
+ * there is no such selection, which is what lets ^S and ^R keep their
+ * ordinary meaning for whatever is reading from the terminal.
+ */
+
+static status
+isearchSelectionTerminalImage(TerminalImage ti, Name direction)
+{ StringObj seed = ti->selection_string;
+
+  if ( isNil(seed) )
+    fail;
+
+  if ( !startIsearchTerminalImage(ti, direction, seed) )
+    fail;
+
+  executeIsearchTerminalImage(ti, DEFAULT, true);
+  succeed;			/* the search has the key from here on, */
+}				/* whether or not it found anything */
+
+/* Leave the search.  `keep' says whether the hit stays selected: ^G
+ * gives back the view and the selection the search started from, any
+ * other way out leaves what was found on the screen.
+ */
+
+static status
+endIsearchTerminalImage(TerminalImage ti, BoolObj keep)
+{ RlcData b = ti->data;
+
+  if ( !rlc_isearching(b) )
+    succeed;
+
+  assign(ti, focus_function, NIL);
+  assign(ti, search_string,  NIL);
+
+  b->changed |= CHG_CHANGED;		/* the matches all over the page go */
+
+  if ( keep == OFF )
+  { /* Only what is still in the ring: output during the search may have
+     * pushed the lines we started from out, and a stale index counts as
+     * a line like any other.  A search that started from a selection
+     * gives that selection back; one that started from the caret had
+     * none to give.
+     */
+    if ( b->isearch.seeded &&
+	 rlc_between(b, b->first, b->last, b->isearch.held_start_line) &&
+	 rlc_between(b, b->first, b->last, b->isearch.held_end_line) )
+      rlc_set_selection(b, b->isearch.held_start_line,
+			 b->isearch.held_start_char,
+			 b->isearch.held_end_line,
+			 b->isearch.held_end_char);
+    else
+      rlc_set_selection(b, 0, 0, 0, 0);
+
+    if ( rlc_between(b, b->first, b->last, b->isearch.window_start) )
+      rlc_scroll_lines(b, ( rlc_count_lines(b, b->first,
+					    b->isearch.window_start) -
+			    rlc_count_lines(b, b->first, b->window_start) ));
+  }
+  b->isearch.seeded = false;
+
+  /* The hit that stays selected is a selection like any other, so the
+   * matches the search was showing carry straight over to the ones the
+   * selection shows rather than blinking out under the cursor: the
+   * needle could not be set while the search ran, and the redraw sets
+   * it now that the focus function has let go.
+   */
+  rlc_request_redraw(b);
+  reportSelectionTerminalImage(ti);	/* hides the bar when there is */
+					/* nothing to say */
+  succeed;
+}
+
+/* One search step.  `chr' is a character to append to the search
+ * string, or @default when the string is already what it should be.
+ *
+ * `repeat' says whether this asks for the *next* hit -- what ^S and ^R
+ * do -- rather than for a fresh look at where the current one is.
+ * Only a repeat steps off the hit; changing the search string, whether
+ * by typing, by backspace or by ^W, looks again at the place the hit
+ * already is, so a search stays where the user can see it for as long
+ * as it still matches there.
+ *
+ * The wrap follows Emacs and class editor: the first failure only says
+ * so, and the attempt after it starts over at the far end.
+ */
+
+static status
+executeIsearchTerminalImage(TerminalImage ti, Int chr, bool repeat)
+{ RlcData b = ti->data;
+  bool fwd = ti->search_direction == NAME_forward;
+
+  if ( notDefault(chr) )
+  { if ( isNil(ti->search_string) )
+      assign(ti, search_string, newObject(ClassString, EAV));
+    insertCharacterString(ti->search_string, chr, DEFAULT, DEFAULT);
+  }
+
+  if ( isNil(ti->search_string) ||
+       valInt(getSizeCharArray(ti->search_string)) == 0 )
+  { reportIsearchTerminalImage(ti, 0, 0);
+    succeed;
+  }
+
+  size_t len;
+  rlc_pos *pos;
+  uchar_t *text = rlc_buffer_text(b, &len, &pos);
+  if ( !text )
+    fail;
+
+  ssize_t start = rlc_isearch_start(b, pos, len, fwd, repeat);
+  ssize_t times = fwd ? 1 : -1;
+  bool ec = ti->exact_case == ON;
+  bool wm = rlc_match_word(b);
+  ssize_t hit = ucs_find(b, text, len, start, &ti->search_string->data,
+			 times, 'a', ec, wm);
+
+  if ( hit < 0 && ti->search_wrapped_warned == ON )
+  { hit = ucs_find(b, text, len, fwd ? 0 : (ssize_t)len,
+		   &ti->search_string->data, times, 'a', ec, wm);
+    assign(ti, search_wrapped_warned, OFF);
+  }
+
+  /* Every line on the page can hold a match, and a redraw otherwise
+   * repaints only the lines that say they changed -- which for a
+   * search step is just the two the hit moved between.  The rest kept
+   * whatever they were painted with, so matches went unpainted and old
+   * ones stayed.
+   */
+  b->changed |= CHG_CHANGED;
+  rlc_request_redraw(b);
+
+  if ( hit < 0 )
+  { send(ti, NAME_report, NAME_warning, CtoName("Failing ISearch: %s"),
+	 ti->search_string, EAV);
+    if ( ti->search_wrapped_warned == OFF )
+      assign(ti, search_wrapped_warned, ON);
+  } else
+  { size_t end = hit + valInt(getSizeCharArray(ti->search_string));
+    if ( end > len )
+      end = len;
+    rlc_pos ps = rlc_pos_start(b, text, pos, len, hit);
+    rlc_pos pe = rlc_pos_end(pos, end);
+
+    int index;
+    int total = rlc_match_count(b, text, len, &ti->search_string->data,
+				ec, wm, hit, &index);
+
+    rlc_set_selection(b, ps.line, ps.cell, pe.line, pe.cell);
+    send(ti, NAME_scrollTo, toInt(hit), EAV);
+    reportIsearchTerminalImage(ti, index, total);
+    assign(ti, search_wrapped_warned, OFF); /* we are somewhere again */
+    if ( repeat )			/* asked to move on, so we did: the */
+    { b->isearch.base_line = ps.line;	/* string is looked up from here now */
+      b->isearch.base_char = ps.cell;
+    }
+  }
+
+  rlc_free(text);
+  rlc_free(pos);
+  succeed;
+}
+
+/* The two things that decide what counts as a match.  Changing one
+ * while a search is running looks again from where it is looking from,
+ * so the hit, the tally and what is painted all follow at once.
+ */
+
+static status
+searchAgainTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+
+  if ( rlc_isearching(b) && notNil(ti->search_string) )
+    return executeIsearchTerminalImage(ti, DEFAULT, false);
+
+  /* They decide what a selection matches as well.  ->search_word also
+   * decides whether a one-character selection is looked for at all, so
+   * the needle itself has to be worked out again, not just the tally.
+   *
+   * The page is damaged whether or not the needle changed: these change
+   * which places on it match without changing what is looked for, and
+   * the redraw only damages when the string itself moved.
+   */
+  if ( rlc_has_selection(b) )
+  { b->changed |= CHG_CHANGED;
+    rlc_request_redraw(b);
+    reportSelectionTerminalImage(ti);
+  }
+
+  succeed;
+}
+
+static status
+exactCaseTerminalImage(TerminalImage ti, BoolObj exact)
+{ assign(ti, exact_case, exact);
+  return searchAgainTerminalImage(ti);
+}
+
+static status
+searchWordTerminalImage(TerminalImage ti, BoolObj word)
+{ RlcData b = ti->data;
+
+  assign(ti, search_word, word);
+  /* Otherwise the box could not be turned off over a double-clicked
+   * word: the selection would go on asking for whole words and the box
+   * would say something the matching disagrees with.
+   */
+  if ( word == OFF )
+    b->sel_word = false;
+
+  return searchAgainTerminalImage(ti);
+}
+
+static status
+isearchForwardTerminalImage(TerminalImage ti)
+{ return beginIsearchTerminalImage(ti, NAME_forward);
+}
+
+static status
+isearchBackwardTerminalImage(TerminalImage ti)
+{ return beginIsearchTerminalImage(ti, NAME_backward);
+}
+
+static status
+isearchSelectionForwardTerminalImage(TerminalImage ti)
+{ return isearchSelectionTerminalImage(ti, NAME_forward);
+}
+
+static status
+isearchSelectionBackwardTerminalImage(TerminalImage ti)
+{ return isearchSelectionTerminalImage(ti, NAME_backward);
+}
+
+/* Take the word behind the hit into the search string, the way ^W does
+ * in Emacs: having found where something starts, this is how one asks
+ * for the whole of it without typing it out.
+ */
+
+static status
+extendIsearchToWordTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+  size_t len;
+  rlc_pos *pos;
+  uchar_t *text;
+
+  if ( !rlc_has_selection(b) || isNil(ti->search_string) )
+    succeed;				/* nothing found to extend */
+
+  if ( !(text=rlc_buffer_text(b, &len, &pos)) )
+    fail;
+
+  ssize_t start = rlc_index_at(pos, len, b->sel_start_line, b->sel_start_char);
+  ssize_t end   = ( start < 0 ? (ssize_t)len
+		    : start + valInt(getSizeCharArray(ti->search_string)) );
+
+  /* Whatever separates the hit from the next word comes along with it,
+   * so that pressing this again walks on word by word.  Not across a
+   * line though: on a terminal a line is what things are written in,
+   * and a search string with a line break in it matches almost nothing.
+   */
+  ssize_t gap = end;
+  while( gap >= 0 && (size_t)gap < len &&
+	 text[gap] != '\n' && !rlc_is_word_char(b, text[gap]) )
+    gap++;
+  ssize_t word = gap;
+  while( word >= 0 && (size_t)word < len && rlc_is_word_char(b, text[word]) )
+    word++;
+
+  bool grew = word > gap;
+  if ( grew )
+  { for(ssize_t i=end; i<word; i++)
+      insertCharacterString(ti->search_string, toInt(text[i]), DEFAULT, DEFAULT);
+  }
+
+  rlc_free(text);
+  rlc_free(pos);
+
+  if ( !grew )
+  { /* Not the report's status: it fails when there is nowhere to show
+     * it, and a focus function that fails hands the key to the client.
+     */
+    send(ti, NAME_report, NAME_warning,
+	 CtoName("No word behind the hit"), EAV);
+    succeed;
+  }
+
+  return executeIsearchTerminalImage(ti, DEFAULT, false);
+}
+
+/* Drop the last character of the search string, and say whether
+ * anything is left.
+ */
+
+static bool
+shortenIsearchTerminalImage(TerminalImage ti)
+{ if ( notNil(ti->search_string) )
+  { int size = valInt(getSizeCharArray(ti->search_string));
+
+    if ( size > 1 )
+    { deleteString(ti->search_string, toInt(size-1), DEFAULT);
+      return true;
+    }
+  }
+
+  assign(ti, search_string, NIL);
+  return false;
+}
+
+/* The focus function: every key while the search runs.  Where class
+ * editor lets a key it does not want fall through to its ordinary
+ * meaning, we have to be careful about which ones: an unhandled key
+ * here is sent to the process on the terminal, and ending a search
+ * with Return is not a reason to submit a line to the shell.  So the
+ * keys that end the search are swallowed, and only those whose
+ * ordinary meaning is worth having -- ^C above all, which is how one
+ * interrupts a program that is still running -- fall through.
+ */
+
+static status
+IsearchTerminalImage(TerminalImage ti, EventObj ev)
+{ RlcData b = ti->data;
+  Name cnm = characterName(ev);
+  Any cmd  = getFunctionKeyBinding(ti->bindings, cnm);
+  int chr  = isInteger(ev->id) ? valInt(ev->id) : -1;
+
+  if ( cmd == NAME_isearchForward || cmd == NAME_isearchBackward ||
+       chr == Control('S') || chr == Control('R') )
+  { Name dir = ( cmd == NAME_isearchBackward || chr == Control('R')
+		 ? NAME_backward : NAME_forward );
+
+    assign(ti, search_direction, dir);
+    return executeIsearchTerminalImage(ti, DEFAULT, true);
+  }
+
+  if ( cnm == NAME_backspace || ev->id == NAME_BS ||
+       chr == Control('H') || chr == 127 )
+  { if ( shortenIsearchTerminalImage(ti) )
+      return executeIsearchTerminalImage(ti, DEFAULT, false);
+
+    rlc_set_selection(b, 0, 0, 0, 0);	/* nothing left to look for */
+    reportIsearchTerminalImage(ti, 0, 0);
+    succeed;
+  }
+
+  if ( chr == Control('W') )		/* take the rest of the word too */
+    return extendIsearchToWordTerminalImage(ti);
+
+  if ( valInt(ev->buttons) & BUTTON_meta )
+  { if ( chr == 'c' )			/* what counts as a match */
+      return exactCaseTerminalImage(ti, ti->exact_case == ON ? OFF : ON);
+    if ( chr == 'w' )
+      return searchWordTerminalImage(ti, rlc_match_word(b) ? OFF : ON);
+  }
+
+  if ( chr == Control('G') )		/* abort: give back view and hit */
+    return endIsearchTerminalImage(ti, OFF);
+
+  if ( chr == ESC || chr == '\r' || chr == '\n' ||
+       ev->id == NAME_ESC || ev->id == NAME_RET )
+    return endIsearchTerminalImage(ti, ON);
+
+  if ( chr >= ' ' && !(valInt(ev->buttons) & BUTTON_meta) )
+    return executeIsearchTerminalImage(ti, toInt(chr), false);
+
+  endIsearchTerminalImage(ti, ON);	/* let the key mean what it means */
+  fail;
+}
+
+
 /* Return the logical cursor position as a Point(col, row).
  *
  * col is the visual column on the current line (sum of display widths
@@ -766,9 +2364,134 @@ static Point
 getCursorPositionTerminalImage(TerminalImage ti)
 { RlcData b = ti->data;
   int col = rlc_cell_to_vcol(&b->lines[b->caret_y], b->caret_x);
-  int row = rlc_count_lines(b, b->window_start, b->caret_y);
+  int row = rlc_view_count(b, b->window_start, b->caret_y);
 
   answer(answerObject(ClassPoint, toInt(col), toInt(row), EAV));
+}
+
+
+/* Return the ends of the selection as Point(col, row).
+ *
+ * The coordinates are the ones <-cursor_position uses, so a selection
+ * that is scrolled out of view answers rows outside 0..<-rows-1.  Both
+ * fail if there is no selection.  As in class editor, `start' is where
+ * the selection was anchored and `end' the side that moved, which is
+ * to say that `end' may come before `start' in the text.
+ */
+
+static Point
+selection_position(RlcData b, int line, int chr)
+{ int col = rlc_cell_to_vcol(&b->lines[line], chr);
+  int row = rlc_view_count(b, b->window_start, line);
+
+  answer(answerObject(ClassPoint, toInt(col), toInt(row), EAV));
+}
+
+
+static Point
+getSelectionStartTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+
+  if ( !rlc_has_selection(b) )
+    fail;
+
+  return selection_position(b, b->sel_start_line, b->sel_start_char);
+}
+
+
+static Point
+getSelectionEndTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+
+  if ( !rlc_has_selection(b) )
+    fail;
+
+  return selection_position(b, b->sel_end_line, b->sel_end_char);
+}
+
+
+/* Return the size of the terminal in character units.
+ *
+ * The pixel size (<-width, <-height) only yields this after dividing
+ * by the font's cell width and subtracting the margin, i.e. after
+ * duplicating rlc_resize_pixel_units().  Report it directly instead,
+ * so callers that reason in columns and rows -- the coordinate system
+ * <-cursor_position and <-row already use -- need not know the font.
+ */
+/* The style painted over a cell: the selection, the hit of an
+ * incremental search, one of its other matches, or the hyperlink under
+ * it.  Fails when the cell is drawn from its own attributes, which is
+ * to say from the colours and the bold or underline the client asked
+ * for.
+ *
+ * This goes through the very computation the painter does, so what it
+ * answers is what is on the screen rather than a second opinion about
+ * it.  Without it nothing outside the window can see a highlight at
+ * all, which leaves the whole of the feedback an incremental search
+ * gives beyond the reach of a test.
+ */
+
+static Style
+getCellStyleTerminalImage(TerminalImage ti, Int column, Int row)
+{ RlcData b = ti->data;
+  int c = valInt(column);
+  int r = valInt(row);
+
+  if ( r < 0 || r >= b->window_size || c < 0 || c >= rlc_overlay_width(b) )
+    fail;
+
+  int line = rlc_view_line_at_row(b, r);
+  RlcTextLine tl = &b->lines[line];
+  rlc_span spans[MAX_MATCH_SPANS];
+  int nspans = rlc_match_spans(b, spans, MAX_MATCH_SPANS);
+  Style overlay[MAXLINE];
+
+  rlc_line_overlay(b, line, tl, rlc_line_in_selection(b, line),
+		   spans, nspans, overlay);
+  if ( overlay[c] )
+    answer(overlay[c]);
+
+  int cell = rlc_vcol_to_cell(tl, c);	/* a hyperlink, then? */
+  if ( tl->text && cell < tl->size && tl->text[cell].flags.link )
+  { for(href *hr = tl->links; hr; hr = hr->next)
+    { if ( cell >= hr->start && cell <= hr->start + hr->length )
+      { Style ls = ( hr == b->armed_href &&
+		     notNil(ti->link_armed_style) &&
+		     !isDefault(ti->link_armed_style)
+		     ? ti->link_armed_style : ti->link_style );
+	if ( notNil(ls) && !isDefault(ls) )
+	  answer(ls);
+	break;
+      }
+    }
+  }
+
+  fail;
+}
+
+/* What <->search_word says, or what the selection asks for: see
+ * rlc_match_word().  The box on the report bar shows this rather than
+ * the flag, so that it says what is being matched now.
+ */
+
+static BoolObj
+getMatchWordTerminalImage(TerminalImage ti)
+{ answer(rlc_match_word(ti->data) ? ON : OFF);
+}
+
+static Int
+getColumnsTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+
+  answer(toInt(b->width));
+}
+
+
+static Int
+getRowsTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+
+  answer(toInt(b->window_size));
 }
 
 
@@ -787,10 +2510,10 @@ getRowTerminalImage(TerminalImage ti, Int arg)
   if ( row < 0 || row >= b->window_size )
     fail;
 
-  int line = rlc_add_lines(b, b->window_start, row);
+  int line = rlc_view_line_at_row(b, row);
   RlcTextLine tl = &b->lines[line];
 
-  uchar_t *buf = rlc_read_from_window(b, line, 0, line, tl->size);
+  uchar_t *buf = rlc_read_from_window(b, line, 0, line, tl->size, "\n", 0);
   if ( buf )
   { StringObj str = TCHAR2String(buf);
     rlc_free(buf);
@@ -802,10 +2525,78 @@ getRowTerminalImage(TerminalImage ti, Int arg)
   fail;
 }
 
+
+/* True if `c` is not a Unicode scalar value: out of range, a UTF-16
+ * surrogate or a non-character.  None of these can be drawn, so the
+ * font has no glyph for them and measuring one yields the width of the
+ * "missing glyph" box (typically two cells) rather than a meaningful
+ * answer.  Note that clients working in UTF-16 (libedit on Windows) do
+ * hand us surrogates and sentinels: see getCwidthTerminalImage().
+ */
+
+static bool
+not_a_character(uchar_t c)
+{ return ( c > 0x10FFFF ||
+	   (c >= 0xD800  && c <= 0xDFFF) ||	/* surrogates */
+	   (c >= 0xFDD0  && c <= 0xFDEF) ||	/* non-characters */
+	   (c&0xFFFE) == 0xFFFE );		/* U+xFFFE, U+xFFFF */
+}
+
+
+/* Return the number of terminal columns occupied by code point `chr`.
+ *
+ * This exposes terminal_char_cells() -- the classification the grid
+ * itself uses -- so that clients needing to predict our layout have a
+ * single point of truth rather than a second, drifting copy.  It is in
+ * particular consulted by library(editline) (through the hook
+ * editline:el_wcwidth/2) so that libedit's cursor arithmetic agrees
+ * with our column grid.  Note that the answer deliberately does not
+ * depend on the font: see terminal_char_cells().
+ *
+ * Fails while the terminal has no buffer or cell metrics yet, or if
+ * `chr` is not a drawable character, leaving the caller to fall back on
+ * its own notion of width.
+ */
+static Int
+getCwidthTerminalImage(TerminalImage ti, Int chr)
+{ RlcData b = ti->data;
+  uchar_t c = (uchar_t)valInt(chr);
+
+  if ( !b || b->cw <= 0.0 || not_a_character(c) )
+    fail;
+
+  answer(toInt(terminal_char_cells(c)));
+}
+
 static status
 clearSelectionTerminalImage(TerminalImage ti)
-{ rlc_set_selection(ti->data, 0, 0, 0, 0);
+{ ti->data->sel_word = false;
+  rlc_set_selection(ti->data, 0, 0, 0, 0);
+  reportSelectionTerminalImage(ti);
   succeed;
+}
+
+/* Send text as a paste: between the brackets of DEC private mode 2004
+ * when the client asked for them, so that its line editor inserts the
+ * text rather than acting on the keys in it -- a TAB that completes, a
+ * newline that enters the line.
+ */
+
+static bool
+rlc_send_pasted(RlcData b, const char *u, size_t ulen)
+{ const char *bsm_start = S_ESC"[200~";
+  const char *bsm_end = S_ESC"[201~";
+
+  if ( b->bracketed_paste_mode )
+    rlc_send(b, bsm_start, strlen(bsm_start));
+  if ( rlc_send(b, u, ulen) != ulen )
+  { Cprintf("Failed to send %s\n", u);
+    return false;
+  }
+  if ( b->bracketed_paste_mode )
+    rlc_send(b, bsm_end, strlen(bsm_end));
+
+  return true;
 }
 
 static status
@@ -815,21 +2606,18 @@ pasteTerminalImage(TerminalImage ti, Name which)
   StringObj str = get(CurrentDisplay(ti), NAME_paste, which, EAV);
   size_t ulen;
   const char *u = stringToUTF8(&str->data, &ulen);
-  const char *bsm_start = S_ESC"[200~";
-  const char *bsm_end = S_ESC"[201~";
 
-  clearSelectionTerminalImage(ti);
+  /* A clipboard paste replaces the selection, as it would in any
+   * editor.  Not a primary one: that is the middle-click paste, whose
+   * selection is the text being pasted -- deleting it would turn the
+   * copy into a move.  ->delete_selection declines a selection outside
+   * the input, and clears it either way.
+   */
+  if ( which != NAME_clipboard || !send(ti, NAME_deleteSelection, EAV) )
+    clearSelectionTerminalImage(ti);
   DEBUG(NAME_paste, Cprintf("Paste %zd bytes from %s\n", ulen, pp(which)));
-  if ( ti->data->bracketed_paste_mode )
-    rlc_send(ti->data, bsm_start, strlen(bsm_start));
-  if ( rlc_send(ti->data, u, ulen) != ulen )
-  { Cprintf("Failed to send %s\n", u);
-    fail;
-  }
-  if ( ti->data->bracketed_paste_mode )
-    rlc_send(ti->data, bsm_end, strlen(bsm_end));
 
-  succeed;
+  return rlc_send_pasted(ti->data, u, ulen);
 }
 
 static status
@@ -847,10 +2635,89 @@ copyTerminalImage(TerminalImage ti, Name which)
   return rlc_copy(ti->data, which);
 }
 
-/* Virtual method */
+/* Interrupt the process running in this terminal.  If another session
+ * owns the pty we hand the tty its interrupt character and let the
+ * line discipline signal the foreground process group.  If there is
+ * none we fail, leaving the interrupt to a subclass: a prolog_terminal
+ * runs its client as a thread of this process, which no tty can reach.
+ */
+
 static status
 interruptTerminalImage(TerminalImage ti)
-{ succeed;
+{ RlcData b = ti->data;
+  int intr;
+
+  if ( rlc_client_owns_terminal(b) && (intr=rlc_interrupt_char(b)) >= 0 )
+  { char chr = intr;
+
+    return rlc_send(b, &chr, 1) == 1;
+  }
+
+  fail;
+}
+
+static Int
+getForegroundProcessTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;			/* NULL after ->unlink */
+  int pgid;
+
+  if ( b && (pgid=rlc_foreground_process(b)) > 0 )
+    answer(toInt(pgid));
+
+  fail;
+}
+
+/**
+ * Does the tty echo what is sent to it?
+ *
+ * Echo off says a client put the tty in raw mode and is thus reading
+ * and displaying by itself.  That tells us when text we send arrives
+ * at a client that is ready for it rather than at one still setting
+ * the terminal up, which would display it twice.  Fails if we have no
+ * pty, or on a platform that cannot tell.
+ */
+
+static BoolObj
+getTtyEchoTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;			/* NULL after ->unlink */
+  int echo;
+
+  if ( b && (echo=rlc_tty_echo(b)) >= 0 )
+    answer(echo ? ON : OFF);
+
+  fail;
+}
+
+/**
+ * Working directory of the process group that owns the pty, asked of
+ * the OS rather than of the client.  Unlike <-working_directory this
+ * needs no cooperation, but it only works on some platforms and only
+ * while another process owns the terminal.
+ */
+
+static Name
+getForegroundDirectoryTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;			/* NULL after ->unlink */
+  char buf[PATH_MAX];
+
+  if ( b && rlc_foreground_directory(b, buf, sizeof(buf)) )
+    answer(FNToName(buf));
+
+  fail;
+}
+
+/**
+ * The client reported where it is; see osc7_directory().  A subclass
+ * may trap this to follow the client, e.g., to label the window or to
+ * open file dialogs in the right place.
+ */
+
+static status
+workingDirectoryTerminalImage(TerminalImage ti, Name dir, Name host)
+{ assign(ti, working_directory, dir);
+  assign(ti, host, host);
+
+  succeed;
 }
 
 static status
@@ -860,18 +2727,207 @@ copyOrInterruptTerminalImage(TerminalImage ti)
   return send(ti, NAME_interrupt, EAV);
 }
 
+
+/* Drop a selection that the line being edited is about to leave behind.
+ *
+ * A key we hand the program moves its caret or changes what it is
+ * reading, and a highlight over that line then stands over something
+ * else than what was picked -- which is why an editor drops the
+ * selection as soon as one types on.  What the key cannot touch is left
+ * alone: the prompt in front of the input and the output above it come
+ * back as they were.
+ *
+ * Any overlap with the input counts, not just a selection wholly inside
+ * it as ->delete_selection asks for: ->select_all makes one that starts
+ * in the output and runs into the line being typed, and editing on
+ * leaves that one as stale as the rest.
+ */
+
+static void
+dropInputSelectionTerminalImage(TerminalImage ti)
+{ if ( rlc_selection_on_input(ti->data) )
+    clearSelectionTerminalImage(ti);
+}
+
+
+/* ->delete_selection
+ *	Delete the selection, if it lies inside the line being edited.
+ *	Fails otherwise, so that a key bound to this can fall through to
+ *	whatever it normally does; the rest of the screen is output and
+ *	cannot be taken back.
+ *
+ *	As with a click that moves the caret, the program on the terminal
+ *	does the work: we walk its caret to the end of the selection and
+ *	then hand it one delete per grapheme cluster.
+ */
+
+/* rlc_delete_input()
+ *	Delete [(sl,sc), (el,ec)) of the line being edited.  We can only
+ *	ask: walk the caret of the line editor to the end of the range and
+ *	hand it a DEL per grapheme cluster.  Unlike a kill command this
+ *	also works in vi insert mode, and it leaves the kill buffer alone.
+ */
+
+static void
+rlc_delete_input(RlcData b, int sl, int sc, int el, int ec)
+{ int n, i;
+
+  if ( (n=rlc_cluster_distance(b, sl, sc, el, ec)) > 0 )
+  { rlc_caret_to(b, el, ec);
+    for(i=0; i<n; i++)
+      rlc_send(b, "\177", 1);		/* DEL: ->delete_prev_char */
+  }
+}
+
+static status
+deleteSelectionTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+  int sl, sc, el, ec;
+
+  if ( !rlc_selection_in_input(b, &sl, &sc, &el, &ec) )
+    fail;
+
+  rlc_delete_input(b, sl, sc, el, ec);
+  rlc_set_selection(b, 0, 0, 0, 0);
+  succeed;
+}
+
+
+/* <-input, ->clear_input and ->send_input act on the first line of a
+ * command while the client reads it; see rlc_first_input().  Together
+ * they let a command be typed while the user is halfway a line: take
+ * the line out, type the command and put the line back when the client
+ * asks for the next one.
+ *
+ * <-input answers tuple(Text, Tail): the text of that line and the
+ * number of grapheme clusters behind the caret, which is what
+ * ->send_input needs to put the caret back.
+ */
+
+static Tuple
+getInputTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+  int sl, sc, el, ec, tail;
+  uchar_t *text;
+  StringObj str;
+
+  if ( !b || !rlc_first_input(b, &sl, &sc, &el, &ec) )
+    fail;
+
+  if ( rlc_sel_lt(b, b->caret_y, b->caret_x, sl, sc) )
+    tail = rlc_cluster_distance(b, sl, sc, el, ec);
+  else
+    tail = rlc_cluster_distance(b, b->caret_y, b->caret_x, el, ec);
+
+  if ( !(text=rlc_read_from_window(b, sl, sc, el, ec, "", 0)) )
+    fail;
+  str = TCHAR2String(text);
+  rlc_free(text);
+  if ( !str )
+    fail;
+
+  answer(answerObject(ClassTuple, str, toInt(tail), EAV));
+}
+
+
+static status
+clearInputTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+  int sl, sc, el, ec;
+
+  if ( !b || !rlc_first_input(b, &sl, &sc, &el, &ec) )
+    fail;
+
+  rlc_delete_input(b, sl, sc, el, ec);
+  succeed;
+}
+
+
+static status
+sendInputTerminalImage(TerminalImage ti, CharArray text, Int tail)
+{ RlcData b = ti->data;
+  int sl, sc, el, ec;
+  size_t ulen;
+  const char *u;
+
+  if ( !b || !rlc_first_input(b, &sl, &sc, &el, &ec) )
+    fail;
+
+  u = stringToUTF8(&text->data, &ulen);
+  if ( !rlc_send_pasted(b, u, ulen) )
+    fail;
+
+  if ( notDefault(tail) )
+  { const char *left = b->app_escape ? S_ESC"OD" : S_ESC"[D";
+    int i, n = valInt(tail);
+
+    for(i=0; i<n; i++)			/* the caret back where it was */
+      rlc_send(b, left, strlen(left));
+  }
+
+  succeed;
+}
+
+
+/* ->cua_key_as_prefix: event
+ *	Is ^X (or ^C) the prefix key it usually is, rather than cut?
+ *	Answers the question keybinding.c asks for `prefix_or_cut', and
+ *	mirrors editor->cua_key_as_prefix: a prefix unless there is
+ *	something here to take and the user stops at the one key.  We ask
+ *	for a selection in the input, not just any selection, since that
+ *	is all ->cut can act on.
+ */
+
+static status
+cuaKeyAsPrefixTerminalImage(TerminalImage ti, EventObj ev)
+{ int sl, sc, el, ec;
+
+  if ( instanceOfObject(ev, ClassEvent) &&
+       (valInt(ev->buttons) & BUTTON_shift) )
+    succeed;
+
+  if ( !rlc_selection_in_input(ti->data, &sl, &sc, &el, &ec) )
+    succeed;
+
+  if ( ws_wait_for_key(250) )		/* another key follows: a prefix */
+    succeed;
+
+  fail;
+}
+
+
+/* ->cut
+ *	Copy the selection and delete it.  Only inside the line being
+ *	edited: a cut that quietly did no more than copy would be worse
+ *	than a key that does nothing.
+ */
+
+static status
+cutTerminalImage(TerminalImage ti)
+{ RlcData b = ti->data;
+  int sl, sc, el, ec;
+
+  if ( !rlc_selection_in_input(b, &sl, &sc, &el, &ec) )
+    fail;
+
+  return send(ti, NAME_copy, NAME_clipboard, EAV) &&
+	 send(ti, NAME_deleteSelection, EAV);
+}
+
 static status
 cursorEndTerminalImage(TerminalImage ti)
-{ RlcData b = ti->data;
-  const char *seq = b->app_escape ? S_ESC"0F" : S_ESC"[F";
+{ char buf[16];
+  const char *seq = final_seq(buf, sizeof(buf), 'F', 0, ti->data->app_escape);
+
   rlc_send(ti->data, seq, strlen(seq));
   succeed;
 }
 
 static status
 cursorHomeTerminalImage(TerminalImage ti)
-{ RlcData b = ti->data;
-  const char *seq = b->app_escape ? S_ESC"0H" : S_ESC"[H";
+{ char buf[16];
+  const char *seq = final_seq(buf, sizeof(buf), 'H', 0, ti->data->app_escape);
+
   rlc_send(ti->data, seq, strlen(seq));
   succeed;
 }
@@ -905,17 +2961,63 @@ refreshTerminalImage(TerminalImage ti)
   succeed;
 }
 
-static status
-fontTerminalImage(TerminalImage ti, FontObj font, FontObj bold)
-{ assign(ti, font, font);
-  if ( isDefault(bold) )
-    bold = newObject(ClassFont, font->family, NAME_bold, font->points, EAV);
-  CharArray cmp = (CharArray)NAME_x;
-  if ( getAdvanceFont(font, cmp) != getAdvanceFont(bold, cmp) )
-  { Cprintf("Fonts need to have the same pitch\n");
-    bold = NIL;
+/* Resolve one of the variants of <-font: the boldened, the slanted and
+ * the boldened slanted one.  @default means "derive it from <-font",
+ * which is what makes the variants follow a font the client set without
+ * naming them.  Whatever we end up with must advance by the same amount
+ * as the regular font: the cell grid (b->cw) comes from that font alone
+ * (rlc_init_text_dimensions()), so a variant of another pitch would put
+ * its glyphs beside the cells they belong to.  Such a variant becomes
+ * @nil and the painter falls back to a font that does fit.
+ *
+ * `style' is the font style to derive and `weight' its weight, which
+ * only the boldened slanted variant needs to name: initialiseFont()
+ * infers a bold weight from the style `bold' but not from `italic'.
+ */
+
+static FontObj
+variant_font(FontObj font, FontObj var, Name style, Name weight)
+{ if ( isDefault(var) )
+    var = newObject(ClassFont, font->family, style, font->points, weight, EAV);
+
+  if ( notNil(var) && var != font )
+  { CharArray cmp = (CharArray)NAME_x;
+
+    if ( getAdvanceFont(font, cmp) != getAdvanceFont(var, cmp) )
+    { Cprintf("%s: pitch differs from %s; ignored\n", pp(var), pp(font));
+      var = NIL;
+    }
   }
-  assign(ti, bold_font, bold);
+
+  return var;
+}
+
+
+/* Fill the three variant slots from `bold', `italic' and `bold_italic',
+ * each of which may be @default to have it derived from <-font.  Used
+ * both by ->font and by ->initialise, where the slots arrive from the
+ * class variables and are as much in need of the pitch check.
+ */
+
+static void
+assign_variant_fonts(TerminalImage ti,
+		     FontObj bold, FontObj italic, FontObj bold_italic)
+{ FontObj font = ti->font;
+
+  assign(ti, bold_font,
+	 variant_font(font, bold, NAME_bold, DEFAULT));
+  assign(ti, italic_font,
+	 variant_font(font, italic, NAME_italic, DEFAULT));
+  assign(ti, bold_italic_font,
+	 variant_font(font, bold_italic, NAME_italic, NAME_bold));
+}
+
+
+static status
+fontTerminalImage(TerminalImage ti, FontObj font,
+		  FontObj bold, FontObj italic, FontObj bold_italic)
+{ assign(ti, font, font);
+  assign_variant_fonts(ti, bold, italic, bold_italic);
   requestComputeGraphical(ti, DEFAULT);
   changedEntireImageGraphical(ti);
 
@@ -935,8 +3037,27 @@ selectionStyleTerminalImage(TerminalImage ti, Style sel)
 }
 
 static status
+isearchStyleTerminalImage(TerminalImage ti, Style s)
+{ assign(ti, isearch_style, s);
+  return refreshTerminalImage(ti);
+}
+
+static status
+isearchOtherStyleTerminalImage(TerminalImage ti, Style s)
+{ assign(ti, isearch_other_style, s);
+  return refreshTerminalImage(ti);
+}
+
+static status
 nfdStyleTerminalImage(TerminalImage ti, Style s)
 { assign(ti, nfd_style, s);
+  return refreshTerminalImage(ti);
+}
+
+
+static status
+foldStyleTerminalImage(TerminalImage ti, Style s)
+{ assign(ti, fold_style, s);
   return refreshTerminalImage(ti);
 }
 
@@ -958,11 +3079,20 @@ ansiColoursTerminalImage(TerminalImage ti, Vector colours)
   return refreshTerminalImage(ti);
 }
 
+/* Not `window ->label': that is delegated to the <-decoration and wraps
+   the window in a window_decorator to put a label on it, which is not
+   what a client asking for a window title means.  Where the title does
+   belong depends on where the window is shown, so hand it to the window
+   and let `window ->window_label' and whoever overrules it decide.
+*/
+
 static status
 windowLabelTerminalImage(TerminalImage ti, CharArray label)
 { PceWindow sw = getWindowGraphical((Graphical)ti);
+
   if ( sw )
-    return send(sw, NAME_label, label, EAV);
+    return send(sw, NAME_windowLabel, label, EAV);
+
   fail;
 }
 
@@ -997,7 +3127,7 @@ getPtyNameTerminalImage(TerminalImage ti)
   RlcData b = ti->data;
 
   if ( !b->pty.slave_name[0] )
-  { if ( !rlc_open_pty_pair(b, 80, 25) )
+  { if ( !rlc_open_pty_pair(b) )
       fail;
   }
 
@@ -1026,6 +3156,792 @@ printTerminalImage(TerminalImage ti, Int start, Int count)
   succeed;
 }
 
+		 /*******************************
+		 *       SEMANTIC BLOCKS        *
+		 *******************************/
+
+/* A terminal_block is what the OSC 133 marks of one command add up to:
+ * the prompt (`A'), the line the user edited (`B'), the output of
+ * running it (`C') and the end of that output (`D', or the prompt after
+ * it).  ->prompt_mark builds them; they hang in <-blocks of the terminal
+ * in the order they were made.
+ *
+ * A block outlives the marks it was made from but not the text it points
+ * at.  Its anchors are ring positions, which say nothing once the line
+ * they name has been recycled, so rlc_expire_blocks() clears an anchor as
+ * its line leaves the scroll-back and lets go of the block once nothing
+ * of it is left.  What remains is checked rather than trusted: every
+ * method that needs text asks block_range() first.
+ */
+
+#define ANCHOR_NONE (-1)
+
+static RlcAnchors
+rlc_new_anchors(void)
+{ RlcAnchors a = rlc_malloc(sizeof(*a));
+
+  if ( a )
+  { a->prompt_line = a->prompt_char = ANCHOR_NONE;
+    a->input_line  = a->input_char  = ANCHOR_NONE;
+    a->output_line = a->output_char = ANCHOR_NONE;
+    a->end_line    = a->end_char    = ANCHOR_NONE;
+    a->continued   = false;
+    a->cont_char   = ANCHOR_NONE;
+    a->hidden_lines = 0;
+  }
+
+  return a;
+}
+
+
+static status
+initialiseTerminalBlock(TerminalBlock tb, TerminalImage ti)
+{ assign(tb, terminal, ti);
+  assign(tb, id,       ZERO);
+  assign(tb, folded,   OFF);
+  assign(tb, running,  OFF);
+  tb->anchors = rlc_new_anchors();
+
+  return tb->anchors ? SUCCEED : FAIL;
+}
+
+
+static status
+unlinkTerminalBlock(TerminalBlock tb)
+{ if ( tb->anchors )
+  { rlc_free(tb->anchors);
+    tb->anchors = NULL;
+  }
+  assign(tb, terminal, NIL);
+
+  succeed;
+}
+
+
+/* The buffer a block belongs to, or NULL once it has been detached from
+ * its terminal.  Everything below starts here.
+ */
+
+static RlcData
+block_data(TerminalBlock tb)
+{ if ( notNil(tb->terminal) && tb->anchors )
+    return tb->terminal->data;
+
+  return NULL;
+}
+
+
+static bool
+block_anchor(RlcData b, int line)
+{ return line != ANCHOR_NONE && rlc_between(b, b->first, b->last, line);
+}
+
+
+/* The lines a block covers, as a pair of ring positions.  `what' names
+ * the part: the command the user typed, the output it produced, or both
+ * with the prompt in front.  A mark that never arrived -- the output of a
+ * command still running, the prompt of a read that printed none -- is
+ * taken to reach to the caret, which is where the client is writing.
+ */
+
+static bool
+block_range(TerminalBlock tb, Name what,
+	    int *sl, int *sc, int *el, int *ec)
+{ RlcData b = block_data(tb);
+  RlcAnchors a;
+
+  if ( !b )
+    return false;
+  a = tb->anchors;
+
+  if ( what == NAME_command )
+  { if ( !block_anchor(b, a->input_line) )
+      return false;
+    *sl = a->input_line;
+    *sc = a->input_char;
+  } else if ( what == NAME_output )
+  { if ( !block_anchor(b, a->output_line) )
+      return false;
+    *sl = a->output_line;
+    *sc = a->output_char;
+  } else				/* NAME_all */
+  { if ( block_anchor(b, a->prompt_line) )
+    { *sl = a->prompt_line;
+      *sc = a->prompt_char;
+    } else if ( block_anchor(b, a->input_line) )
+    { *sl = a->input_line;		/* a read that printed no prompt */
+      *sc = a->input_char;
+    } else
+      return false;
+  }
+
+  /* An anchor that was recorded and has since gone -- its line erased by
+   * ED 2, or pushed out of the scroll-back -- is not the same as one that
+   * never arrived.  The first means the block can no longer say where it
+   * ends, and nothing may be read from it; only the second, a command
+   * still running, reaches to where the client is writing.
+   */
+  { int endl = what == NAME_command ? a->output_line : a->end_line;
+
+    if ( endl != ANCHOR_NONE && !block_anchor(b, endl) )
+      return false;
+  }
+
+  if ( what == NAME_command )
+  { if ( block_anchor(b, a->output_line) )
+    { /* The output begins where the line the user entered ended, which
+       * is the start of the line below it: the client echoed the return
+       * that entered it.  What was typed stops short of that break --
+       * a command is a command, not a command and a newline.
+       */
+      if ( a->output_char == 0 && a->output_line != b->first )
+      { *el = PrevLine(b, a->output_line);
+	*ec = b->lines[*el].size;
+      } else
+      { *el = a->output_line;
+	*ec = a->output_char;
+      }
+    } else				/* still being edited */
+    { *el = b->caret_y;
+      *ec = b->caret_x;
+    }
+  } else
+  { if ( block_anchor(b, a->end_line) )
+    { *el = a->end_line;
+      *ec = a->end_char;
+    } else				/* still running */
+    { *el = b->caret_y;
+      *ec = b->caret_x;
+    }
+  }
+
+  return true;
+}
+
+
+/* The marks as indices in the flat character space of the terminal, so
+ * that a block composes with <-contents, <-find, ->selection and
+ * ->scroll_to.  The "Character indices" section of the terminal_image
+ * documentation says how long such an index is good for; <-id is the
+ * handle that outlives them.
+ */
+
+static Int
+block_index(TerminalBlock tb, int line, int chr)
+{ RlcData b = block_data(tb);
+  size_t len;
+  rlc_pos *pos;
+  uchar_t *text;
+  ssize_t i;
+
+  if ( !b || !block_anchor(b, line) )
+    fail;
+  if ( !(text=rlc_buffer_text(b, &len, &pos)) )
+    fail;
+
+  i = rlc_index_at(pos, len, line, chr);
+  rlc_free(text);
+  rlc_free(pos);
+
+  if ( i < 0 )
+    fail;
+
+  answer(toInt(i));
+}
+
+
+static Int
+getPromptTerminalBlock(TerminalBlock tb)
+{ RlcAnchors a = tb->anchors;
+
+  return a ? block_index(tb, a->prompt_line, a->prompt_char) : FAIL;
+}
+
+
+static Int
+getInputTerminalBlock(TerminalBlock tb)
+{ RlcAnchors a = tb->anchors;
+
+  return a ? block_index(tb, a->input_line, a->input_char) : FAIL;
+}
+
+
+static Int
+getOutputTerminalBlock(TerminalBlock tb)
+{ RlcAnchors a = tb->anchors;
+
+  return a ? block_index(tb, a->output_line, a->output_char) : FAIL;
+}
+
+
+static Int
+getEndTerminalBlock(TerminalBlock tb)
+{ RlcAnchors a = tb->anchors;
+
+  return a ? block_index(tb, a->end_line, a->end_char) : FAIL;
+}
+
+
+/* The text of the block.  Lines are separated by a single newline, as
+ * <-contents does; ->copy hands the clipboard the \r\n form that
+ * <-selected uses, by going through the selection.
+ */
+
+static uchar_t *
+block_text(TerminalBlock tb, Name what, const char *sep)
+{ RlcData b = block_data(tb);
+  int sl, sc, el, ec, skip = 0;
+
+  if ( !block_range(tb, what, &sl, &sc, &el, &ec) )
+    return NULL;
+
+  /* The command of an input the client collected over several lines has
+   * a continuation prompt down its left-hand side.  Those belong to the
+   * client rather than to what was typed, so they are read over: what
+   * comes back is the command, which is what a copy of it is for and
+   * what handing it back to the client needs.  `all' keeps them: it is
+   * what the window shows.
+   */
+  if ( what == NAME_command && tb->anchors->cont_char != ANCHOR_NONE )
+    skip = tb->anchors->cont_char;
+
+  return rlc_read_from_window(b, sl, sc, el, ec, sep, skip);
+}
+
+
+static StringObj
+getContentTerminalBlock(TerminalBlock tb, Name what)
+{ uchar_t *text;
+
+  if ( isDefault(what) )
+    what = NAME_output;
+
+  if ( (text=block_text(tb, what, "\n")) )
+  { StringObj str = TCHAR2String(text);
+
+    rlc_free(text);
+    if ( str )
+    { pushAnswerObject(str);
+      answer(str);
+    }
+  }
+
+  fail;
+}
+
+
+static status
+selectTerminalBlock(TerminalBlock tb, Name what)
+{ RlcData b = block_data(tb);
+  int sl, sc, el, ec;
+
+  if ( isDefault(what) )
+    what = NAME_output;
+  if ( !block_range(tb, what, &sl, &sc, &el, &ec) )
+    fail;
+
+  rlc_set_selection(b, sl, sc, el, ec);
+  reportSelectionTerminalImage(tb->terminal);
+
+  succeed;
+}
+
+
+/* Copy goes by the text of the block rather than by the region of the
+ * screen it covers, which is what ->select makes the selection: the
+ * continuation prompts of a command collected over several lines are on
+ * the screen but were never typed, and a copy of the command is for
+ * handing back to something that will read it.  Lines are separated the
+ * way <-selected separates them, which is what another program expects.
+ */
+
+static status
+copyTerminalBlock(TerminalBlock tb, Name what, Name which)
+{ uchar_t *text;
+
+  if ( isDefault(what) )
+    what = NAME_output;
+  if ( !(text=block_text(tb, what, "\n")) )
+    fail;
+
+  StringObj str = TCHAR2String(text);
+  rlc_free(text);
+  if ( !str )
+    fail;
+
+  DisplayObj d = CurrentDisplay(tb->terminal);
+  status rc;
+
+  addCodeReference(str);
+  if ( isDefault(which) )
+    rc = send(d, NAME_copy, str, EAV);
+  else
+    rc = send(d, NAME_selection, which, str, EAV);
+  considerPreserveObject(str);
+
+  return rc;
+}
+
+
+static status
+scrollToTerminalBlock(TerminalBlock tb)
+{ Int i;
+
+  if ( !(i=getPromptTerminalBlock(tb)) &&
+       !(i=getInputTerminalBlock(tb)) )
+    fail;
+
+  return send(tb->terminal, NAME_scrollTo, i, EAV);
+}
+
+
+/* Folding hides the output of a command from the display.  It is a
+ * property of the view rather than of the text: <-contents, <-find and
+ * ->select_all keep seeing what a fold hides, and only the paint loop and
+ * the geometry feeding it skip it.  See rlc_view_next().
+ *
+ * The lines carry the answer as a bit each, which is what the paint loop
+ * can afford to ask.  Those bits are a cache of what the blocks say;
+ * rlc_restamp_folds() writes them, and everything that moves lines about
+ * calls it afterwards rather than trying to keep them up to date.
+ */
+
+static status
+foldedTerminalBlock(TerminalBlock tb, BoolObj folded)
+{ RlcData b = block_data(tb);
+  int head, from, to;
+
+  if ( tb->folded == folded )
+    succeed;
+
+  if ( isOn(folded) )
+  { if ( !b || rlc_alt_screen(b) )	/* the application owns the window */
+      fail;
+    if ( !rlc_fold_lines(b, tb, &head, &from, &to) )
+      fail;				/* still running, or nothing to hide */
+  }
+
+  bool at_end = b && rlc_view_count(b, b->window_start, b->last)
+			< b->window_size;
+
+  assign(tb, folded, folded);
+
+  if ( b )
+  { rlc_restamp_folds(b);
+    rlc_keep_end_in_view(b, at_end);
+    b->changed |= CHG_CARET|CHG_CLEAR|CHG_CHANGED;
+    rlc_request_redraw(b);
+  }
+
+  succeed;
+}
+
+
+static status
+foldTerminalBlock(TerminalBlock tb)
+{ return foldedTerminalBlock(tb, ON);
+}
+
+
+static status
+unfoldTerminalBlock(TerminalBlock tb)
+{ return foldedTerminalBlock(tb, OFF);
+}
+
+
+static status
+toggleFoldTerminalBlock(TerminalBlock tb)
+{ return foldedTerminalBlock(tb, isOn(tb->folded) ? OFF : ON);
+}
+
+
+		 /*******************************
+		 *          REMOVING            *
+		 *******************************/
+
+/* Taking a command out of the buffer altogether: the lines it covers go
+ * and the text under them moves up into the gap.  Under them rather than
+ * over: the history a removal was not about stays where it is, and the
+ * buffer gets shorter at the end the client is writing to, which is the
+ * end it can afford to lose.
+ *
+ * Everything that names a line by its place in the ring has to be told.
+ * The selection and an incremental search are ended rather than
+ * followed -- what they were on may be what is going -- and the caret,
+ * the window and the marks of every other command are moved with the
+ * text.
+ */
+
+/* The lines a block covers: from the line its command starts on to the
+ * last line of its output.  `D' lands on the line the prompt after it
+ * goes on, which belongs to that prompt and not to this command.
+ */
+
+static bool
+rlc_block_lines(RlcData b, TerminalBlock tb, int *fromp, int *top)
+{ int from, sc, el, ec;
+
+  if ( isOn(tb->running) ||
+       !block_range(tb, NAME_all, &from, &sc, &el, &ec) )
+    return false;
+  if ( !block_anchor(b, tb->anchors->end_line) )
+    return false;			/* it has not finished */
+
+  from = rlc_logical_start(b, from);
+  *top = ec == 0 ? PrevLine(b, el) : el;
+  *fromp = from;
+
+  return rlc_count_lines(b, b->first, from) <=
+	 rlc_count_lines(b, b->first, *top);
+}
+
+
+/** Where a ring position ends up once the lines `from'..`to' are gone:
+ * one below the range moves up with the text, one above it does not
+ * move at all, and one inside it has nothing left to name.
+ */
+
+static int
+rlc_position_after_removal(RlcData b, int from, int to, int n, int line)
+{ if ( line == ANCHOR_NONE )
+    return ANCHOR_NONE;
+
+  int f = rlc_count_lines(b, b->first, from);
+  int t = rlc_count_lines(b, b->first, to);
+  int l = rlc_count_lines(b, b->first, line);
+
+  if ( l < f )
+    return line;
+  if ( l <= t )
+    return ANCHOR_NONE;
+
+  return rlc_add_lines(b, line, -n);
+}
+
+
+/** One mark of a block, moved with the text it named.  A mark inside the
+ * range goes to the start of the line the gap closed on: that is where
+ * what it pointed at used to be and where its neighbour now is.
+ */
+
+static void
+rlc_mark_after_removal(RlcData b, int from, int to, int n,
+		       int *line, int *chr)
+{ int l;
+
+  if ( *line == ANCHOR_NONE )
+    return;
+
+  if ( (l=rlc_position_after_removal(b, from, to, n, *line)) == ANCHOR_NONE )
+  { *line = from;
+    *chr  = 0;
+  } else
+    *line = l;
+}
+
+
+/** Take the lines `from'..`to' out of the ring.  Only the lines: what
+ * names them is the caller's to put right.
+ */
+
+static void
+rlc_delete_lines(RlcData b, int from, int to)
+{ int n     = rlc_count_lines(b, from, to) + 1;
+  int below = rlc_count_lines(b, to, b->last);
+  int dst   = from;
+  int src   = NextLine(b, to);
+
+  for(int i=0; i<n; i++)		/* the text that is going */
+    rlc_free_line(b, rlc_add_lines(b, from, i));
+
+  for(int i=0; i<below; i++)		/* what was under it comes up */
+  { b->lines[dst] = b->lines[src];
+    b->lines[dst].line_no  = dst;
+    b->lines[dst].changed |= CHG_CHANGED;
+    dst = NextLine(b, dst);
+    src = NextLine(b, src);
+  }
+
+  for(int i=0; i<n; i++)		/* and the end falls off */
+  { rlc_reinit_line(b, dst);
+    dst = NextLine(b, dst);
+  }
+
+  b->last = rlc_add_lines(b, b->last, -n);
+  b->changed |= CHG_CHANGED|CHG_CLEAR|CHG_CARET;
+}
+
+
+static status
+removeTerminalBlock(TerminalBlock tb)
+{ RlcData b = block_data(tb);
+  TerminalImage ti;
+  Chain blocks;
+  Cell cl;
+  int from, to, n;
+
+  if ( !b || rlc_alt_screen(b) )	/* the application owns the window */
+    fail;
+  if ( !rlc_block_lines(b, tb, &from, &to) )
+    fail;
+
+  n = rlc_count_lines(b, from, to) + 1;
+
+  /* The line the client is writing on, and the one the caret is on, are
+   * not ours to take away.
+   */
+  if ( rlc_position_after_removal(b, from, to, n, b->last)   == ANCHOR_NONE ||
+       rlc_position_after_removal(b, from, to, n, b->caret_y) == ANCHOR_NONE )
+    fail;
+
+  ti = tb->terminal;
+  if ( rlc_isearching(b) )		/* it may be looking at what goes */
+    endIsearchTerminalImage(ti, OFF);
+  rlc_set_selection(b, 0, 0, 0, 0);
+
+  bool at_end = rlc_view_count(b, b->window_start, b->last) < b->window_size;
+
+  rlc_delete_lines(b, from, to);
+
+  b->caret_y = rlc_position_after_removal(b, from, to, n, b->caret_y);
+  b->input_line = rlc_position_after_removal(b, from, to, n, b->input_line);
+  if ( b->input_line == ANCHOR_NONE )
+    b->input_active = false;
+
+  int ws = rlc_position_after_removal(b, from, to, n, b->window_start);
+  b->window_start = ws == ANCHOR_NONE ? from : ws;
+
+  blocks = ti->blocks;
+  for_cell(cl, blocks)
+  { TerminalBlock t2 = cl->value;
+    RlcAnchors a = t2->anchors;
+
+    if ( !a || t2 == tb )
+      continue;
+    /* A mark inside the range goes to where the gap closed rather than
+     * being let go of.  The one that lands there is the `D' of the
+     * command before this one, which the client wrote on the line this
+     * one's prompt went on: its output now ends where the text that came
+     * up to fill the gap begins.
+     */
+    rlc_mark_after_removal(b, from, to, n, &a->prompt_line, &a->prompt_char);
+    rlc_mark_after_removal(b, from, to, n, &a->input_line,  &a->input_char);
+    rlc_mark_after_removal(b, from, to, n, &a->output_line, &a->output_char);
+    rlc_mark_after_removal(b, from, to, n, &a->end_line,    &a->end_char);
+  }
+
+  assign(tb, terminal, NIL);
+  deleteChain(blocks, tb);
+
+  rlc_restamp_folds(b);
+  rlc_keep_end_in_view(b, at_end);	/* it was showing the end; still is */
+  rlc_request_redraw(b);
+
+  succeed;
+}
+
+
+#define T_blockWhat "what=[{command,output,all}]"
+static char *T_blockCopy[] =
+{ "what=[{command,output,all}]", "which=[{primary,clipboard}]" };
+
+static vardecl var_terminal_block[] =
+{ IV(NAME_terminal, "terminal_image*", IV_GET,
+     NAME_context, "Terminal it belongs to (@nil: its text is gone)"),
+  IV(NAME_id, "int", IV_GET,
+     NAME_context, "Handle that outlives the character indices"),
+  SV(NAME_folded, "bool", IV_GET|IV_STORE, foldedTerminalBlock,
+     NAME_appearance, "Its output is collapsed"),
+  IV(NAME_running, "bool", IV_GET,
+     NAME_status, "The command is still writing its output"),
+  IV(NAME_anchors, "alien:RlcAnchors", IV_NONE,
+     NAME_cache, "Where its OSC 133 marks landed")
+};
+
+static senddecl send_terminal_block[] =
+{ SM(NAME_initialise, 1, "terminal=terminal_image", initialiseTerminalBlock,
+     DEFAULT, "Create a block on a terminal"),
+  SM(NAME_unlink, 0, NULL, unlinkTerminalBlock,
+     DEFAULT, "Release the recorded positions"),
+  SM(NAME_select, 1, T_blockWhat, selectTerminalBlock,
+     NAME_selection, "Make this block the selection"),
+  SM(NAME_copy, 2, T_blockCopy, copyTerminalBlock,
+     NAME_selection, "Copy this block to the clipboard"),
+  SM(NAME_scrollTo, 0, NULL, scrollToTerminalBlock,
+     NAME_scroll, "Scroll the prompt of this block into view"),
+  SM(NAME_fold, 0, NULL, foldTerminalBlock,
+     NAME_appearance, "Hide the output of this block"),
+  SM(NAME_unfold, 0, NULL, unfoldTerminalBlock,
+     NAME_appearance, "Show the output of this block"),
+  SM(NAME_toggleFold, 0, NULL, toggleFoldTerminalBlock,
+     NAME_appearance, "Hide the output if it is shown and back"),
+  SM(NAME_remove, 0, NULL, removeTerminalBlock,
+     NAME_edit, "Take this command out of the buffer")
+};
+
+static getdecl get_terminal_block[] =
+{ GM(NAME_prompt, 0, "int", NULL, getPromptTerminalBlock,
+     NAME_indices, "Index where the prompt starts (OSC 133 A)"),
+  GM(NAME_input, 0, "int", NULL, getInputTerminalBlock,
+     NAME_indices, "Index where the entered line starts (OSC 133 B)"),
+  GM(NAME_output, 0, "int", NULL, getOutputTerminalBlock,
+     NAME_indices, "Index where its output starts (OSC 133 C)"),
+  GM(NAME_end, 0, "int", NULL, getEndTerminalBlock,
+     NAME_indices, "Index where its output ends (OSC 133 D)"),
+  GM(NAME_content, 1, "string", T_blockWhat, getContentTerminalBlock,
+     NAME_text, "New string with the text of this block")
+};
+
+#define rc_terminal_block NULL
+
+static Name terminal_block_termnames[] =
+	{ NAME_terminal };
+
+ClassDecl(terminal_block_decls,
+	  var_terminal_block, send_terminal_block, get_terminal_block,
+	  rc_terminal_block,
+	  1, terminal_block_termnames);
+
+status
+makeClassTerminalBlock(Class class)
+{ declareClass(class, &terminal_block_decls);
+
+  succeed;
+}
+
+
+/* Which block a place in the buffer belongs to, if any.  A place is a
+ * character index, or a point or an event to take the pixels from -- the
+ * same choice <-link offers.  A click in the gutter asks this to find out
+ * what its triangle belongs to.
+ */
+
+static TerminalBlock
+block_at_position(TerminalImage ti, int line, int cell)
+{ RlcData b = ti->data;
+  Cell cl;
+
+  for_cell(cl, ti->blocks)
+  { TerminalBlock tb = cl->value;
+    int sl, sc, el, ec;
+
+    if ( block_range(tb, NAME_all, &sl, &sc, &el, &ec) &&
+	 !rlc_sel_lt(b, line, cell, sl, sc) &&
+	 !rlc_sel_lt(b, el, ec, line, cell) )
+      return tb;
+  }
+
+  return NULL;
+}
+
+
+static TerminalBlock
+getBlockAtTerminalImage(TerminalImage ti, Any where)
+{ RlcData b = ti->data;
+  TerminalBlock tb;
+  int line, cell;
+
+  if ( isInteger(where) )
+  { size_t len;
+    rlc_pos *pos;
+    uchar_t *text = rlc_buffer_text(b, &len, &pos);
+    ssize_t i = valInt(where);
+
+    if ( !text )
+      fail;
+    if ( i >= 0 && (size_t)i <= len )
+    { rlc_pos p = rlc_pos_start(b, text, pos, len, i);
+      line = p.line;
+      cell = p.cell;
+    } else
+      line = -1;
+    rlc_free(text);
+    rlc_free(pos);
+    if ( line < 0 )
+      fail;
+  } else
+  { Int x, y;
+
+    if ( instanceOfObject(where, ClassEvent) )
+    { get_xy_event(where, ti, ON, &x, &y);
+    } else
+    { Point pt = where;
+      x = pt->x;
+      y = pt->y;
+    }
+    rlc_translate_mouse(b, valInt(x), valInt(y), &line, &cell);
+  }
+
+  if ( (tb=block_at_position(ti, line, cell)) )
+    answer(tb);
+
+  fail;
+}
+
+
+/** The block whose fold marker is at a position, i.e. whether the
+ * pointer is on a triangle in the margin.  What a click there acts on,
+ * and what decides whether a popup is about the block or about the
+ * terminal.
+ */
+
+static TerminalBlock
+getFoldAtTerminalImage(TerminalImage ti, Any where)
+{ TerminalBlock tb;
+  Int x, y;
+
+  if ( instanceOfObject(where, ClassEvent) )
+  { get_xy_event(where, ti, ON, &x, &y);
+  } else
+  { Point pt = where;
+    x = pt->x;
+    y = pt->y;
+  }
+
+  if ( (tb=rlc_fold_at_gutter(ti, valInt(x), valInt(y))) )
+    answer(tb);
+
+  fail;
+}
+
+
+static TerminalBlock
+getBlockTerminalImage(TerminalImage ti, Int id)
+{ Cell cl;
+
+  for_cell(cl, ti->blocks)
+  { TerminalBlock tb = cl->value;
+
+    if ( tb->id == id )
+      answer(tb);
+  }
+
+  fail;
+}
+
+
+static status
+foldAllTerminalImage(TerminalImage ti)
+{ Cell cl;
+
+  for_cell(cl, ti->blocks)
+    send(cl->value, NAME_fold, EAV);
+
+  succeed;
+}
+
+
+static status
+unfoldAllTerminalImage(TerminalImage ti)
+{ Cell cl;
+
+  for_cell(cl, ti->blocks)
+    send(cl->value, NAME_unfold, EAV);
+
+  succeed;
+}
+
+
 /* Type declarations */
 
 static char *T_initialise[] =
@@ -1036,9 +3952,24 @@ static char *T_scrollVertical[] =
 { "direction={forwards,backwards,goto}",
   "unit={file,page,line}", "amount=int" };
 static char *T_font[] =
-{ "font=font", "bold=[font]" };
+{ "font=font", "bold=[font]", "italic=[font]", "bold_italic=[font]" };
+static char *T_workingDirectory[] =
+{ "directory=name*", "host=name*" };
+static char *T_promptMark[] =
+{ "kind={prompt,input,output,end}", "continuation=[bool]" };
+static char *T_sendInput[] =
+{ "text=char_array", "tail=[0..]" };
 static char *T_print[] =
 { "start=[int]", "count=[int]" };
+static char *T_find[] =
+{ "from=int", "for=string", "times=[int]",
+  "return=[{start,end}]", "exact_case=[bool]", "word=[bool]" };
+static char *T_contents[] =
+{ "from=[int]", "size=[int]" };
+static char *T_selection[] =
+{ "from=[int]", "to=[int]" };
+static char *T_cellStyle[] =
+{ "column=int", "row=int" };
 
 static vardecl var_terminal_image[] =
 { IV(NAME_bindings, "key_binding", IV_BOTH,
@@ -1047,11 +3978,20 @@ static vardecl var_terminal_image[] =
      NAME_appearance, "Font used to draw the string"),
   IV(NAME_boldFont, "font*", IV_GET,
      NAME_appearance, "Font for bold text"),
+  IV(NAME_italicFont, "font*", IV_GET,
+     NAME_appearance, "Font for italic text"),
+  IV(NAME_boldItalicFont, "font*", IV_GET,
+     NAME_appearance, "Font for bold italic text"),
   SV(NAME_background, "[colour]", IV_GET|IV_STORE, backgroundTerminalImage,
      NAME_appearance, "Terminal background colour"),
   SV(NAME_selectionStyle, "[style]", IV_GET|IV_STORE,
      selectionStyleTerminalImage,
      NAME_appearance, "Feedback for the selection"),
+  SV(NAME_isearchStyle, "style*", IV_GET|IV_STORE, isearchStyleTerminalImage,
+     NAME_appearance, "Feedback for the hit of an incremental search"),
+  SV(NAME_isearchOtherStyle, "style*", IV_GET|IV_STORE,
+     isearchOtherStyleTerminalImage,
+     NAME_appearance, "Feedback for its other matches on the page"),
   SV(NAME_nfdStyle, "style*", IV_GET|IV_STORE, nfdStyleTerminalImage,
      NAME_appearance, "Style for NFD grapheme clusters (@nil to disable)"),
   SV(NAME_linkStyle, "style*", IV_GET|IV_STORE, linkStyleTerminalImage,
@@ -1059,10 +3999,14 @@ static vardecl var_terminal_image[] =
   SV(NAME_linkArmedStyle, "style*", IV_GET|IV_STORE,
      linkArmedStyleTerminalImage,
      NAME_appearance, "Style for the hyperlink under the mouse"),
+  SV(NAME_foldStyle, "style*", IV_GET|IV_STORE, foldStyleTerminalImage,
+     NAME_appearance, "Style for the fold marker (@nil for none)"),
   SV(NAME_ansiColours, "vector*", IV_GET|IV_STORE, ansiColoursTerminalImage,
      NAME_appearance, "The 16 ansi colours"),
   IV(NAME_armedLink, "bool", IV_GET,
      NAME_event, "Hovering a link"),
+  IV(NAME_armedFold, "bool", IV_GET,
+     NAME_event, "Hovering the marker of a fold"),
   IV(NAME_linkMessage, "code*", IV_BOTH,
      NAME_event, "Hovering a link"),
   IV(NAME_scrollBar, "scroll_bar*", IV_BOTH,
@@ -1071,6 +4015,28 @@ static vardecl var_terminal_image[] =
      NAME_memory, "How many lines are saved for scroll back"),
   IV(NAME_syntax, "syntax_table", IV_BOTH,
      NAME_language, "Description of the used syntax"),
+  IV(NAME_focusFunction, "name*", IV_GET,
+     NAME_event, "Method that gets the keys while it succeeds"),
+  IV(NAME_searchString, "string*", IV_GET,
+     NAME_search, "What the incremental search is looking for"),
+  IV(NAME_selectionString, "string*", IV_GET,
+     NAME_search, "Selection whose other occurrences are highlighted"),
+  IV(NAME_searchDirection, "{forward,backward}", IV_GET,
+     NAME_search, "Direction of the incremental search"),
+  IV(NAME_searchWrappedWarned, "bool", IV_NONE,
+     NAME_search, "The search reported hitting the end of the buffer"),
+  SV(NAME_exactCase, "bool", IV_GET|IV_STORE, exactCaseTerminalImage,
+     NAME_search, "Search is case sensitive"),
+  SV(NAME_searchWord, "bool", IV_GET|IV_STORE, searchWordTerminalImage,
+     NAME_search, "Search matches whole words only"),
+  IV(NAME_workingDirectory, "name*", IV_GET,
+     NAME_process, "Directory the client reported (OSC 7 or OSC 9;9)"),
+  IV(NAME_host, "name*", IV_GET,
+     NAME_process, "Host it reported that directory on (@nil: this one)"),
+  IV(NAME_blocks, "chain", IV_GET,
+     NAME_process, "terminal_block objects, oldest first"),
+  IV(NAME_dragScrollTimer, "timer*", IV_NONE,
+     NAME_scroll, "Scrolls while the selection is dragged outside"),
   IV(NAME_data, "alien:RlcData", IV_NONE,
      NAME_cache, "Line buffer and related data")
 };
@@ -1082,28 +4048,32 @@ static senddecl send_terminal_image[] =
      DEFAULT, "Destroy data"),
   SM(NAME_geometry, 4, T_geometry, geometryTerminalImage,
      DEFAULT, "Change geometry"),
-  SM(NAME_font, 2, T_font, fontTerminalImage,
-     NAME_appearance, "Set font and bold font"),
+  SM(NAME_font, 4, T_font, fontTerminalImage,
+     NAME_appearance, "Set font and its bold and italic variants"),
   SM(NAME_compute, 0, NULL, computeTerminalImage,
      NAME_repaint, "Recompute the terminal image"),
   SM(NAME_bubbleScrollBar, 1, "scroll_bar", bubbleScrollBarTerminalImage,
      NAME_scroll, "Update bubble of given scroll_bar object"),
   SM(NAME_scrollVertical, 3, T_scrollVertical, scrollVerticalTerminalImage,
      NAME_scroll, "Trap scroll_bar request"),
+  SM(NAME_dragScroll, 0, NULL, dragScrollTerminalImage,
+     NAME_scroll, "Scroll and extend the selection dragged outside"),
   SM(NAME_WantsKeyboardFocus, 0, NULL, succeedObject,
      NAME_event, "Test if ready to accept input (true)"),
   SM(NAME_event, 1, "event", eventTerminalImage,
      NAME_event, "Handle a general event"),
+  SM(NAME_inputFocus, 1, "bool", inputFocusTerminalImage,
+     NAME_event, "The terminal gained or lost the keyboard focus"),
   SM(NAME_typed, 1, "event", typedTerminalImage,
      NAME_event, "Process a keystroke"),
-  SM(NAME_insertSelf, 1, "0..", insertSelfTerminalImage,
+  SM(NAME_insertSelf, 1, "char", insertSelfTerminalImage,
      NAME_event, "Process a keystroke"),
   SM(NAME_copy, 1, "which=[{primary,clipboard}]", copyTerminalImage,
      NAME_selection, "Copy selected text to clipboard or primary selection"),
   SM(NAME_paste, 1, "which=[{primary,clipboard}]", pasteTerminalImage,
      NAME_selection, "Paste content of clipboard or primary selection"),
   SM(NAME_interrupt, 0, NULL, interruptTerminalImage,
-     NAME_event, "Virtual method called on Ctrl-C"),
+     NAME_event, "Interrupt the foreground process; fail if there is none"),
   SM(NAME_copyOrInterrupt, 0, NULL, copyOrInterruptTerminalImage,
      NAME_selection, "Copy if there is selected text; else interrupt"),
   SM(NAME_cursorEnd, 0, NULL, cursorEndTerminalImage,
@@ -1116,16 +4086,51 @@ static senddecl send_terminal_image[] =
      NAME_event, "Handle 'page-down'-key"),
   SM(NAME_hasSelection, 0, NULL, hasSelectionTerminalImage,
      NAME_selection, "True if the image has a non-empty selection"),
+  SM(NAME_foldAll, 0, NULL, foldAllTerminalImage,
+     NAME_appearance, "Hide the output of every finished command"),
+  SM(NAME_unfoldAll, 0, NULL, unfoldAllTerminalImage,
+     NAME_appearance, "Show the output of every command again"),
   SM(NAME_selectAll, 0, NULL, selectAllTerminalImage,
      NAME_selection, "Select all text in the buffer"),
+  SM(NAME_deleteSelection, 0, NULL, deleteSelectionTerminalImage,
+     NAME_selection, "Delete the selection if it is in the input"),
+  SM(NAME_cut, 0, NULL, cutTerminalImage,
+     NAME_selection, "Copy and delete the selection in the input"),
+  SM(NAME_cuaKeyAsPrefix, 1, "event|event_id", cuaKeyAsPrefixTerminalImage,
+     NAME_event, "Is ^X a prefix rather than cut?"),
+  SM(NAME_selection, 2, T_selection, selectionTerminalImage,
+     NAME_selection, "Make [from, to) the selection"),
+  SM(NAME_scrollTo, 1, "index=int", scrollToTerminalImage,
+     NAME_scroll, "Scroll the line holding index into view"),
+  SM(NAME_isearchForward, 0, NULL, isearchForwardTerminalImage,
+     NAME_search, "Start an incremental search towards the end"),
+  SM(NAME_isearchBackward, 0, NULL, isearchBackwardTerminalImage,
+     NAME_search, "Start an incremental search towards the start"),
+  SM(NAME_isearchSelectionForward, 0, NULL,
+     isearchSelectionForwardTerminalImage,
+     NAME_search, "Search on from the selection towards the end"),
+  SM(NAME_isearchSelectionBackward, 0, NULL,
+     isearchSelectionBackwardTerminalImage,
+     NAME_search, "Search on from the selection towards the start"),
+  SM(NAME_Isearch, 1, "event", IsearchTerminalImage,
+     NAME_search, "Focus function of an incremental search"),
   SM(NAME_send, 1, "text=char_array", sendTerminalImage,
      NAME_insert, "Send text to the connected process"),
+  SM(NAME_clearInput, 0, NULL, clearInputTerminalImage,
+     NAME_insert, "Delete the first line of a command being edited"),
+  SM(NAME_sendInput, 2, T_sendInput, sendInputTerminalImage,
+     NAME_insert, "Paste into the first line of a command being edited"),
   SM(NAME_insert, 1, "text=char_array", insertTerminalImage,
      NAME_insert, "Insert text at caret (moves caret)"),
   SM(NAME_print, 2, T_print, printTerminalImage,
      NAME_debug, "Print content of the window"),
   SM(NAME_windowLabel, 1, "char_array", windowLabelTerminalImage,
      NAME_label, "Called on OSC 0 <window title>"),
+  SM(NAME_workingDirectory, 2, T_workingDirectory,
+     workingDirectoryTerminalImage,
+     NAME_process, "Called on OSC 7 or OSC 9;9 <directory>"),
+  SM(NAME_promptMark, 2, T_promptMark, promptMarkTerminalImage,
+     NAME_process, "Called on OSC 133 <semantic prompt mark>"),
 #ifdef __WINDOWS__
   SM(NAME_launch, 1, "char_array", launchTerminalImage,
      NAME_process, "Run process in the terminal"),
@@ -1135,21 +4140,71 @@ static senddecl send_terminal_image[] =
 static getdecl get_terminal_image[] =
 { GM(NAME_ptyName, 0, "pty=name*", NULL, getPtyNameTerminalImage,
      NAME_process, "Path name for the pty"),
+  GM(NAME_foregroundProcess, 0, "int", NULL,
+     getForegroundProcessTerminalImage,
+     NAME_process, "Process group of another session owning the pty"),
+  GM(NAME_ttyEcho, 0, "bool", NULL,
+     getTtyEchoTerminalImage,
+     NAME_process, "Whether the tty echoes what we send it"),
+  GM(NAME_input, 0, "tuple", NULL, getInputTerminalImage,
+     NAME_insert, "tuple(Text, Tail) of the command line being edited"),
+  GM(NAME_foregroundDirectory, 0, "directory=name", NULL,
+     getForegroundDirectoryTerminalImage,
+     NAME_process, "Working directory of <-foreground_process"),
   GM(NAME_displayedCursor, 0, "cursor=cursor", NULL,
      getDisplayedCursorTerminalImage,
      NAME_event, "Indicate normal cursor or link"),
   GM(NAME_selected, 0, "string", NULL,
      getSelectedTerminalImage,
      NAME_selection, "New string with contents of selection"),
+  GM(NAME_matchWord, 0, "bool", NULL,
+     getMatchWordTerminalImage,
+     NAME_search, "Whether matching asks for whole words now"),
   GM(NAME_cursorPosition, 0, "point", NULL,
      getCursorPositionTerminalImage,
      NAME_cursor, "Logical cursor position as point(col, row)"),
+  GM(NAME_selectionStart, 0, "point", NULL,
+     getSelectionStartTerminalImage,
+     NAME_selection, "Anchor of the selection as point(col, row)"),
+  GM(NAME_selectionEnd, 0, "point", NULL,
+     getSelectionEndTerminalImage,
+     NAME_selection, "Moving end of the selection as point(col, row)"),
   GM(NAME_row, 1, "string", "int",
      getRowTerminalImage,
      NAME_text, "Text content of visible row (0-based from top)"),
+  GM(NAME_columns, 0, "int", NULL,
+     getColumnsTerminalImage,
+     NAME_dimension, "Width of the terminal in characters"),
+  GM(NAME_rows, 0, "int", NULL,
+     getRowsTerminalImage,
+     NAME_dimension, "Height of the terminal in characters"),
   GM(NAME_link, 1, "name", "point|event",
      getURLTerminalImage,
-     NAME_selected, "Hyperlink content and location")
+     NAME_selected, "Hyperlink content and location"),
+  GM(NAME_cellStyle, 2, "style", T_cellStyle,
+     getCellStyleTerminalImage,
+     NAME_appearance, "Style painted over a cell, if any"),
+  GM(NAME_cwidth, 1, "int", "code=int",
+     getCwidthTerminalImage,
+     NAME_text, "Columns occupied by a code point in this font"),
+  GM(NAME_find, 6, "index=int", T_find,
+     getFindTerminalImage,
+     NAME_search, "Search for a string"),
+  GM(NAME_length, 0, "int", NULL,
+     getLengthTerminalImage,
+     NAME_search, "Number of characters in the buffer"),
+  GM(NAME_contents, 2, "string", T_contents,
+     getContentsTerminalImage,
+     NAME_text, "Text of the buffer from index"),
+  GM(NAME_block, 1, "terminal_block", "id=int",
+     getBlockTerminalImage,
+     NAME_process, "Block with this <-id"),
+  GM(NAME_blockAt, 1, "terminal_block", "at=int|point|event",
+     getBlockAtTerminalImage,
+     NAME_process, "Block holding an index or a position"),
+  GM(NAME_foldAt, 1, "terminal_block", "at=point|event",
+     getFoldAtTerminalImage,
+     NAME_process, "Block whose fold marker is at this position")
 };
 
 static classvardecl rc_terminal_image[] =
@@ -1165,6 +4220,16 @@ static classvardecl rc_terminal_image[] =
      UXWIN("style(background := yellow)",
 	   "@_select_style"),
      "Style for <-selection"),
+  RC(NAME_isearchStyle, "style*",
+     "style(background := green)",
+     "Style for the hit of an incremental search"),
+  RC(NAME_isearchOtherStyle, "style*",
+     "style(background := pale_turquoise)",
+     "Style for its other matches on the page (@nil for none)"),
+  RC(NAME_exactCase, "bool", "@off",
+     "Incremental search is case sensitive"),
+  RC(NAME_searchWord, "bool", "@off",
+     "Incremental search matches whole words only"),
   RC(NAME_nfdStyle, "style*", "@nil",
      "Style for NFD grapheme clusters (default off)"),
   RC(NAME_linkStyle, "style*",
@@ -1173,6 +4238,9 @@ static classvardecl rc_terminal_image[] =
   RC(NAME_linkArmedStyle, "style*",
      "style(colour := blue, underline := @on)",
      "Style for the hyperlink under the mouse"),
+  RC(NAME_foldStyle, "style*",
+     "style(colour := grey50)",
+     "Style for the fold marker and its tally (@nil for none)"),
   RC(NAME_autoCopy, "bool", UXWINMAC("@on", "@off", "@off"),
      "Automatically copy selected text to the clipboard"),
   RC(NAME_saveLines, "int", "1000",
@@ -1183,6 +4251,10 @@ static classvardecl rc_terminal_image[] =
      "Default font"),
   RC(NAME_boldFont, "font*", "boldtt",
      "Bold font"),
+  RC(NAME_italicFont, "font*", "itt",
+     "Italic font"),
+  RC(NAME_boldItalicFont, "font*", "bitt",
+     "Bold italic font"),
   RC(NAME_ansiColours, "vector*",
      "vector("
      "colour(black),"
@@ -1218,7 +4290,6 @@ status
 makeClassTerminalImage(Class class)
 { declareClass(class, &terminal_image_decls);
 
-//  setCloneFunctionClass(class, cloneEditor);
   setRedrawFunctionClass(class, RedrawAreaTerminalImage);
 
   succeed;
@@ -1262,26 +4333,6 @@ ucscpy(uchar_t *dst, const uchar_t *src)
   *dst = 0;
 }
 
-#if 0
-static void
-ucsncpy(uchar_t *dst, const uchar_t *src, size_t len)
-{ while(*src && len-- > 0)
-    *dst++ = *src++;
-  *dst = 0;
-}
-#endif
-
-static int
-cuncmp(const char *s1, const uchar_t *s2, size_t len)
-{ const unsigned char *u1 = (const unsigned char*)s1;
-  for(; len-- > 0; u1++, s2++)
-  { int d = *u1 - *s2;
-    if ( d )
-      return d;
-  }
-  return 0;
-}
-
 static int
 ucscmp(const uchar_t *s1, const uchar_t *s2)
 { while(*s1 == *s2 && *s1)
@@ -1292,24 +4343,6 @@ ucscmp(const uchar_t *s1, const uchar_t *s2)
   return *s1-*s2;
 }
 
-
-static uchar_t *
-ucstr(const uchar_t *haystack, const char *needle)
-{ for(; *haystack; haystack++)
-  { const unsigned char *n = (const unsigned char*)needle;
-    const uchar_t *h = haystack;
-    for(; *n; n++, h++)
-    { if ( *n != *h )
-	break;
-      if ( !*h )
-	return NULL;
-    }
-    if ( !*n )
-      return (uchar_t*)haystack;
-  }
-
-  return NULL;
-}
 
 
 static Name
@@ -1364,12 +4397,26 @@ again:
 		 *******************************/
 
 /**
- * Handle  an typed  character.  C-c  and C-v  are handled  here.  All
- * other characters are added to the queue of this terminal.
+ * Send a typed character to the client as UTF-8.
+ *
+ * ^Z is dropped while we are our own client: it would stop the thread
+ * running this window and nothing is left to continue it.  Once a
+ * process group of another session holds the terminal the character
+ * goes through, so that a shell started on it can suspend its jobs.
+ * A client that turned signals off wants the character as data, and
+ * then rlc_suspend_char() reports none.
  */
 static void
 typed_char(RlcData b, int chr)
-{ rlc_set_selection(b, 0, 0, 0, 0);
+{ int susp;
+
+  rlc_set_selection(b, 0, 0, 0, 0);
+
+  if ( !rlc_client_owns_terminal(b) &&
+       (susp=rlc_suspend_char(b)) > 0 && chr == susp )
+  { DEBUG(NAME_term, Cprintf("Not sending %d: would stop the client\n", chr));
+    return;
+  }
 
   DEBUG(NAME_term, Cprintf("Send %d to client\n", chr));
   char buf[6];
@@ -1396,7 +4443,20 @@ rlc_is_word_char(RlcData b, int chr)
 		 *	    SELECTION		*
 		 *******************************/
 
-#define SelLT(l1, c1, l2, c2) ((l1) < (l2) || ((l1) == (l2) && (c1) < (c2)))
+/* Is (l1,c1) before (l2,c2)?  The lines live in a ring, so their bare
+ * indices do not order them: once it has wrapped, a line further down
+ * the screen has the smaller index.  Comparing the indices made a drag
+ * downwards look like a drag upwards, and extending a selection over
+ * the wrap did not extend it at all. */
+
+static bool
+rlc_sel_lt(RlcData b, int l1, int c1, int l2, int c2)
+{ int n1 = rlc_count_lines(b, b->first, l1);
+  int n2 = rlc_count_lines(b, b->first, l2);
+
+  return n1 < n2 || (n1 == n2 && c1 < c2);
+}
+
 #define SelEQ(l1, c1, l2, c2) ((l1) == (l2) && (c1) == (c2))
 
 static int
@@ -1490,76 +4550,324 @@ rlc_set_selection(RlcData b, int sl, int sc, int el, int ec)
   b->sel_end_line   = el;
   b->sel_end_char   = ec;
 
-					/* ... and request a repaint */
+					/* ... and request a repaint, which */
+					/* says what to highlight as well */
   rlc_request_redraw(b);
 }
 
 
-void
+static void
 rlc_translate_mouse(RlcData b, int x, int y, int *line, int *chr)
 { int ln = b->window_start;
   int n = b->window_size;		/* # lines */
   RlcTextLine tl;
   x-= b->cw;				/* margin */
 
-//  if ( !b->window )
-//    return;
-
   while( y > b->ch && ln != b->last && n-- > 0 )
-  { ln = NextLine(b, ln);
+  { ln = rlc_view_next(b, ln);
     y -= b->ch;
   }
   *line = ln;
   tl = &b->lines[ln];
 
-  if ( b->fixedfont )
-  { /* Map pixel x to character index, accounting for double-width cells. */
-    int col = 0;		/* accumulated visual column (in cw units) */
-    int ci  = 0;		/* character index */
-    while ( ci < tl->size )
-    { int w = tc_display_width(&tl->text[ci]);
-      if ( w == 0 ) { ci++; continue; }	/* skip combining chars */
-      if ( (col + w) * (int)b->cw > x )
-	break;
-      col += w;
-      ci++;
-    }
-    *chr = ci;
-  } else if ( tl->size == 0 )
-  { *chr = 0;
-  } else
-  { text_char *s = tl->text;
-    int f = 0;
-    int t = tl->size;
-    int m = (f+t)/2;
-    int i;
-
-    for(i=10; --i > 0; m=(f+t)/2)
-    { int w;
-
-      w = text_width(b, s, m);
-      if ( x > w )
-      { int cw = 0;
-
-	if ( x < w+cw )
-	{ *chr = m;
-	  return;
-	}
-	f = m+1;
-      } else
-      { t = m;
-      }
-    }
-
-    /* The binary search drives off text_width, which sums display widths
-     * and thus treats a combining mark as width 0.  That means consecutive
-     * m values can span a combining-mark cell without the sum changing,
-     * and m can settle on a combining cell (width 0 in display but a real
-     * code-point cell).  Snap the result to the start of its grapheme
-     * cluster so callers (selection, click handlers) get a cluster-base
-     * cell, never a combiner. */
-    *chr = rlc_snap_start(tl, m);
+  /* Map pixel x to the character index of the cell it is in, accounting
+   * for double-width cells.  This is the same col × cw geometry that
+   * paint uses, for a proportional font as well: see
+   * rlc_init_text_dimensions().  A cell owns the pixels from its own
+   * column boundary up to the next one, so the leftmost pixel of a cell
+   * belongs to that cell rather than to the one before it.  Combining
+   * marks take no column, so the result is a cluster base or tl->size.
+   */
+  int col = 0;			/* accumulated visual column (in cw units) */
+  int ci  = 0;			/* character index */
+  while ( ci < tl->size )
+  { int w = tc_display_width(&tl->text[ci]);
+    if ( w == 0 ) { ci++; continue; }	/* skip combining chars */
+    if ( (col + w) * (int)b->cw > x )
+      break;
+    col += w;
+    ci++;
   }
+  *chr = ci;
+}
+
+
+/* Move the client's caret to a clicked position.
+ *
+ * The line being edited belongs to the client, not to us, so we cannot
+ * put the caret anywhere: we can only ask, and the request every line
+ * editor understands is cursor-left and cursor-right.  Count the
+ * grapheme clusters between the caret and the click and send that
+ * many.  Only inside the logical line the caret is on -- the line
+ * being edited -- so a click anywhere else still just starts a
+ * selection.
+ *
+ * And only while a line editor is there to understand the request.
+ * The client that asks for a single character -- the Prolog tracer at
+ * its `? ' prompt, get_single_char/1, with_tty_raw/1 -- reads the ESC
+ * of the first cursor key as the answer and reports it as an unknown
+ * command.  The tty tells us nothing: it is in the same non-canonical
+ * mode either way.  Two things a client says do.
+ *
+ * The OSC 133 marks say it outright: between `B' and `C' there is a
+ * line being edited, and `B' landed where it starts, so a click in
+ * front of it can be taken to mean the start of the input rather than
+ * a walk into the prompt.
+ *
+ * Bracketed paste is what is left for a client that does not mark its
+ * prompts, which is most of them: a line editor turns DEC private mode
+ * 2004 on while it owns the input and off while a command runs, so it
+ * is on when there is a caret to move.  See rlc_editing_line().
+ */
+
+#define MAX_CLICK_MOVE 4096		/* don't flood the client */
+
+static int
+rlc_logical_start(RlcData b, int line)
+{ while ( line != b->first && b->lines[PrevLine(b, line)].softreturn )
+    line = PrevLine(b, line);
+
+  return line;
+}
+
+/* Grapheme clusters from (l1,c1) forward to (l2,c2).  The caller
+ * guarantees both are on the same logical line and (l1,c1) comes
+ * first.
+ */
+
+static int
+rlc_cluster_distance(RlcData b, int l1, int c1, int l2, int c2)
+{ int n = 0;
+
+  for(;;)
+  { RlcTextLine tl = &b->lines[l1];
+
+    if ( (l1 == l2 && c1 >= c2) || n >= MAX_CLICK_MOVE )
+      return n;
+
+    if ( c1 >= tl->size )		/* on to the next wrapped row */
+    { if ( l1 == b->last )
+	return n;
+      l1 = NextLine(b, l1);
+      c1 = 0;
+      continue;
+    }
+
+    c1 = rlc_cluster_next(tl, c1);
+    n++;
+  }
+}
+
+/* Is a line editor there to understand a request to move its caret?
+ *
+ * A client that marks its prompts is taken at its word.  One that does
+ * not leaves us with bracketed paste, which a line editor turns on
+ * while it owns the input and off while a command runs.  Which of the
+ * two is asked is decided per prompt: turning bracketed paste on
+ * without marking what follows is how a shell that never heard of OSC
+ * 133 takes this window over.
+ */
+
+static bool
+rlc_editing_line(RlcData b)
+{ return b->prompt_marks ? b->input_active : b->bracketed_paste_mode;
+}
+
+
+/* Where the line being edited starts, if the client marked it and the
+ * mark is still on the line the caret is on.  Scrolling the mark out of
+ * the buffer or off its line leaves it behind, so it is checked rather
+ * than trusted.
+ */
+
+static bool
+rlc_input_start(RlcData b, int line, int *sl, int *sc)
+{ if ( b->input_active &&
+       rlc_between(b, b->first, b->last, b->input_line) &&
+       rlc_logical_start(b, b->input_line) == rlc_logical_start(b, line) )
+  { *sl = b->input_line;
+    *sc = b->input_char;
+    return true;
+  }
+
+  return false;
+}
+
+
+/* rlc_caret_to()
+ *	Walk the caret of the line being edited to (line, chr) by handing
+ *	the client cursor keys.  We do not move it ourselves: the program
+ *	on the terminal owns the line, and only it knows what a step
+ *	across a grapheme cluster costs.
+ */
+
+static void
+rlc_caret_to(RlcData b, int line, int chr)
+{ const char *seq;
+  int n, i;
+
+  if ( rlc_sel_lt(b, line, chr, b->caret_y, b->caret_x) )
+  { n = rlc_cluster_distance(b, line, chr, b->caret_y, b->caret_x);
+    seq = b->app_escape ? S_ESC"OD" : S_ESC"[D";
+  } else
+  { n = rlc_cluster_distance(b, b->caret_y, b->caret_x, line, chr);
+    seq = b->app_escape ? S_ESC"OC" : S_ESC"[C";
+  }
+
+  for(i=0; i<n; i++)
+    rlc_send(b, seq, strlen(seq));
+}
+
+
+static bool
+rlc_caret_to_click(RlcData b, int x, int y)
+{ int line, chr;
+  int sl, sc;
+
+  if ( !rlc_editing_line(b) )		/* nobody is editing a line */
+    return false;
+
+  rlc_translate_mouse(b, x, y, &line, &chr);
+  if ( !rlc_between(b, b->first, b->last, line) ||
+       rlc_logical_start(b, line) != rlc_logical_start(b, b->caret_y) )
+    return false;
+
+  if ( rlc_input_start(b, line, &sl, &sc) &&
+       rlc_sel_lt(b, line, chr, sl, sc) )
+  { line = sl;				/* a click in the prompt means */
+    chr  = sc;				/* the start of the input */
+  }
+
+  rlc_caret_to(b, line, chr);
+
+  return true;
+}
+
+
+/* rlc_logical_end()
+ *	The last position of the logical line `line' is part of: the end
+ *	of the text on the last of its soft-wrapped rows.
+ */
+
+static void
+rlc_logical_end(RlcData b, int line, int *el, int *ec)
+{ while ( line != b->last && b->lines[line].softreturn )
+    line = NextLine(b, line);
+
+  *el = line;
+  *ec = b->lines[line].size;
+}
+
+
+/* rlc_selection_in_input()
+ *	Is the selection entirely inside the line being edited?  If so,
+ *	answer its range, ordered.  Only then may we delete it: anything
+ *	else on the screen is output, which we cannot take back.
+ */
+
+/* rlc_selection_range()
+ *	The selection ordered: (sl,sc) is where it starts in the text and
+ *	(el,ec) where it ends, whichever of the two the user anchored it
+ *	at.
+ */
+
+static void
+rlc_selection_range(RlcData b, int *sl, int *sc, int *el, int *ec)
+{ if ( rlc_sel_lt(b, b->sel_start_line, b->sel_start_char,
+		     b->sel_end_line, b->sel_end_char) )
+  { *sl = b->sel_start_line; *sc = b->sel_start_char;
+    *el = b->sel_end_line;   *ec = b->sel_end_char;
+  } else
+  { *sl = b->sel_end_line;   *sc = b->sel_end_char;
+    *el = b->sel_start_line; *ec = b->sel_start_char;
+  }
+}
+
+
+static bool
+rlc_selection_in_input(RlcData b, int *sl, int *sc, int *el, int *ec)
+{ int isl, isc, lel, lec;
+
+  if ( !rlc_editing_line(b) || !rlc_has_selection(b) )
+    return false;
+
+  rlc_selection_range(b, sl, sc, el, ec);
+
+					/* one logical line, the one we
+					   are editing */
+  if ( rlc_logical_start(b, *sl) != rlc_logical_start(b, b->caret_y) ||
+       rlc_logical_start(b, *el) != rlc_logical_start(b, b->caret_y) )
+    return false;
+
+					/* at or after the prompt */
+  if ( !rlc_input_start(b, *sl, &isl, &isc) ||
+       rlc_sel_lt(b, *sl, *sc, isl, isc) )
+    return false;
+
+					/* not past the end of the text */
+  rlc_logical_end(b, b->caret_y, &lel, &lec);
+  if ( rlc_sel_lt(b, lel, lec, *el, *ec) )
+    return false;
+
+  return true;
+}
+
+
+/* rlc_selection_on_input()
+ *	Does the selection cover any of the text being edited?  Where
+ *	rlc_selection_in_input() asks whether we may edit the selection,
+ *	this asks only whether editing the line can leave it standing
+ *	over something else, so a selection that runs from the output
+ *	into the input counts too.  The prompt in front of the input does
+ *	not: it is redrawn as it was.
+ */
+
+static bool
+rlc_selection_on_input(RlcData b)
+{ int sl, sc, el, ec, isl, isc, lel, lec;
+
+  if ( !rlc_editing_line(b) || !rlc_has_selection(b) )
+    return false;
+
+  if ( !rlc_input_start(b, b->caret_y, &isl, &isc) )
+    return false;
+
+  rlc_selection_range(b, &sl, &sc, &el, &ec);
+  rlc_logical_end(b, b->caret_y, &lel, &lec);
+
+  return rlc_sel_lt(b, sl, sc, lel, lec) &&	/* starts before its end */
+	 rlc_sel_lt(b, isl, isc, el, ec);	/* ends after its start */
+}
+
+
+/* rlc_first_input()
+ *	Is the client reading the first line of a command, and if so, where
+ *	does that line run?  From where the client marked its input (OSC
+ *	133 `B') to the end of the text on the logical line of the caret.
+ *
+ *	Only a prompt the client does not mark `k=s' counts.  A `k=s'
+ *	prompt asks for more of an input the client has not finished
+ *	collecting, and what it has read of it cannot be taken back.  The
+ *	Prolog toplevel is such a client: once the prompt of a query is
+ *	used, everything it reads is a continuation, a read/1 of the goal
+ *	that runs included.  A client that marks no prompts tells us
+ *	nothing, and neither does bracketed paste: it is on for every line
+ *	that is edited, not just for the first.
+ */
+
+static bool
+rlc_first_input(RlcData b, int *sl, int *sc, int *el, int *ec)
+{ if ( !b->prompt_marks || !b->input_active || b->input_continued ||
+       !rlc_input_start(b, b->caret_y, sl, sc) )
+    return false;
+
+  rlc_logical_end(b, b->caret_y, el, ec);
+  if ( rlc_sel_lt(b, *el, *ec, *sl, *sc) )
+  { *el = *sl;				/* nothing typed behind the mark */
+    *ec = *sc;
+  }
+
+  return true;
 }
 
 
@@ -1569,6 +4877,7 @@ rlc_start_selection(RlcData b, int x, int y)
 
   rlc_translate_mouse(b, x, y, &l, &c);
   b->sel_unit = SEL_CHAR;
+  b->sel_word = false;
   b->sel_org_line = l;
   b->sel_org_char = c;
   rlc_set_selection(b, l, c, l, c);
@@ -1636,6 +4945,11 @@ static void
 rlc_word_selection(RlcData b, int x, int y)
 { int l, c;
 
+  /* Before rlc_set_selection(), which is what works out the matches:
+   * picking a word says to look for that word.
+   */
+  b->sel_word = true;
+
   rlc_translate_mouse(b, x, y, &l, &c);
   if ( rlc_between(b, b->first, b->last, l) )
   { RlcTextLine tl = &b->lines[l];
@@ -1674,6 +4988,7 @@ static void
 rlc_line_selection(RlcData b, int x, int y)
 { int l, c;
 
+  b->sel_word = false;
   rlc_translate_mouse(b, x, y, &l, &c);
   if ( rlc_between(b, b->first, b->last, l) )
   { RlcTextLine tl = &b->lines[l];
@@ -1691,7 +5006,7 @@ rlc_extend_selection(RlcData b, int x, int y)
   int ec = b->sel_org_char;
 
   rlc_translate_mouse(b, x, y, &l, &c);
-  if ( SelLT(l, c, b->sel_org_line, b->sel_org_char) )
+  if ( rlc_sel_lt(b, l, c, b->sel_org_line, b->sel_org_char) )
   {				/* Backward */
     if ( b->sel_unit == SEL_WORD )
     { if ( rlc_between(b, b->first, b->last, l) )
@@ -1724,7 +5039,7 @@ rlc_extend_selection(RlcData b, int x, int y)
       c = 0;
     }
     rlc_set_selection(b, l, c, el, ec);
-  } else if ( SelLT(b->sel_org_line, b->sel_org_char, l, c) )
+  } else if ( rlc_sel_lt(b, b->sel_org_line, b->sel_org_char, l, c) )
   {				/* forward */
     if ( b->sel_unit == SEL_WORD )
     { if ( rlc_between(b, b->first, b->last, l) )
@@ -1761,21 +5076,42 @@ rlc_extend_selection(RlcData b, int x, int y)
 
 static void
 rlc_select_all(RlcData b)
-{ rlc_set_selection(b, b->first, 0, b->last, b->width);
+{ b->sel_word = false;
+  rlc_set_selection(b, b->first, 0, b->last, b->width);
 }
 
+/* Text of the region that starts at cell `sc` of line `sl` and ends
+ * before cell `ec` of line `el`, with `sep` between lines that are not
+ * soft-wrapped continuations of the line above.
+ *
+ * The separator is the caller's because the clipboard and the search
+ * index space want different ones.  Text handed to another program
+ * carries "\r\n"; the index space of <-find and friends is defined
+ * with a single "\n", as a two-character separator would make the
+ * distance between the start and the end of a match depend on how many
+ * line breaks it spans.
+ */
+
 static uchar_t *
-rlc_read_from_window(RlcData b, int sl, int sc, int el, int ec)
+rlc_read_from_window(RlcData b, int sl, int sc, int el, int ec,
+		     const char *sep, int skip)
 { int bufsize = 256;
+  size_t seplen = strlen(sep);
   uchar_t *buf;
   int i = 0;
 
-  if ( el < sl || (el == sl && ec < sc) )
+  /* Order the endpoints in the ring, not by their bare indices: once
+   * the ring has wrapped, the end of a region that spans the wrap has
+   * the smaller index.  Comparing the indices themselves rejected
+   * exactly the selections covering both ends of the buffer -- which
+   * is what select-all does once the terminal has scrolled. */
+  if ( rlc_count_lines(b, b->first, el) < rlc_count_lines(b, b->first, sl) ||
+       (el == sl && ec < sc) )
     return NULL;			/* invalid region */
   if ( !(buf = rlc_malloc(bufsize * sizeof(uchar_t))) )
     return NULL;			/* not enough memory */
 
-  for( ; ; sc = 0, sl = NextLine(b, sl))
+  for( ; ; )
   { RlcTextLine tl = &b->lines[sl];
     if ( tl )
     { int e = (sl == el ? ec : tl->size);
@@ -1800,15 +5136,26 @@ rlc_read_from_window(RlcData b, int sl, int sc, int el, int ec)
       return buf;
     }
 
-    if ( tl && !tl->softreturn )
-    { if ( i+2 >= bufsize )
+    bool hard = tl && !tl->softreturn;
+
+    if ( hard )
+    { if ( i+(int)seplen >= bufsize )
       { bufsize *= 2;
 	if ( !(buf = rlc_realloc(buf, bufsize * sizeof(uchar_t))) )
 	  return NULL;			/* not enough memory */
       }
-      buf[i++] = '\r';			/* Bill ... */
-      buf[i++] = '\n';
+      for(const char *s = sep; *s; s++)
+	buf[i++] = *s;
     }
+
+    sl = NextLine(b, sl);
+    /* `skip' passes over what stands in front of every line but the
+     * first, which is how the text of a command typed over several
+     * lines is read without the continuation prompts the client drew
+     * down its left-hand side.  A wrapped line has no prompt of its
+     * own, so only a hard break skips.
+     */
+    sc = hard ? skip : 0;
   }
 }
 
@@ -1827,7 +5174,7 @@ rlc_selection(RlcData b)
 { if ( rlc_has_selection(b) )
     return rlc_read_from_window(b,
 				b->sel_start_line, b->sel_start_char,
-				b->sel_end_line,   b->sel_end_char);
+				b->sel_end_line,   b->sel_end_char, "\r\n", 0);
   return NULL;
 }
 
@@ -1851,13 +5198,445 @@ rlc_copy(RlcData b, Name to)	/* NAME_clipboard or NAME_primary */
 }
 
 
+/* Selecting text says what to look for as well as what to copy: the
+ * other places it occurs on the page are shown the way the other
+ * matches of an incremental search are, so that picking out a variable
+ * or an atom finds the rest of them without typing it again.
+ *
+ * Not every selection is one to look for.  A drag over blank space, or
+ * one that runs past the end of a line, would light up most of the
+ * screen; so would a single character, unless whole-word matching is on
+ * and a single character can be a word of its own.  Those stay a plain
+ * selection.
+ *
+ * The text, rlc_malloc()ed for the caller to free, or NULL if this is
+ * not a selection we look for.
+ */
+
+/* Whether what is looked for has to be a whole word.  The two ways of
+ * saying so: the flag, which the box on the report bar sets and which
+ * outlives what used it, and the way the selection was made -- picking
+ * a word with a double click says to look for that word, not for the
+ * letters it happens to be made of.
+ *
+ * A search takes this from the selection it was seeded with, which is
+ * why `sel_word' is left alone while one runs; an unseeded search
+ * clears it along with the selection it starts without.
+ */
+
+static bool
+rlc_match_word(RlcData b)
+{ TerminalImage ti = b->object;
+
+  return ti && (ti->search_word == ON || b->sel_word);
+}
+
+#define SEL_MATCH_MAX 100		/* longest selection we look for */
+
+static uchar_t *
+rlc_selection_needle(RlcData b)
+{ TerminalImage ti = b->object;
+
+  if ( !ti ||
+       rlc_isearching(b) ||		/* the search owns the overlay */
+       rlc_alt_screen(b) ||		/* the application owns the window */
+       !rlc_has_selection(b) )
+    return NULL;
+
+  uchar_t *sel = rlc_read_from_window(b,
+				      b->sel_start_line, b->sel_start_char,
+				      b->sel_end_line,   b->sel_end_char,
+				      "\n", 0);
+  if ( !sel )
+    return NULL;
+
+  size_t len = 0;
+  bool blank = true;
+  for(uchar_t *q = sel; *q; q++)
+  { if ( *q == '\n' )			/* more than a line: too much */
+    { len = SEL_MATCH_MAX+1;
+      break;
+    }
+    if ( !iswspace(*q) )
+      blank = false;
+    len++;
+  }
+
+  if ( blank || len > SEL_MATCH_MAX ||
+       (len < 2 && !rlc_match_word(b)) )
+  { rlc_free(sel);
+    return NULL;
+  }
+
+  return sel;
+}
+
+/* Is `s' the same text as the 0-terminated `text'?  What we have to
+ * compare is a string object against a freshly read selection, and
+ * making a string object of the latter just to throw it away again is
+ * what this is here to avoid.
+ */
+
+static bool
+rlc_str_eq_tchar(PceString s, const uchar_t *text)
+{ size_t i;
+
+  for(i=0; i<(size_t)s->s_size; i++)
+  { if ( !text[i] || str_fetch(s, i) != text[i] )
+      return false;
+  }
+
+  return text[i] == 0;
+}
+
+/* Keep <-selection_string on what rlc_match_spans() should look for.
+ * Called from rlc_request_redraw(), so for every change of the
+ * selection and for every batch of output, and it does as little as it
+ * can: reading the selected text is a walk over the selection, and
+ * neither the string object nor the repaint happens unless the text
+ * actually changed.
+ *
+ * That repaint has to be the whole page.  Unlike the selection, whose
+ * lines rlc_set_selection() can name, a match can be on any line of the
+ * page, and a redraw only paints the lines that say they changed.
+ */
+
+static void
+rlc_update_selection_string(RlcData b)
+{ TerminalImage ti = b->object;
+
+  if ( !ti )
+    return;
+
+  uchar_t *sel = rlc_selection_needle(b);
+  StringObj old = ti->selection_string;
+
+  if ( !sel )
+  { if ( notNil(old) )
+    { assign(ti, selection_string, NIL);
+      b->changed |= CHG_CHANGED;
+    }
+    return;
+  }
+
+  if ( notNil(old) && rlc_str_eq_tchar(&old->data, sel) )
+  { rlc_free(sel);			/* nothing on the page changes */
+    return;
+  }
+
+  assign(ti, selection_string, TCHAR2String(sel));
+  b->changed |= CHG_CHANGED;
+  rlc_free(sel);
+}
+
+
+		 /*******************************
+		 *            SEARCH            *
+		 *******************************/
+
+/* The buffer as a flat sequence of characters, which is what <-find,
+ * <-length, <-contents, ->selection and ->scroll_to address.  Index 0
+ * is the first character of the oldest line we still keep; a line
+ * contributes the cells that hold a character, so a wide character
+ * counts once and the placeholder cell of its right half not at all;
+ * a line that is not a soft-wrapped continuation is followed by a
+ * single newline, except for the last line.
+ *
+ * A ring line and a cell in it say where a character is; an index says
+ * how far into the text it is.  The two need each other -- a search
+ * wants text, the selection wants cells -- and rlc_buffer_text() hands
+ * out both from the same walk, so they cannot disagree about which
+ * cells hold a character.
+ *
+ * Indices are relative to the oldest line we keep and therefore shift
+ * as output pushes lines out of the scroll-back.  They say where
+ * something is now, not what it is: an index is only good until the
+ * next thing the client writes.
+ */
+
+/* Text of the lines `from' .. `to', plus the position of each character
+ * and one more for the end.  Both are rlc_malloc()ed; the caller frees
+ * them.  Returns NULL if we are out of memory.
+ *
+ * The whole buffer is what the index space is defined over; a range of
+ * it is what the painter wants, which only ever asks about the lines it
+ * is about to draw.
+ */
+
+static uchar_t *
+rlc_text_between(RlcData b, int from, int to, size_t *lenp, rlc_pos **posp)
+{ size_t len = 0;
+  int line = from;
+
+  for(;;)				/* count first: one alloc, no realloc */
+  { RlcTextLine tl = &b->lines[line];
+
+    for(int i=0; i<tl->size; i++)
+    { if ( tl->text[i].code )
+	len++;
+    }
+    if ( line == to )
+      break;
+    if ( !tl->softreturn )
+      len++;				/* the newline */
+    line = NextLine(b, line);
+  }
+
+  uchar_t *text = rlc_malloc((len+1)*sizeof(*text));
+  rlc_pos *pos  = rlc_malloc((len+1)*sizeof(*pos));
+  if ( !text || !pos )
+  { if ( text ) rlc_free(text);
+    if ( pos )  rlc_free(pos);
+    return NULL;
+  }
+
+  size_t i = 0;
+  line = from;
+  for(;;)
+  { RlcTextLine tl = &b->lines[line];
+
+    for(int c=0; c<tl->size; c++)
+    { if ( tl->text[c].code )
+      { text[i]      = tl->text[c].code;
+	pos[i].line  = line;
+	pos[i].cell  = c;
+	i++;
+      }
+    }
+    if ( line == to )
+    { pos[i].line = line;		/* the end: past the last cell */
+      pos[i].cell = tl->size;
+      break;
+    }
+    if ( !tl->softreturn )
+    { text[i]     = '\n';
+      pos[i].line = line;		/* the newline sits at the line end */
+      pos[i].cell = tl->size;
+      i++;
+    }
+    line = NextLine(b, line);
+  }
+  text[len] = 0;
+  assert(i == len);
+
+  *lenp = len;
+  *posp = pos;
+  return text;
+}
+
+static uchar_t *
+rlc_buffer_text(RlcData b, size_t *lenp, rlc_pos **posp)
+{ return rlc_text_between(b, b->first, b->last, lenp, posp);
+}
+
+/* Where an index is, as a line and a cell.  An index that names a
+ * newline is two places at once: the end of the line it terminates and
+ * the start of the line below.  Which one is meant depends on the side
+ * of a region it is on, so there are two of these, as there are for
+ * grapheme clusters one level down (rlc_snap_start(), rlc_snap_end()).
+ */
+
+static rlc_pos
+rlc_pos_start(RlcData b, const uchar_t *text, const rlc_pos *pos,
+	      size_t len, size_t index)
+{ rlc_pos p = pos[index];
+
+  if ( index < len && text[index] == '\n' )
+  { p.line = NextLine(b, p.line);	/* the line below starts here */
+    p.cell = 0;
+  }
+
+  return p;
+}
+
+static rlc_pos
+rlc_pos_end(const rlc_pos *pos, size_t index)
+{ return pos[index];			/* the end of the line it closes */
+}
+
+/* Character at `index`, or 0 outside the text.  Word mode asks about
+ * the characters just outside a match, and nothing is a word character
+ * beyond the ends of the buffer.
+ */
+
+#define BFETCH(text, len, index) \
+	((index) < 0 || (size_t)(index) >= (len) ? 0 : (text)[index])
+
+static bool
+ucs_match(RlcData b, const uchar_t *text, size_t len, ssize_t here,
+	  PceString s, bool exact_case, bool word)
+{ ssize_t l = s->s_size;
+
+  if ( word &&
+       (rlc_is_word_char(b, BFETCH(text, len, here-1)) ||
+	rlc_is_word_char(b, BFETCH(text, len, here+l))) )
+    return false;
+
+  for(ssize_t i=0; i<l; i++)
+  { uchar_t c1 = BFETCH(text, len, here+i);
+    uchar_t c2 = str_fetch(s, i);
+
+    if ( exact_case ? c1 != c2 : towlower(c1) != towlower(c2) )
+      return false;
+  }
+
+  return true;
+}
+
+/* Index of the `times`-th match at or after (before, if `times` is
+ * negative) `here`, or -1 if there is none.  `az` says whether to
+ * report the start of the match or its end.
+ *
+ * Unlike find_textbuffer(), which this follows in everything else, a
+ * repeat starts one character past the match it found: leaving `here`
+ * on the hit made every repeat find the same place again.
+ */
+
+/* The string the page is highlighted for: what an incremental search is
+ * looking for while one is running, and otherwise the selection, when
+ * it is one we show the other occurrences of (see
+ * rlc_selection_needle()).  NULL if the page carries no matches.
+ *
+ * A search owns the overlay while it runs -- the hit is the selection,
+ * and matching the selection as well would be matching the same string
+ * twice.
+ */
+
+static PceString
+rlc_match_string(RlcData b)
+{ TerminalImage ti = b->object;
+
+  if ( !ti )
+    return NULL;
+  if ( rlc_isearching(b) )
+    return isNil(ti->search_string) ? NULL : &ti->search_string->data;
+
+  return isNil(ti->selection_string) ? NULL : &ti->selection_string->data;
+}
+
+/* Every place on the visible page where that string occurs, as cell
+ * ranges: a match that crosses a wrap makes one of these per line.
+ *
+ * The painter asks for this while it draws, rather than the search or
+ * the selection keeping a list up to date.  A redraw walks every row of
+ * the page anyway, so looking through the page for the string as well
+ * costs a constant factor and no bookkeeping: nothing to invalidate
+ * when a line is recycled or the window rewrapped, and nothing left
+ * behind when the search ends or the selection goes.
+ *
+ * What it does cost is the damage.  A redraw only *paints* the lines
+ * that say they changed, and a match can be on any of them, so both the
+ * things that can change the string mark the whole window changed (see
+ * executeIsearchTerminalImage() and rlc_update_selection_string()).
+ */
+
+static int
+rlc_match_spans(RlcData b, rlc_span *spans, int max)
+{ TerminalImage ti = b->object;
+  PceString needle = rlc_match_string(b);
+  int n = 0;
+
+  if ( !needle )
+    return 0;
+  size_t slen = needle->s_size;
+  if ( slen == 0 )
+    return 0;
+
+  /* Back to the start of the logical line the page starts on and
+   * forward to the end of the one it ends on: a match that straddles a
+   * wrap is only found if both halves are there to be found.
+   */
+  int from = rlc_logical_start(b, b->window_start);
+  int to   = ( rlc_view_count(b, b->window_start, b->last) < b->window_size
+	       ? b->last
+	       : rlc_view_add(b, b->window_start, b->window_size-1) );
+  while( to != b->last && b->lines[to].softreturn )
+    to = NextLine(b, to);
+
+  size_t len;
+  rlc_pos *pos;
+  uchar_t *text = rlc_text_between(b, from, to, &len, &pos);
+  if ( !text )
+    return 0;
+
+  bool ec = ti->exact_case == ON;
+  bool wm = rlc_match_word(b);
+  ssize_t here = 0;
+
+  while( n < max )
+  { ssize_t hit = ucs_find(b, text, len, here, needle, 1, 'a', ec, wm);
+    if ( hit < 0 )
+      break;
+
+    size_t end = hit + slen;
+    if ( end > len )
+      end = len;
+
+    for(size_t i=hit; i<end && n<max; )	/* one span per line it covers */
+    { int line  = pos[i].line;
+      int first = pos[i].cell;
+      int last  = first;
+
+      while( i < end && pos[i].line == line )
+      { last = pos[i].cell + 1;
+	i++;
+      }
+      last = rlc_snap_end(&b->lines[line], last);
+
+      if ( n > 0 && spans[n-1].line == line && first <= spans[n-1].to )
+      { if ( last > spans[n-1].to )	/* runs into the one before it */
+	  spans[n-1].to = last;
+      } else
+      { spans[n].line = line;
+	spans[n].from = first;
+	spans[n].to   = last;
+	n++;
+      }
+    }
+
+    here = hit+1;			/* every place it occurs, as the */
+  }					/* count does; see rlc_match_count() */
+
+  rlc_free(text);
+  rlc_free(pos);
+
+  return n;
+}
+
+static ssize_t
+ucs_find(RlcData b, const uchar_t *text, size_t len, ssize_t here,
+	 PceString s, ssize_t times, char az, bool exact_case, bool word)
+{ ssize_t where = -1;
+  int step = times < 0 ? -1 : 1;
+
+  if ( times == 0 )
+    return here;
+
+  for( ; times != 0; times -= step )
+  { bool hit = false;
+
+    for( ; here >= 0 && (size_t)here <= len; here += step )
+    { if ( ucs_match(b, text, len, here, s, exact_case, word) )
+      { where = here;
+	hit = true;
+	break;
+      }
+    }
+    if ( !hit )
+      return -1;
+    here += step;			/* else the repeat finds this again */
+  }
+
+  return az == 'a' ? where : where + (ssize_t)s->s_size;
+}
+
 		 /*******************************
 		 *           REPAINT		*
 		 *******************************/
 
 static bool
 rlc_caret_xy(RlcData b, int *x, int *y)
-{ int line = rlc_count_lines(b, b->window_start, b->caret_y);
+{ int line = rlc_view_count(b, b->window_start, b->caret_y);
 
   if ( line < b->window_size )
   { *y = line * b->ch;
@@ -1944,9 +5723,15 @@ rlc_update_scrollbar(RlcData b)
 
 static void
 rlc_scroll_bubble(RlcData b, int *length, int *start, int *view)
-{ int nsb_lines = rlc_count_lines(b, b->first, b->last);
-  int nsb_start = rlc_count_lines(b, b->first, b->window_start);
-  int nsb_view  = rlc_count_lines(b, b->window_start, b->last);
+{ if ( rlc_alt_screen(b) )		/* no scrollback: fill the bar */
+  { *length = *view = b->window_size;
+    *start  = 0;
+    return;
+  }
+
+  int nsb_lines = rlc_view_count(b, b->first, b->last);
+  int nsb_start = rlc_view_count(b, b->first, b->window_start);
+  int nsb_view  = rlc_view_count(b, b->window_start, b->last);
   if ( nsb_view > b->window_size )
     nsb_view = b->window_size;
 
@@ -1960,13 +5745,8 @@ rlc_scroll_lines(RlcData b, int lines)
 { if ( lines == 0 )
     return;
 
-  if ( lines > 0 )
-  { for( ; lines && b->window_start != b->last; lines--)
-      b->window_start = NextLine(b, b->window_start);
-  } else
-  { for( ; lines && b->window_start != b->first; lines++)
-      b->window_start = PrevLine(b, b->window_start);
-  }
+  b->window_start = rlc_clamp_window_start(b,
+			rlc_view_add(b, b->window_start, lines));
 
   b->changed |= CHG_CARET|CHG_CLEAR|CHG_CHANGED;
   rlc_request_redraw(b);
@@ -2005,10 +5785,101 @@ rlc_scroll_lines(RlcData b, int lines)
  *  chars_columns(cells, n) * cw pixels.  Underline is re-applied per
  *  cluster so it still joins visually.
  */
+/* The Block Elements, U+2580..U+259F, drawn as rectangles of the cell
+ * rather than as glyphs of the font.
+ *
+ * A font lays its glyphs out in its own em box, which is not the cell:
+ * the box is placed by the baseline and is shorter than the line height
+ * a terminal gives a row.  A full block then leaves a strip of the cell
+ * background above it, a quadrant sits below the top of its cell, and
+ * what the client drew as one solid shape comes out of the screen in
+ * stripes -- visible wherever the client also set a background colour,
+ * and as a gap between the rows of a picture built out of quadrants.
+ * Every terminal draws these itself for that reason.
+ *
+ * block_element_rects() answers the rectangles of `code' in eighths of
+ * the cell, 0 if it is not one we draw.  The three shades (U+2591..93)
+ * are left to the font: they are a texture rather than a shape, and a
+ * rectangle is not what they are made of.
+ */
+
+static int
+block_element_rects(int code, cell_rect *r)
+{ switch(code)
+  { case 0x2580:			/* upper half */
+      r[0] = (cell_rect){0, 0, 8, 4};
+      return 1;
+    case 0x2581: case 0x2582: case 0x2583: case 0x2584: /* lower n/8, */
+    case 0x2585: case 0x2586: case 0x2587: case 0x2588: /* full block */
+    { int n = code - 0x2580;
+      r[0] = (cell_rect){0, 8-n, 8, n};
+      return 1;
+    }
+    case 0x2589: case 0x258a: case 0x258b: case 0x258c: /* left n/8 */
+    case 0x258d: case 0x258e: case 0x258f:
+    { int n = 0x2590 - code;
+      r[0] = (cell_rect){0, 0, n, 8};
+      return 1;
+    }
+    case 0x2590:			/* right half */
+      r[0] = (cell_rect){4, 0, 4, 8};
+      return 1;
+    case 0x2594:			/* upper one eighth */
+      r[0] = (cell_rect){0, 0, 8, 1};
+      return 1;
+    case 0x2595:			/* right one eighth */
+      r[0] = (cell_rect){7, 0, 1, 8};
+      return 1;
+    case 0x2596: case 0x2597: case 0x2598: case 0x2599: /* the quadrants */
+    case 0x259a: case 0x259b: case 0x259c: case 0x259d:
+    case 0x259e: case 0x259f:
+    { /* Which quadrants each of them lights, as upper-left,
+       * upper-right, lower-left, lower-right.
+       */
+      static const unsigned char quadrants[] =
+      { 0x4, 0x8, 0x1, 0xd, 0x9, 0x7, 0xb, 0x2, 0x6, 0xe };
+      int bits = quadrants[code - 0x2596];
+      int n = 0;
+
+      for(int q=0; q<4; q++)
+      { if ( bits & (1<<q) )
+	  r[n++] = (cell_rect){ (q&1) ? 4 : 0, (q&2) ? 4 : 0, 4, 4 };
+      }
+      return n;
+    }
+  }
+
+  return 0;
+}
+
+/* Round to the pixel the cell edge nearest `v'.  Both sides of a shared
+ * edge round the same way, so neither a seam nor an overlap can appear
+ * between two of these rectangles or between one and the cell next to
+ * it.
+ */
+
+static int
+round_edge(double v)
+{ return (int)(v < 0.0 ? v - 0.5 : v + 0.5);
+}
+
+static void
+paint_block_element(const cell_rect *r, int n,
+		    int x, int y, int w, int h)
+{ for(int i=0; i<n; i++)
+  { int x0 = round_edge(x + (double)r[i].x           * w / 8.0);
+    int x1 = round_edge(x + (double)(r[i].x+r[i].w)  * w / 8.0);
+    int y0 = round_edge(y + (double)r[i].y           * h / 8.0);
+    int y1 = round_edge(y + (double)(r[i].y+r[i].h)  * h / 8.0);
+
+    r_fill(x0, y0, x1-x0, y1-y0, NAME_foreground);
+  }
+}
+
 static void
 paint_chunks(const text_char *cells, int n,
 	     const char *utf8, int ulen,
-	     int x0, int ty, int cw, FontObj font,
+	     int x0, int ty, int ctop, int ch, int cw, FontObj font,
 	     int underline, Name underline_texture,
 	     int strike, Name strike_texture)
 { const text_char *c = cells;
@@ -2063,7 +5934,39 @@ paint_chunks(const text_char *cells, int n,
     int chunk_cols = chars_columns(c + chunk_i, i - chunk_i);
     int chunk_w    = chunk_cols * cw;
 
-    s_print_utf8(chunk_u, chunk_ulen, x0, ty, font);
+    cell_rect rects[MAX_CELL_RECTS];
+    int nrects;
+
+    if ( i - chunk_i == 1 &&
+	 (nrects=block_element_rects(c[chunk_i].code, rects)) > 0 )
+    { paint_block_element(rects, nrects, x0, ctop, chunk_w, ch);
+    } else
+    { /* A font may draw a glyph wider than the columns Unicode gives
+	 it: on macOS U+23BF and friends resolve to a symbol face that
+	 draws them at ~1.6 cells, and a character the font has no glyph
+	 for comes back as a "missing glyph" box that is wider still.  The
+	 grid may not grow to accommodate that -- it is shared with the
+	 client, which cannot see our font; see terminal_char_cells().
+	 Condense the glyph into its own cells instead, which keeps all of
+	 it, where clipping would cut the right off a great many symbols.
+	 c_width() is the font's cached per-code-point advance, so the
+	 measurement costs nothing after the first time we see the
+	 character.  ASCII is excluded up front: it is the common case and
+	 always fits.  So is everything above the BMP: the width cache does
+	 not hold those, so asking would mean a Pango round-trip on every
+	 repaint, and what is up there is emoji, which the font draws at
+	 the two cells they are classified as. */
+      double xscale = 1.0;
+
+      if ( c[chunk_i].code >= 0x80 && c[chunk_i].code <= 0xFFFF )
+      { double aw = c_width(c[chunk_i].code, font);
+
+	if ( aw > chunk_w )
+	  xscale = (double)chunk_w / aw;
+      }
+
+      s_print_utf8_scaled(chunk_u, chunk_ulen, x0, ty, font, xscale);
+    }
     if (underline)
       r_underline(font, x0, ty, chunk_w, DEFAULT, underline_texture);
     if (strike)
@@ -2166,12 +6069,36 @@ palette_init(RlcData b)
   /* Slots 0..15 are sentinel placeholders; nothing to write yet. */
 }
 
+/* Own and let go of a Colour of the palette.
+ *
+ * ->lock_object would do, were F_LOCKED a count.  It is a flag, and
+ * ws_pixel_to_colour() interns: every terminal that resolves an RGBA
+ * value gets the same Colour, so the first of them to let go took the
+ * protection of all the others with it.  Deleting a second Epilog
+ * window left the first painting with a freed Colour.  A reference
+ * counts.  Taking the Colour off the answer stack is what
+ * ->lock_object did on our behalf; without it the Colour is freed when
+ * the goal that painted it ends.
+ */
+
+static void
+palette_own_colour(Colour c)
+{ deleteAnswerObject(c);
+  addRefObj(c);
+}
+
+static void
+palette_disown_colour(Colour c)
+{ delRefObj(c);
+  freeableObj(c);
+}
+
 static void
 palette_destroy(RlcData b)
 { if ( b->palette_obj )
   { for(uint32_t i = PAL_ANSI_RESERVED; i < b->palette_size; i++)
     { if ( b->palette_obj[i] )
-	lockObject(b->palette_obj[i], OFF);
+	palette_disown_colour(b->palette_obj[i]);
     }
     rlc_free(b->palette_obj);
     b->palette_obj = NULL;
@@ -2293,8 +6220,9 @@ palette_for_xterm256(RlcData b, int n)
  * NULL — callers fall back to the terminal/style default.  Slots 0..15
  * read from ti->ansi_colours so theme changes take effect immediately;
  * higher slots come from the interned COLORRGBA palette, with each
- * Colour created lazily and locked so it survives xpce GC between
- * paints (RevColourTable holds Colours with refer=none).
+ * Colour created lazily and referenced so it survives between paints
+ * (RevColourTable holds Colours with refer=none).  See
+ * palette_own_colour().
  */
 static Colour
 palette_colour(RlcData b, unsigned idx)
@@ -2311,7 +6239,7 @@ palette_colour(RlcData b, unsigned idx)
   if ( !b->palette_obj[idx] )
   { Colour c = ws_pixel_to_colour(b->palette[idx]);
     if ( c )
-      lockObject(c, ON);
+      palette_own_colour(c);
     b->palette_obj[idx] = c;
   }
   return b->palette_obj[idx];
@@ -2330,6 +6258,7 @@ typedef struct
   bool   underline;
   bool   strike;
   bool   bold;
+  bool   italic;
 } effective_style;
 
 static effective_style
@@ -2342,14 +6271,20 @@ effective_style_for(RlcData b, text_flags flags, bool armed)
       .underline_texture = NAME_none,
       .strike            = flags.strike,
       .strike_texture    = NAME_none,
-      .bold              = flags.bold
+      .bold              = flags.bold,
+      .italic            = flags.italic
     };
 
   /* Link overlay: only slots that the user explicitly set (neither nil
    * nor @default) replace the cell's own values.  An application can
    * still embed colored, bold, or unstyled links by leaving link_style
    * slots at @default — the cell's flags win where the style is silent.
-   * The hover (armed) variant overrides link_style on a per-link basis;
+   * The colours of the resting link_style only apply if the client did
+   * not colour the label itself: a client that colours its links (`rg`
+   * does) knows better what its output means than we do, and the
+   * underline marks the link anyway.  The hover (armed) variant does
+   * replace them: that is transient feedback which must be visible on a
+   * coloured link as well.  It overrides link_style on a per-link basis;
    * cells outside the hovered href keep using the resting link_style.
    *
    * Style->underline historically was "Bool or Colour" (we ignore the
@@ -2358,14 +6293,16 @@ effective_style_for(RlcData b, text_flags flags, bool armed)
    * vocabulary (solid, dotted, dashed, dashdot, dashdotted, longdash).
    */
   if ( flags.link )
-  { Style ls = (armed &&
-		notNil(ti->link_armed_style) && !isDefault(ti->link_armed_style))
-		 ? ti->link_armed_style
-		 : ti->link_style;
+  { bool hover = (armed &&
+		  notNil(ti->link_armed_style) &&
+		  !isDefault(ti->link_armed_style));
+    Style ls = hover ? ti->link_armed_style : ti->link_style;
     if ( notNil(ls) && !isDefault(ls) )
-    { if ( notDefault(ls->colour) && notNil(ls->colour) )
+    { if ( (hover || flags.fg == PAL_DEFAULT) &&
+	   notDefault(ls->colour) && notNil(ls->colour) )
 	es.fg = ls->colour;
-      if ( notDefault(ls->background) && notNil(ls->background) )
+      if ( (hover || flags.bg == PAL_DEFAULT) &&
+	   notDefault(ls->background) && notNil(ls->background) )
 	es.bg = ls->background;
       Any uls = ls->underline;
       if ( notDefault(uls) && notNil(uls) && uls != OFF )
@@ -2381,18 +6318,47 @@ effective_style_for(RlcData b, text_flags flags, bool armed)
       }
       if ( ls->attributes & TXT_BOLDEN )
 	es.bold = true;
+      if ( ls->attributes & TXT_ITALIC )
+	es.italic = true;
     }
   }
   return es;
 }
 
+/* The font a run is painted in.  <-font, <-bold_font, <-italic_font and
+ * <-bold_italic_font are a 2x2 over bold and italic, but any of the
+ * three variants may be @nil -- the client never named it, or it was
+ * dropped for having the wrong pitch.  Fall back through the variants
+ * that are left rather than losing the attribute entirely: bold italic
+ * shown as italic still says more than bold italic shown as neither.
+ */
+
+static FontObj
+variant_font_for(TerminalImage ti, const effective_style *es)
+{ if ( es->bold && es->italic && notNil(ti->bold_italic_font) )
+    return ti->bold_italic_font;
+  if ( es->italic && notNil(ti->italic_font) )
+    return ti->italic_font;
+  if ( es->bold && notNil(ti->bold_font) )
+    return ti->bold_font;
+
+  return ti->font;
+}
+
+
 /** Draw a line of the terminal
+ */
+
+/** Draw the visual columns [from, to) of a line.  `overlay' is a style
+ *  to paint the whole span in -- the selection, the hit of a search or
+ *  one of its other matches -- or NULL to draw each cell as its own
+ *  flags and any hyperlink under it say.
  */
 
 static void
 rlc_paint_text(RlcData b,
 	       RlcTextLine tl, int from, int to,
-	       int ty, int *cx, bool insel)
+	       int ty, int *cx, Style overlay)
 { TerminalImage ti = b->object;
   text_char *chars, *s;
   text_char buf[MAXLINE];
@@ -2428,9 +6394,10 @@ rlc_paint_text(RlcData b,
     } else
     { i = 0;
     }
+    text_flags pad = rlc_eol_flags(tl);	/* background colour erase */
     for(; i<len; i++, o++)
     { o->code  = ' ';
-      o->flags = TF_DEFAULT;
+      o->flags = pad;
       o->flags.width = 1;
     }
   }
@@ -2466,13 +6433,14 @@ rlc_paint_text(RlcData b,
     }
   }
 
-  if ( insel )					/* TBD: Cache */
-  { Any ofg = r_colour(ti->selection_style->colour);
-    Any obg = r_background(ti->selection_style->background);
+  if ( overlay )				/* TBD: Cache */
+  { Any ofg = r_colour(overlay->colour);
+    Any obg = r_background(overlay->background);
     int x0 = *cx;
     *cx += chars_columns(chars, len) * b->cw;
     r_clear(x0, ty-b->cb, *cx-x0, b->ch);
-    paint_chunks(chars, len, text, (int)(t-text), x0, ty, b->cw, ti->font,
+    paint_chunks(chars, len, text, (int)(t-text), x0, ty,
+		 ty-b->cb, b->ch, b->cw, ti->font,
                  0, NAME_none, 0, NAME_none);
     r_colour(ofg);
     r_background(obg);
@@ -2493,12 +6461,22 @@ rlc_paint_text(RlcData b,
 	 together.  Armed status flips at the href's edge, splitting an
 	 otherwise-uniform link run when only part of it is hovered. */
       char *ut = t;
-      for(segment=0;
-	  segment<left && s[segment].flags.raw == flags.raw &&
-	  ((start + segment >= armed_from &&
-	    start + segment <  armed_to) == armed0);
-	  segment++)
-      { if ( s[segment].code != 0 )
+      for(segment=0; segment<left; segment++)
+      { const text_char *cell = &s[segment];
+	/* Followers (width-0 combining marks, code-0 wide-char placeholders)
+	   inherit the preceding base's flags and armed status; keep them in
+	   the current segment so a wide glyph and its placeholder share one
+	   r_clear + paint_chunks call — otherwise the placeholder's r_clear
+	   wipes the right half of the just-painted glyph. */
+	if ( cell->flags.width != 0 && cell->code != 0 )
+	{ if ( cell->flags.raw != flags.raw )
+	    break;
+	  bool cell_armed = (start + segment >= armed_from &&
+			     start + segment <  armed_to);
+	  if ( cell_armed != armed0 )
+	    break;
+	}
+	if ( cell->code != 0 )
 	{ int chr;
 	  ut = utf8_get_char(ut, &chr);
 	}
@@ -2514,20 +6492,10 @@ rlc_paint_text(RlcData b,
 	obg = r_background(es.bg);
       if ( flags.inverse )
 	r_swap_background_and_foreground();
-      FontObj font = ti->font;
-      if ( es.bold )
-      { if ( notNil(ti->bold_font) )
-	  font = ti->bold_font;
-	else
-	  Cprintf("No bold font\n");
-      }
+      FontObj font = variant_font_for(ti, &es);
 
       int x0 = *cx;
       *cx += chars_columns(s, segment) * b->cw;
-#if 0
-      fprintf(stderr, "Print \"%s\"[%d] at %d[%d],%d using %s\n",
-	      t, ulen, x0, *cx-x0, ty, pp(ti->font));
-#endif
       r_clear(x0, ty-b->cb, *cx-x0, b->ch);
       if ( notNil(ti->nfd_style) && !isDefault(ti->nfd_style) )
       { Colour nfd_bg = ti->nfd_style->background;
@@ -2547,7 +6515,8 @@ rlc_paint_text(RlcData b,
 	  }
 	}
       }
-      paint_chunks(s, segment, t, ulen, x0, ty, b->cw, font,
+      paint_chunks(s, segment, t, ulen, x0, ty,
+		   ty-b->cb, b->ch, b->cw, font,
                    es.underline, es.underline_texture,
                    es.strike, es.strike_texture);
       if ( flags.inverse )
@@ -2560,65 +6529,201 @@ rlc_paint_text(RlcData b,
   }
 }
 
+/* Which style, if any, is painted over each visual column of a line.
+ * The other matches go in first and the selection over them, so the hit
+ * the user is on wins where they meet -- and so the occurrence that is
+ * the selection keeps the selection style rather than becoming one of
+ * its own matches.
+ *
+ * The selection is a range over lines rather than within one, so a line
+ * wholly inside it takes the style throughout; `insel' says whether the
+ * line the caller is about to fill in starts inside the selection.
+ */
+
+static int
+rlc_overlay_width(RlcData b)
+{ return b->width < MAXLINE ? b->width : MAXLINE;
+}
+
+/* Does the selection cover the whole of this line?  True for the lines
+ * between its ends; the ends themselves are covered from or up to a
+ * column and rlc_line_overlay() works those out for itself.
+ */
+
+static bool
+rlc_line_in_selection(RlcData b, int line)
+{ int n = rlc_count_lines(b, b->first, line);
+
+  return ( rlc_count_lines(b, b->first, b->sel_start_line) < n &&
+	   rlc_count_lines(b, b->first, b->sel_end_line)   > n );
+}
+
+static void
+rlc_line_overlay(RlcData b, int line, RlcTextLine tl, bool insel,
+		 const rlc_span *spans, int nspans, Style *overlay)
+{ TerminalImage ti = b->object;
+  Style sel = ( rlc_isearching(b) && notNil(ti->isearch_style)
+		? ti->isearch_style : ti->selection_style );
+  Style other = ti->isearch_other_style;
+  int width = rlc_overlay_width(b);
+  int from, to;				/* the selected columns */
+
+  if ( line == b->sel_start_line || line == b->sel_end_line )
+  { from = ( line == b->sel_start_line
+	     ? rlc_cell_to_vcol(tl, b->sel_start_char) : 0 );
+    to   = ( line == b->sel_end_line
+	     ? rlc_cell_to_vcol(tl, b->sel_end_char) : width );
+  } else if ( insel )			/* a line the selection spans whole */
+  { from = 0;
+    to   = width;
+  } else
+  { from = to = 0;
+  }
+
+  for(int c=0; c<width; c++)
+    overlay[c] = NULL;
+
+  if ( notNil(other) )
+  { for(int i=0; i<nspans; i++)
+    { if ( spans[i].line != line )
+	continue;
+      int f = rlc_cell_to_vcol(tl, spans[i].from);
+      int t = rlc_cell_to_vcol(tl, spans[i].to);
+      for(int c=f; c<t && c<width; c++)
+	overlay[c] = other;
+    }
+  }
+
+  for(int c=from; c<to && c<width; c++)
+    overlay[c] = sel;
+}
+
+/* The marker of a fold, in the one column of margin the paint loop
+ * clears anyway.  It is drawn rather than written: a glyph would be a
+ * cell of the buffer, and everything that reads the buffer back --
+ * <-contents, <-selected, a search -- would find it there.  Pointing
+ * down it says there is something it can hide; pointing right, that it
+ * is hiding it.
+ */
+
+static Any
+rlc_fold_colour(TerminalImage ti)
+{ Style st = ti->fold_style;
+
+  if ( isNil(st) || isDefault(st) )
+    return NULL;
+
+  return ( notDefault(st->colour) && notNil(st->colour) ) ? st->colour
+							 : ti->colour;
+}
+
+
+static void
+rlc_draw_fold_marker(RlcData b, int line, int x, int ty)
+{ TerminalImage ti = b->object;
+  TerminalBlock tb;
+  Any colour;
+
+  if ( !(colour=rlc_fold_colour(ti)) ||
+       !(tb=rlc_fold_head_block(b, line)) )
+    return;
+
+  /* As wide as the column it is drawn in, and as tall as that is wide:
+   * a marker small enough to be mistaken for a speck of dirt is worse
+   * than none.  Only a cell shorter than it is wide makes it smaller.
+   */
+  double cx = x + b->cw/2.0;
+  double cy = ty - b->cb + b->ch/2.0;
+  double w  = b->cw*0.9;
+  double h  = w*0.87;
+
+  if ( h > b->ch*0.8 )
+  { h = b->ch*0.8;
+    w = h/0.87;
+  }
+
+  r_fillpattern(colour, NAME_foreground);
+  if ( isOn(tb->folded) )		/* pointing at what it is hiding */
+    r_fill_triangle(cx-h/2, cy-w/2, cx+h/2, cy, cx-h/2, cy+w/2);
+  else					/* and at what it can hide */
+    r_fill_triangle(cx-w/2, cy-h/2, cx+w/2, cy-h/2, cx, cy+h/2);
+}
+
+
+/* What a closed fold hides, said after the command that produced it.
+ * Also not written into the buffer, and for the same reason.
+ */
+
+static void
+rlc_draw_fold_tally(RlcData b, int line, int cx, int ty)
+{ TerminalImage ti = b->object;
+  TerminalBlock tb;
+  Any colour, ofg;
+  char tally[64];
+
+  if ( !(colour=rlc_fold_colour(ti)) ||
+       !(tb=rlc_fold_head_block(b, line)) ||
+       !isOn(tb->folded) )
+    return;
+
+  int n = tb->anchors->hidden_lines;
+  snprintf(tally, sizeof(tally), "  ⋯ %d line%s", n, n == 1 ? "" : "s");
+
+  ofg = r_colour(colour);
+  s_print_utf8(tally, (int)strlen(tally), cx, ty, ti->font);
+  r_colour(ofg);
+}
+
+
 static void
 rlc_redraw(RlcData b, int x, int y, int w, int h)
 { TerminalImage ti = b->object;
   int sl = 0;
   int el = b->window_size;
-  int l = rlc_add_lines(b, b->window_start, sl);
+  int l = b->window_start;
   int pl = sl;				/* physical line */
-  bool insel = false;			/* selected lines? */
-
-  if ( rlc_count_lines(b, b->first, b->sel_start_line) <
-       rlc_count_lines(b, b->first, l) &&
-       rlc_count_lines(b, b->first, b->sel_end_line) >=
-       rlc_count_lines(b, b->first, l) )
-    insel = true;
+  rlc_span spans[MAX_MATCH_SPANS];
+  int nspans = rlc_match_spans(b, spans, MAX_MATCH_SPANS);
+  Style overlay[MAXLINE];
 
   r_background(ti->background);
 
-  for(; pl <= el; l = NextLine(b, l), pl++)
+  for(; pl <= el; pl++)
   { RlcTextLine tl = &b->lines[l];
     int ty = y + b->cb + b->ch * pl;
     int cx = x + b->cw;
 
     r_clear(x, ty-b->cb, b->cw, b->ch); /* clear margin */
+    if ( tl->fold_head )
+      rlc_draw_fold_marker(b, l, x, ty);
 
-					/* compute selection */
-    /* sel_{start,end}_char are CELL indices (consistent with caret_x and
-     * tl->text[] indexing in rlc_set_selection / rlc_read_from_window).
-     * rlc_paint_text takes VISUAL-COLUMN bounds, so convert here.  Without
-     * the conversion, NFD combining marks (own cell, width 0) make the cell
-     * index drift past the visual column, and the painted selection extends
-     * past where the user dragged. */
-    if ( l == b->sel_start_line )
-    { int cf = rlc_cell_to_vcol(tl, b->sel_start_char);
-      int ce = (b->sel_end_line != b->sel_start_line
-		  ? b->width
-		  : rlc_cell_to_vcol(tl, b->sel_end_char));
+    /* The selection and the matches of a search are ranges of CELLS
+     * (consistent with caret_x and tl->text[] indexing in
+     * rlc_set_selection / rlc_read_from_window) while rlc_paint_text
+     * takes VISUAL-COLUMN bounds, so rlc_line_overlay() converts.
+     * Without the conversion, NFD combining marks (own cell, width 0)
+     * make the cell index drift past the visual column, and what is
+     * painted extends past what was picked.
+     */
+    rlc_line_overlay(b, l, tl, rlc_line_in_selection(b, l),
+		     spans, nspans, overlay);
 
-      rlc_paint_text(b, tl,  0, cf, ty, &cx, insel);
-      insel = true;
-      rlc_paint_text(b, tl, cf, ce, ty, &cx, insel);
-      if ( l == b->sel_end_line )
-      { insel = false;
-	rlc_paint_text(b, tl, ce, b->width, ty, &cx, insel);
-      } else
-	insel = true;
-    } else if ( l == b->sel_end_line )	/* end of selection */
-    { int ce = rlc_cell_to_vcol(tl, b->sel_end_char);
+    int width = rlc_overlay_width(b);
+    for(int from=0; from<width; )	/* one call per run of one style */
+    { int to = from+1;
 
-      rlc_paint_text(b, tl, 0, ce, ty, &cx, insel);
-      insel = false;
-      rlc_paint_text(b, tl, ce, b->width, ty, &cx, insel);
-    } else				/* entire line in/out selection */
-    { rlc_paint_text(b, tl, 0, b->width, ty, &cx, insel);
+      while( to < width && overlay[to] == overlay[from] )
+	to++;
+      rlc_paint_text(b, tl, from, to, ty, &cx, overlay[from]);
+      from = to;
     }
 
 					/* clear remainder of line */
     if ( cx < x+b->width * (b->cw+1) )
     { r_clear(cx, y+b->ch*pl, x+w-cx, b->ch);
     }
+    if ( tl->fold_head )
+      rlc_draw_fold_tally(b, l, cx, ty);
 
     tl->changed = CHG_RESET;
 
@@ -2627,6 +6732,7 @@ rlc_redraw(RlcData b, int x, int y, int w, int h)
       r_clear(x, yb, w, h-yb);
       break;
     }
+    l = rlc_view_next(b, l);		/* a closed fold is walked over */
   }
   rlc_draw_caret(b, x, y);
 
@@ -2640,6 +6746,15 @@ static void
 rlc_request_redraw(RlcData b)
 { TerminalImage ti = b->object;
 
+  /* Here rather than in rlc_set_selection(): the text under a selection
+   * can change without the selection itself moving -- an erase, or a
+   * client that repaints the screen -- and the matches must be of what
+   * is selected now, not of what was selected when it was made.  This
+   * runs before the damage is looked at, so what it finds is painted in
+   * the same pass.  It costs nothing while nothing is selected.
+   */
+  rlc_update_selection_string(b);
+
   if ( b->changed & CHG_CHANGED )
   { changedEntireImageGraphical(ti);
     rlc_place_caret(b);
@@ -2649,7 +6764,7 @@ rlc_request_redraw(RlcData b)
     int ymin=0, ymax;
     bool first = true;
 
-    for(; y < b->window_size; y++, i = NextLine(b, i))
+    for(; y < b->window_size; y++, i = rlc_view_next(b, i))
     { RlcTextLine l = &b->lines[i];
 
       if ( l->changed & CHG_CHANGED )
@@ -2679,8 +6794,11 @@ rlc_request_redraw(RlcData b)
 
 static bool
 rlc_normalise(RlcData b)
-{ if ( rlc_count_lines(b, b->window_start, b->caret_y) >= b->window_size )
-  { b->window_start = rlc_add_lines(b, b->caret_y, -(b->window_size-1));
+{ if ( rlc_isearching(b) )		/* the user is driving the view */
+    return false;
+
+  if ( rlc_view_count(b, b->window_start, b->caret_y) >= b->window_size )
+  { b->window_start = rlc_view_add(b, b->caret_y, -(b->window_size-1));
     b->changed |= CHG_CARET|CHG_CLEAR|CHG_CHANGED;
     rlc_request_redraw(b);
     return true;
@@ -2707,6 +6825,20 @@ rlc_resize_pixel_units(RlcData b, int w, int h)
   rlc_resize_pty(b, nw, nh);
 }
 
+
+/* Size to give a pty we are about to create.  The pty is created lazily,
+ * after the window has been laid out, so it must be told the size the
+ * terminal already has: the resize that would tell it comes only when
+ * the size changes again, and a client asking the tty for its size
+ * (tty_size/2) does so long before that.
+ */
+
+static void
+rlc_pty_size(RlcData b, int *cols, int *rows)
+{ *cols = b->width       > 0 ? b->width       : 80;
+  *rows = b->window_size > 0 ? b->window_size : 25;
+}
+
 		 /*******************************
 		 *	       FONT		*
 		 *******************************/
@@ -2726,20 +6858,6 @@ rlc_init_text_dimensions(RlcData b, FontObj font)
 { b->cw = valNum(getAvgCharWidthFont(font));
   b->cb = s_ascent(font);
   b->ch = s_height(font);
-  b->fixedfont = font->fixed_width == ON;
-}
-
-
-static int
-text_width(RlcData b, const text_char *text, int len)
-{ /* Cell-based pixel width: sum of visual columns × cw.  Kept uniform
-   * with paint and caret positioning so click-translation, selection,
-   * and the caret all agree.  See rlc_init_text_dimensions() for the
-   * monospace-grid assumption. */
-  int cols = 0;
-  for(int i=0; i<len; i++)
-    cols += tc_display_width(&text[i]);
-  return cols * b->cw;
 }
 
 
@@ -2777,6 +6895,13 @@ rlc_make_buffer(int w, int h)
   b->height         = h;
   b->width          = w;
   b->window_size    = 25;
+  b->scroll_top     = 0;
+  b->scroll_bottom  = b->window_size-1;
+  b->autowrap       = true;
+  b->alt_scroll     = true;
+  b->mouse_col      = -1;		/* no cell reported yet */
+  b->mouse_row      = -1;
+  rlc_init_tabs(b);
   b->lines          = rlc_malloc(sizeof(rlc_text_line) * h);
   b->cmdstat	    = CMD_INITIAL;
   b->changed	    = CHG_CARET|CHG_CHANGED|CHG_CLEAR;
@@ -2809,6 +6934,8 @@ rlc_destroy_buffer(RlcData b)
     rlc_free(b->lines);
   }
 
+  if ( b->link_url )
+    rlc_free(b->link_url);
   rlc_destroy_saved_screen(b);
   rlc_close_connection(b);
   palette_destroy(b);
@@ -3016,6 +7143,151 @@ move_links_soft(RlcData b, RlcTextLine from, RlcTextLine to)
 }
 
 
+/* Rewrapping moves text between the lines of the ring, so afterwards a
+ * line index names different text.  Describe a position as (logical
+ * lines back from the last, cell offset from the start of that logical
+ * line) and put it back once the ring has been rebuilt.  A logical line
+ * is a hard line plus its soft continuations -- exactly what rewrapping
+ * preserves.
+ */
+
+typedef struct
+{ int	lines_back;			/* logical lines before the last */
+  int	offset;				/* cells from the logical start */
+} rlc_textpos;
+
+static rlc_textpos
+rlc_save_textpos(RlcData b, int line, int chr)
+{ rlc_textpos pos = { -1, chr };
+  int i;
+
+  if ( !rlc_between(b, b->first, b->last, line) )
+    return pos;				/* stale index; leave it alone */
+
+  for(i=line; i != b->first && b->lines[PrevLine(b, i)].softreturn; )
+  { i = PrevLine(b, i);
+    pos.offset += b->lines[i].size;
+  }
+
+  pos.lines_back = 0;
+  for(; i != b->last; i = NextLine(b, i))
+  { if ( !b->lines[i].softreturn )
+      pos.lines_back++;
+  }
+
+  return pos;
+}
+
+static void
+rlc_restore_textpos(RlcData b, rlc_textpos pos, int *line, int *chr)
+{ int i = b->last;
+  int n, off;
+
+  if ( pos.lines_back < 0 )
+    return;
+
+  while ( i != b->first && b->lines[PrevLine(b, i)].softreturn )
+    i = PrevLine(b, i);
+  for(n=pos.lines_back; n > 0 && i != b->first; n--)
+  { i = PrevLine(b, i);			/* end of the logical line above */
+    while ( i != b->first && b->lines[PrevLine(b, i)].softreturn )
+      i = PrevLine(b, i);
+  }
+
+  /* Walk the continuations.  A position at the end of a full line stays
+   * there rather than moving to the next: rlc_put() leaves the caret on
+   * the right margin and wraps only when the next character arrives.
+   */
+  for(off=pos.offset;
+      off > b->lines[i].size && b->lines[i].softreturn && i != b->last;
+      i = NextLine(b, i))
+    off -= b->lines[i].size;
+
+  if ( off > b->lines[i].size )
+    off = b->lines[i].size;
+
+  *line = i;
+  *chr  = off;
+}
+
+
+/* Carry the marks of the blocks across a rewrap, as the caret and the
+ * selection are carried: a ring position says nothing once the lines
+ * under it have been broken up differently, but the offset into the
+ * logical line it sits on survives.  Four positions per block, in the
+ * order the chain has them.
+ */
+
+static rlc_textpos *
+rlc_save_block_anchors(RlcData b, int *np)
+{ TerminalImage ti = b->object;
+  rlc_textpos *saved;
+  Cell cl;
+  int n = 0, i = 0;
+
+  *np = 0;
+  if ( !ti || isNil(ti->blocks) || emptyChain(ti->blocks) )
+    return NULL;
+  n = valInt(getSizeChain(ti->blocks));
+  if ( !(saved=rlc_malloc(n*4*sizeof(*saved))) )
+    return NULL;
+
+  for_cell(cl, ti->blocks)
+  { TerminalBlock tb = cl->value;
+    RlcAnchors a = tb->anchors;
+    static const rlc_textpos none = { -1, 0 };
+    int lines[4];
+    int chars[4];
+
+    lines[0] = a ? a->prompt_line : ANCHOR_NONE;
+    chars[0] = a ? a->prompt_char : 0;
+    lines[1] = a ? a->input_line  : ANCHOR_NONE;
+    chars[1] = a ? a->input_char  : 0;
+    lines[2] = a ? a->output_line : ANCHOR_NONE;
+    chars[2] = a ? a->output_char : 0;
+    lines[3] = a ? a->end_line    : ANCHOR_NONE;
+    chars[3] = a ? a->end_char    : 0;
+
+    for(int k=0; k<4; k++, i++)
+      saved[i] = lines[k] == ANCHOR_NONE ? none
+	       : rlc_save_textpos(b, lines[k], chars[k]);
+  }
+
+  *np = n;
+  return saved;
+}
+
+
+static void
+rlc_restore_block_anchors(RlcData b, rlc_textpos *saved, int n)
+{ TerminalImage ti = b->object;
+  Cell cl;
+  int i = 0;
+
+  if ( !saved )
+    return;
+  if ( ti && notNil(ti->blocks) )
+  { for_cell(cl, ti->blocks)
+    { TerminalBlock tb = cl->value;
+      RlcAnchors a = tb->anchors;
+
+      if ( i/4 >= n )
+	break;
+      if ( a )
+      { rlc_restore_textpos(b, saved[i+0], &a->prompt_line, &a->prompt_char);
+	rlc_restore_textpos(b, saved[i+1], &a->input_line,  &a->input_char);
+	rlc_restore_textpos(b, saved[i+2], &a->output_line, &a->output_char);
+	rlc_restore_textpos(b, saved[i+3], &a->end_line,    &a->end_char);
+      }
+      i += 4;
+    }
+  }
+
+  rlc_free(saved);
+  rlc_restamp_folds(b);
+}
+
+
 static void
 rlc_resize(RlcData b, int w, int h)
 { int i;
@@ -3027,8 +7299,41 @@ rlc_resize(RlcData b, int w, int h)
 	Cprintf("Resizing %dx%d --> %dx%d\n",
 		b->width, b->window_size, w, h));
 
+  /* An alternate screen is up over lines we are about to rewrap.  Give
+   * the normal screen back first, so that it is rewrapped with the rest
+   * of the buffer and the blocks that name it follow their text, and
+   * take it again at the new size below.  The saved copies cannot be
+   * rewrapped where they are; the application redraws what it had on the
+   * screen when it sees the SIGWINCH this sends it.
+   */
+  bool alt = rlc_alt_screen(b);
+  if ( alt )
+  { rlc_erase_display(b);
+    rlc_restore_screen(b);
+  }
+
+  rlc_textpos caret     = rlc_save_textpos(b, b->caret_y, b->caret_x);
+  rlc_textpos sel_org   = rlc_save_textpos(b, b->sel_org_line,
+					      b->sel_org_char);
+  rlc_textpos sel_start = rlc_save_textpos(b, b->sel_start_line,
+					      b->sel_start_char);
+  rlc_textpos sel_end   = rlc_save_textpos(b, b->sel_end_line,
+					      b->sel_end_char);
+  rlc_textpos isearch   = rlc_save_textpos(b, b->isearch.origin_line,
+					      b->isearch.origin_char);
+  rlc_textpos isbase    = rlc_save_textpos(b, b->isearch.base_line,
+					      b->isearch.base_char);
+  rlc_textpos isheld_s  = rlc_save_textpos(b, b->isearch.held_start_line,
+					      b->isearch.held_start_char);
+  rlc_textpos isheld_e  = rlc_save_textpos(b, b->isearch.held_end_line,
+					      b->isearch.held_end_char);
+  int nblocks;
+  rlc_textpos *blocks = rlc_save_block_anchors(b, &nblocks);
+
   b->window_size = h;
   b->width = w;
+  b->scroll_top = 0;			/* the region does not survive a */
+  b->scroll_bottom = h-1;		/* screen of a different size */
 
   for(i = b->first; /*i != b->last*/; i = NextLine(b, i))
   { RlcTextLine tl = &b->lines[i];
@@ -3063,7 +7368,6 @@ rlc_resize(RlcData b, int w, int h)
 	pl->adjusted = true;
 	i = (int)(pl - b->lines);
 	update_links(pl, tl, moved);
-//	DEBUG(Dprint_lines(b, b->first, b->last));
       } else				/* put in next line */
       { RlcTextLine nl;
 	int move = tl->size - w;
@@ -3114,11 +7418,34 @@ rlc_resize(RlcData b, int w, int h)
   else
     b->window_start = rlc_add_lines(b, b->last, -(h-1));
 
+  /* Follow the text: the caret and the selection were indices into the
+   * ring we just rebuilt. */
+  rlc_restore_textpos(b, caret,     &b->caret_y,       &b->caret_x);
+  rlc_restore_textpos(b, sel_org,   &b->sel_org_line,  &b->sel_org_char);
+  rlc_restore_textpos(b, sel_start, &b->sel_start_line,&b->sel_start_char);
+  rlc_restore_textpos(b, sel_end,   &b->sel_end_line,  &b->sel_end_char);
+  rlc_restore_textpos(b, isearch,   &b->isearch.origin_line,
+				    &b->isearch.origin_char);
+  rlc_restore_textpos(b, isbase,    &b->isearch.base_line,
+				    &b->isearch.base_char);
+  rlc_restore_textpos(b, isheld_s,  &b->isearch.held_start_line,
+				    &b->isearch.held_start_char);
+  rlc_restore_textpos(b, isheld_e,  &b->isearch.held_end_line,
+				    &b->isearch.held_end_char);
+  rlc_restore_block_anchors(b, blocks, nblocks);
+  b->window_start = rlc_last_window_start(b);	/* in rows: the folds are
+						   back on the lines */
+
   /* Clamp caret_x: typing at 80 cols can leave caret_x up to 80 in
    * the pending-wrap position; after shrinking to 25 cols the cap
    * is 3*25+1 = 76 and rlc_check_assertions would otherwise abort. */
   if ( b->caret_x > LINE_CELL_CAPACITY(b) - 1 )
     b->caret_x = LINE_CELL_CAPACITY(b) - 1;
+
+  if ( alt )				/* the application gets its screen */
+  { rlc_save_screen(b);			/* back at the new size */
+    rlc_erase_display(b);
+  }
 
   b->changed |= CHG_CARET|CHG_CHANGED|CHG_CLEAR;
 
@@ -3227,7 +7554,8 @@ rlc_open_line(RlcData b)
   if ( i == b->sel_start_line )
     rlc_set_selection(b, 0, 0, 0, 0);	/* clear the selection */
   if ( i == b->first )
-  { rlc_free_line(b, b->first);
+  { rlc_expire_blocks(b, b->first);	/* the marks on it say nothing now */
+    rlc_free_line(b, b->first);
     b->first = NextLine(b, b->first);
   }
 
@@ -3236,6 +7564,8 @@ rlc_open_line(RlcData b)
   b->lines[i].adjusted   = false;
   b->lines[i].size       = 0;
   b->lines[i].softreturn = false;
+  b->lines[i].folded     = false;
+  b->lines[i].fold_head  = false;
   b->lines[i].line_no    = i;
 }
 
@@ -3272,8 +7602,536 @@ rlc_add_lines(RlcData b, int here, int add)
 
 
 		 /*******************************
+		 *        THE FOLDED VIEW       *
+		 *******************************/
+
+/* The ring arithmetic above counts every line there is.  What the window
+ * shows is not every line: a closed fold hides the output of a command,
+ * and the rows below it move up.  Where a row of the window is meant, the
+ * three below take the place of NextLine(), rlc_count_lines() and
+ * rlc_add_lines(); where the text itself is meant -- the selection, the
+ * search, <-contents -- the plain ones stay, because a fold hides text
+ * from the eye and not from the buffer.
+ *
+ * b->folds counts the closed folds, so a terminal that has none (which is
+ * every terminal until someone folds something) pays a single test.
+ */
+
+static bool
+rlc_folded(RlcData b, int line)
+{ return b->folds && b->lines[line].folded;
+}
+
+
+/** The visible line after `line', skipping what a closed fold hides.
+ * Never walks past b->last, which is always visible.
+ */
+
+static int
+rlc_view_next(RlcData b, int line)
+{ do
+  { if ( line == b->last )
+      return line;
+    line = NextLine(b, line);
+  } while ( rlc_folded(b, line) );
+
+  return line;
+}
+
+
+/** Rows between `from' and `to', i.e. rlc_count_lines() over the lines
+ * the window would show.
+ */
+
+static int
+rlc_view_count(RlcData b, int from, int to)
+{ int steps = rlc_count_lines(b, from, to);
+
+  if ( !b->folds )
+    return steps;
+
+  int n = 0;
+  for(int l=from; steps-- > 0; )
+  { l = NextLine(b, l);
+    if ( !rlc_folded(b, l) )
+      n++;
+  }
+
+  return n;
+}
+
+
+/** `add' visible lines on from `here'.  A negative `add' walks back.
+ * Clamps at the ends of the buffer rather than wrapping round them, as
+ * the window cannot show what is not there.
+ */
+
+static int
+rlc_view_add(RlcData b, int here, int add)
+{ for( ; add > 0 && here != b->last; add-- )
+    here = rlc_view_next(b, here);
+
+  for( ; add < 0 && here != b->first; add++ )
+  { do
+    { here = PrevLine(b, here);
+    } while ( here != b->first && rlc_folded(b, here) );
+  }
+
+  return here;
+}
+
+
+/** The line shown on row `row' of the window.  Past the last line there
+ * is nothing to show, and the ring slots beyond it are what <-row and
+ * <-cell_style report as the blank rest of the window; rlc_view_add()
+ * stops at b->last, so those rows are counted out from there.
+ */
+
+static int
+rlc_view_line_at_row(RlcData b, int row)
+{ int last = rlc_view_count(b, b->window_start, b->last);
+
+  if ( row <= last )
+    return rlc_view_add(b, b->window_start, row);
+
+  return rlc_add_lines(b, b->last, row-last);
+}
+
+
+/** Write the fold bits of every line from what the blocks say.  They are
+ * a cache the paint loop can afford to ask; this is the only thing that
+ * writes them, so anything that moves lines about calls it afterwards
+ * rather than trying to keep them up to date.
+ */
+
+/* The lines a fold covers: `head' is the logical line the command is on
+ * -- the one showing `?- foo.' -- and [from,to] is what folding hides,
+ * which is the output and not the command that produced it.  The output
+ * starts where `C' landed, at the start of the line below the command,
+ * unless the client wrote it without a newline of its own, in which case
+ * that line carries both and stays.  It ends where `D' landed, which is
+ * the line the next prompt goes on.
+ *
+ * Fails for a block that has nothing to hide: one still running, one
+ * that printed nothing, one whose lines have scrolled away.
+ */
+
+static bool
+rlc_fold_lines(RlcData b, TerminalBlock tb, int *headp, int *fromp, int *top)
+{ int sl, sc, el, ec, head, from, to;
+
+  if ( isOn(tb->running) ||
+       !block_range(tb, NAME_all, &head, &sc, &el, &ec) ||
+       !block_range(tb, NAME_output, &sl, &sc, &el, &ec) )
+    return false;
+
+  head = rlc_logical_start(b, head);
+  from = sc == 0 ? sl : NextLine(b, sl);
+  to   = ec == 0 ? PrevLine(b, el) : el;
+
+  if ( from == b->last || from == head ||
+       rlc_count_lines(b, b->first, from) > rlc_count_lines(b, b->first, to) )
+    return false;			/* it printed nothing to hide */
+
+  *headp = head;
+  *fromp = from;
+  *top   = to;
+
+  return true;
+}
+
+
+/** Open the fold that hides `line', if one does.  A search whose hit is
+ * inside a fold, or a ->scroll_to that lands in one, means to be shown
+ * what it found rather than the fold that covers it.
+ */
+
+static bool
+rlc_unfold_line(RlcData b, int line)
+{ TerminalImage ti = b->object;
+  Cell cl;
+
+  if ( !b->folds || !ti || isNil(ti->blocks) || !rlc_folded(b, line) )
+    return false;
+
+  for_cell(cl, ti->blocks)
+  { TerminalBlock tb = cl->value;
+    int head, from, to;
+
+    if ( isOn(tb->folded) && rlc_fold_lines(b, tb, &head, &from, &to) &&
+	 rlc_between(b, from, to, line) )
+      return !!send(tb, NAME_unfold, EAV);
+  }
+
+  return false;
+}
+
+
+/** The block whose marker belongs on `line'.  Only asked about a line
+ * the stamp says is a fold head, so the walk over the blocks is paid for
+ * once per marker rather than once per row.
+ */
+
+static TerminalBlock
+rlc_fold_head_block(RlcData b, int line)
+{ TerminalImage ti = b->object;
+  Cell cl;
+
+  if ( !ti || isNil(ti->blocks) )
+    return NULL;
+
+  for_cell(cl, ti->blocks)
+  { TerminalBlock tb = cl->value;
+    int head, from, to;
+
+    if ( rlc_fold_lines(b, tb, &head, &from, &to) && head == line )
+      return tb;
+  }
+
+  return NULL;
+}
+
+
+static void
+rlc_restamp_folds(RlcData b)
+{ TerminalImage ti = b->object;
+  Cell cl;
+  int folds = 0;
+
+  for(int l=0; l<b->height; l++)
+  { if ( b->lines[l].folded || b->lines[l].fold_head )
+      b->lines[l].changed |= CHG_CHANGED;   /* it may not be marked now */
+    b->lines[l].folded    = false;
+    b->lines[l].fold_head = false;
+  }
+
+  /* Nothing is folded while the alternate screen is up.  The window is
+   * the application's, and the lines under it are the normal screen's:
+   * an anchor that names one of them says where a fold goes there and
+   * not here.  The lines the application writes reach those slots as it
+   * fills the window, and stamping its own rows as hidden took them off
+   * the screen under it, which is `less' on a session with folds coming
+   * up scrambled.  The blocks keep <-folded, so rlc_restore_screen()
+   * closes the folds again over the lines it gives back.
+   */
+  if ( !ti || isNil(ti->blocks) || rlc_alt_screen(b) )
+  { b->folds = 0;
+    return;
+  }
+
+  for_cell(cl, ti->blocks)
+  { TerminalBlock tb = cl->value;
+    int head, from, to, hidden = 0;
+
+    if ( !rlc_fold_lines(b, tb, &head, &from, &to) )
+      continue;
+
+    b->lines[head].fold_head = true;	/* it can be folded, so it is */
+    b->lines[head].changed |= CHG_CHANGED;  /* marked whether it is or not */
+    if ( !isOn(tb->folded) )
+      continue;
+
+    for(int l=from; ; l=NextLine(b, l))
+    { if ( l == head || l == b->last )	/* never the caret's own line */
+	break;
+      b->lines[l].folded = true;
+      b->lines[l].changed |= CHG_CHANGED;
+      hidden++;
+      if ( l == to )
+	break;
+    }
+
+    if ( hidden > 0 )
+    { tb->anchors->hidden_lines = hidden;
+      folds++;
+    } else
+      assign(tb, folded, OFF);
+  }
+
+  b->folds = folds;
+
+  /* The window must start on a line it can show. */
+  while ( rlc_folded(b, b->window_start) && b->window_start != b->first )
+    b->window_start = PrevLine(b, b->window_start);
+}
+
+
+/** Keep the end of the buffer on the bottom row.  Closing a fold takes
+ * rows out of the window and everything under it moves up, so a window
+ * that was showing that end has to go on showing it, or the last line
+ * walks off the bottom and leaves the blank rest of the buffer behind
+ * it; opening one is the same the other way about.
+ *
+ * `at_end' says whether the window was showing the end, and has to be
+ * asked before the fold bits are rewritten.  Only a change the user made
+ * to the folds wants this: erasing the display or dropping blocks
+ * rewrites the bits too, and there the window is the caller's own to
+ * place.
+ */
+
+/** The line the window may start on at the furthest it can be scrolled:
+ * the one that puts the end of the buffer on the bottom row.  There is
+ * nothing under the last line to show, so scrolling past this only walks
+ * the text off the top and ends with an empty window.
+ */
+
+static int
+rlc_last_window_start(RlcData b)
+{ int start;
+
+  if ( rlc_view_count(b, b->first, b->last) < b->window_size )
+    start = b->first;			/* it all fits */
+  else
+    start = rlc_view_add(b, b->last, -(b->window_size-1));
+
+  while ( rlc_folded(b, start) && start != b->first )
+    start = PrevLine(b, start);
+
+  return start;
+}
+
+
+/** Do not scroll further than that.  Fewer lines than the window holds
+ * are all of them, so `here' is only ever pulled back.
+ */
+
+static int
+rlc_clamp_window_start(RlcData b, int here)
+{ int last = rlc_last_window_start(b);
+
+  if ( rlc_view_count(b, b->first, here) >
+       rlc_view_count(b, b->first, last) )
+    return last;
+
+  return here;
+}
+
+
+static void
+rlc_keep_end_in_view(RlcData b, bool at_end)
+{ if ( at_end )
+    b->window_start = rlc_last_window_start(b);
+}
+
+
+		 /*******************************
 		 *    ANSI SEQUENCE HANDLING	*
 		 *******************************/
+
+/** Row of `line' counted from the top of the window.
+ *
+ * Lines above the window (i.e., in the scroll back) give a number well
+ * past the last row rather than a negative one, so a single test
+ * against the height of the window rejects both.
+ */
+
+static int
+rlc_window_row(RlcData b, int line)
+{ return rlc_view_count(b, b->window_start, line);
+}
+
+
+/** First line of the scrolling region (DECSTBM, `CSI r'). */
+
+static int
+rlc_region_start(RlcData b)
+{ return rlc_add_lines(b, b->window_start, b->scroll_top);
+}
+
+
+/** True if the scrolling region is a part of the window rather than
+ * all of it.  Text reaching the bottom of such a region scrolls the
+ * region alone; the window as a whole scrolls into the scroll back.
+ */
+
+static bool
+rlc_has_region(RlcData b)
+{ return b->scroll_top > 0 || b->scroll_bottom < b->window_size-1;
+}
+
+
+/** Last line of the scrolling region.
+ *
+ * Lines below `b->last' do not exist yet: when the region is not
+ * filled, `grow' asks for up to that many new lines at the end so
+ * content scrolled down has somewhere to go.  The result is the last
+ * line that may be written, which is the last line of the region if
+ * the buffer reaches that far and `b->last' otherwise.
+ */
+
+static int
+rlc_region_bottom(RlcData b, int grow)
+{ int rows = rlc_window_row(b, b->last)+1;
+
+  for(int room = b->scroll_bottom+1 - rows; grow > 0 && room > 0; grow--, room--)
+  { rlc_add_line(b);
+    rows++;
+  }
+
+  if ( rows > b->scroll_bottom )
+    return rlc_add_lines(b, b->window_start, b->scroll_bottom);
+
+  return b->last;
+}
+
+
+/** Number of lines from `line' to `bottom', or 0 if `line' is not in
+ * the scrolling region.
+ */
+
+static int
+rlc_region_size(RlcData b, int line, int bottom)
+{ int row = rlc_window_row(b, line);
+
+  if ( row < b->scroll_top || row > b->scroll_bottom )
+    return 0;
+  int rows = rlc_count_lines(b, line, bottom)+1;
+
+  return rows > b->window_size ? 0 : rows;	/* `line' past `bottom' */
+}
+
+
+/** Scroll the part of the screen from `line' to the bottom of the
+ * scrolling region.
+ *
+ * If `shift' is positive, insert that many empty lines at `line',
+ * moving the content down and discarding what is pushed past the
+ * bottom (ANSI IL).  If it is negative, delete that many lines at
+ * `line', moving the content below up and leaving empty lines at the
+ * bottom (ANSI DL).  Both are the same walk over the region, run from
+ * opposite ends: copying towards the end content moves to means each
+ * line is read before it is overwritten.
+ */
+
+static void
+rlc_scroll_region(RlcData b, int line, int shift)
+{ int bottom = rlc_region_bottom(b, shift);
+  int rows   = rlc_region_size(b, line, bottom);
+  int count  = shift > 0 ? shift : -shift;
+
+  if ( rows == 0 )
+    return;
+  if ( count > rows )
+    count = rows;
+  int move = rows - count;		/* lines that survive */
+  int from = shift > 0 ? bottom : line;	/* end we copy towards */
+  int step = shift > 0 ? -1 : 1;
+  int off  = shift > 0 ? -count : count;	/* destination to source */
+
+  for(int i=0; i<count; i++)		/* lines that leave the region */
+    rlc_free_line(b, rlc_add_lines(b, from, i*step));
+  for(int i=0; i<move; i++)
+  { int dst = rlc_add_lines(b, from, i*step);
+    int src = rlc_add_lines(b, dst, off);
+
+    b->lines[dst] = b->lines[src];
+    b->lines[dst].line_no = dst;
+    b->lines[dst].changed |= CHG_CHANGED;
+  }
+  for(int i=0; i<count; i++)		/* the new empty lines */
+  { int l = rlc_add_lines(b, from, (move+i)*step);
+
+    rlc_reinit_line(b, l);
+    b->lines[l].changed |= CHG_CHANGED;
+  }
+
+  if ( b->folds )			/* the fold bits travelled with the */
+    rlc_restamp_folds(b);		/* lines; the blocks say where they go */
+
+  b->changed |= CHG_CARET|CHG_CLEAR|CHG_CHANGED;
+}
+
+
+/** Scroll the region up (SU, `CSI Ps S').
+ *
+ * The caret does not move.  Scrolling the whole window pushes the
+ * lines that leave the top into the scroll back, as a line feed on the
+ * last row does; a region, or the alternate screen, has nowhere to put
+ * them and drops them.
+ */
+
+static void
+rlc_scroll_up(RlcData b, int count)
+{ if ( rlc_has_region(b) || b->saved.lines ||
+       rlc_window_row(b, b->last)+1 < b->window_size )
+  { rlc_scroll_region(b, rlc_region_start(b), -count);
+  } else
+  { int row = rlc_window_row(b, b->caret_y);
+    int x = b->caret_x;
+
+    b->caret_y = rlc_add_lines(b, b->window_start, b->window_size-1);
+    rlc_caret_down(b, count);		/* scrolls the window along */
+    b->caret_y = rlc_add_lines(b, b->window_start, row);
+    b->caret_x = x;
+    b->changed |= CHG_CARET;
+  }
+}
+
+
+/** Scroll the region down (SD, `CSI Ps T').  What leaves the bottom is
+ * gone; a terminal does not pull the scroll back onto the screen.
+ */
+
+static void
+rlc_scroll_down(RlcData b, int count)
+{ rlc_scroll_region(b, rlc_region_start(b), count);
+}
+
+
+/** Soft terminal reset (DECSTR, `CSI ! p').  Puts the modes, the
+ * attributes and the character sets back to their defaults, leaving
+ * the screen and the tab stops alone.  It is part of terminfo's `is2',
+ * so this runs whenever a full screen application starts.
+ *
+ * DEC resets autowrap here; xterm leaves it on, and so do we: `am' is
+ * what its terminfo entry promises and an application that sends `is2'
+ * does not expect to have lost it.
+ */
+
+static void
+rlc_soft_reset(RlcData b)
+{ rlc_link_end(b);
+  b->scroll_top       = 0;
+  b->scroll_bottom    = b->window_size-1;
+  b->sgr_flags        = TF_DEFAULT;
+  b->insert_mode      = false;
+  b->autowrap         = true;
+  b->app_escape       = false;
+  b->app_keypad_mode  = false;
+  b->G0               = G_ASCII;
+  b->G1               = G_ASCII;
+  b->shift_in         = false;
+  b->cursor.saved     = false;
+  b->hide_caret       = false;
+  changed_caret(b);
+}
+
+
+/** Hard terminal reset (RIS, `ESC c').  As DECSTR, but it also gives
+ * back the normal screen, the default tab stops and an empty window.
+ */
+
+static void
+rlc_reset(RlcData b)
+{ if ( b->saved.lines )
+    rlc_restore_screen(b);
+  rlc_soft_reset(b);
+  rlc_init_tabs(b);
+  b->bracketed_paste_mode = false;
+  b->prompt_marks         = false;
+  b->input_active         = false;
+  b->input_continued      = false;
+  rlc_drop_blocks(b);
+  b->focus_inout_events   = false;
+  b->alt_scroll           = true;
+  b->mouse_tracking       = 0;
+  b->mouse_encoding       = 0;
+  b->mouse_col            = -1;
+  b->mouse_row            = -1;
+  b->last_char            = 0;
+  rlc_erase_display(b);
+}
+
 
 static void
 rlc_need_arg(RlcData b, int arg, int def)
@@ -3299,28 +8157,8 @@ rlc_caret_up(RlcData b, int arg)
 
 static void
 rlc_reverse_index(RlcData b)
-{ if ( b->caret_y == b->window_start )
-  { int lines = rlc_count_lines(b, b->window_start, b->last)+1;
-    int bottom;
-    if ( lines > b->window_size )
-    { bottom = rlc_add_lines(b, b->window_start, b->window_size-1);
-    } else
-    { bottom = NextLine(b, b->last);
-      b->last = bottom;
-    }
-
-    rlc_free_line(b, bottom);
-    while(bottom != b->window_start)
-    { int before = PrevLine(b, bottom);
-      b->lines[bottom] = b->lines[before];
-      b->lines[bottom].changed |= CHG_CHANGED;
-      b->lines[bottom].line_no = bottom;
-      bottom = before;
-    }
-    rlc_reinit_line(b, bottom);
-    b->lines[bottom].changed |= CHG_CHANGED;
-
-    b->changed |= CHG_CARET|CHG_CLEAR|CHG_CHANGED;
+{ if ( rlc_window_row(b, b->caret_y) == b->scroll_top )
+  { rlc_scroll_region(b, b->caret_y, 1);
   } else
   { b->caret_y = PrevLine(b, b->caret_y);
     b->changed |= CHG_CARET;
@@ -3331,20 +8169,38 @@ rlc_reverse_index(RlcData b)
 static void
 rlc_caret_down(RlcData b, int arg)
 { while ( arg-- > 0 )
-  { if ( b->caret_y == b->last )
-      rlc_add_line(b);
+  { if ( rlc_has_region(b) &&
+	 rlc_window_row(b, b->caret_y) == b->scroll_bottom )
+    { rlc_scroll_region(b, rlc_region_start(b), -1);
+      continue;				/* the caret stays where it is */
+    }
+    if ( b->caret_y == b->last )
+      rlc_add_line(b);			/* rlc_open_line() clears its flags */
     b->caret_y = NextLine(b, b->caret_y);
-    b->lines[b->caret_y].softreturn = false; /* ? why not only on open? */
+    /* Do NOT clear softreturn here.  Moving the caret says nothing
+     * about how the line it lands on ends, and a client that walks
+     * down its input with newlines -- libedit going to the end of a
+     * wrapped line, or from one display row to the next -- would turn
+     * every continuation into a hard break.  Rewrapping on the next
+     * resize then reflows the pieces separately and leaves parts of
+     * the old layout on the screen.  The flag belongs to the content:
+     * rlc_put() sets it when a line wraps, rlc_erase_line() clears it
+     * when the tail that wrapped is erased.
+     */
   }
   b->changed |= CHG_CARET;
-					/* scroll? */
-  int row = rlc_count_lines(b, b->window_start, b->caret_y);
+					/* scroll?  In rows: a closed fold
+					   takes lines off the window and
+					   counting them scrolled a window
+					   that still had room for the
+					   caret */
+  int row = rlc_window_row(b, b->caret_y);
   if ( row >= b->window_size )
   { if ( b->saved.lines )
     { rlc_shift_up(b, row-(b->window_size-1));
       b->caret_y = rlc_add_lines(b, b->window_start, b->window_size-1);
-    } else
-    { b->window_start = rlc_add_lines(b, b->caret_y, -(b->window_size-1));
+    } else if ( !rlc_isearching(b) )	/* the user is driving the view */
+    { b->window_start = rlc_view_add(b, b->caret_y, -(b->window_size-1));
       b->changed |= CHG_CHANGED|CHG_CLEAR;
     }
   }
@@ -3353,31 +8209,74 @@ rlc_caret_down(RlcData b, int arg)
 }
 
 
+/* The visual column the caret is on, with a pending wrap resolved.
+ *
+ * A character written in the last column leaves the caret one column
+ * past the right margin, so that a combining mark still attaches to it
+ * and the wrap happens only when the next base arrives -- see rlc_put().
+ * That position is not one the client can be told about or move from:
+ * to everything below, the caret is on the last column.  ECMA-48 says
+ * so as well, which is why cursor motion cancels the pending wrap:
+ * `CSI C' at the right margin stays there rather than stepping over it.
+ */
+
+static int
+rlc_caret_vcol(RlcData b)
+{ int vcol = rlc_cell_to_vcol(&b->lines[b->caret_y], b->caret_x);
+
+  return vcol >= b->width ? b->width-1 : vcol;
+}
+
+
+/* Put the caret on a visual column of the line it is on.  Cells and
+ * columns only match 1:1 for plain narrow content, so moving between
+ * lines is a matter of columns: the same column is a different cell on
+ * a line that holds combining marks or wide characters.
+ */
+
 static void
-rlc_caret_forward(RlcData b, int arg)
-{ tlog("rlc_caret_forward(arg=%d) entry caret_x=%d caret_y=%d\n",
-       arg, b->caret_x, b->caret_y);
-  /* Move by VISUAL columns, not cells.  An NFD cluster takes several
-     cells but one visual column, so cell-indexed arithmetic moves the
-     caret by a fraction of a column for combining content.  Wide-char
-     right-half placeholders are their own visual column (a `\b` steps
-     through a wide char in two halves). */
+rlc_caret_to_vcol(RlcData b, int vcol)
+{ b->caret_x = rlc_vcol_to_cell(&b->lines[b->caret_y],
+				Bounds(vcol, 0, b->width-1));
+  if ( b->caret_x > LINE_CELL_CAPACITY(b) - 1 )
+    b->caret_x = LINE_CELL_CAPACITY(b) - 1;
+
+  b->changed |= CHG_CARET;
+}
+
+
+/* Cursor motion stops at the edge of the line.
+ *
+ * Only writing a character wraps: ECMA-48 has CUF not pass the last
+ * column, and a terminal without `bw' does not take a backspace in
+ * column 0 to the line above.
+ *
+ * Wrapping on a cursor motion also marked the row it left as
+ * soft-wrapped, so a later rewrap read two rows as one line and the
+ * screen filled with duplicated text.
+ *
+ * Motion is by VISUAL columns, not cells.  An NFD cluster takes
+ * several cells but one visual column, so cell-indexed arithmetic
+ * would move the caret by a fraction of a column for combining
+ * content.  Wide-char right-half placeholders are their own visual
+ * column (a `\b` steps through a wide char in two halves).
+ */
+
+static void
+rlc_cursor_forward(RlcData b, int arg)
+{ b->caret_x = rlc_vcol_to_cell(&b->lines[b->caret_y], rlc_caret_vcol(b));
+
   while(arg-- > 0)
   { RlcTextLine tl = &b->lines[b->caret_y];
     int cur_vcol = rlc_cell_to_vcol(tl, b->caret_x);
     int new_vcol = cur_vcol + 1;
+
     if ( new_vcol >= b->width )
-    { b->lines[b->caret_y].softreturn = true;
-      b->caret_x = 0;
-      rlc_caret_down(b, 1);
-    } else
-    { b->caret_x = rlc_vcol_to_cell(tl, new_vcol);
-    }
+      break;				/* at the right edge; stay there */
+    b->caret_x = rlc_vcol_to_cell(tl, new_vcol);
   }
 
   b->changed |= CHG_CARET;
-  tlog("rlc_caret_forward exit  caret_x=%d caret_y=%d\n",
-       b->caret_x, b->caret_y);
 }
 
 
@@ -3385,17 +8284,12 @@ static void
 rlc_caret_backward(RlcData b, int arg)
 { tlog("rlc_caret_backward(arg=%d) entry caret_x=%d caret_y=%d\n",
        arg, b->caret_x, b->caret_y);
-  /* See rlc_caret_forward: move by visual columns. */
   while(arg-- > 0)
   { RlcTextLine tl = &b->lines[b->caret_y];
     int cur_vcol = rlc_cell_to_vcol(tl, b->caret_x);
     if ( cur_vcol == 0 )
-    { rlc_caret_up(b, 1);
-      tl = &b->lines[b->caret_y];
-      b->caret_x = rlc_vcol_to_cell(tl, b->width - 1);
-    } else
-    { b->caret_x = rlc_vcol_to_cell(tl, cur_vcol - 1);
-    }
+      break;				/* at the left edge; stay there */
+    b->caret_x = rlc_vcol_to_cell(tl, cur_vcol - 1);
   }
 
   b->changed |= CHG_CARET;
@@ -3412,16 +8306,54 @@ rlc_cariage_return(RlcData b)
 }
 
 
+		 /*******************************
+		 *	     TAB STOPS		*
+		 *******************************/
+
+#define TAB_MAP_COLS ((int)sizeof(((RlcData)0)->tabs)*8)
+
+static bool
+rlc_is_tab_stop(RlcData b, int col)
+{ if ( col < 0 || col >= TAB_MAP_COLS )
+    return col%8 == 0;			/* past the map: the default */
+
+  return (b->tabs[col/8] & (1<<(col%8))) != 0;
+}
+
+
 static void
-rlc_tab(RlcData b)
+rlc_init_tabs(RlcData b)
+{ memset(b->tabs, 0, sizeof(b->tabs));
+  for(int col=0; col<TAB_MAP_COLS; col += 8)
+    b->tabs[col/8] |= 1<<(col%8);
+}
+
+
+static void
+rlc_set_tab(RlcData b, int col, bool set)
+{ if ( col >= 0 && col < TAB_MAP_COLS )
+  { if ( set )
+      b->tabs[col/8] |=  (1<<(col%8));
+    else
+      b->tabs[col/8] &= ~(1<<(col%8));
+  }
+}
+
+
+/** Move the caret to a visual column of the current line.  `fill' says
+ * to write out the columns it passes over as spaces, which is what a
+ * tab does: the text it moved over is on the screen, and the caret can
+ * only sit where the line reaches.
+ */
+
+static void
+rlc_caret_to_column(RlcData b, int col, bool fill)
 { RlcTextLine tl = &b->lines[b->caret_y];
 
-  do
-  { rlc_caret_forward(b, 1);
-  } while( (b->caret_x % 8) != 0 );
-
-  if ( tl->size < b->caret_x )
+  b->caret_x = rlc_vcol_to_cell(tl, col);
+  if ( fill && tl->size < b->caret_x )
   { rlc_unadjust_line(b, b->caret_y);
+    tl = &b->lines[b->caret_y];
 
     while ( tl->size < b->caret_x )
     { text_char *tc = &tl->text[tl->size++];
@@ -3430,9 +8362,63 @@ rlc_tab(RlcData b)
       tc->flags = b->sgr_flags;
       tc->flags.width = 1;
     }
+    tl->changed |= CHG_CHANGED;
   }
 
   b->changed |= CHG_CARET;
+}
+
+
+/** The next tab stop after `col', never past the last column. */
+
+static int
+rlc_next_tab_stop(RlcData b, int col)
+{ int to = col+1;
+
+  while( to < b->width-1 && !rlc_is_tab_stop(b, to) )
+    to++;
+
+  return to > b->width-1 ? b->width-1 : to;
+}
+
+
+/** Horizontal tab: write out the columns up to the next tab stop.
+ */
+
+static void
+rlc_tab(RlcData b)
+{ int col = rlc_cell_to_vcol(&b->lines[b->caret_y], b->caret_x);
+
+  rlc_caret_to_column(b, rlc_next_tab_stop(b, col), true);
+}
+
+
+/** Cursor forward tabulation (CHT) and backward tabulation (CBT) move
+ * the caret over the same stops without writing anything.
+ */
+
+static void
+rlc_forward_tabs(RlcData b, int count)
+{ int col = rlc_cell_to_vcol(&b->lines[b->caret_y], b->caret_x);
+
+  while(count-- > 0)
+    col = rlc_next_tab_stop(b, col);
+
+  rlc_caret_to_column(b, col, false);
+}
+
+
+static void
+rlc_back_tabs(RlcData b, int count)
+{ int col = rlc_cell_to_vcol(&b->lines[b->caret_y], b->caret_x);
+
+  while(count-- > 0 && col > 0)
+  { col--;
+    while( col > 0 && !rlc_is_tab_stop(b, col) )
+      col--;
+  }
+
+  rlc_caret_to_column(b, col, false);
 }
 
 
@@ -3443,12 +8429,17 @@ rlc_tab(RlcData b)
 
 static void
 rlc_set_caret(RlcData b, int x, int y)
-{ int cy = rlc_count_lines(b, b->window_start, b->caret_y);
+{ int cy = rlc_window_row(b, b->caret_y);
 
   y = Bounds(y, 0, b->window_size);
 
-  if ( y < cy )
-    b->caret_y = rlc_add_lines(b, b->window_start, y);
+  /* The client names a row of the window.  Counting lines put the caret
+   * in the text a closed fold hides, where what it wrote next never
+   * showed; below the last row there are no lines yet and no fold can
+   * be in the way, so getting there is a matter of adding them.
+   */
+  if ( y <= rlc_window_row(b, b->last) )
+    b->caret_y = rlc_view_add(b, b->window_start, y);
   else
     rlc_caret_down(b, y-cy);
 
@@ -3501,39 +8492,289 @@ rlc_restore_caret_position(RlcData b)
 }
 
 
+/** Save the cursor (DECSC, `ESC 7').  Where `CSI s' saves the position
+ * alone, this also saves the attributes and the character sets, as the
+ * VT100 does.
+ */
+
+static void
+rlc_save_cursor(RlcData b)
+{ b->cursor.x        = rlc_cell_to_vcol(&b->lines[b->caret_y], b->caret_x);
+  b->cursor.y        = rlc_window_row(b, b->caret_y);
+  b->cursor.sgr      = b->sgr_flags;
+  b->cursor.G0       = b->G0;
+  b->cursor.G1       = b->G1;
+  b->cursor.shift_in = b->shift_in;
+  b->cursor.saved    = true;
+}
+
+
+/** Restore the cursor (DECRC, `ESC 8').  Without a saved cursor the
+ * VT100 goes home with everything at its default, which is also what
+ * we do after a reset.
+ */
+
+static void
+rlc_restore_cursor(RlcData b)
+{ if ( b->cursor.saved )
+  { rlc_set_caret(b, b->cursor.x, b->cursor.y);
+    b->sgr_flags = b->cursor.sgr;
+    b->G0        = b->cursor.G0;
+    b->G1        = b->cursor.G1;
+    b->shift_in  = b->cursor.shift_in;
+  } else
+  { rlc_set_caret(b, 0, 0);
+    b->sgr_flags = TF_DEFAULT;
+    b->G0        = G_ASCII;
+    b->G1        = G_ASCII;
+    b->shift_in  = false;
+  }
+  b->sgr_flags.link = !!b->link_url;	/* OSC 8 is not part of the cursor */
+}
+
+
+/** Put the window back on the oldest slots of the ring.
+ *
+ * The slots still hold whatever was written in them, and the redraw
+ * paints a whole window from `window_start' without stopping at
+ * `last': emptying the buffer means emptying its lines.
+ */
+
+static void
+rlc_restart_buffer(RlcData b)
+{ b->window_start = b->first = b->last = 0;
+
+  rlc_drop_blocks(b);
+  for(int i=0; i<b->height; i++)
+    rlc_free_line(b, i);
+}
+
+
+/** Erase saved lines (ED 3): let go of the scroll back.  If that leaves
+ * nothing on the screen either we start the ring over, which is what
+ * `clear' hit: it sends ED 2 before ED 3, so the window was already
+ * empty here and the old text of the slots we land on came back.
+ */
+
 static void
 rlc_erase_saved_lines(RlcData b)
-{ if ( b->last == b->window_start )
-    b->window_start = b->first = b->last = 0;
-  else
-    b->first = b->window_start;
+{ if ( rlc_alt_screen(b) )		/* the scroll back is the normal
+					   screen's, and this one has none */
+    return;
+
+  if ( b->last == b->window_start )
+  { int row = rlc_window_row(b, b->caret_y);
+
+    rlc_restart_buffer(b);
+    b->caret_y = rlc_add_lines(b, b->window_start, row);
+    b->changed |= CHG_CHANGED|CHG_CLEAR|CHG_CARET;
+  } else
+  { b->first = b->window_start;
+    rlc_sweep_blocks(b);
+  }
 }
+
+/** Drop the lines from `line' to the last one of the buffer.
+ *
+ * A line beyond `b->last' does not exist, but it is still in the ring
+ * and both the painter and <-row walk the ring: unless we let go of
+ * its text it stays on the screen.
+ */
+
+static void
+rlc_drop_lines_below(RlcData b, int line)
+{ while( line != b->last )
+  { line = NextLine(b, line);
+    rlc_free_line(b, line);
+  }
+}
+
 
 static void
 rlc_erase_display(RlcData b)
-{ if ( b->first == b->window_start ) /* no saved lines */
-    b->window_start = b->first = b->last = 0;
-
-  RlcTextLine tl = &b->lines[b->window_start];
-  tl->size = 0;
+{ rlc_drop_lines_below(b, b->window_start);
+  rlc_free_line(b, b->window_start);
   b->last = b->window_start;
+
+  if ( rlc_alt_screen(b) )
+  { /* The erase of an application on the alternate screen, over lines the
+     * normal screen is coming back to.  Starting the ring over would move
+     * them and sweeping would let go of the blocks that name them; only
+     * the folds go, having nothing left to hide.
+     */
+    rlc_restamp_folds(b);
+  } else
+  { if ( b->first == b->window_start )	/* no saved lines: start over */
+      rlc_restart_buffer(b);		/* this is what `cls' hit: ED 3
+					 * leaves no saved lines, so ED 2
+					 * takes this branch and the
+					 * banner of the session came
+					 * back with the next prompt
+					 * written over it. */
+    rlc_sweep_blocks(b);		/* the marks on the lines it erased
+					   have nothing left to name */
+  }
+
   b->changed |= CHG_CHANGED|CHG_CLEAR|CHG_CARET;
 
   rlc_set_caret(b, 0, 0);
 }
 
 
-static void
-rlc_erase_line(RlcData b)
-{ RlcTextLine tl = &b->lines[b->caret_y];
+/** Overwrite the cells [from,to) with spaces in the current SGR flags.
+ *
+ * A cell that stays on the line takes the background colour along
+ * (`bce'), which the cells dropped by truncation cannot: this terminal
+ * holds lines of the length they were written to, so that copying a
+ * row does not pick up the blanks to the right of its text.
+ */
 
-  tl->size = b->caret_x;
+static void
+rlc_blank_cells(RlcData b, RlcTextLine tl, int from, int to)
+{ if ( to > tl->size )
+    to = tl->size;
+
+  for(int i=from; i<to; i++)
+  { text_char *tc = &tl->text[i];
+
+    tc->code  = ' ';
+    tc->flags = b->sgr_flags;
+    tc->flags.width = 1;
+  }
+
+  tl->changed |= CHG_CHANGED;
+}
+
+
+/** Erase in line (EL): 0 erases from the caret to the end of the line,
+ * 1 from the start of the line up to and including the caret and 2 the
+ * whole line.  The caret does not move.
+ *
+ * If a background colour is in effect the erased cells take it along
+ * (_background colour erase_, `bce'), which is how a coloured block is
+ * made to extend to the right margin.  The cells dropped by truncation
+ * cannot carry it: this terminal holds lines of the length they were
+ * written to, so that copying a row does not pick up the blanks to the
+ * right of its text.  We therefore record the erase on the line and let
+ * rlc_paint_text() apply it to the padding it generates.  See
+ * rlc_eol_flags().
+ */
+
+static void
+rlc_erase_line(RlcData b, int mode)
+{ RlcTextLine tl = &b->lines[b->caret_y];
+  bool bce;				/* does the tail take the colour? */
+
+  switch(mode)
+  { case 0:
+      /* If the caret sits beyond the text, the cells in between were
+	 never written and must keep the default background, which the
+	 single colour we record for the tail cannot express. */
+      bce = b->caret_x <= tl->size;
+      if ( b->caret_x < tl->size )
+	tl->size = b->caret_x;
+      break;
+    case 1:
+      rlc_blank_cells(b, tl, 0,
+		      rlc_cluster_next(tl, rlc_snap_start(tl, b->caret_x)));
+      return;				/* the tail of the line stays */
+    case 2:
+      bce = true;
+      tl->size = 0;
+      break;
+    default:
+      return;
+  }
+
+  if ( bce && b->sgr_flags.bg != PAL_DEFAULT )
+  { tl->eol_flags       = b->sgr_flags;
+    tl->eol_flags.width = 1;
+    tl->eol_flags.link  = 0;		/* no href covers the padding */
+    tl->eol_erased      = true;
+  } else
+  { tl->eol_erased      = false;
+  }
+
+  tl->softreturn = false;		/* what wrapped is gone */
   tl->changed |= CHG_CHANGED|CHG_CLEAR;
 }
 
+/** Flags to paint the cells to the right of the text of a line with.
+ *
+ * These cells are not stored in the line (see rlc_erase_line()), so they
+ * are generated by rlc_paint_text() and are invisible to
+ * rlc_read_from_window(), i.e., copying a row yields its text without
+ * trailing blanks.
+ */
+
+static text_flags
+rlc_eol_flags(const RlcTextLine tl)
+{ if ( tl->eol_erased )
+    return tl->eol_flags;
+
+  return TF_DEFAULT;
+}
+
+
+/** Erase in display (ED) 1: from the top of the screen up to and
+ * including the caret.
+ */
+
+static void
+rlc_erase_above(RlcData b)
+{ for(int line = b->window_start; line != b->caret_y; line = NextLine(b, line))
+  { RlcTextLine tl = &b->lines[line];
+
+    tl->size = 0;
+    tl->softreturn = false;
+    tl->changed |= CHG_CHANGED|CHG_CLEAR;
+    if ( line == b->last )		/* the caret is off screen */
+      return;
+  }
+
+  rlc_erase_line(b, 1);
+  b->changed |= CHG_CHANGED|CHG_CLEAR;
+}
+
+
+/** Erase characters (ECH): blank `count' columns at the caret without
+ * moving what follows them.  Erasing whole grapheme clusters can free
+ * cells (the combining marks of an erased cluster are gone), so the
+ * tail of the line moves up to keep the columns aligned.
+ */
+
+static void
+rlc_erase_chars(RlcData b, int count)
+{ RlcTextLine tl = rlc_prepare_line(b, b->caret_y);
+  int cx = rlc_snap_start(tl, b->caret_x);
+  int cells = 0;			/* cells the erased clusters take */
+  int cols = 0;				/* and the columns they occupy */
+  int p = cx;
+
+  while ( cols < count && p < tl->size )
+  { int next = rlc_cluster_next(tl, p);
+
+    for(int i=p; i<next; i++)
+      cols += tc_display_width(&tl->text[i]);
+    cells = next - cx;
+    p = next;
+  }
+					/* a cluster erases as a whole, so
+					   `cols' can pass `count' */
+  if ( cells > cols )			/* the marks we erased freed cells */
+  { for(int i=cx+cols; i<tl->size-(cells-cols); i++)
+      tl->text[i] = tl->text[i+cells-cols];
+    tl->size -= cells-cols;
+  }
+  rlc_blank_cells(b, tl, cx, cx+cols);
+  b->caret_x = cx;
+}
+
+
 static void
 rlc_clear_from_cursor(RlcData b)
-{ rlc_erase_line(b);
+{ rlc_erase_line(b, 0);
+  rlc_drop_lines_below(b, b->caret_y);
   b->last = b->caret_y;
   /* If we just collapsed the buffer to a single line parked at a
    * non-zero ring-position, compact to line 0 so the origin
@@ -3554,6 +8795,21 @@ rlc_clear_from_cursor(RlcData b)
     b->first = 0;
     b->last = 0;
   }
+  if ( !rlc_alt_screen(b) )
+    rlc_sweep_blocks(b);		/* the lines below the caret are
+					 * gone; a block that lived only
+					 * there has nothing left to name.
+					 * This is the `cl' of a Windows
+					 * client: libedit's fake termcap
+					 * clears with CUP home + ED 0.
+					 *
+					 * Not on the alternate screen: what
+					 * it erases is its own, and the
+					 * blocks name the normal screen's
+					 * lines under it, which are coming
+					 * back.  Sweeping them there is
+					 * `less' losing the folds of the
+					 * session it was started from. */
   b->changed |= CHG_CHANGED|CHG_CLEAR|CHG_CARET;
 }
 
@@ -3561,6 +8817,7 @@ static void
 rlc_sgr(RlcData b, int sgr)
 { if ( sgr == 0 )
   { b->sgr_flags = TF_DEFAULT;
+    b->sgr_flags.link = !!b->link_url;	/* OSC 8 is not an SGR attribute */
   } else if ( sgr >= 30 && sgr <= 39 )
   { b->sgr_flags.fg = sgr == 39 ? PAL_DEFAULT : sgr-30;
   } else if ( sgr >= 40 && sgr <= 49 )
@@ -3571,6 +8828,8 @@ rlc_sgr(RlcData b, int sgr)
   { b->sgr_flags.bg = sgr == 109 ? PAL_DEFAULT : sgr-100+8;
   } else if ( sgr == 1 )
   { b->sgr_flags.bold = 1;
+  } else if ( sgr == 3 )
+  { b->sgr_flags.italic = 1;
   } else if ( sgr == 4 )
   { b->sgr_flags.underline = 1;
   } else if ( sgr == 7 )
@@ -3579,6 +8838,8 @@ rlc_sgr(RlcData b, int sgr)
   { b->sgr_flags.strike = 1;
   } else if ( sgr == 22 )	/* also clears "faint" */
   { b->sgr_flags.bold = 0;
+  } else if ( sgr == 23 )	/* also clears "fraktur", which we never set */
+  { b->sgr_flags.italic = 0;
   } else if ( sgr == 24 )
   { b->sgr_flags.underline = 0;
   } else if ( sgr == 27 )
@@ -3618,16 +8879,67 @@ rlc_prepare_line(RlcData b, int y)
     tc->code  = ' ';
     tc->flags = b->sgr_flags;
     tc->flags.width = 1;
+    tc->flags.link = 0;			/* no href covers padding */
   }
 
   return tl;
 }
 
 
+/* Open `slots` cells at the caret, shifting the rest of the line right.
+ * Used by ICH (\e[<n>@) and by a write in insert mode (IRM).
+ */
+
+static void
+rlc_open_cells(RlcData b, RlcTextLine tl, int slots)
+{ /* Bound tl->size by the line's physical cell capacity (which
+     allows for combining marks), NOT by b->width: a row holding NFD
+     content can legitimately have more cells than visual columns, and
+     clamping to b->width would trim its trailing combining marks. */
+  int cap = LINE_CELL_CAPACITY(b);
+
+  if ( tl->size + slots <= cap )
+    tl->size += slots;
+  else if ( tl->size < cap )
+    tl->size = cap;
+  for(int i=tl->size-1; i>=(int)(b->caret_x+slots); i--)
+    tl->text[i] = tl->text[i-slots];
+}
+
+
+/* Content shifted past the right edge is discarded rather than wrapped.
+ * Trim any tail clusters whose visual column would fall past b->width so
+ * the stored content matches what is visible on-screen.  The walk is
+ * cluster-aware: a wide cluster's base + placeholder go or stay
+ * together, and a base with attached combining marks is not sliced
+ * through.
+ */
+
+static void
+rlc_trim_past_margin(RlcData b, RlcTextLine tl)
+{ int vcol = 0;
+  int keep = tl->size;
+
+  for(int i=0; i<tl->size; )
+  { int next = rlc_cluster_next(tl, i);
+    int cw = 0;
+    for(int j=i; j<next; j++)
+      cw += tc_display_width(&tl->text[j]);
+    if ( vcol + cw > b->width )
+    { keep = i;
+      break;
+    }
+    vcol += cw;
+    i = next;
+  }
+  tl->size = keep;
+}
+
+
 static void
 rlc_put(RlcData b, int chr)
 { RlcTextLine tl = rlc_prepare_line(b, b->caret_y);
-  int dw = uchar_display_width((uchar_t)chr);
+  int dw = terminal_char_cells((uchar_t)chr);
   tlog("rlc_put(0x%X) entry caret_x=%d width=%d\n",
        chr, b->caret_x, dw);
   if ( dw == 0 )
@@ -3668,6 +8980,8 @@ rlc_put(RlcData b, int chr)
     tc->flags.width = 0;
     if ( tl->size <= b->caret_x )
       tl->size = b->caret_x + 1;
+    if ( b->link_url )
+      rlc_link_cells(b, tl, b->caret_x, 1);
     tl->changed |= CHG_CHANGED;
     /* Advance the cell index (not the visual column) so the next char
        doesn't overwrite this combiner.  Cap at the physical line
@@ -3687,7 +9001,13 @@ rlc_put(RlcData b, int chr)
        char's second half won't fit, wrap to the next line first.  When
        wrapping for a wide char at the last column, pad that column so
        the rendered glyph and the cell array stay in sync. */
-    if ( cur_vcol >= b->width ||
+    if ( (cur_vcol >= b->width ||
+	  (dw == 2 && cur_vcol + 1 >= b->width)) && !b->autowrap )
+    { /* DECAWM is off: the character goes into the last column, over
+	 whatever is there, and the caret stays with it. */
+      b->caret_x = rlc_vcol_to_cell(tl, b->width > dw ? b->width-dw : 0);
+      tl = rlc_prepare_line(b, b->caret_y);
+    } else if ( cur_vcol >= b->width ||
 	 (dw == 2 && cur_vcol + 1 >= b->width) )
     { if ( dw == 2 && cur_vcol < b->width &&
 	   b->caret_x < LINE_CELL_CAPACITY(b) )
@@ -3704,6 +9024,15 @@ rlc_put(RlcData b, int chr)
       rlc_caret_down(b, 1);
       tl = rlc_prepare_line(b, b->caret_y);
     }
+
+    /* Insert mode (IRM, \e[4h): open the cells this character needs and
+       push the rest of the row right rather than writing over it.  What
+       is pushed past the right edge is discarded, not wrapped.  A
+       combining mark is not a new cluster and takes no column, so it
+       does not open a cell -- the width-0 branch above already makes
+       room for it. */
+    if ( b->insert_mode )
+      rlc_open_cells(b, tl, dw == 2 ? 2 : 1);
 
     text_char *tc = &tl->text[b->caret_x];
     tc->code  = chr;
@@ -3723,21 +9052,32 @@ rlc_put(RlcData b, int chr)
 	tl->size = b->caret_x + 2;
     }
 
+    if ( b->insert_mode )
+      rlc_trim_past_margin(b, tl);
+
+    if ( b->link_url )
+      rlc_link_cells(b, tl, b->caret_x, dw == 2 ? 2 : 1);
+
     tl->changed |= CHG_CHANGED;
     /* Advance caret_x by the character's cell width directly — do NOT go
-       through rlc_caret_forward because that skips zero-width cells, which
-       would cause double-advance for wide chars whose placeholder is 0-width.
-       We DO NOT skip existing combining marks following the new base: when
-       a client re-echoes a grapheme cluster (e.g. libedit re-writing a base
-       to move the cursor), it sends base + combiners in sequence.  Skipping
-       here would advance past a combiner that the very next rlc_put is about
-       to re-write, causing that write to land one cell too far right and
-       clobber the following cluster's base.  Do NOT wrap here either:
+       through the visual-column motion of rlc_cursor_forward, which skips
+       zero-width cells and would double-advance for wide chars whose
+       placeholder is 0-width.  We DO NOT skip existing combining marks
+       following the new base: when a client re-echoes a grapheme cluster
+       (e.g. libedit re-writing a base to move the cursor), it sends base +
+       combiners in sequence.  Skipping here would advance past a combiner
+       that the very next rlc_put is about to re-write, causing that write
+       to land one cell too far right and clobber the following cluster's
+       base.  Do NOT wrap here either:
        delayed wrap above handles the end-of-line transition on the next
        base, which lets a trailing combiner still attach to this base. */
     b->caret_x += dw;
+    if ( !b->autowrap &&		/* no delayed wrap: the caret stays */
+	 rlc_cell_to_vcol(tl, b->caret_x) > b->width-1 )
+      b->caret_x = rlc_vcol_to_cell(tl, b->width-1);
     b->changed |= CHG_CARET;
   }
+  b->last_char = chr;			/* what REP repeats */
   tlog("rlc_put exit  caret_x=%d size=%d\n", b->caret_x, tl->size);
 }
 
@@ -3747,19 +9087,9 @@ rlc_insert(RlcData b, int chr)
   int dw = uchar_display_width((uchar_t)chr);
   tlog("rlc_insert(0x%X) entry caret_x=%d width=%d size=%d\n",
        chr, b->caret_x, dw, tl->size);
-  int slots = (dw == 2) ? 2 : 1;	/* wide chars need 2 cells */
-
-  /* Bound tl->size by the line's physical cell capacity (which
-     allows for combining marks), NOT by b->width: a row holding NFD
-     content can legitimately have more cells than visual columns, and
-     clamping to b->width would trim its trailing combining marks. */
   int cap = LINE_CELL_CAPACITY(b);
-  if ( tl->size + slots <= cap )
-    tl->size += slots;
-  else if ( tl->size < cap )
-    tl->size = cap;
-  for(int i=tl->size-1; i>=(int)(b->caret_x+slots); i--)
-    tl->text[i] = tl->text[i-slots];
+
+  rlc_open_cells(b, tl, (dw == 2) ? 2 : 1);
   text_char *tc = &tl->text[b->caret_x];
   tc->code  = chr;
   tc->flags = b->sgr_flags;
@@ -3770,28 +9100,7 @@ rlc_insert(RlcData b, int chr)
     ph->flags = b->sgr_flags;
     ph->flags.width = 0;
   }
-  /* ANSI ICH discards content shifted past the right edge.  Trim any
-     tail clusters whose visual column would fall past b->width so the
-     stored content matches what's visible on-screen.  Use a
-     cluster-aware walk: a wide cluster's base + placeholder go or
-     stay together, and a base with attached combining marks is not
-     sliced through. */
-  { int vcol = 0;
-    int keep = tl->size;
-    for(int i=0; i<tl->size; )
-    { int next = rlc_cluster_next(tl, i);
-      int cw = 0;
-      for(int j=i; j<next; j++)
-	cw += tc_display_width(&tl->text[j]);
-      if ( vcol + cw > b->width )
-      { keep = i;
-	break;
-      }
-      vcol += cw;
-      i = next;
-    }
-    tl->size = keep;
-  }
+  rlc_trim_past_margin(b, tl);
   tl->changed |= CHG_CHANGED;
 }
 
@@ -3898,10 +9207,49 @@ rlc_add_link(RlcTextLine tl, const uchar_t *link, int start, int len)
   return hr;
 }
 
-static href *
-rlc_register_link(RlcData b, const uchar_t *link, size_t len)
-{ RlcTextLine tl = &b->lines[b->caret_y];
-  return rlc_add_link(tl, link, b->caret_x, len);
+/* An OSC 8 hyperlink is a _state_ rather than a self contained sequence:
+ * everything written between `ESC ] 8 ; <params> ; <URL> ST` and the same
+ * sequence with an empty URL belongs to the link.  That includes the SGR
+ * sequences a colouring client such as ripgrep emits inside the label, so
+ * we cannot collect the label as text.  Instead, rlc_put() adds the cells
+ * it writes to the link while it is open.
+ */
+
+static void
+rlc_link_start(RlcData b, const uchar_t *url)
+{ if ( b->link_url )
+    rlc_free(b->link_url);
+  b->link_url = rlc_malloc((ucslen(url)+1)*sizeof(*url));
+  ucscpy(b->link_url, url);
+  b->sgr_flags.link = 1;
+}
+
+
+static void
+rlc_link_end(RlcData b)
+{ if ( b->link_url )
+  { rlc_free(b->link_url);
+    b->link_url = NULL;
+  }
+  b->sgr_flags.link = 0;
+}
+
+
+/* Add `len` cells starting at `start` of `tl` to the open link.  The href
+ * of the previous write is the head of the line's list, so a run of
+ * characters extends a single href.  Moving to a new line, jumping the
+ * caret or a new URL starts a new one.
+ */
+
+static void
+rlc_link_cells(RlcData b, RlcTextLine tl, int start, int len)
+{ href *hr = tl->links;
+
+  if ( hr && hr->start + hr->length == start &&
+       ucscmp(hr->link, b->link_url) == 0 )
+    hr->length += len;
+  else
+    rlc_add_link(tl, b->link_url, start, len);
 }
 
 		 /*******************************
@@ -3916,30 +9264,7 @@ rlc_register_link(RlcData b, const uchar_t *link, size_t len)
 
 static void
 rlc_shift_up(RlcData b, int shift)
-{ int line = b->window_start;
-  int last = rlc_add_lines(b, b->window_start, b->window_size-1);
-  int src = rlc_add_lines(b, line, shift);
-
-  if ( shift < b->window_size )
-  { int done = 0;
-    for(;;)
-    { if ( done++ < shift )
-	rlc_free_line(b, line);
-      b->lines[line] = b->lines[src];
-      b->lines[line].changed = CHG_CHANGED;
-      if ( src == last )
-	break;
-      line = NextLine(b, line);
-      src  = NextLine(b, src);
-    }
-  }
-
-  do
-  { line = NextLine(b, line);
-    rlc_reinit_line(b, line);
-  } while( line != last );
-
-  b->changed |= CHG_CHANGED|CHG_CLEAR;
+{ rlc_scroll_region(b, rlc_region_start(b), -shift);
 }
 
 
@@ -3975,18 +9300,42 @@ rlc_copy_line(RlcTextLine dst, const RlcTextLine src)
     dst->size = src->size;
     memcpy(dst->text, src->text, bytes);
     dst->changed = false;
+    dst->adjusted = true;		/* the copy holds exactly `size` cells */
     dst->softreturn = src->softreturn;
   }
+  dst->eol_erased = src->eol_erased;	/* the background colour erase of */
+  dst->eol_flags  = src->eol_flags;	/* the tail is part of the line */
   if ( src->links )
     dst->links = rlc_copy_links(src->links);
 }
 
+/** Save the window the alternate screen takes over.
+ *
+ * What the application takes over is the rows of the window; what it
+ * writes over is the lines under them, and those are not the same
+ * number: a closed fold hides lines the window does not show and the
+ * erase below takes them away with the rest.  So the span is measured in
+ * rows and saved in lines.  Saving `window_size' lines instead gave back
+ * what the folds hid and dropped the rows below it, which is the screen
+ * a `help/0' left behind on a session with a folded command on it.
+ *
+ * The blocks that name these lines stay: rlc_erase_display() does not
+ * sweep them while the alternate screen is up, so their anchors name the
+ * same slots again once the lines come back and the folds close again.
+ *
+ * The walk stops at the last line of the buffer, which is a line like
+ * any other and on the screen with the rest: counting to it and not
+ * saving it dropped the text a client had written without a newline
+ * after it, which is the prompt of the session `less' was started from.
+ */
+
 static void
 rlc_save_screen(RlcData b)
 { rlc_destroy_saved_screen(b);
-  int lines = rlc_count_lines(b, b->window_start, b->last);
-  if ( lines > b->window_size )
-    lines = b->window_size;
+  int end   = rlc_view_add(b, b->window_start, b->window_size);
+  int lines = rlc_count_lines(b, b->window_start, end);
+  if ( end == b->last )
+    lines++;
   b->saved.height = lines;
   b->saved.lines = rlc_malloc(sizeof(rlc_text_line) * lines);
   b->saved.caret_x = b->caret_x;
@@ -4010,7 +9359,8 @@ rlc_restore_screen(RlcData b)
     b->saved.height = 0;
 
     for(int i=0; i<count; i++)
-    { if ( i < b->window_size )
+    { if ( i < b->height-1 )		/* it came out of the ring, so it
+					   fits; only a shrink could not */
       { rlc_free_line(b, line);
 	RlcTextLine nl = &b->lines[line];
 	*nl = tls[i];
@@ -4019,7 +9369,8 @@ rlc_restore_screen(RlcData b)
 	if ( nl->size > b->width ) /* TODO: we should re-flush */
 	{ nl->size = b->width;
 	  nl->softreturn = false;
-	  rlc_adjust_line(b, i);
+	  nl->adjusted = false;		/* the buffer is still the old size */
+	  rlc_adjust_line(b, line);
 	}
 	line = NextLine(b, line);
       } else
@@ -4028,15 +9379,42 @@ rlc_restore_screen(RlcData b)
     }
     rlc_free(tls);
 
-    if ( rlc_count_lines(b, b->window_start, b->last) < count )
-    { b->last = rlc_add_lines(b, b->window_start, count);
-      rlc_free_line(b, b->last);
-    }
+    /* The last line saved is the last line of the buffer: its text came
+     * back with the rest, so it is not freed here.
+     */
+    if ( rlc_count_lines(b, b->window_start, b->last) < count-1 )
+      b->last = rlc_add_lines(b, b->window_start, count-1);
     b->caret_x = Bounds(b->saved.caret_x, 0, b->width-1);
     b->caret_y = rlc_add_lines(b, b->window_start,
-			       Bounds(b->saved.caret_y, 0, b->window_size));
+			       Bounds(b->saved.caret_y, 0, count-1));
+    rlc_sweep_blocks(b);		/* the folds close again over the lines
+					   that came back; a block below the
+					   window, whose lines the erase took
+					   away, goes */
   }
 }
+
+		 /*******************************
+		 *           ANSI MODES         *
+		 *******************************/
+
+/** Set/clear an ANSI mode: CSI <n> h and CSI <n> l, without the `?'
+ *  that marks the DEC private modes below.
+ */
+
+static void
+rlc_set_ansi_mode(RlcData b, int mode, bool set)
+{ switch(mode)
+  { case 4:				/* IRM: insert/replace mode */
+      b->insert_mode = set;
+      break;
+    default:
+      DEBUG(NAME_term, Cprintf("stub: ANSI mode %d %s\n",
+			       mode, set ? "set" : "reset"));
+      break;
+  }
+}
+
 
 		 /*******************************
 		 *      DEC PRIVATE MODES       *
@@ -4050,6 +9428,15 @@ rlc_set_dec_mode(RlcData b, int mode)
   { case 1:
       b->app_escape = true;
       break;
+    case 5:				/* DECSCNM: reverse video.  Used by
+					   terminfo's `flash', which sets and
+					   clears it around a delay; we take
+					   the set as the flash itself */
+      send(b->object, NAME_flash, EAV);
+      break;
+    case 7:				/* DECAWM: wrap at the margin */
+      b->autowrap = true;
+      break;
     case 12:
       DEBUG(NAME_term, Cprintf("stub: enable blinking cursor\n"));
       break;
@@ -4057,18 +9444,46 @@ rlc_set_dec_mode(RlcData b, int mode)
       b->hide_caret = false;
       changed_caret(b);
       break;
+    case 9:				/* X10: presses only */
+    case 1000:				/* VT200: presses and releases */
+    case 1002:				/* ... and drags */
+    case 1003:				/* ... and motion without buttons */
+      b->mouse_tracking = mode;		/* see rlc_mouse_event() */
+      break;
+    case 1005:				/* coordinates as UTF-8 */
+    case 1006:				/* SGR */
+    case 1015:				/* urxvt */
+      b->mouse_encoding = mode;		/* see rlc_mouse_report() */
+      break;
     case 1004:
       b->focus_inout_events = true;
       break;
+    case 1007:				/* alternate scroll, see rlc_alt_scroll() */
+      b->alt_scroll = true;
+      break;
     case 1049:
-      rlc_save_screen(b);
-      rlc_erase_display(b);
+      /* Ignore it while the alternate screen is already up, as xterm
+       * does.  Saving again would save the alternate screen over the
+       * normal one, which is then gone for good.
+       */
+      if ( !rlc_alt_screen(b) )
+      { /* The lines an application replaces leave the ring, so there is
+	 * nothing left for a running search to find or scroll to.
+	 */
+	if ( rlc_isearching(b) )
+	  endIsearchTerminalImage(b->object, OFF);
+	rlc_save_screen(b);
+	rlc_erase_display(b);
+      }
       break;
     case 2004:
       b->bracketed_paste_mode = true;
+      b->prompt_marks         = false;	/* until this prompt marks itself */
+      b->input_active         = false;
+      b->input_continued      = false;
       break;
     default:
-      Cprintf("Set unknown DEC private mode %d\n", mode);
+      DEBUG(NAME_term, Cprintf("Set unknown DEC private mode %d\n", mode));
   }
 }
 
@@ -4078,6 +9493,11 @@ rlc_clear_dec_mode(RlcData b, int mode)
   { case 1:
       b->app_escape = false;
       break;
+    case 5:				/* DECSCNM: see rlc_set_dec_mode() */
+      break;
+    case 7:				/* DECAWM */
+      b->autowrap = false;
+      break;
     case 12:
       DEBUG(NAME_term, Cprintf("stub: enable static cursor\n"));
       break;
@@ -4085,20 +9505,579 @@ rlc_clear_dec_mode(RlcData b, int mode)
       b->hide_caret = true;
       changed_caret(b);
       break;
+      /* We keep the tracking mode and the encoding as one value each
+	 rather than as a flag per mode.  Clearing one that is not in
+	 effect is then a no-op, which is what an application that
+	 turns off 1000, 1002 and 1003 together expects to happen.
+       */
+    case 9:
+    case 1000:
+    case 1002:
+    case 1003:
+      if ( b->mouse_tracking == mode )
+	b->mouse_tracking = 0;
+      break;
+    case 1005:
+    case 1006:
+    case 1015:
+      if ( b->mouse_encoding == mode )
+	b->mouse_encoding = 0;
+      break;
     case 1004:
       b->focus_inout_events = false;
       break;
+    case 1007:
+      b->alt_scroll = false;
+      break;
     case 1049:
-      rlc_erase_display(b);
-      rlc_restore_screen(b);
+      /* Only when there is a screen to come back to.  Erasing first and
+       * finding nothing saved leaves the window blank with nothing that
+       * can bring it back, which is what a stray or repeated rmcup did:
+       * one comes out of a pseudo console as its client goes away.
+       */
+      if ( rlc_alt_screen(b) )
+      { rlc_erase_display(b);
+	rlc_restore_screen(b);
+      }
       break;
     case 2004:
       b->bracketed_paste_mode = false;
       break;
     default:
-      Cprintf("Clear unknown DEC private mode %d\n", mode);
+      DEBUG(NAME_term, Cprintf("Clear unknown DEC private mode %d\n", mode));
   }
 }
+
+/* Return the 0xRRGGBB / alpha-packed COLORRGBA of an xpce graphical
+   "fill" attribute (Colour, @default, @nil, or Pattern).  Non-Colour or
+   unresolved fills fall back to opaque black; that keeps OSC 10 / 11
+   replies meaningful even when the foreground is the inherited class
+   default.
+ */
+static COLORRGBA
+fill_rgba(Any c)
+{ if ( !c || isNil(c) || isDefault(c) ||
+       !instanceOfObject(c, ClassColour) )
+    return RGBA(0, 0, 0, 0xff);
+  Colour col = c;
+  if ( isDefault(col->rgba) )
+    ws_named_colour(col);
+  if ( isDefault(col->rgba) )
+    return RGBA(0, 0, 0, 0xff);
+  return (COLORRGBA)valInt(col->rgba);
+}
+
+/* Parse an xterm "rgb:R/G/B" colour spec, where each component is 1-4
+   hex digits, into a COLORRGBA.  Each component is scaled to 8 bits per
+   the xterm convention (replicate or truncate as needed).
+ */
+static bool
+parse_rgb_spec(const uchar_t *s, COLORRGBA *out)
+{ if ( s[0] != 'r' || s[1] != 'g' || s[2] != 'b' || s[3] != ':' )
+    return false;
+  s += 4;
+  unsigned ch[3];
+  for(int i=0; i<3; i++)
+  { unsigned v = 0;
+    int n = 0;
+    while ( n < 4 && ((s[0] >= '0' && s[0] <= '9') ||
+		      (s[0] >= 'a' && s[0] <= 'f') ||
+		      (s[0] >= 'A' && s[0] <= 'F')) )
+    { unsigned d = (s[0] <= '9') ? s[0]-'0'
+		 : (s[0] <= 'F') ? s[0]-'A'+10
+		 : s[0]-'a'+10;
+      v = (v<<4) | d;
+      s++;
+      n++;
+    }
+    if ( n == 0 )
+      return false;
+    switch(n)			/* normalise to 8 bits */
+    { case 1: v = v*0x11; break;		/* 0xF  -> 0xFF */
+      case 2: break;				/* already 8-bit */
+      case 3: v = (v*0xff + 0x7ff) / 0xfff; break;
+      case 4: v = (v*0xff + 0x7fff) / 0xffff; break;
+    }
+    ch[i] = v & 0xff;
+    if ( i < 2 )
+    { if ( *s != '/' )
+	return false;
+      s++;
+    }
+  }
+  if ( *s != 0 )
+    return false;
+  *out = RGBA(ch[0], ch[1], ch[2], 0xff);
+  return true;
+}
+
+static bool
+uc_prefix(const uchar_t *s, const char *prefix)
+{ for( ; *prefix; prefix++, s++)
+  { if ( *s != (uchar_t)*prefix )
+      return false;
+  }
+
+  return true;
+}
+
+static int
+hexdigit(uchar_t c)
+{ if ( c >= '0' && c <= '9' ) return c-'0';
+  if ( c >= 'a' && c <= 'f' ) return c-'a'+10;
+  if ( c >= 'A' && c <= 'F' ) return c-'A'+10;
+
+  return -1;
+}
+
+/* Is `host' of an OSC 7 URL this machine?  Emitters use the empty host,
+   "localhost" or some spelling of our own name, so we compare the first
+   label and leave the domain out of it.
+ */
+
+static bool
+osc7_local_host(const char *host)
+{ if ( !host[0] || strcmp(host, "localhost") == 0 )
+    return true;
+
+  Name me = getHostnamePce(PCE);
+  if ( !me || !isstrA(&me->data) )
+    return false;
+
+  const char *my = strName(me);
+  size_t hl = strcspn(host, ".");
+  size_t ml = strcspn(my, ".");
+
+  return hl == ml && strncmp(host, my, hl) == 0;
+}
+
+/**
+ * Decode the URL of an OSC 7 report, `file://<host>/<path>`, where the
+ * path is percent-encoded UTF-8.
+ *
+ * @param host is set to the host of the URL, or NIL if that is us.  A
+ * host means the client sits at the far end of an ssh connection and
+ * the directory it names is one over there.
+ * @return the directory as a Name, or NIL if the URL is unusable.
+ */
+
+static Name
+osc7_directory(const uchar_t *url, Name *host)
+{ char hostname[256];
+  char path[ANSI_MAX_LINK];
+  size_t hlen = 0;
+
+  *host = NIL;
+  if ( !uc_prefix(url, "file://") )
+    return NIL;
+  url += 7;
+
+  for( ; *url && *url != '/'; url++)
+  { if ( hlen < sizeof(hostname)-1 && *url < 0x80 )
+      hostname[hlen++] = (char)*url;
+    else
+      return NIL;
+  }
+  hostname[hlen] = 0;
+
+  char *o = path;
+  char *e = path+sizeof(path)-8;	/* room for a char and the 0 */
+  for( ; *url; url++)
+  { uchar_t c = *url;
+
+    if ( c == '%' )			/* a percent-encoded UTF-8 byte */
+    { int d1 = hexdigit(url[1]);
+      int d2 = hexdigit(url[2]);
+
+      if ( d1 < 0 || d2 < 0 || (d1 == 0 && d2 == 0) )
+	return NIL;
+      c = d1*16+d2;
+      url += 2;
+    } else if ( c >= 0x80 )		/* not encoded; encode it now */
+    { if ( o >= e )
+	return NIL;
+      o = utf8_put_char(o, c);
+      continue;
+    }
+
+    if ( o >= e )
+      return NIL;
+    *o++ = (char)c;
+  }
+  *o = 0;
+
+#ifdef __WINDOWS__
+  if ( path[0] == '/' && isalpha(path[1]) && path[2] == ':' )
+    memmove(path, path+1, strlen(path));	/* /C:/... --> C:/... */
+#endif
+  if ( !path[0] )
+    return NIL;
+
+  if ( !osc7_local_host(hostname) )
+    *host = CtoName(hostname);
+
+  return UTF8ToName(path);
+}
+
+/**
+ * Decode an OSC 9;9 report, `ESC ] 9 ; 9 ; <path> ST`.  This is what
+ * Windows shells emit: a plain path, neither a URL nor encoded, and
+ * always one on this machine.  Other OSC 9 commands are notifications
+ * we have no use for.
+ *
+ * @return the directory as a Name, or NIL if this is not a report.
+ */
+
+static Name
+osc9_directory(const uchar_t *link)
+{ char path[ANSI_MAX_LINK];
+
+  if ( !uc_prefix(link, "9;") )
+    return NIL;
+
+  char *o = path;
+  char *e = path+sizeof(path)-8;
+  for(const uchar_t *s = link+2; *s; s++)
+  { if ( o >= e )
+      return NIL;
+    o = utf8_put_char(o, *s);
+  }
+  *o = 0;
+
+  if ( !path[0] )
+    return NIL;
+
+  return UTF8ToName(path);
+}
+
+/**
+ * Tell the terminal where its client is, but only when that is news:
+ * a shell reports its directory on every prompt, and ->working_directory
+ * may be trapped to update a label or a file dialog.
+ */
+
+static void
+report_directory(RlcData b, Name dir, Name host)
+{ TerminalImage ti = b->object;
+
+  if ( ti->working_directory != dir || ti->host != host )
+    send(ti, NAME_workingDirectory, dir, host, EAV);
+}
+
+/** OSC 133, the "semantic prompt" marks of FinalTerm that iTerm2,
+ * kitty, WezTerm and VS Code speak: `A' starts a prompt, `B' ends the
+ * prompt and starts the line the user edits, `C' ends that line and
+ * starts the output of what was entered, and `D' ends the output.
+ * Everything after the mark letter is a parameter list we have no use
+ * for.
+ *
+ * What they add up to is one terminal_block per command, kept in
+ * <-blocks of the terminal, which is what lets a block be copied, jumped
+ * to or folded away long after it was printed.  The mouse takes its own
+ * two things from the same marks: whether the client is reading a line
+ * right now and where that line starts.  See rlc_caret_to_click().
+ *
+ * The marks arrive more often than the commands do.  `A' and `B' live
+ * inside the prompt string of the client, so it emits them again every
+ * time it redraws its prompt -- after a completion listing, after ^L,
+ * after every keystroke of an incremental search.  A repeat is therefore
+ * not a new command but the same one saying where it has moved to, and
+ * the block it belongs to is re-anchored rather than replaced.  What
+ * settles it is `C': once the line has been entered, the next `A' is a
+ * new prompt.
+ *
+ * A command can also take more than one line to type.  The client asks
+ * for each of them separately -- a Prolog term is read a line at a time
+ * until its full stop, a shell keeps reading while a quote is open --
+ * and marks all but the first with `A;k=s', the secondary prompt.  Those
+ * lines are one command, and the block spans all of them.
+ */
+
+/** The newest block, or NULL if the client has marked nothing yet. */
+
+static TerminalBlock
+rlc_last_block(RlcData b)
+{ TerminalImage ti = b->object;
+
+  if ( ti && notNil(ti->blocks) )
+  { TerminalBlock tb = getTailChain(ti->blocks);
+
+    if ( tb && tb->anchors )
+      return tb;
+  }
+
+  return NULL;
+}
+
+
+/** Let go of every block.  Called where the text they point at is gone
+ * as a whole: a reset, and a scroll-back that was cleared.
+ */
+
+static void
+rlc_drop_blocks(RlcData b)
+{ TerminalImage ti = b->object;
+
+  if ( ti && notNil(ti->blocks) )
+  { Cell cl;
+
+    for_cell(cl, ti->blocks)
+      assign((TerminalBlock)cl->value, terminal, NIL);
+    clearChain(ti->blocks);
+  }
+  b->folds = 0;
+}
+
+
+/** Line `dying' is about to be recycled.  Clear the anchors that named
+ * it and let go of the blocks that have nothing left.
+ *
+ * Only the oldest blocks can be affected -- the marks of a later command
+ * landed on later lines -- so this stops at the first block that keeps
+ * something, which is what makes it affordable to call for every line
+ * that scrolls out.
+ */
+
+static void
+rlc_expire_blocks(RlcData b, int dying)
+{ TerminalImage ti = b->object;
+
+  if ( !ti || isNil(ti->blocks) || emptyChain(ti->blocks) )
+    return;
+
+  for(;;)
+  { TerminalBlock tb = getHeadChain(ti->blocks);
+    RlcAnchors a;
+
+    if ( !tb || !(a=tb->anchors) )
+      return;
+
+    if ( a->prompt_line == dying ) a->prompt_line = ANCHOR_NONE;
+    if ( a->input_line  == dying ) a->input_line  = ANCHOR_NONE;
+    if ( a->output_line == dying ) a->output_line = ANCHOR_NONE;
+    if ( a->end_line    == dying ) a->end_line    = ANCHOR_NONE;
+
+    if ( a->prompt_line != ANCHOR_NONE || a->input_line  != ANCHOR_NONE ||
+	 a->output_line != ANCHOR_NONE || a->end_line    != ANCHOR_NONE )
+      return;				/* it keeps something, and so do
+					   the blocks after it */
+
+    if ( isOn(tb->folded) )
+      b->folds--;
+    assign(tb, terminal, NIL);
+    deleteChain(ti->blocks, tb);
+    if ( emptyChain(ti->blocks) )
+      return;
+  }
+}
+
+
+/** Is there still a block here?
+ *
+ * Two ways for one to end.  Everything it named is gone, which is the
+ * plain case.  Or it still names a line but no longer the mark that
+ * closed it: an erase takes the lines below the caret and leaves the
+ * ones above, so a block can keep its prompt and lose its end.  It
+ * cannot say how far it reaches any more, and a mark that is gone is
+ * not a mark that never arrived -- that is a command still running,
+ * which reaches to the caret.  See block_range().
+ */
+
+static bool
+block_alive(RlcData b, TerminalBlock tb)
+{ RlcAnchors a = tb->anchors;
+
+  if ( !a )
+    return false;
+
+  if ( !block_anchor(b, a->prompt_line) && !block_anchor(b, a->input_line) &&
+       !block_anchor(b, a->output_line) && !block_anchor(b, a->end_line) )
+    return false;
+
+  if ( a->end_line != ANCHOR_NONE && !block_anchor(b, a->end_line) )
+    return false;
+
+  return true;
+}
+
+
+/** Let go of the blocks whose lines have left the buffer.  The
+ * incremental path above sees every line that is recycled; this is for
+ * the wholesale ones, where the scroll-back is dropped in one go.
+ */
+
+static void
+rlc_sweep_blocks(RlcData b)
+{ TerminalImage ti = b->object;
+  Chain gone;
+  Cell cl;
+
+  if ( !ti || isNil(ti->blocks) || emptyChain(ti->blocks) )
+    return;
+
+  gone = answerObject(ClassChain, EAV);
+  for_cell(cl, ti->blocks)
+  { TerminalBlock tb = cl->value;
+
+    if ( !block_alive(b, tb) )
+      appendChain(gone, tb);
+  }
+
+  for_cell(cl, gone)
+  { TerminalBlock tb = cl->value;
+
+    assign(tb, terminal, NIL);
+    deleteChain(ti->blocks, tb);
+  }
+  doneObject(gone);
+
+  rlc_restamp_folds(b);
+}
+
+
+/** Where the marks of the block being built go. */
+
+static void
+osc133_open_block(RlcData b)
+{ TerminalImage ti = b->object;
+  TerminalBlock tb;
+
+  if ( !ti || isNil(ti->blocks) )
+    return;
+
+  if ( (tb=newObject(ClassTerminalBlock, ti, EAV)) )
+  { assign(tb, id, toInt(b->next_block_id++));
+    appendChain(ti->blocks, tb);
+  }
+}
+
+
+/** The value of a `k=' parameter of a mark, or 0.  Everything after the
+ * mark letter is a list of key=value parameters; `k' says what kind of
+ * prompt an `A' is, `s' for the secondary prompt of an input the client
+ * is still collecting.  See ->prompt_mark.
+ */
+
+static int
+osc133_kind(const uchar_t *param)
+{ for(const uchar_t *s = param; *s; s++)
+  { if ( s[0] == ';' && s[1] == 'k' && s[2] == '=' )
+      return (int)s[3];
+  }
+
+  return 0;
+}
+
+
+/** What a client says with an OSC 133 mark, and what the terminal makes of
+ * it: where a prompt starts (`prompt'), where the line the user edits
+ * starts (`input'), where that line was entered and its output begins
+ * (`output'), and where the output ends (`end').  `continuation' is the
+ * `k=s' of a secondary prompt, i.e. the client is asking for another line
+ * of an input it has not finished collecting.
+ *
+ * A subclass may refine this to act on what its client is doing -- see
+ * class prolog_terminal, which folds the command before the one being
+ * entered.  A refinement must not write to the terminal or destroy it:
+ * the escape sequence this arrived in is still being parsed, and output
+ * of its own would move the very lines and blocks that parse is holding.
+ */
+
+static status
+promptMarkTerminalImage(TerminalImage ti, Name kind, BoolObj continuation)
+{ RlcData b = ti->data;
+  TerminalBlock tb;
+  RlcAnchors a;
+
+  if ( !b )
+    fail;
+  if ( rlc_alt_screen(b) )
+    succeed;				/* What an application on the
+					   alternate screen marks is not a
+					   command of the client, and the
+					   lines it would name are given
+					   back when the screen is. */
+  tb = rlc_last_block(b);
+  a  = tb ? tb->anchors : NULL;
+
+  b->prompt_marks = true;
+
+  if ( kind == NAME_prompt )
+  { b->input_active    = false;
+    b->input_continued = isOn(continuation); /* see rlc_first_input() */
+    if ( a && isOn(continuation) )
+    { /* A secondary prompt: the client is asking for another line of
+       * an input it has not finished collecting, which is one command
+       * to whoever is typing it.  The block stays open, and with it the
+       * prompt of the line the command started on, which is where its
+       * marker belongs.
+       *
+       * If nothing was printed between the last two marks there is no
+       * output yet, only a line of the command; let go of it so that
+       * the `output' after this prompt anchors the real output.  If
+       * something was printed, this is a read from inside a command
+       * that is running, and its output stands.
+       */
+      a->continued = true;
+      if ( a->output_line != ANCHOR_NONE &&
+	   a->output_line == a->end_line && a->output_char == a->end_char )
+      { a->output_line = a->output_char = ANCHOR_NONE;
+	a->end_line    = a->end_char    = ANCHOR_NONE;
+	assign(tb, running, OFF);
+      }
+      succeed;
+    }
+    if ( !a || a->output_line != ANCHOR_NONE )
+    { if ( a && a->end_line == ANCHOR_NONE )
+      { a->end_line = b->caret_y;	/* a client that marks no `D' ends */
+	a->end_char = b->caret_x;	/* its output where the next one starts */
+	assign(tb, running, OFF);
+	rlc_restamp_folds(b);		/* it can be folded now */
+      }
+      osc133_open_block(b);
+      if ( !(tb=rlc_last_block(b)) )
+	succeed;
+      a = tb->anchors;
+    }
+    a->prompt_line = b->caret_y;	/* the same prompt, drawn again */
+    a->prompt_char = b->caret_x;
+  } else if ( kind == NAME_input )
+  { b->input_active = true;
+    b->input_line   = b->caret_y;
+    b->input_char   = b->caret_x;
+    if ( !a )				/* a read that marked no prompt */
+    { osc133_open_block(b);
+      if ( !(tb=rlc_last_block(b)) )
+	succeed;
+      a = tb->anchors;
+    }
+    if ( !a->continued )		/* the command starts on its first */
+    { a->input_line = b->caret_y;	/* line, not on the one being added */
+      a->input_char = b->caret_x;
+    } else if ( a->cont_char == ANCHOR_NONE )
+    { a->cont_char = b->caret_x;	/* where its later lines start, past
+					   the continuation prompt */
+    }
+  } else if ( kind == NAME_output )	/* the line was entered */
+  { b->input_active = false;
+    if ( a && a->output_line == ANCHOR_NONE )
+    { a->output_line = b->caret_y;
+      a->output_char = b->caret_x;
+      assign(tb, running, ON);
+    }
+  } else				/* NAME_end: its output is over */
+  { b->input_active = false;
+    if ( a && a->output_line != ANCHOR_NONE )
+    { a->end_line = b->caret_y;
+      a->end_char = b->caret_x;
+      assign(tb, running, OFF);
+      rlc_restamp_folds(b);		/* it can be folded now */
+    }
+  }
+
+  succeed;
+}
+
 
 static void
 osc_command(RlcData b, int param, const uchar_t *link)
@@ -4115,56 +10094,80 @@ osc_command(RlcData b, int param, const uchar_t *link)
       rewindAnswerStack(mark, NIL);
       break;
     }
-    default:
-      Cprintf("Unknown OSC command: %d\n", param);
-  }
-}
-
-/** The "ST" sequence is either \e\\ or \a
- */
-static bool
-osc8_end(RlcData b)
-{ const char *end1 = S_ESC"]8;;\a";	/* new OSC 8 standard */
-  const char *end2 = S_ESC"]8;;"S_ESC"\\";	/* old */
-  const size_t end1l = strlen(end1);
-  const size_t end2l = strlen(end2);
-
-  int chr = b->link[b->link_len-1];
-  if ( chr == '\a' &&
-       b->link_len >= end1l &&
-       cuncmp(end1, &b->link[b->link_len-end1l], end1l) == 0 )
-  { b->link_len -= end1l;
-    return true;
-  }
-  if ( chr == '\\' &&
-       b->link_len >= end2l &&
-       cuncmp(end2, &b->link[b->link_len-end2l], end2l) == 0 )
-  { b->link_len -= end2l;
-    return true;
-  }
-
-  return false;
-}
-
-
-static void
-rlc_put_link(RlcData b, const uchar_t *label, const uchar_t *link)
-{ text_flags flags0 = b->sgr_flags;
-  int y = b->caret_y;
-  href *hr = rlc_register_link(b, link, ucslen(label));
-  b->sgr_flags.link = 1;
-  for( ; *label; label++)
-  { rlc_put(b, *label);
-    if ( b->caret_y != y )	/* moved to next line */
-    { size_t left = ucslen(label)-1;
-      hr->length -= left;
-      rlc_check_links(&b->lines[y]);
-      hr = rlc_register_link(b, link, left);
-      y = b->caret_y;
+    case 7:			/* working directory of the client */
+    { Name host;
+      Name dir = osc7_directory(link, &host);
+      report_directory(b, dir, host);
+      break;
     }
+    case 8:			/* 8;<params>;<URL>: hyperlink */
+    { const uchar_t *url = link;
+
+      while(*url && *url != ';')	/* we have no use for the params */
+	url++;
+      if ( *url != ';' )		/* malformed: no URL at all */
+	break;
+      url++;
+      DEBUG(NAME_term, Cprintf("Link: \"%ls\"\n", url));
+      if ( *url )
+	rlc_link_start(b, url);
+      else
+	rlc_link_end(b);
+      break;
+    }
+    case 9:			/* 9;<path>: the same, Windows style */
+    { Name dir = osc9_directory(link);
+      if ( notNil(dir) )
+	report_directory(b, dir, NIL);
+      break;
+    }
+    case 10:			/* default foreground colour */
+    case 11:			/* default background colour */
+    { TerminalImage ti = b->object;
+      if ( link[0] == '?' && link[1] == 0 )
+      { COLORRGBA rgba = fill_rgba(param == 10 ? ti->colour : ti->background);
+	char buf[64];
+	snprintf(buf, sizeof(buf),
+		 S_ESC"]%d;rgb:%02x/%02x/%02x"S_ESC"\\",
+		 param,
+		 (unsigned)ColorRValue(rgba),
+		 (unsigned)ColorGValue(rgba),
+		 (unsigned)ColorBValue(rgba));
+	rlc_send(b, buf, strlen(buf));
+      } else
+      { COLORRGBA rgba;
+	if ( parse_rgb_spec(link, &rgba) )
+	{ AnswerMark mark;
+	  markAnswerStack(mark);
+	  Colour nc = ws_pixel_to_colour(rgba);
+	  if ( nc )
+	  { addCodeReference(nc);
+	    send(ti, param == 10 ? NAME_colour : NAME_background, nc, EAV);
+	    delCodeReference(nc);
+	    freeableObj(nc);
+	  }
+	  rewindAnswerStack(mark, NIL);
+	}
+      }
+      break;
+    }
+    case 133:			/* semantic prompt marks */
+    { Name kind = NULL;
+
+      switch(link[0])
+      { case 'A': kind = NAME_prompt; break;
+	case 'B': kind = NAME_input;  break;
+	case 'C': kind = NAME_output; break;
+	case 'D': kind = NAME_end;    break;
+      }
+      if ( kind )
+	send(b->object, NAME_promptMark, kind,
+	     osc133_kind(link) == 's' ? ON : OFF, EAV);
+      break;
+    }
+    default:
+      DEBUG(NAME_term, Cprintf("Unknown OSC command: %d\n", param));
   }
-  rlc_check_links(&b->lines[y]);
-  b->sgr_flags = flags0;
 }
 
 #ifdef _DEBUG
@@ -4181,8 +10184,9 @@ rlc_putansi(RlcData b, int chr)
 #endif
 
 #ifdef XPCE_TERM_TRACE
-  { static const char *names[] = {
-      "INITIAL", "ESC", "ANSI", "OSC", "DEC_PRIVATE", "G0", "G1"
+  { static const char *names[] = {		/* must track ansi_state */
+      "INITIAL", "ESC", "G0", "G1", "ANSI", "OSC", "OSCARG", "OSCTEXT",
+      "DEC_PRIVATE", "CSI_INTERMEDIATE", "DCS", "DCS_ESC"
     };
     const char *st = (b->cmdstat >= 0 && b->cmdstat < (int)(sizeof(names)/sizeof(*names)))
 		    ? names[b->cmdstat] : "?";
@@ -4196,8 +10200,7 @@ rlc_putansi(RlcData b, int chr)
       { case '\b':
 	  CMD(rlc_caret_backward(b, 1));
 	  break;
-        case 0x7:
-	  //MessageBeep(MB_ICONEXCLAMATION);
+        case 0x7:			/* BEL */
 	  send(b->object, NAME_flash, EAV);
 	  break;
 	case '\r':
@@ -4212,6 +10215,9 @@ rlc_putansi(RlcData b, int chr)
 	case 27:			/* ESC */
 	  b->cmdstat = CMD_ESC;
 	  break;
+	case 0:				/* NUL */
+	case 0x7F:			/* DEL */
+	  break;			/* ignored, as on a VT100 */
 	case 0x0F:			/* SI (Shift In) */
 	  b->shift_in = true;
 	  break;
@@ -4219,6 +10225,8 @@ rlc_putansi(RlcData b, int chr)
 	  b->shift_in = false;
 	  break;
 	default:
+	  if ( chr < 0x20 )		/* unhandled C0 control: ignore */
+	    break;			/* (e.g. \001/\002 from a bash PS0) */
 	  CMD(rlc_put(b, chr));
 	  break;
       }
@@ -4229,6 +10237,8 @@ rlc_putansi(RlcData b, int chr)
 	  b->cmdstat = CMD_ANSI;
 	  b->argc    = 0;
 	  b->argstat = 0;		/* no arg */
+	  b->csi_private = 0;
+	  b->csi_intermediate = 0;
 	  break;
 	case ']':
 	  b->cmdstat = CMD_OSC;
@@ -4239,23 +10249,71 @@ rlc_putansi(RlcData b, int chr)
 	case ')':
 	  b->cmdstat = CMD_G1;
 	  break;
-	case 'M':
+	case 'M':			/* RI: reverse index */
 	  CMD(rlc_reverse_index(b));
 	  b->cmdstat = CMD_INITIAL;
 	  break;
-	case '=':
+	case 'D':			/* IND: index */
+	  CMD(rlc_caret_down(b, 1));
+	  b->cmdstat = CMD_INITIAL;
+	  break;
+	case 'E':			/* NEL: next line */
+	  CMD(rlc_cariage_return(b));
+	  CMD(rlc_caret_down(b, 1));
+	  b->cmdstat = CMD_INITIAL;
+	  break;
+	case 'c':			/* RIS: reset to initial state */
+	  CMD(rlc_reset(b));
+	  b->cmdstat = CMD_INITIAL;
+	  break;
+	case 'H':			/* HTS: set a tab stop */
+	  CMD(rlc_set_tab(b, rlc_cell_to_vcol(&b->lines[b->caret_y],
+					      b->caret_x), true));
+	  b->cmdstat = CMD_INITIAL;
+	  break;
+	case '7':			/* DECSC: save cursor */
+	  CMD(rlc_save_cursor(b));
+	  b->cmdstat = CMD_INITIAL;
+	  break;
+	case '8':			/* DECRC: restore cursor */
+	  CMD(rlc_restore_cursor(b));
+	  b->cmdstat = CMD_INITIAL;
+	  break;
+	case '=':			/* DECKPAM: application keypad */
 	  b->app_keypad_mode = true;
 	  b->cmdstat = CMD_INITIAL;
 	  break;
-	case '>':
-	  b->app_keypad_mode = true;
+	case '>':			/* DECKPNM: numeric keypad */
+	  b->app_keypad_mode = false;
+	  b->cmdstat = CMD_INITIAL;
+	  break;
+	case 'P':			/* DCS introducer */
+	  b->cmdstat = CMD_DCS;
+	  break;
+	case '\\':			/* stray ST without a string */
 	  b->cmdstat = CMD_INITIAL;
 	  break;
 	default:
-	  Cprintf("ESC%c\n", chr);
+	  DEBUG(NAME_term, Cprintf("Unknown escape: ESC%c\n", chr));
 	  b->cmdstat = CMD_INITIAL;
 	  break;
       }
+      break;
+    case CMD_DCS:
+      /* Device Control String body.  Swallow until BEL or ESC '\\' (ST).
+	 We do not parse XTGETTCAP / DECRQSS; vim treats no reply as
+	 "capability unknown" and falls back to its compiled terminfo.
+       */
+      if ( chr == '\a' )
+	b->cmdstat = CMD_INITIAL;
+      else if ( chr == ESC )
+	b->cmdstat = CMD_DCS_ESC;
+      break;
+    case CMD_DCS_ESC:
+      /* '\\' closes the DCS (ST = ESC '\\'); anything else continues the
+	 body.
+       */
+      b->cmdstat = (chr == '\\') ? CMD_INITIAL : CMD_DCS;
       break;
     case CMD_G0:
       switch(chr)
@@ -4280,22 +10338,13 @@ rlc_putansi(RlcData b, int chr)
       b->cmdstat = CMD_INITIAL;
       break;
     case CMD_OSC:
-      switch ( chr )
-      { case '8':
-	{ b->must_see = ";;";
-	  b->cmdstat = CMD_LINK;
-	  break;
-	}
-	default:
-	{ if ( chr >= '0' && chr <= '9' )
-	  { b->cmdstat = CMD_OSCARG;
-	    b->argc    = 0;
-	    b->argstat = 1;
-	    b->argv[b->argc] = (chr - '0');
-	    break;
-	  }
-	  b->cmdstat = CMD_INITIAL;
-	}
+      if ( chr >= '0' && chr <= '9' )
+      { b->cmdstat = CMD_OSCARG;
+	b->argc    = 0;
+	b->argstat = 1;
+	b->argv[b->argc] = (chr - '0');
+      } else
+      { b->cmdstat = CMD_INITIAL;
       }
       break;
     case CMD_OSCTEXT:
@@ -4324,64 +10373,20 @@ rlc_putansi(RlcData b, int chr)
 	  rlc_put(b, *split);
       }
       break;
-    case CMD_LINK:
-      if ( b->must_see && b->must_see[0] == chr )
-      { b->must_see++;
-	if ( !b->must_see[0] )
-	{ b->cmdstat = CMD_LINKARG;
-	  b->link_len = 0;
-	  b->must_see = NULL;
-	}
-	break;
-      } else
-      { b->cmdstat = CMD_INITIAL;
-	break;
+    case CMD_CSI_INTERMEDIATE:
+      /* Consume further intermediates (0x20-0x2F).  A final byte
+	 (0x40-0x7E) terminates the sequence; of those we act on DECSTR
+	 (CSI ! p) and discard the rest.  Any other byte aborts
+	 (treated as end of sequence) per ECMA-48.
+       */
+      if ( chr >= 0x20 && chr <= 0x2F )
+      { b->csi_intermediate = 0;	/* more than one: none of ours */
+	return;
       }
-    case CMD_LINKARG:
-      if ( b->link_len < ANSI_MAX_LINK-1 )
-      { const char *sep1   = "\a"; /* OSC8 "ST" sequence */
-	const size_t sep1l = strlen(sep1);
-	const char *sep2   = S_ESC"\\";
-	const size_t sep2l = strlen(sep2);
-
-	b->link[b->link_len++] = chr;
-	b->link[b->link_len] = 0;
-	if ( osc8_end(b) )
-	{ uchar_t *link;
-
-	  b->cmdstat = CMD_INITIAL;
-	  b->link[b->link_len] = 0;
-
-	  uchar_t *label = ucstr(b->link, sep1);
-	  if ( label )
-	  { *label = 0;
-	    label += sep1l;
-	    link = b->link;
-	  } else if ( (label=ucstr(b->link, sep2)) )
-	  { *label = 0;
-	    label += sep2l;
-	    link = b->link;
-	  } else
-	  { label = b->link;
-	    link = NULL;
-	  }
-	  DEBUG(NAME_term,
-		Cprintf("Link: \"%ls\", Label \"%ls\"\n", link, label));
-	  if ( link )
-	  { rlc_put_link(b, label, link);
-	  } else
-	  { for( ; *label; label++)
-	      rlc_put(b, *label);
-	  }
-	}
-	break;
-      } else			/* too long; process as text */
-      { b->cmdstat = CMD_INITIAL;
-	b->link[b->link_len] = 0;
-	for(uchar_t *split=b->link; *split; split++)
-	  rlc_put(b, *split);
-	break;
-      }
+      if ( b->csi_intermediate == '!' && chr == 'p' )
+	CMD(rlc_soft_reset(b));
+      b->cmdstat = CMD_INITIAL;
+      break;
     case CMD_ANSI:			/* ESC [ */
     case CMD_DEC_PRIVATE:		/* ESC [ ? */
     case CMD_OSCARG:			/* ESC ] <digit> */
@@ -4405,6 +10410,18 @@ rlc_putansi(RlcData b, int chr)
 	  b->argc++;			/* silently discard more of them */
 	b->argstat = 0;
       }
+      /* ECMA-48: zero or more intermediate bytes (0x20-0x2F) may appear
+	 between the parameter bytes and the final byte (0x40-0x7E).
+	 Of the combinations xterm/vim use -- CSI ! p (DECSTR), " p
+	 (DECSCL), $ p (DECRQM), % q (XTQMODKEYS) -- we act on DECSTR
+	 and consume the rest of the sequence silently.  OSC arg state
+	 has its own terminator handling and is excluded.
+       */
+      if ( b->cmdstat != CMD_OSCARG && chr >= 0x20 && chr <= 0x2F )
+      { b->cmdstat = CMD_CSI_INTERMEDIATE;
+	b->csi_intermediate = chr;
+	return;
+      }
       switch(chr)
       { case ';':
 	  if ( b->cmdstat == CMD_OSCARG )
@@ -4421,33 +10438,44 @@ rlc_putansi(RlcData b, int chr)
 	  CMD(rlc_set_caret(b, col, row));
 	  break;
 	}
-	case 'd':
+	case 'd':		/* CSI Ps d — Line Position Absolute (VPA) */
 	{ rlc_need_arg(b, 1, 1); /* row */
 	  int row = Bounds(b->argv[0], 1, b->window_size)-1;
-	  int col = b->caret_x;
+	  int col = rlc_caret_vcol(b);	/* the column, not the cell */
 	  CMD(rlc_set_caret(b, col, row));
 	  break;
 	}
-	case 'r':
-	  if ( b->argc == 0 )
-	  { DEBUG(NAME_term, Cprintf("Unlimit scroll\n"));
-	  } else
-	  { rlc_need_arg(b, 1, 1); /* row */
-	    rlc_need_arg(b, 2, 1); /* col */
-	    DEBUG(NAME_term, Cprintf("Limit scroll\n"));
+	case 'r':		/* CSI Ps ; Ps r — scrolling region (DECSTBM) */
+	{ rlc_need_arg(b, 1, 1);		/* top row */
+	  rlc_need_arg(b, 2, b->window_size);	/* bottom row */
+	  int top = Bounds(b->argv[0], 1, b->window_size)-1;
+	  int bottom = Bounds(b->argv[1], 1, b->window_size)-1;
+
+	  if ( top < bottom )		/* a region holds at least two rows */
+	  { b->scroll_top    = top;
+	    b->scroll_bottom = bottom;
+	    DEBUG(NAME_term, Cprintf("Scroll region %d..%d\n", top, bottom));
+	    CMD(rlc_set_caret(b, 0, 0));	/* DECSTBM homes the caret */
 	  }
 	  break;
+	}
 	case 'A':
-	  rlc_need_arg(b, 1, 1);
+	{ rlc_need_arg(b, 1, 1);
+	  int vcol = rlc_caret_vcol(b);	/* CUU moves within a column */
 	  CMD(rlc_caret_up(b, b->argv[0]));
+	  rlc_caret_to_vcol(b, vcol);
 	  break;
+	}
 	case 'B':
-	  rlc_need_arg(b, 1, 1);
+	{ rlc_need_arg(b, 1, 1);
+	  int vcol = rlc_caret_vcol(b);	/* CUD moves within a column */
 	  CMD(rlc_caret_down(b, b->argv[0]));
+	  rlc_caret_to_vcol(b, vcol);
 	  break;
+	}
 	case 'C':
 	  rlc_need_arg(b, 1, 1);
-	  CMD(rlc_caret_forward(b, b->argv[0]));
+	  CMD(rlc_cursor_forward(b, b->argv[0]));
 	  break;
 	case 'D':
 	  rlc_need_arg(b, 1, 1);
@@ -4457,16 +10485,24 @@ rlc_putansi(RlcData b, int chr)
 	  rlc_need_arg(b, 1, 0);
 	  CMD(rlc_set_caret_x(b, b->argv[0]));
 	  break;
-	case 's':
-	  CMD(rlc_save_caret_position(b));
+	case 's':		/* CSI s — save the caret (SCOSC) */
+	  if ( b->csi_private )	/* CSI ? Pm s is XTSAVE */
+	    Dprint_csi(b, chr);
+	  else
+	    CMD(rlc_save_caret_position(b));
 	  break;
-	case 'u':
-	  CMD(rlc_restore_caret_position(b));
+	case 'u':		/* CSI u — restore the caret (SCORC) */
+	  if ( b->csi_private )	/* CSI < u and friends are the kitty */
+	    Dprint_csi(b, chr);	/* keyboard protocol */
+	  else
+	    CMD(rlc_restore_caret_position(b));
 	  break;
 	case 'J':
 	  rlc_need_arg(b, 1, 0);
 	  if ( b->argv[0] == 0 )
 	    CMD(rlc_clear_from_cursor(b));
+	  else if ( b->argv[0] == 1 )
+	    CMD(rlc_erase_above(b));
 	  else if ( b->argv[0] == 2 )
 	    CMD(rlc_erase_display(b));
 	  else if ( b->argv[0] == 3 )
@@ -4474,11 +10510,63 @@ rlc_putansi(RlcData b, int chr)
 	  else
 	    Dprint_csi(b, chr);
 	  break;
-	case 'K':
-	  CMD(rlc_erase_line(b));
+	case 'K':		/* CSI Ps K — Erase in Line (EL) */
+	  rlc_need_arg(b, 1, 0);
+	  CMD(rlc_erase_line(b, b->argv[0]));
+	  break;
+	case 'X':		/* CSI Ps X — Erase Character(s) (ECH) */
+	  rlc_need_arg(b, 1, 1);
+	  CMD(rlc_erase_chars(b, b->argv[0]));
+	  break;
+	case 'b':		/* CSI Ps b — Repeat (REP) */
+	  rlc_need_arg(b, 1, 1);
+	  if ( b->last_char )
+	  { int n = Bounds(b->argv[0], 1, b->width);
+
+	    for(int i=0; i<n; i++)
+	      CMD(rlc_put(b, b->last_char));
+	  }
+	  break;
+	case 'I':		/* CSI Ps I — Cursor Forward Tab (CHT) */
+	  rlc_need_arg(b, 1, 1);
+	  CMD(rlc_forward_tabs(b, Bounds(b->argv[0], 1, b->width)));
+	  break;
+	case 'Z':		/* CSI Ps Z — Cursor Backward Tab (CBT) */
+	  rlc_need_arg(b, 1, 1);
+	  CMD(rlc_back_tabs(b, Bounds(b->argv[0], 1, b->width)));
+	  break;
+	case 'g':		/* CSI Ps g — Tab Clear (TBC) */
+	  rlc_need_arg(b, 1, 0);
+	  if ( b->argv[0] == 0 )
+	    CMD(rlc_set_tab(b, rlc_cell_to_vcol(&b->lines[b->caret_y],
+						b->caret_x), false));
+	  else if ( b->argv[0] == 3 )
+	    memset(b->tabs, 0, sizeof(b->tabs));
+	  else
+	    Dprint_csi(b, chr);
+	  break;
+	case 'S':		/* CSI Ps S — Scroll Up (SU) */
+	  if ( b->csi_private )			/* CSI ? Pi ; ... S is XTSMGRAPHICS */
+	  { Dprint_csi(b, chr);
+	    break;
+	  }
+	  rlc_need_arg(b, 1, 1);
+	  CMD(rlc_scroll_up(b, Bounds(b->argv[0], 1, b->window_size)));
+	  break;
+	case 'T':		/* CSI Ps T — Scroll Down (SD) */
+	  if ( b->argc > 1 )	/* mouse tracking takes five parameters */
+	  { Dprint_csi(b, chr);
+	    break;
+	  }
+	  rlc_need_arg(b, 1, 1);
+	  CMD(rlc_scroll_down(b, Bounds(b->argv[0], 1, b->window_size)));
 	  break;
 	case 'm':
-	  { rlc_need_arg(b, 1, 0);
+	  { if ( b->csi_private )	/* CSI > Pm m is XTMODKEYS, not SGR */
+	    { Dprint_csi(b, chr);
+	      break;
+	    }
+	    rlc_need_arg(b, 1, 0);
 
 	    /* Walk the SGR parameter list.  Most codes are atomic (handled
 	     * by rlc_sgr); 38/48 introduce a sub-sequence for extended
@@ -4515,20 +10603,55 @@ rlc_putansi(RlcData b, int chr)
 	  rlc_need_arg(b, 1, 1);
 	  CMD(rlc_delete_chars(b, b->argv[0]));
 	  break;
-	case '?':
+	case 'L':		/* CSI Ps L — Insert Line(s) (IL) */
+	case 'M':		/* CSI Ps M — Delete Line(s) (DL) */
+	{ rlc_need_arg(b, 1, 1);
+	  int count = b->argv[0] < 1 ? 1 : b->argv[0];
+	  /* The caret keeps the column it is on.  ECMA-48 takes it to the
+	   * line home position, but no terminal a client is written
+	   * against does that -- xterm and tmux both leave the column
+	   * alone -- and an editor that opens a line in the middle of one
+	   * and writes on it landed at the left margin here.  The column
+	   * rather than the cell: the lines moved under the caret and the
+	   * one it lands on may hold a different number of cells before
+	   * that column.
+	   */
+	  int vcol = rlc_caret_vcol(b);
+	  CMD(rlc_scroll_region(b, b->caret_y, chr == 'L' ? count : -count));
+	  rlc_caret_to_vcol(b, vcol);
+	  break;
+	}
+	/* The parameter prefixes of ECMA-48, 0x3c..0x3f.  A sequence
+	 * carrying one is private and means nothing without it: `?' is
+	 * the DEC modes, `>' the xterm extensions, `<' and `=' the
+	 * kitty keyboard protocol.  Remembering the prefix is what
+	 * keeps `CSI < u', which pops that protocol's flags, from
+	 * being read as the `CSI u' that restores the caret -- and its
+	 * `u' from being printed as text.
+	 */
+	case '<':
+	case '=':
 	case '>':
+	case '?':
 	  b->cmdstat = CMD_DEC_PRIVATE;
+	  b->csi_private = chr;
 	  return;
 	case 'l':
 	  if ( b->cmdstat == CMD_DEC_PRIVATE )
 	  { rlc_need_arg(b, 1, 0);
 	    rlc_clear_dec_mode(b, b->argv[0]);
+	  } else
+	  { rlc_need_arg(b, 1, 0);
+	    rlc_set_ansi_mode(b, b->argv[0], false);
 	  }
 	  break;
 	case 'h':
 	  if ( b->cmdstat == CMD_DEC_PRIVATE )
 	  { rlc_need_arg(b, 1, 0);
 	    rlc_set_dec_mode(b, b->argv[0]);
+	  } else
+	  { rlc_need_arg(b, 1, 0);
+	    rlc_set_ansi_mode(b, b->argv[0], true);
 	  }
 	  break;
 	case 't':
@@ -4545,7 +10668,7 @@ rlc_putansi(RlcData b, int chr)
 	  /* \e[6n: report row and column */
 	  if ( b->argc == 1 && b->argv[0] == 6 )
 	  { int row = rlc_count_lines(b, b->window_start, b->caret_y)+1;
-	    int col = b->caret_x+1;
+	    int col = rlc_caret_vcol(b)+1;	/* the column, not the cell */
 	    char buf[100];
 	    snprintf(buf, sizeof(buf), S_ESC"[%d;%dR", row, col);
 	    rlc_send(b, buf, strlen(buf));
@@ -4553,9 +10676,15 @@ rlc_putansi(RlcData b, int chr)
 	  { Dprint_csi(b, chr);
 	  }
 	  break;
-	case 'c':		/* Identify as VT100+ANSI */
-	{ const char *id = S_ESC"[?1;2c";
-	  rlc_send(b, id, strlen(id));
+	case 'c':		/* CSI c — Device Attributes (DA) */
+	{ const char *id = NULL;
+
+	  if ( b->csi_private == 0 )		/* primary: VT100 with AVO */
+	    id = S_ESC"[?1;2c";
+	  else if ( b->csi_private == '>' )	/* secondary: VT100, no ROM */
+	    id = S_ESC"[>0;10;0c";
+	  if ( id )
+	    rlc_send(b, id, strlen(id));
 	  break;
 	}
 	default:
@@ -4568,82 +10697,6 @@ rlc_putansi(RlcData b, int chr)
 #ifdef _DEBUG
   (void)cmd;
 #endif
-}
-
-
-		 /*******************************
-		 *	LINE-READ SUPPORT	*
-		 *******************************/
-
-void
-rlc_get_mark(rlc_console c, RlcMark m)
-{ RlcData b = rlc_get_data(c);
-
-  m->mark_x = b->caret_x;
-  m->mark_y = b->caret_y;
-}
-
-
-void
-rlc_goto_mark(rlc_console c, RlcMark m, const uchar_t *data, size_t offset)
-{ RlcData b = rlc_get_data(c);
-
-  b->caret_x = m->mark_x;
-  b->caret_y = m->mark_y;
-
-  for( ; offset-- > 0; data++ )
-  { switch(*data)
-    { case '\t':
-	rlc_tab(b);
-	break;
-      case '\n':
-	b->caret_x = 0;
-        rlc_caret_down(b, 1);
-	break;
-      default:
-	rlc_caret_forward(b, 1);
-    }
-  }
-}
-
-
-void
-rlc_erase_from_caret(rlc_console c)
-{ RlcData b = rlc_get_data(c);
-  int i = b->caret_y;
-  int x = b->caret_x;
-  int last = rlc_add_lines(b, b->window_start, b->window_size);
-
-  do
-  { RlcTextLine tl = &b->lines[i];
-
-    if ( tl->size != x )
-    { tl->size = x;
-      tl->changed |= CHG_CHANGED|CHG_CLEAR;
-    }
-
-    i = NextLine(b, i);
-    x = 0;
-  } while ( i != last );
-}
-
-
-void
-rlc_putchar(rlc_console c, int chr)
-{ RlcData b = rlc_get_data(c);
-
-  rlc_putansi(b, chr);
-}
-
-
-uchar_t *
-rlc_read_screen(rlc_console c, RlcMark f, RlcMark t)
-{ RlcData b = rlc_get_data(c);
-  uchar_t *buf;
-
-  buf = rlc_read_from_window(b, f->mark_y, f->mark_x, t->mark_y, t->mark_x);
-
-  return buf;
 }
 
 
@@ -4756,6 +10809,42 @@ set_stream_properties(IOSTREAM *i, IOSTREAM *o, IOSTREAM *e)
 #endif
 
 /**
+ * Neither  side may  survive an  exec().   The client  hands its  own
+ * descriptors to  a process it  starts -- a  shell of shell/0  or of
+ * process_create/3 -- as  stdin, stdout and stderr,  and those it is
+ * welcome to.  A copy of ours is  another matter: as long as a child
+ * holds the master, the pty never  hangs up, so the child outlives us
+ * rather than being sent  the SIGHUP that closing the  master owes it
+ * when Prolog halts.
+ */
+
+static void
+set_cloexec(int fd)
+{ int flags;
+
+  if ( fd >= 0 && (flags=fcntl(fd, F_GETFD)) != -1 )
+    fcntl(fd, F_SETFD, flags|FD_CLOEXEC);
+}
+
+/**
+ * Open the client side of our pty.
+ *
+ * O_CLOEXEC is POSIX 2008.  Asking for _XOPEN_SOURCE 600 rather than
+ * 700 at the  top of this file hides it on  glibc, and the resulting
+ * error names  the symbol rather  than the cause;  hence the check
+ * below.
+ */
+
+#ifndef O_CLOEXEC
+#error "O_CLOEXEC undeclared: check _XOPEN_SOURCE at the top of this file"
+#endif
+
+static int
+open_pty_slave(RlcData b)
+{ return open(b->pty.slave_name, O_RDWR|O_NOCTTY|O_CLOEXEC);
+}
+
+/**
  * Establish  a pty  pair between  the xpce  terminal and  the client.
  * Normally,  the client  is a  Prolog  thread, but  this design  also
  * allows  forking and  attaching  an arbitrary  process  to our  xpce
@@ -4763,12 +10852,17 @@ set_stream_properties(IOSTREAM *i, IOSTREAM *o, IOSTREAM *e)
  */
 
 static bool
-rlc_open_pty_pair(RlcData b, int cols, int rows)
-{ memset(&b->pty, 0, sizeof(b->pty));
+rlc_open_pty_pair(RlcData b)
+{ int cols, rows;
+
+  memset(&b->pty, 0, sizeof(b->pty));
+  for(int i=0; i<3; i++)
+    b->pty.client_fd[i] = -1;
 
   b->pty.master_fd = posix_openpt(O_RDWR | O_NOCTTY);
   if ( b->pty.master_fd < 0 )
     return errorPce(b->object, NAME_cannotOpenPty);
+  set_cloexec(b->pty.master_fd);
 
   if ( grantpt(b->pty.master_fd) < 0 )
   { close(b->pty.master_fd);
@@ -4781,15 +10875,13 @@ rlc_open_pty_pair(RlcData b, int cols, int rows)
   }
 
   char *slave = ptsname(b->pty.master_fd);
-#if 0
   if ( !slave )
   { close(b->pty.master_fd);
     return errorPce(b->object, NAME_cannotPtsname);
   }
-#endif
 
   strncpy(b->pty.slave_name, slave, sizeof(b->pty.slave_name) - 1);
-  b->pty.slave_fd = open(b->pty.slave_name, O_RDWR | O_NOCTTY);
+  b->pty.slave_fd = open_pty_slave(b);
   if ( b->pty.slave_fd < 0 )
   { close(b->pty.master_fd);
     return errorPce(b->object, NAME_cannotOpenPty);
@@ -4797,7 +10889,66 @@ rlc_open_pty_pair(RlcData b, int cols, int rows)
   b->pty.open = true;
   b->pty.watch = add_fd_to_watch(b->pty.master_fd, FD_READY_TERMINAL, b->object);
   pceRegisterConsole(b->pty.slave_fd, CON_DRAIN_TCFLUSH);
+  rlc_pty_size(b, &cols, &rows);
+  rlc_resize_pty(b, cols, rows);
 
+  return true;
+}
+
+/**
+ * Reconnect the client side of the pty after the kernel revoked it.
+ *
+ * A process that made this pty its  controlling terminal -- a child of
+ * shell/1 or process_create/3 -- is the session leader of a session
+ * that owns a terminal, and on BSD systems, MacOS among them, the
+ * kernel revokes such a terminal when its session leader exits.  It
+ * detaches every descriptor on the slave side from the device, in
+ * this process as well: the fds stay open, but read() and write() on
+ * them fail with EIO and the master sees end of file.  Linux does not
+ * do this and never reaches the reconnect below.
+ *
+ * The device itself survives, so opening it again gives a working
+ * terminal, which we dup2() back onto the descriptors we and our
+ * client hold.  The fd numbers stay as they were, which is what makes
+ * this repairable at all: the client's Prolog streams and the console
+ * we registered both remember the descriptor rather than the device.
+ *
+ * shell/1 does the same for its caller as soon as the child is gone
+ * (restore_ctty() in src/os/pl-os.c), because the calling thread is
+ * back and writing before we get to see the end of file here.  This
+ * catches what it cannot: a process the client left running.
+ *
+ * @return true if the pty was revoked and is now usable again.
+ */
+
+static bool
+rlc_reclaim_pty(RlcData b)
+{ struct termios tio;
+
+  if ( !b->pty.open || b->pty.slave_fd < 0 ||
+       tcgetattr(b->pty.slave_fd, &tio) == 0 )
+    return false;			/* not revoked */
+
+  int fd = open_pty_slave(b);
+  if ( fd < 0 )
+    return false;
+
+  int fds[4] = { b->pty.slave_fd,	/* Ours and the client's three */
+		 b->pty.client_fd[0],
+		 b->pty.client_fd[1],
+		 b->pty.client_fd[2]
+	       };
+
+  for(int i=0; i<4; i++)		/* leave what shell/1 already did */
+  { if ( fds[i] >= 0 && fds[i] != fd && tcgetattr(fds[i], &tio) < 0 )
+    { dup2(fd, fds[i]);
+      set_cloexec(fds[i]);		/* dup2() does not carry it over */
+    }
+  }
+  close(fd);
+
+  DEBUG(NAME_term, Cprintf("%s: reclaimed revoked pty %s\n",
+			   pp(b->object), b->pty.slave_name));
   return true;
 }
 
@@ -4817,18 +10968,178 @@ rlc_close_connection(RlcData b)
       close(b->pty.slave_fd);
       b->pty.slave_fd = -1;
     }
+    for(int i=0; i<3; i++)
+      b->pty.client_fd[i] = -1;
     b->pty.open = false;
   }
 }
 
+/* Zero if we never opened a pty, -1 once we closed it, and both mean
+ * there is no client to send to.
+ */
+
 static ssize_t
 rlc_send(RlcData b, const char *buffer, size_t count)
-{ if ( b->pty.master_fd )
+{ if ( b->pty.master_fd > 0 )
   { return write(b->pty.master_fd, buffer, count);
   } else
   { Cprintf("Nowhere to send data\n");
     return -1;
   }
+}
+
+/**
+ * Does the line discipline echo what we send to the pty?
+ *
+ * Returns -1 if we cannot tell.  Echo off says a client put the tty in
+ * raw mode, which is how we know it reads and displays by itself.
+ */
+
+static int
+rlc_tty_echo(RlcData b)
+{ struct termios tio;
+
+  if ( b->pty.open && b->pty.slave_fd >= 0 &&
+       tcgetattr(b->pty.slave_fd, &tio) == 0 )
+    return (tio.c_lflag & ECHO) != 0;
+
+  return -1;
+}
+
+/**
+ * Process group that owns the pty, or 0 if there is none.
+ *
+ * A pty only has a foreground process group once a process made it
+ * its controlling terminal.  Our own client, a Prolog thread, cannot
+ * do so: it shares this process, which has a terminal of its own and
+ * may run several of these windows.  A process started from that
+ * thread does, though.  See adopt_ctty() in pl-os.c and process.c.
+ *
+ * This makes the kernel answer whether an external process is running
+ * in this terminal, without either side telling us about it.
+ */
+
+static int
+rlc_foreground_process(RlcData b)
+{ if ( b->pty.open )
+  { pid_t pgid = tcgetpgrp(b->pty.master_fd);
+
+    if ( pgid > 0 && pgid != getpgrp() )
+      return pgid;
+  }
+
+  return 0;
+}
+
+static bool
+rlc_client_owns_terminal(RlcData b)
+{ return rlc_foreground_process(b) > 0;
+}
+
+#if defined(__APPLE__) || defined(KERN_PROC_CWD)
+/**
+ * Copy a path from a fixed size field of an OS struct into `buf`.  The
+ * field need not be terminated, so we bound the length by its size.
+ *
+ * @return false if the path does not fit; a truncated path is a
+ * different directory and thus worse than none.
+ */
+
+static bool
+rlc_copy_path(char *buf, size_t size, const char *path, size_t pathlen)
+{ size_t len = strnlen(path, pathlen);
+
+  if ( len >= size )
+    return false;
+
+  memcpy(buf, path, len);
+  buf[len] = 0;
+
+  return true;
+}
+#endif
+
+/**
+ * Working directory of the process that owns the pty.
+ *
+ * The foreground process group is named after its leader, so its pid is
+ * the pgid we get from the kernel.  Asking the OS where that process is
+ * needs no cooperation from the client, unlike OSC 7, but there is no
+ * portable way to do it and some systems provide none at all.  OpenBSD
+ * is one; there, and on Windows, OSC 7 is all we have.
+ *
+ * @return true if `buf` was filled with the directory.
+ */
+
+static bool
+rlc_foreground_directory(RlcData b, char *buf, size_t size)
+{ pid_t pid = rlc_foreground_process(b);
+
+  if ( pid <= 0 )
+    return false;
+
+#if defined(__linux__) || defined(__NetBSD__) || defined(__sun)
+  char procfile[64];
+
+#ifdef __sun
+  snprintf(procfile, sizeof(procfile), "/proc/%d/path/cwd", (int)pid);
+#else
+  snprintf(procfile, sizeof(procfile), "/proc/%d/cwd", (int)pid);
+#endif
+
+  ssize_t len = readlink(procfile, buf, size-1);
+  if ( len > 0 )
+  { buf[len] = 0;
+    return true;
+  }
+#elif defined(__APPLE__)
+  struct proc_vnodepathinfo vpi;
+
+  if ( proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vpi, sizeof(vpi)) ==
+       sizeof(vpi) )
+    return rlc_copy_path(buf, size, vpi.pvi_cdir.vip_path,
+			 sizeof(vpi.pvi_cdir.vip_path));
+#elif defined(KERN_PROC_CWD)		/* FreeBSD and friends */
+  struct kinfo_file kf;
+  int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_CWD, (int)pid };
+  size_t len = sizeof(kf);
+
+  if ( sysctl(mib, 4, &kf, &len, NULL, 0) == 0 && len >= sizeof(kf) )
+    return rlc_copy_path(buf, size, kf.kf_path, sizeof(kf.kf_path));
+#else
+  (void)buf;
+  (void)size;
+#endif
+
+  return false;
+}
+
+/**
+ * Character that makes the line discipline raise `which` (VINTR,
+ * VSUSP, ...) in the client, or -1 if the client turned signal
+ * generation off.  The master side reports the settings of the slave.
+ */
+
+static int
+rlc_signal_char(RlcData b, int which)
+{ struct termios tio;
+
+  if ( b->pty.open &&
+       tcgetattr(b->pty.master_fd, &tio) == 0 &&
+       (tio.c_lflag&ISIG) )
+    return tio.c_cc[which];
+
+  return -1;
+}
+
+static int
+rlc_interrupt_char(RlcData b)
+{ return rlc_signal_char(b, VINTR);
+}
+
+static int
+rlc_suspend_char(RlcData b)
+{ return rlc_signal_char(b, VSUSP);
 }
 
 #define PTY_READ_CHUNK 4096
@@ -4837,8 +11148,16 @@ status
 receiveTerminalImage(TerminalImage ti)
 { char buf[PTY_READ_CHUNK+MAX_INCOMPLETE];
   RlcData b = ti->data;
+  ssize_t count;
 
-  ssize_t count = read(b->pty.master_fd, buf+MAX_INCOMPLETE, PTY_READ_CHUNK);
+  /* The watcher thread has already read this; see watch_fill().  Doing
+     the read here would make the main thread the only drainer of the
+     pty, so a main-thread write that fills it could never complete. */
+  count = read_watch(b->pty.watch, buf+MAX_INCOMPLETE, PTY_READ_CHUNK);
+  if ( count < 0 )
+    succeed;				/* nothing buffered right now */
+  if ( count == 0 && rlc_reclaim_pty(b) )
+    succeed;				/* revoked rather than closed */
   return processClientOutputTerminalImage(ti, buf+MAX_INCOMPLETE, count);
 }
 
@@ -4858,7 +11177,13 @@ rlc_resize_pty(RlcData b, int cols, int rows)
       }
       close(fd);
 #ifdef SIGWINCH
-      if ( b->pty.has_client_thread )
+      /* EPILOG_NO_SIGWINCH keeps the signal in: that is the path a
+       * Windows console is always on, and the one a lost signal leaves
+       * us on, where libedit has to notice the new size by polling it
+       * (see terminal_size_changed() in packages/libedit/libedit4pl.c).
+       * The terminal test suite runs itself over it that way.
+       */
+      if ( b->pty.has_client_thread && !getenv("EPILOG_NO_SIGWINCH") )
 	pthread_kill(b->pty.client_thread, SIGWINCH);
 #else
 #warning "Could not find SIGWINCH.  Please investigate"
@@ -4884,7 +11209,7 @@ getPrologStreamTerminalImage(Any obj,
     IOSTREAM *e = NULL;
 
     if ( !b->pty.open &&
-	 !rlc_open_pty_pair(b, 80, 25) )
+	 !rlc_open_pty_pair(b) )
       return false;
 
     i = Sopen_file(b->pty.slave_name, "r");
@@ -4895,6 +11220,9 @@ getPrologStreamTerminalImage(Any obj,
     { set_stream_properties(i,o,e);
 
       *in = i; *out = o; *err = e;
+      b->pty.client_fd[0] = Sfileno(i);	/* to reclaim after a revoke */
+      b->pty.client_fd[1] = Sfileno(o);
+      b->pty.client_fd[2] = Sfileno(e);
       b->pty.client_thread = pthread_self();
       b->pty.has_client_thread = true;
       DEBUG(NAME_term,
@@ -4938,11 +11266,14 @@ rlc_create_pipes(RlcData b)
 }
 
 static bool
-rlc_open_pty_pair(RlcData b, int cols, int rows)
-{ if ( !rlc_create_pipes(b) )
+rlc_open_pty_pair(RlcData b)
+{ int cols, rows;
+
+  if ( !rlc_create_pipes(b) )
     return false;
 
-  COORD size = { cols, rows };
+  rlc_pty_size(b, &cols, &rows);
+  COORD size = { (SHORT)cols, (SHORT)rows };
   if ( CreatePseudoConsole(size, b->ptycon.hTaskIn, b->ptycon.hTaskOut,
 			   0, &b->ptycon.hPC) != S_OK )
   { Cprintf("Failed to create PtyCon\n");
@@ -4951,6 +11282,187 @@ rlc_open_pty_pair(RlcData b, int cols, int rows)
 
   DEBUG(NAME_term, Cprintf("Created PtyCon for %s\n", pp(b->object)));
   return true;
+}
+
+		 /*******************************
+		 *     PSEUDO CONSOLE CLIENTS   *
+		 *******************************/
+
+/**
+ * A  process started  by the  Prolog  thread of  this terminal  --  by
+ * shell/1 or process_create/3 -- must run on the terminal rather than
+ * on a  redirected pipe.  It  does so by  attaching to our  pseudo
+ * console, which it reaches through Swinpseudoconsole() on the streams
+ * it was handed.  See System() in src/pl-nt.c.
+ *
+ * The console cannot simply stay open:  it reads b->ptycon.hTaskIn, the
+ * same end of the  pipe the Prolog thread reads, so  the two would race
+ * for the terminal's input.  It therefore lives no longer than the
+ * clients that asked for it, which is safe because the Prolog thread is
+ * inside System() the whole time.
+ *
+ * The streams  are made by  Swin_open_handle() and so carry  the plain
+ * file  functions.   We  hand   them  a  control  function  that  adds
+ * SIO_[GET|REL]WINPSEUDOCONSOLE  and passes  everything  else on.   It
+ * receives the stream's handle, an fd, hence the registry below.
+ */
+
+typedef struct pty_client
+{ int		     fd;		/* fd of the client stream */
+  RlcData	     data;		/* terminal it belongs to */
+  struct pty_client *next;
+} pty_client;
+
+static pty_client   *pty_clients;
+static IOFUNCTIONS   pty_functions;	/* file functions + our control */
+static IOFUNCTIONS  *pty_saved_functions;
+
+static RlcData
+pty_client_data(void *handle)
+{ for(pty_client *c = pty_clients; c; c = c->next)
+  { if ( c->fd == (int)(intptr_t)handle )
+      return c->data;
+  }
+
+  return NULL;
+}
+
+/**
+ * Claim the pseudo console, creating it if we are the first.
+ */
+
+static int
+claim_pseudo_console(RlcData b, HANDLE *hpc)
+{ if ( !b->ptycon.hPC )
+  { COORD size = { b->width, b->window_size };	/* the visible window */
+
+    if ( CreatePseudoConsole(size, b->ptycon.hTaskIn, b->ptycon.hTaskOut,
+			     0, &b->ptycon.hPC) != S_OK )
+    { Cprintf("Failed to create PtyCon for a client\n");
+      return -1;
+    }
+    b->ptycon.hPC_ours = true;
+  }
+
+  b->ptycon.hPC_refs++;
+  *hpc = b->ptycon.hPC;
+  DEBUG(NAME_term, Cprintf("Claimed PtyCon of %s (%d refs)\n",
+			   pp(b->object), b->ptycon.hPC_refs));
+
+  return 0;
+}
+
+/**
+ * End of a console session.
+ *
+ * A real console owns the screen buffer the application draws on: when
+ * the application goes away the buffer dies with it and the one
+ * underneath comes back, which is why `less' leaves a Windows console
+ * as it found it without sending anything.  A pseudo console does not
+ * do that for us, and once it is closed there is nobody left to send
+ * the sequences either, so the terminal sends them to itself.
+ *
+ * Everything here is a no-op unless the client changed it, and it goes
+ * through the Prolog thread's own output stream rather than through the
+ * screen model: the model belongs to the thread that reads the pipe.
+ */
+
+static void
+end_console_session(RlcData b)
+{ static const char *reset =
+    S_ESC"[?25h"			/* caret visible */
+    S_ESC"[0m"				/* default attributes */
+    S_ESC"[r"				/* the whole screen scrolls */
+    S_ESC"[?1l"				/* normal cursor keys */
+    S_ESC"[?9l"S_ESC"[?1000l"		/* no mouse reports */
+    S_ESC"[?1002l"S_ESC"[?1003l"
+    S_ESC"[?2004l"			/* no bracketed paste */
+    S_ESC"[?1049l";			/* the normal screen, and last of all: it
+					   brings the caret back with it, and
+					   DECSTBM above homes the caret */
+  IOSTREAM *out = b->ptycon.pl_streams[1];
+
+  if ( out )
+  { Sfputs(reset, out);
+    Sflush(out);
+  }
+}
+
+static int
+release_pseudo_console(RlcData b)
+{ if ( b->ptycon.hPC_refs > 0 && --b->ptycon.hPC_refs == 0 &&
+       b->ptycon.hPC_ours )
+  { ClosePseudoConsole(b->ptycon.hPC);	/* give the pipe back to Prolog */
+    b->ptycon.hPC = NULL;
+    b->ptycon.hPC_ours = false;
+    DEBUG(NAME_term, Cprintf("Closed PtyCon of %s\n", pp(b->object)));
+    end_console_session(b);		/* ... and the screen with it */
+  }
+
+  return 0;
+}
+
+static int
+pty_control(void *handle, int action, void *arg)
+{ RlcData b;
+
+  switch(action)
+  { case SIO_GETWINPSEUDOCONSOLE:
+      if ( (b=pty_client_data(handle)) )
+	return claim_pseudo_console(b, arg);
+      return -1;
+    case SIO_RELWINPSEUDOCONSOLE:
+      if ( (b=pty_client_data(handle)) )
+	return release_pseudo_console(b);
+      return -1;
+    default:
+      if ( pty_saved_functions->control )
+	return (*pty_saved_functions->control)(handle, action, arg);
+      return -1;
+  }
+}
+
+static void
+register_client_stream(RlcData b, IOSTREAM *s)
+{ int fd = Sfileno(s);
+  pty_client *c;
+
+  if ( fd < 0 || !(c=rlc_malloc(sizeof(*c))) )
+    return;
+
+  if ( !pty_saved_functions )
+  { pty_saved_functions = s->functions;
+    pty_functions	= *s->functions;
+    pty_functions.control = pty_control;
+  }
+  s->functions = &pty_functions;
+
+  c->fd	     = fd;
+  c->data    = b;
+  c->next    = pty_clients;
+  pty_clients = c;
+}
+
+static void
+register_client_streams(RlcData b, IOSTREAM *i, IOSTREAM *o, IOSTREAM *e)
+{ register_client_stream(b, i);
+  register_client_stream(b, o);
+  register_client_stream(b, e);
+}
+
+static void
+unregister_client_streams(RlcData b)
+{ pty_client **p = &pty_clients;
+
+  while(*p)
+  { pty_client *c = *p;
+
+    if ( c->data == b )
+    { *p = c->next;
+      rlc_free(c);
+    } else
+      p = &c->next;
+  }
 }
 
 /**
@@ -4988,6 +11500,7 @@ getPrologStreamTerminalImage(Any obj,
 	b->ptycon.pl_streams[0] = i;
 	b->ptycon.pl_streams[1] = o;
 	b->ptycon.pl_streams[2] = e;
+	register_client_streams(b, i, o, e);
 
 	*in = i; *out = o; *err = e;
 	return true;
@@ -5025,8 +11538,11 @@ rlc_close_connection(RlcData b)
   }
   if ( (h=b->ptycon.hPC) )
   { b->ptycon.hPC = NULL;
+    b->ptycon.hPC_refs = 0;
+    b->ptycon.hPC_ours = false;
     ClosePseudoConsole(h);
   }
+  unregister_client_streams(b);
   closeHandlePtr(&b->ptycon.hIn);
   closeHandlePtr(&b->ptycon.hOut);
   closeHandlePtr(&b->ptycon.hTaskIn);
@@ -5047,6 +11563,63 @@ rlc_send(RlcData b, const char *buffer, size_t count)
   { Cprintf("%s: nowhere to send data\n", pp(b->object));
     return -1;
   }
+}
+
+/**
+ * A pseudo console has no foreground process group to ask about, and no
+ * process id to report either: the console is made here, but the process
+ * put on it is created by whoever claimed it.  What we do know is that
+ * somebody holds the console, which is what the keyboard has to go by.
+ */
+
+static int
+rlc_foreground_process(RlcData b)
+{ (void)b;
+  return 0;			/* no pid to give; see <-foreground_process */
+}
+
+/* Without a pid there is nobody to ask about, and Windows has no
+ * supported way to read another process' directory anyway.  Here OSC 7
+ * or OSC 9;9 is the only route; see <-working_directory.
+ */
+
+static bool
+rlc_foreground_directory(RlcData b, char *buf, size_t size)
+{ (void)b;
+  (void)buf;
+  (void)size;
+
+  return false;
+}
+
+static bool
+rlc_client_owns_terminal(RlcData b)
+{ return b->ptycon.hPC_refs > 0;
+}
+
+/* The echo belongs to the console mode of the client that attached to
+ * the pseudo console.  We hold no handle on it.
+ */
+
+static int
+rlc_tty_echo(RlcData b)
+{ (void)b;
+  return -1;
+}
+
+/* The console turns this into a Ctrl+C for whatever runs on it, the same
+ * way the line discipline raises SIGINT on POSIX.
+ */
+
+static int
+rlc_interrupt_char(RlcData b)
+{ return rlc_client_owns_terminal(b) ? 3 : -1;
+}
+
+static int
+rlc_suspend_char(RlcData b)
+{ (void)b;
+  return -1;
 }
 
 status
@@ -5079,7 +11652,7 @@ launchTerminalImage(TerminalImage ti, CharArray cmdline)
   SIZE_T attrSize = 0;
 
   if ( !b->ptycon.hPC &&
-       !rlc_open_pty_pair(b, 80, 25) )
+       !rlc_open_pty_pair(b) )
     fail;
 
   InitializeProcThreadAttributeList(NULL, 1, 0, &attrSize);
@@ -5172,10 +11745,17 @@ Dprint_chr(int chr)
     Cprintf("\\\\u%04x", chr);
 }
 
+/* Report a sequence we parsed but do not act on.  A terminal is
+   expected to ignore what it does not know, quietly: the stream
+   belongs to the application, and writing our own notes into it
+   corrupts the screen we are trying to paint.
+*/
+
 static void
 Dprint_csi(RlcData b, int chr)
-{ Cprintf("Unknown ANSI CSI: \\\\e[");
-  for(int i=0; i<b->argc; i++)
-    Cprintf("%s%d", i==0?"":";", b->argv[i]);
-  Cprintf("%c\n", chr);
+{ DEBUG(NAME_term,
+	Cprintf("Unknown ANSI CSI: \\\\e[");
+	for(int i=0; i<b->argc; i++)
+	  Cprintf("%s%d", i==0?"":";", b->argv[i]);
+	Cprintf("%c\n", chr));
 }

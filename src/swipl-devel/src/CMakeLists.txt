@@ -91,6 +91,7 @@ set(SRC_CORE pl-atom.c pl-wam.c pl-arith.c pl-bag.c pl-error.c
     pl-copyterm.c pl-debug.c pl-cont.c pl-ressymbol.c pl-dict.c
     pl-trie.c pl-indirect.c pl-tabling.c pl-rsort.c pl-mutex.c
     pl-allocpool.c pl-wrap.c pl-event.c pl-transaction.c
+    pl-bisim.c
     pl-undo.c pl-alloc.c pl-index.c pl-fli.c pl-coverage.c)
 
 set(LIBSWIPL_SRC
@@ -124,7 +125,7 @@ set(SWIPL_DATA_DIRS
     library/dialect library/dialect/swi library/dialect/eclipse
     library/dialect/hprolog library/dialect/iso
     library/dialect/yap library/theme library/iri_scheme
-    demo cmake app)
+    demo cmake app customize)
 
 if(HAVE_CLIB)
   list(APPEND SWIPL_DATA_DIRS
@@ -164,7 +165,7 @@ set(SWIPL_DATA_library explain.pl sort.pl prolog_config.pl
     charsio.pl portray_text.pl csv.pl persistency.pl fastrw.pl
     coinduction.pl ansi_term.pl base32.pl prolog_history.pl
     optparse.pl arithmetic.pl writef.pl predicate_options.pl
-    random.pl prolog_breakpoints.pl prolog_autoload.pl
+    random.pl random_terms.pl prolog_breakpoints.pl prolog_autoload.pl
     prolog_colour.pl varnumbers.pl codesio.pl prolog_codewalk.pl
     prolog_metainference.pl quasi_quotations.pl
     sandbox.pl prolog_format.pl check_installation.pl
@@ -239,6 +240,7 @@ set(SWIPL_DATA_library_dialect_xsb README.md source.pl basics.pl machine.pl
     curr_sym.pl error_handler.pl lists.pl standard.pl gpp.pl gensym.pl)
 set(SWIPL_DATA_library_build tools.pl conan.pl cmake.pl make.pl)
 set(SWIPL_DATA_demo likes.pl README.md)
+set(SWIPL_DATA_customize edit init.pl README.md)
 set(SWIPL_DATA_cmake swipl.cmake)
 set(SWIPL_DATA_app app.pl qlf.pl README.md)
 if(HAVE_CLIB)
@@ -495,6 +497,7 @@ endif()
 # build swipl
 add_executable(swipl${PGO_SUFFIX} ${SWIPL_SRC})
 target_link_libraries(swipl${PGO_SUFFIX} ${SWIPL_LIBRARIES} libswipl${PGO_SUFFIX})
+add_dsym(swipl${PGO_SUFFIX})
 if(MINGW)
   target_link_options(swipl${PGO_SUFFIX} PRIVATE -municode)
 endif()
@@ -535,6 +538,10 @@ if(SWIPL_SHARED_LIB AND NOT EMSCRIPTEN AND NOT STATIC_EXTENSIONS)
   set(LIBSWIPL_TYPE SHARED)
 else()
   set(LIBSWIPL_TYPE STATIC)
+endif()
+
+if(HAVE_CRMATH)
+include(crmath)
 endif()
 
 # Create an OBJECT library so we can build both a static and dynamic
@@ -610,6 +617,8 @@ endfunction()
 
 add_library(libswipl${PGO_SUFFIX} ${LIBSWIPL_TYPE} $<TARGET_OBJECTS:swiplobjs${PGO_SUFFIX}>)
 libswipl_properties(libswipl${PGO_SUFFIX} swipl${PGO_SUFFIX})
+add_dsym(libswipl${PGO_SUFFIX})		# after libswipl_properties: it
+					# sets FRAMEWORK, which we skip
 target_runtime_dependencies(libswipl)
 
 ###################################################################################
@@ -709,7 +718,14 @@ add_custom_target(
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Create TAGS file for main sources")
 
-# Build the MacOS icon file
+# Provide the MacOS icon file.
+#
+# swipl.icns is a committed, prebuilt asset (desktop/swipl.icns) derived from
+# desktop/swipl-256.png.  We copy it into the build tree rather than generating
+# it here, because iconutil (used by make_icns.sh) cannot run in restricted
+# environments (e.g. sandbox-exec / CI) and is macOS-only.  The icon changes
+# only when the source PNG does; regenerate it with the `regenerate_icns`
+# target below (macOS, outside any sandbox) and commit the result.
 if(EPILOG AND APPLE)
   set(desktop ${CMAKE_SOURCE_DIR}/desktop)
 
@@ -717,14 +733,24 @@ if(EPILOG AND APPLE)
 
   add_custom_command(
     OUTPUT ${ICNS_FILE}
-    COMMAND sh ${desktop}/make_icns.sh ${desktop}/swipl-256.png ${ICNS_FILE}
-    DEPENDS ${desktop}/make_icns.sh ${desktop}/swipl-256.png
-    COMMENT "Create MacOS icons"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${desktop}/swipl.icns ${ICNS_FILE}
+    DEPENDS ${desktop}/swipl.icns
+    COMMENT "Copy MacOS icon (prebuilt desktop/swipl.icns)"
     VERBATIM
   )
 
   add_custom_target(generate_icns ALL DEPENDS ${ICNS_FILE})
   add_dependencies(${EPILOG_APP} generate_icns)
+
+  # Manual, opt-in regeneration of the committed icon from the source PNG.
+  # Not part of ALL: it requires iconutil and must run outside a sandbox.
+  add_custom_target(regenerate_icns
+    COMMAND sh ${desktop}/make_icns.sh ${desktop}/swipl-256.png ${desktop}/swipl.icns
+    DEPENDS ${desktop}/make_icns.sh ${desktop}/swipl-256.png
+    COMMENT "Regenerate committed desktop/swipl.icns from swipl-256.png (macOS, no sandbox)"
+    VERBATIM
+  )
 
   if(BUILD_MACOS_BUNDLE)
     install(FILES ${ICNS_FILE} DESTINATION ${SWIPL_INSTALL_RESOURCES})

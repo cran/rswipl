@@ -274,11 +274,21 @@ static int
 write_pcre(IOSTREAM *s, atom_t symbol, int flags)
 { (void)flags; /* unused arg */
   const re_data *re = PL_blob_data(symbol, NULL, NULL);
+  const wchar_t *pattern;
+  size_t len;
+  int rc;
+
   /* For blob details: re_portray_() - re_portray/2 */
+  /* The pattern is written as a quoted atom rather than /pattern/ so
+     that the whole blob is acceptable to read_term/2,3 using blob(dead).
+     A pattern containing ')' or a quote made the old form unparsable.
+  */
   PL_STRINGS_MARK();
-  SfprintfX(s, "<regex>(%p, /%Ws/)", re, PL_atom_wchars(re->pattern, NULL));
+  rc = ( (pattern=PL_atom_wchars(re->pattern, &len)) &&
+	 SfprintfX(s, "<regex>(%p, %.*WAs)", re, (int)len, pattern) >= 0 );
   PL_STRINGS_RELEASE();
-  return TRUE;
+
+  return rc;
 }
 
 
@@ -1792,7 +1802,8 @@ re_foldl_(term_t regex, term_t on,
 
 install_t
 install_pcre4pl(void)
-{ FUNCTOR_pair2 = PL_new_functor(PL_new_atom("-"), 2);
+{ PL_register_blob_type(&pcre2_blob);
+  FUNCTOR_pair2 = PL_new_functor(PL_new_atom("-"), 2);
 
   PL_register_foreign("re_config_",   1, re_config_,   0);
   PL_register_foreign("re_compile",   3, re_compile_,  0);

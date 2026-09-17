@@ -129,6 +129,7 @@ scope('C.frame', basic).
 scope('C.function', basic).
 scope('C.gesture', basic).
 scope('C.get_method', basic).
+scope('C.gradient', basic).
 scope('C.graphical', basic).
 scope('C.grbox', basic).
 scope('C.handle', basic).
@@ -1430,6 +1431,9 @@ scope('M.gesture.S.terminate', basic_programming).
 scope('M.gesture.S.verify', basic_programming).
 scope('M.get_method.G.get', advanced_programming).
 scope('M.get_method.S.initialise', advanced_programming).
+scope('M.gradient.S.initialise', basic).
+scope('M.gradient.S.add_stop', basic).
+scope('M.gradient.S.stops', advanced).
 scope('M.graphical.G.above', advanced_programming).
 scope('M.graphical.G.absolute_area', advanced).
 scope('M.graphical.G.absolute_position', obscure).
@@ -3487,9 +3491,11 @@ scope('R.terminal_image.ansi_colours', advanced).
 scope('R.terminal_image.auto_copy', advanced).
 scope('R.terminal_image.background', advanced).
 scope('R.terminal_image.bold_font', advanced).
+scope('R.terminal_image.bold_italic_font', advanced).
 scope('R.terminal_image.colour', advanced).
 scope('R.terminal_image.cursor', advanced).
 scope('R.terminal_image.font', advanced).
+scope('R.terminal_image.italic_font', advanced).
 scope('R.terminal_image.link_armed_style', advanced).
 scope('R.terminal_image.link_cursor', advanced).
 scope('R.terminal_image.link_style', advanced).
@@ -4444,6 +4450,12 @@ scope('V.get_method.return_type', advanced_programming).
 scope('V.get_method.source', advanced).
 scope('V.get_method.summary', advanced).
 scope('V.get_method.types', advanced).
+scope('V.gradient.kind', advanced).
+scope('V.gradient.p0', advanced).
+scope('V.gradient.p1', advanced).
+scope('V.gradient.r0', advanced).
+scope('V.gradient.r1', advanced).
+scope('V.gradient.stops', advanced).
 scope('V.graphical.active', advanced_programming).
 scope('V.graphical.area', internal).
 scope('V.graphical.colour', obscure).
@@ -5592,6 +5604,7 @@ scope('V.terminal_image.armed_link', advanced).
 scope('V.terminal_image.background', advanced).
 scope('V.terminal_image.bindings', advanced).
 scope('V.terminal_image.bold_font', advanced).
+scope('V.terminal_image.bold_italic_font', advanced).
 scope('V.terminal_image.colour', advanced).
 scope('V.terminal_image.connections', advanced).
 scope('V.terminal_image.cursor', advanced).
@@ -5599,6 +5612,7 @@ scope('V.terminal_image.data', internal).
 scope('V.terminal_image.device', advanced).
 scope('V.terminal_image.displayed', advanced).
 scope('V.terminal_image.font', advanced).
+scope('V.terminal_image.italic_font', advanced).
 scope('V.terminal_image.handles', advanced).
 scope('V.terminal_image.inverted', advanced).
 scope('V.terminal_image.layout_interface', advanced).

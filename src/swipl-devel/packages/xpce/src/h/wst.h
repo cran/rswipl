@@ -46,6 +46,7 @@
 #include <sdl/sdlfont.h>
 #include <sdl/sdlframe.h>
 #include <sdl/sdlmenu.h>
+#include <sdl/sdlmenubar.h>
 #include <sdl/sdlcursor.h>
 #include <sdl/sdltimer.h>
 #include <sdl/sdlstream.h>

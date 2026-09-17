@@ -3,7 +3,8 @@
     Author:        Jan Wielemaker and Anjo Anjewierden
     E-mail:        jan@swi-prolog.org
     WWW:           https://www.swi-prolog.org/projects/xpce/
-    Copyright (c)  1985-2002, University of Amsterdam
+    Copyright (c)  1985-2026, University of Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -250,8 +251,7 @@ draw_attribute(Gr, Att, Val) :->
     "Modify an attribute if ->has_attribute"::
     send(Gr, has_attribute, Att),
     get(Gr, draw_attribute, Att, OldVal),
-    send(OldVal, lock_object, @on),
-    (   catch(send(OldVal, equal, Val), _, fail)
+    (   send(OldVal, equal, Val)
     ->  true
     ;   get(Gr, window, Window),
         send(Window, open_undo_group),
@@ -263,6 +263,7 @@ draw_attribute(Gr, Att, Val) :->
     send(Gr, modified).
 draw_attribute(Gr, Att, Val) :<-
     "Just completeness"::
+    send(Gr, has_attribute, Att),
     get(Gr, Att, Val).
 
 
@@ -412,21 +413,6 @@ handle(0,   h/2, link, west).
 handle(w,   h/2, link, east).
 
 :- draw_end_shape.
-
-                 /*******************************
-                 *            METAFILE          *
-                 *******************************/
-
-:- draw_begin_shape(draw_metafile, win_metafile, "PceDraw Windows Metafile",
-                    [@draw_resizable_shape_recogniser]).
-
-handle(w/2, 0,   link, north).
-handle(w/2, h,   link, south).
-handle(0,   h/2, link, west).
-handle(w,   h/2, link, east).
-
-:- draw_end_shape.
-
 
                 /********************************
                 *            TEXT               *

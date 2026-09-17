@@ -1,9 +1,4 @@
-! XPCE 5.0 Class Variable defaults for colour and monochrome displays
-! Author: Jan Wielemaker, University of Amsterdam
-! Modified: Tue Dec  7 14:15:04 1999
-!	Added alias for symbol-font
-! Modified: Jan 6, 2005
-!	Use internationalised fonts
+! XPCE Class Variable defaults
 !
 ! See README.customise before changing this file.
 
@@ -20,18 +15,18 @@ font.system_fonts:	[ normal    := font(sans, normal, 12), \
 			  boldhuge  := font(sans, bold,   18), \
 			  fixed     := font(mono, normal, 14), \
 			  tt        := font(mono, normal, 14), \
-			  boldtt    := font(mono, bold,   14)  \
+			  boldtt    := font(mono, bold,   14), \
+			  itt       := font(mono, italic, 14), \
+			  bitt      := font(mono, italic, 14, bold)  \
 			]
-
-! This one is often slow on colour displays.  Prefer the beep then.
-
-*.visual_bell:		when(@colour_display, @off, @on)
 
 ! Set this to @on if you want searching in the editor to be case-sensitive
 ! by default.
 
 ! editor.exact_case:	@on
 
-! Finally, parse the user's defaults file.
-
-#include $PCEAPPDATA/Defaults
+! The per-user file, $PCEAPPDATA/Defaults, used to be pulled in here.
+! It is now read after this one by load_pce_defaults/0 in
+! boot/pce_principal.pl, so that a program can decline to read it with
+! the `xpce_defaults' Prolog flag.  It is still read last, so it still
+! wins over anything above.

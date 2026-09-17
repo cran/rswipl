@@ -34,6 +34,7 @@
 */
 
 :- module(pce_show_event, []).
+:- encoding(utf8).
 :- use_module(library(pce)).
 :- use_module(library(pce_toc)).
 :- autoload(library(pce_help_file)).
@@ -52,20 +53,22 @@ initialise(V, M) :->
     send(new(D, dialog), below, P),
     send(new(event_hierarchy_window), left, D),
     send(new(event_list), right, D),
-    send(new(D2, dialog), above, D),
-    send(D2, name, menu_bar_dialog),
-    send(V, fill_menu_bar),
     send(V, fill_dialog),
     send(V, fill_picture),
     send(V, keyboard_focus, P).
 
-fill_menu_bar(V) :->
-    get(V, member, menu_bar_dialog, D),
-    send(D, pen, 0),
-    send(D, gap, size(0, 5)),
-    send(D, append, new(MB, menu_bar)),
-    send(MB, append, new(Help, popup(help))),
-    send_list(Help, append,
+%       My menu goes on the bar of the window I am in -- see
+%       `pane_frame ->update_menu_bar'.  It used to be a bar of my own, in
+%       a dialog above my windows.
+
+menu_bar_key(_V, Key:name) :<-
+    "Every event viewer asks for the same menu bar"::
+    Key = event_viewer.
+
+fill_menu_bar(V, MD:tool_dialog) :->
+    "Put my menu on the bar of the window I am in"::
+    get(MD, popup, events, @on, Popup),
+    send_list(Popup, append,
               [ menu_item(about,
                           message(V, about)),
                 menu_item(help,
@@ -165,7 +168,7 @@ initialise(B) :->
 
 event(B, Ev:event) :->
     ignore(send_super(B, event, Ev)),
-    send(B?frame, append_event, Ev).
+    send(?(B, container, man_frame), append_event, Ev).
 
 :- pce_end_class(event_landing).
 
@@ -238,20 +241,46 @@ find(W, EvNode, Node) :-
 
 :- pce_begin_class(event_list, browser).
 
+variable(repeat, int := 1, get, "How often the event at the end arrived").
+
 initialise(EL) :->
     send_super(EL, initialise),
     send(EL, select_message,
-         message(EL?frame, show_event, @arg1?object)).
+         message(?(EL, container, man_frame), show_event, @arg1?object)).
+
+%       An event that repeats -- the run of `loc_move' a mouse dragged
+%       across the box makes -- counts up on the line it is already on
+%       rather than filling the list with copies of itself.  That line
+%       keeps the last of them, which is the one selecting it shows.
 
 append(EL, Ev:event) :->
+    "Add an event, or count it if it repeats the one at the end"::
     get(Ev, clone, Clone),
-    (   send(Clone, is_a, keyboard)
-    ->  get(Clone, key, Label)
-    ;   get(Clone, id, Label)
+    event_label(Clone, Label),
+    (   get(EL, members, Items),
+        get(Items, tail, DI),
+        get(DI, key, Label)
+    ->  get(EL, repeat, Repeat0),
+        Repeat is Repeat0+1,
+        send(EL, slot, repeat, Repeat),
+        send(DI, label, string('%s (%d×)', Label, Repeat)),
+        send(DI, object, Clone)
+    ;   send(EL, slot, repeat, 1),
+        send_super(EL, append, new(DI, dict_item(Label, @default, Clone)))
     ),
-    send_super(EL, append, new(DI, dict_item(Label, @default, Clone))),
     send(EL, normalise, DI),
     send(EL, selection, DI).
+
+%!  event_label(+Event, -Label) is det.
+%
+%   What the line is called.  A keystroke says which key it was; anything
+%   else says what kind of event it is.
+
+event_label(Ev, Label) :-
+    (   send(Ev, is_a, keyboard)
+    ->  get(Ev, key, Label)
+    ;   get(Ev, id, Label)
+    ).
 
 :- pce_end_class.
 

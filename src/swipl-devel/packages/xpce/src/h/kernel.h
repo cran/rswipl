@@ -964,8 +964,8 @@ typedef struct _classdecl
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
       NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE NOTE
 
-If you  add/delete slots, do  not forget to  change PCE_CLASS_SLOTS in
-pce-class.c
+If you  add/delete slots, do  not forget to  change CLASS_PCE_SLOTS in
+ker/class.c
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 NewClass(class)
@@ -986,6 +986,7 @@ NewClass(class)
   Sheet		features;		/* installed features */
   Int		no_created;		/* how many were created */
   Int		no_freed;		/* how many were freed */
+  Int		no_reachable;		/* reached by last ->_check */
   BoolObj	solid;			/* graphicals: OFF by default */
   Name		selection_style;	/* graphicals: feedback selected */
   Chain		handles;		/* graphicals only: connection pts */
@@ -1206,6 +1207,7 @@ NewClass(pce)
 
   Name		home;			/* Home directory */
   SourceSink	defaults;		/* Location to load defaults from */
+  SourceSink	user_defaults;		/* ... and the user's, or @nil */
   Directory	application_data;	/* User application data */
 
   Name		version;		/* Version number of PCE */
@@ -1562,17 +1564,23 @@ struct var_extension
 		*        INCREMENTAL GC		*
 		********************************/
 
+typedef intptr_t AnswerMark;		/* Mark to the answer stack */
 typedef struct to_cell *ToCell;		/* TemporaryObjectCell */
 
 struct to_cell
-{ ToCell	next;			/* Next of the stack */
+{ ToCell	above;			/* Towards the top, or NULL */
+  ToCell	next;			/* Next of the stack */
   Any		value;			/* Object there */
-  long		index;			/* Index of the mark */
+  AnswerMark	index;			/* Index of the mark */
 };
 
 GLOBAL int	deferredUnalloced;	/* # deferred unallocs in ->free */
 
-typedef intptr_t AnswerMark;
+typedef struct answer_table		/* object --> its cell on the AnswerStack */
+{ ToCell       *cells;			/* open addressing, linear probing */
+  size_t	size;			/* # slots (a power of 2) */
+  size_t	count;			/* # cells in the table */
+} answer_table;
 
 #define markAnswerStack(mark)	{(mark) = AnswerStack->index;}
 #define rewindAnswerStack(mark, obj) \

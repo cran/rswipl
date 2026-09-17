@@ -585,10 +585,8 @@ retry:
   { Word v;
 
     if ( !hasGlobalSpace(1) )
-    { int rc;
-
-      if ( (rc=ensureGlobalSpace(1, ALLOW_GC)) != true )
-	return raiseStackOverflow(rc);
+    { if ( !ensureGlobalSpace(1, ALLOW_GC) )
+	return false;
       goto retry;
     }
     v = gTop++;
@@ -1481,12 +1479,8 @@ cons_functorv(DECL_LD term_t h, functor_t fd, va_list args)
   } else
   { Word a, t;
 
-    if ( !hasGlobalSpace(1+arity) )
-    { int rc;
-
-      if ( (rc=ensureGlobalSpace(1+arity, ALLOW_GC)) != true )
-	return raiseStackOverflow(rc);
-    }
+    if ( !ensureGlobalSpace(1+arity, ALLOW_GC) )
+      return false;
 
     a = t = gTop;
     gTop += 1+arity;
@@ -1540,12 +1534,8 @@ PL_cons_functor_v(term_t h, functor_t fd, term_t a0)
   } else
   { Word t, a, ai;
 
-    if ( !hasGlobalSpace(1+arity) )
-    { int rc;
-
-      if ( (rc=ensureGlobalSpace(1+arity, ALLOW_GC)) != true )
-	return raiseStackOverflow(rc);
-    }
+    if ( !ensureGlobalSpace(1+arity, ALLOW_GC) )
+      return false;
 
     a = t = gTop;
     gTop += 1+arity;
@@ -1566,12 +1556,8 @@ bool
 PL_cons_list(DECL_LD term_t l, term_t head, term_t tail)
 { Word a;
 
-  if ( !hasGlobalSpace(3) )
-  { int rc;
-
-    if ( (rc=ensureGlobalSpace(3, ALLOW_GC)) != true )
-      return raiseStackOverflow(rc);
-  }
+  if ( !ensureGlobalSpace(3, ALLOW_GC) )
+    return false;
 
   a = gTop;
   gTop += 3;
@@ -1604,12 +1590,8 @@ PL_cons_list_v(term_t list, size_t count, term_t elems)
   if ( count > 0 )
   { Word p;
 
-    if ( !hasGlobalSpace(3*count) )
-    { int rc;
-
-      if ( (rc=ensureGlobalSpace(3*count, ALLOW_GC)) != true )
-	return raiseStackOverflow(rc);
-    }
+    if ( !ensureGlobalSpace(3*count, ALLOW_GC) )
+      return false;
 
     p = gTop;
     for( ; count-- > 0; p += 3, elems++ )
@@ -1646,6 +1628,25 @@ static const int type_map[8] = { PL_VARIABLE,
 				 -1		/* TAG_REFERENCE */
 			       };
 
+/* PL_get_term_value() reports the coarse Prolog type of a term and
+   fills the appropriate slot of the term_value_t union.  Numeric terms
+   are classified as follows:
+
+     PL_INT64   -- fits in int64_t; val->i is set
+     PL_INTEGER -- integer (bignum) that does not fit int64_t; val->f
+		   holds the float promotion
+     PL_RATIONAL -- non-integer rational; val->f holds the float promotion
+     PL_FLOAT   -- floating point; val->f is set
+
+   Returns 0 with a pending exception when the numeric value cannot be
+   promoted to a float (e.g. huge bignums such as 1<<10000 that overflow
+   double).  Non-numeric terms return PL_ATOM, PL_STRING, PL_TERM,
+   PL_VARIABLE, PL_NIL, PL_BLOB or PL_LIST_PAIR as appropriate.
+
+   This API is deprecated; new code should call the specific PL_get_*
+   accessor and PL_is_* type test needed.
+*/
+
 int /* PL_* type */
 PL_get_term_value(term_t t, term_value_t *val)
 { GET_LD
@@ -1656,9 +1657,27 @@ PL_get_term_value(term_t t, term_value_t *val)
   switch(rval)
   { case PL_VARIABLE:
       break;
-    case PL_INTEGER:
-      get_int64(w, &val->i);		/* TBD: Handle MPZ integers? */
+    case PL_INTEGER:				/* == isRational() */
+    { number n;
+
+      get_number(w, &n);
+      switch( n.type )
+      { case V_INTEGER:
+	{ val->i = n.value.i;
+	  return PL_INT64;
+	}
+	default:
+	{ numtype t0 = n.type;
+
+	  if ( promoteToFloatNumber(&n) )
+	  { val->f = n.value.f;
+	    return t0 == V_MPZ ? PL_INTEGER : PL_RATIONAL;
+	  }
+	  return 0;
+	}
+      }
       break;
+    }
     case PL_FLOAT:
       val->f = valFloat(w);
       break;
@@ -1703,11 +1722,21 @@ atom_to_bool(atom_t a)
 }
 
 
+API_STUB(bool)
+(PL_get_bool)(term_t t, int *b)
+( valid_term_t(t);
+  return PL_get_bool(t, b);
+)
+
+API_STUB(bool)
+(PL_get_stdbool)(term_t t, bool *b)
+( valid_term_t(t);
+  return PL_get_stdbool(t, b);
+)
+
 bool
-PL_get_bool(term_t t, int *b)
-{ GET_LD
-  valid_term_t(t);
-  word w = valHandle(t);
+PL_get_stdbool(DECL_LD term_t t, bool *b)
+{ word w = valHandle(t);
 
   if ( isAtom(w) )
   { int bv = atom_to_bool(word2atom(w));
@@ -1730,6 +1759,14 @@ PL_get_bool(term_t t, int *b)
   return false;
 }
 
+bool
+PL_get_bool(DECL_LD term_t t, int *b)
+{ bool stdb;
+  bool rc = PL_get_stdbool(t, &stdb);
+  if ( rc )
+    *b = stdb;
+  return rc;
+}
 
 /* PL_get_atom(DECL_LD term_t t, atom_t *a) moved to pl-fli.h */
 
@@ -2953,18 +2990,12 @@ bool
 PL_put_uint64(term_t t, uint64_t i)
 { GET_LD
   word w;
-  int rc;
   valid_user_term_t(t);
 
-  switch ( (rc=put_uint64(&w, i, ALLOW_GC)) )
-  { case true:
-      setHandle(t, w);
-      return true;
-    case LOCAL_OVERFLOW:
-      return PL_representation_error("uint64_t");
-    default:
-      return raiseStackOverflow(rc);
-  }
+  if ( !put_uint64(&w, i) )
+    return false;
+  setHandle(t, w);
+  return true;
 }
 
 
@@ -2978,14 +3009,11 @@ API_STUB(bool)
 bool
 _PL_put_number(DECL_LD term_t t, Number n)
 { word w;
-  int rc;
 
-  if ( (rc=put_number(&w, n, ALLOW_GC)) == true )
-  { setHandle(t, w);
-    return true;
-  } else
-  { return raiseStackOverflow(rc);
-  }
+  if ( !put_number(&w, n) )
+    return false;
+  setHandle(t, w);
+  return true;
 }
 
 
@@ -3003,15 +3031,12 @@ bool
 PL_put_float(term_t t, double f)
 { GET_LD
   word w;
-  int rc;
 
   valid_user_term_t(t);
-  if ( (rc=put_double(&w, f, ALLOW_GC)) == true )
-  { setHandle(t, w);
-    return true;
-  }
-
-  return raiseStackOverflow(rc);
+  if ( !put_double(&w, f) )
+    return false;
+  setHandle(t, w);
+  return true;
 }
 
 
@@ -3153,10 +3178,8 @@ PL_unify_compound(term_t t, functor_t f)
     word to;
 
     if ( !hasGlobalSpace(needed) )
-    { int rc;
-
-      if ( (rc=ensureGlobalSpace(needed, ALLOW_GC)) != true )
-	return raiseStackOverflow(rc);
+    { if ( !ensureGlobalSpace(needed, ALLOW_GC) )
+	return false;
       p = valHandleP(t);		/* reload: may have shifted */
       deRef(p);
     }
@@ -3189,10 +3212,8 @@ PL_unify_functor(DECL_LD term_t t, functor_t f)
     { size_t needed = (1+arity);
 
       if ( !hasGlobalSpace(needed) )
-      { int rc;
-
-	if ( (rc=ensureGlobalSpace(needed, ALLOW_GC)) != true )
-	  return raiseStackOverflow(rc);
+      { if ( !ensureGlobalSpace(needed, ALLOW_GC) )
+	  return false;
 	p = valHandleP(t);		/* reload: may have shifted */
 	deRef(p);
       }
@@ -3232,7 +3253,7 @@ PL_unify_atom_chars(term_t t, const char *chars)
 { GET_LD
   valid_term_t(t);
   atom_t a = lookupAtom(chars, strlen(chars));
-  int rval = PL_unify_atom(t, a);
+  bool rval = PL_unify_atom(t, a);
 
   PL_unregister_atom(a);
 
@@ -3245,7 +3266,7 @@ PL_unify_atom_nchars(term_t t, size_t len, const char *chars)
 { GET_LD
   valid_term_t(t);
   atom_t a = lookupAtom(chars, len);
-  int rval = PL_unify_atom(t, a);
+  bool rval = PL_unify_atom(t, a);
 
   PL_unregister_atom(a);
 
@@ -3440,18 +3461,11 @@ unify_int64_ex(DECL_LD term_t t, int64_t i, int ex)
   { if ( valInt(w) == i )
       return bindConst(p, w);
 
-    int rc;
-    if ( (rc=put_int64(&w, i, 0)) == true )
-    { p = valHandleP(t);
-      deRef(p);
-      return bindConst(p, w);
-#ifndef O_BIGNUM
-    } else if ( rc == LOCAL_OVERFLOW ) /* no bignums and doesn't fit */
-    { return PL_representation_error("int64");
-#endif
-    } else
-    { return raiseStackOverflow(rc);
-    }
+    if ( !put_int64(&w, i) )
+      return false;
+    p = valHandleP(t);
+    deRef(p);
+    return bindConst(p, w);
   }
 
   if ( w == *p && valInt(w) == i )
@@ -3487,16 +3501,10 @@ PL_unify_uint64(term_t t, uint64_t i)
   { return unify_int64_ex(t, i, true);
   } else if ( PL_is_variable(t) )
   { word w;
-    int rc;
 
-    switch ( (rc=put_uint64(&w, i, ALLOW_GC)) )
-    { case true:
-	return PL_unify_atomic(t, w);
-      case LOCAL_OVERFLOW:
-	return PL_representation_error("uint64_t");
-      default:
-	return raiseStackOverflow(rc);
-    }
+    if ( !put_uint64(&w, i) )
+      return false;
+    return PL_unify_atomic(t, w);
   } else
   { number n;
 
@@ -3566,14 +3574,12 @@ PL_unify_float(DECL_LD term_t t, double f)
   deRef(p);
   if ( canBind(*p) )
   { word w;
-    int rc = put_double(&w, f, ALLOW_GC);
 
-    if ( rc == true )
-    { p = valHandleP(t);
-      deRef(p);
-      return bindConst(p, w);
-    } else
-      return raiseStackOverflow(rc);
+    if ( !put_double(&w, f) )
+      return false;
+    p = valHandleP(t);
+    deRef(p);
+    return bindConst(p, w);
   }
 
   return isFloat(*p) && valFloat(*p) == f;
@@ -3648,10 +3654,8 @@ PL_unify_list(DECL_LD term_t l, term_t h, term_t t)
     word c;
 
     if ( !hasGlobalSpace(3) )
-    { int rc;
-
-      if ( (rc=ensureGlobalSpace(3, ALLOW_GC)) != true )
-	return raiseStackOverflow(rc);
+    { if ( !ensureGlobalSpace(3, ALLOW_GC) )
+	return false;
       p = valHandleP(l);		/* reload: may have shifted */
       deRef(p);
     }
@@ -4037,12 +4041,8 @@ _PL_unify_xpce_reference(term_t t, xpceref_t *ref)
   Word p;
 
   valid_term_t(t);
-  if ( !hasGlobalSpace(2) )
-  { int rc;
-
-    if ( (rc=ensureGlobalSpace(2, ALLOW_GC)) != true )
-      return raiseStackOverflow(rc);
-  }
+  if ( !ensureGlobalSpace(2, ALLOW_GC) )
+    return false;
 
   p = valHandleP(t);
 
@@ -4123,7 +4123,7 @@ PL_unify_blob(term_t t, void *blob, size_t len, PL_blob_t *type)
   int new;
   valid_term_t(t);
   atom_t a = lookupBlob(blob, len, type, &new);
-  int rval = PL_unify_atom(t, a);
+  bool rval = PL_unify_atom(t, a);
 
   PL_unregister_atom(a);
 
@@ -4196,7 +4196,8 @@ PL_free_blob(atom_t a)
 
   if ( ison(type, PL_BLOB_NOCOPY) && type->release && x->name )
   { if ( (*type->release)(a) )
-    { x->length = 0;
+    { PL_blob_gc_released(x);		/* the resource is gone: stop */
+      x->length = 0;			/* counting it towards the margin */
       x->name = NULL;
       return true;
     }
@@ -5347,6 +5348,27 @@ PL_prompt_next(IOSTREAM *in)
 }
 
 
+/* Does the prompt that comes next continue an input that was started
+ * earlier?  prompt1/1 names the prompt of a first line and is called
+ * once per query by the toplevel; PrologPrompt() hands it out once and
+ * everything after it gets the prompt of prompt/2, which is what a
+ * continuation is.
+ *
+ * A commandline editor that marks its prompts says which kind each one
+ * is, so that a terminal reading the marks can tell a term typed over
+ * several lines from several commands.  See OSC 133 `k=s'.
+ */
+
+bool
+PL_prompt_is_continuation(IOSTREAM *in)
+{ GET_LD
+
+  return ( in == Suser_input &&
+	   LD->prompt.first &&
+	   LD->prompt.first_used );
+}
+
+
 char *
 PL_prompt_string(IOSTREAM *in)
 { GET_LD
@@ -5394,7 +5416,7 @@ PL_dispatch_hook(PL_dispatch_hook_t hook)
 
 
 #if defined(HAVE_SELECT) && !defined(__WINDOWS__)
-#if defined(HAVE_POLL_H) && defined(HAVE_POLL)
+#if defined(HAVE_POLL)
 #include <poll.h>
 #elif defined(HAVE_SYS_SELECT_H)
 #include <sys/select.h>
@@ -5448,6 +5470,15 @@ input_on_stream(IOSTREAM *in)
 #endif
 
 
+/* The event dispatcher runs Prolog callbacks (menu items, key bindings,
+   ...) and such a callback may leave an exception behind.  Notably the
+   "Halt Prolog" item of an Epilog window raises unwind(halt(Status)) in
+   this very thread: with the SDL backend the events of the main thread
+   are dispatched from here, while it is waiting for input on the
+   terminal.  We must stop waiting and let the exception through rather
+   than dispatch on until the user happens to type something.
+*/
+
 bool
 PL_dispatch(IOSTREAM *in, int wait)
 { if ( wait == PL_DISPATCH_INSTALLED )
@@ -5459,10 +5490,12 @@ PL_dispatch(IOSTREAM *in, int wait)
       { if ( PL_handle_signals() < 0 )
 	  return false;
 	(*GD->foreign.dispatch_events)(in);
+	if ( PL_exception(0) )
+	  return false;
       }
     } else
     { (*GD->foreign.dispatch_events)(in);
-      if ( PL_handle_signals() < 0 )
+      if ( PL_handle_signals() < 0 || PL_exception(0) )
 	  return false;
     }
   }
@@ -5489,7 +5522,7 @@ PL_recorded(record_t r, term_t t)
 { GET_LD
 
   valid_term_t(t);
-  return copyRecordToGlobal(t, r, ALLOW_GC) == true;
+  return copyRecordToGlobal(t, r, ALLOW_GC);
 }
 
 

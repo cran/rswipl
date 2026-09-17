@@ -42,6 +42,7 @@
 #include "pl-pro.h"
 #include "pl-read.h"
 #include "os/pl-ctype.h"
+#include "os/pl-utf8.h"
 #undef LD
 #define LD LOCAL_LD
 
@@ -211,6 +212,95 @@ static int	tracking(const Atom a);
 IOSTREAM *atomLogFd = 0;
 #endif
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Per blob type accounting.  A type may declare a `gc_margin', in which case
+we track how much of it has no registrations, in the same places where we
+track GD->atoms.unregistered.  The unit is the blob's length: for text and
+for copied blobs that is its size in bytes, and for PL_BLOB_NOCOPY it is
+whatever the type passed to PL_unify_blob(), which is free to describe the
+resource the blob keeps alive.  A type that cares about the number of live
+instances rather than their size passes 1.
+
+Types that declare no margin are not accounted at all, so nothing changes
+for them.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+/* gc_margin and the two counters were carved out of PL_blob_t's unused
+   reserved[8].  The struct must not have changed size: extensions define
+   their type statically and are not recompiled.
+*/
+static_assert(sizeof(((PL_blob_t*)0)->reserved) + 5*sizeof(size_t) ==
+	      8*sizeof(void*),
+	      "PL_blob_t layout changed; this breaks the foreign ABI");
+
+/* Subtract, without letting the counter wrap.  The length of a blob can
+   change under us: PL_free_blob() sets it to zero.
+*/
+
+static inline void
+sub_size(size_t *cnt, size_t units)
+{ size_t old, new;
+
+  do
+  { old = *cnt;
+    new = old > units ? old-units : 0;
+  } while( !COMPARE_AND_SWAP_SIZE(cnt, old, new) );
+}
+
+
+/* How many blobs of this type exist and how much they hold.  Tracked for
+   every type: answering this from current_blob/2 costs a scan of the whole
+   atom array.
+*/
+
+static inline void
+add_type_live(Atom a)
+{ ATOMIC_INC(&a->type->live);
+  ATOMIC_ADD(&a->type->space, a->length);
+}
+
+
+static inline void
+del_type_live(Atom a)
+{ ATOMIC_DEC(&a->type->live);
+  sub_size(&a->type->space, a->length);
+}
+
+
+static inline void
+add_type_units(Atom a)
+{ PL_blob_t *type = a->type;
+
+  if ( type->gc_margin )
+    ATOMIC_ADD(&type->unregistered, a->length);
+}
+
+/* The length may change under us: PL_free_blob() sets it to zero.  Any
+   drift is corrected by collectAtoms(), which recomputes from scratch, but
+   we must not let the counter wrap.
+*/
+
+static inline void
+del_type_units(Atom a)
+{ PL_blob_t *type = a->type;
+
+  if ( type->gc_margin )
+    sub_size(&type->unregistered, a->length);
+}
+
+
+/* PL_free_blob() dropped the resource while the blob may still be counted
+   as a candidate.  Called before the length is cleared.
+*/
+
+void
+PL_blob_gc_released(Atom a)
+{ if ( ATOM_REF_COUNT(a->references) == 0 )
+    del_type_units(a);
+  sub_size(&a->type->space, a->length);
+}
+
+
 static inline int
 bump_atom_references(Atom a, unsigned int ref)
 { for(;;)
@@ -221,7 +311,9 @@ bump_atom_references(Atom a, unsigned int ref)
 
     if ( COMPARE_AND_SWAP_UINT(&a->references, ref, nref) )
     { if ( ATOM_REF_COUNT(ref) == 0 )
-	ATOMIC_DEC(&GD->atoms.unregistered);
+      { ATOMIC_DEC(&GD->atoms.unregistered);
+	del_type_units(a);
+      }
       return true;
     } else
     { ref = a->references;
@@ -247,6 +339,246 @@ static PL_blob_t unregistered_blob_atom =
   PL_BLOB_NOCOPY|PL_BLOB_TEXT,
   "unregistered"
 };
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+The `unavailable' blob type holds a blob that has no foreign object: the
+result of reading <type>(...) with read_term/2,3 and blob(dead).  Its
+content is the source text, so that writing it reproduces the input.
+
+It is deliberately not PL_BLOB_TEXT (so atom/1 fails on it, as it does
+for the blob it stands for) and not PL_BLOB_UNIQUE (the pointer printed
+by a blob is not a stable identity: the atom garbage collector reuses
+addresses, so two blobs that write the same text are not necessarily the
+same object).  Because it is a type of its own, every typed accessor
+rejects it by comparing the type: no additional guards are needed.
+
+blob/2 reports the type name recorded in the text rather than
+`unavailable'.  See deadBlobType().
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static int
+write_unavailable(IOSTREAM *s, atom_t a, int flags)
+{ size_t len;
+  const char *text = PL_blob_data(a, &len, NULL);
+  const char *e = text+len;
+
+  (void)flags;
+  while ( text < e )			/* the text is UTF-8; emit code */
+  { int c;				/* points to respect the encoding */
+
+    text = utf8_get_char(text, &c);
+    if ( Sputcode(c, s) < 0 )
+      return false;
+  }
+
+  return true;
+}
+
+
+static int
+compare_unavailable(atom_t a, atom_t b)
+{ size_t la, lb;
+  const char *ta = PL_blob_data(a, &la, NULL);
+  const char *tb = PL_blob_data(b, &lb, NULL);
+  size_t l = la < lb ? la : lb;
+  int v;
+
+  if ( (v=memcmp(ta, tb, l)) != 0 )
+    return SCALAR_TO_CMP(v, 0);
+  if ( la != lb )
+    return SCALAR_TO_CMP(la, lb);
+
+  return SCALAR_TO_CMP(ta, tb);		/* distinct blobs, equal text */
+}
+
+
+static PL_blob_t unavailable_blob =
+{ PL_BLOB_MAGIC,
+  0,
+  "unavailable",
+  NULL,					/* release */
+  compare_unavailable,
+  write_unavailable
+};
+
+
+/* deadBlobType() returns the type name recorded in the text of a
+   dead blob, i.e. `stream' for "<stream>(0x55c1e0)".  Returns 0 if `a'
+   is not a dead blob.
+*/
+
+atom_t
+deadBlobType(atom_t a)
+{ size_t len;
+  PL_blob_t *type;
+  const char *text = PL_blob_data(a, &len, &type);
+  const char *e;
+
+  if ( type != &unavailable_blob || !text || len < 2 || text[0] != '<' )
+    return 0;
+  if ( !(e=memchr(text+1, '>', len-1)) )
+    return 0;
+
+  return PL_new_atom_mbchars(REP_UTF8, e-(text+1), text+1);
+}
+
+
+/* scanLiveBlobs() finds the blob that writes as `text'.  Candidates are
+   selected on their data pointer if `by_addr', else on their type name.
+   Returns a registered atom, or 0 if there is no match or more than one.
+   In the latter case *ambiguous is set to true.
+*/
+
+static atom_t
+scanLiveBlobs(atom_t type_name, void *addr, bool by_addr,
+	      const char *text, size_t len, bool *ambiguous)
+{ size_t index;
+  int i, last=false;
+  atom_t found = 0;
+
+  for(index=1, i=MSB(index); !last; i++)
+  { size_t upto = (size_t)2<<i;
+    size_t high = GD->atoms.highest;
+    Atom b = GD->atoms.array.blocks[i];
+
+    if ( upto >= high )
+    { upto = high;
+      last = true;
+    }
+
+    for(; index<upto; index++)
+    { Atom atom = b + index;
+      unsigned int refs = atom->references;
+      PL_blob_t *btype = atom->type;
+      IOSTREAM *s;
+      char *out = NULL;			/* Sopenmem() writes through both */
+      size_t outlen = 0;
+      bool eq;
+
+      if ( !(ATOM_IS_VALID(refs) && btype && btype->write &&
+	     atom->name &&			/* PL_free_blob() was called */
+	     ( by_addr ? (void*)atom->name == addr
+		       : type_name == btype->atom_name ) &&
+	     atom->atom != ATOM_garbage_collected &&
+	     bump_atom_references(atom, refs)) )
+	continue;
+
+      if ( !(s=Sopenmem(&out, &outlen, "w")) )
+      { PL_unregister_atom(atom->atom);
+	return found;
+      }
+      s->encoding = ENC_UTF8;
+      eq = (*btype->write)(s, atom->atom, PL_WRT_QUOTED);
+      eq = ( Sclose(s) == 0 && eq &&
+	     outlen == len &&
+	     memcmp(out, text, len) == 0 );
+      Sfree(out);
+
+      if ( !eq )
+      { PL_unregister_atom(atom->atom);
+	continue;
+      }
+
+      if ( found )			/* ambiguous: refuse to guess */
+      { PL_unregister_atom(atom->atom);
+	PL_unregister_atom(found);
+	if ( ambiguous )
+	  *ambiguous = true;
+	return 0;
+      }
+      found = atom->atom;		/* keep the reference */
+    }
+  }
+
+  return found;
+}
+
+
+/* blob_address() is true if the first argument of `<type>(Arg, ...)' is
+   a pointer, e.g., <clause>(0x63c0850).  See the `%p' of Svfprintf().
+*/
+
+static bool
+blob_address(const char *text, size_t len, void **addrp)
+{ const char *e = &text[len];
+  const char *s = memchr(text, '(', len);
+  const char *d;
+  uintptr_t addr = 0;
+
+  if ( !s || e-s < 4 || s[1] != '0' || s[2] != 'x' )
+    return false;
+
+  for(d=s+3; d<e; d++)
+  { int c = *d;
+
+    if ( c >= '0' && c <= '9' )
+      addr = addr<<4 | (c-'0');
+    else if ( c >= 'a' && c <= 'f' )
+      addr = addr<<4 | (c-'a'+10);
+    else
+      break;
+  }
+
+  if ( d == s+3 || d == e || (*d != ',' && *d != ')') || addr == 0 )
+    return false;
+
+  *addrp = (void*)addr;
+  return true;
+}
+
+
+/* lookupLiveBlob() finds the blob of type `type_name' that writes as
+   `text'.  Returns a registered atom, or 0 if there is no match or more
+   than one.  Used for read_term/2,3 with blob(resolve).
+
+   Most write() functions print the blob data using `%p', which allows us
+   to find the candidate without writing every blob in the atom table.
+   That is not just faster: a write() may need a lock, e.g., the Python
+   GIL for library(janus).  If the first argument is not the blob data we
+   fall back to comparing the text of all blobs of this type.
+
+   Note that the printed form is not an identity: after atom garbage
+   collection an address can be reused by another blob of the same type.
+   Resolving is therefore best-effort and only enabled where the input is
+   trusted, i.e. the toplevel.
+*/
+
+static atom_t
+lookupLiveBlob(atom_t type_name, const char *text, size_t len)
+{ void *addr;
+
+  if ( blob_address(text, len, &addr) )
+  { bool ambiguous = false;
+    atom_t found = scanLiveBlobs(0, addr, true, text, len, &ambiguous);
+
+    if ( found || ambiguous )
+      return found;
+  }
+
+  return scanLiveBlobs(type_name, NULL, false, text, len, NULL);
+}
+
+
+/* newDeadBlob() creates the blob for read_term/2,3 reading
+   <type>(...).  If `resolve', first look for a live blob that writes as
+   this text.  Returns a registered atom or 0.
+*/
+
+atom_t
+newDeadBlob(atom_t type_name, const char *text, size_t len, bool resolve)
+{ GET_LD
+  int new;
+
+  if ( resolve )
+  { atom_t live;
+
+    if ( (live=lookupLiveBlob(type_name, text, len)) )
+      return live;
+  }
+
+  return lookupBlob(text, len, &unavailable_blob, &new);
+}
 
 
 void
@@ -647,6 +979,7 @@ redo:
   release_atom_table();
   release_atom_bucket();
 
+  add_type_live(a);
   if ( ATOMIC_INC(&GD->statistics.atoms) % 128 == 0 )
     considerAGC();
 
@@ -884,6 +1217,8 @@ invalidateAtom(Atom a, unsigned int ref)
     }
   }
 
+  del_type_live(a);
+
   if ( isoff(a->type, PL_BLOB_NOCOPY) )
   { size_t slen = a->length + a->type->padding;
     ATOMIC_SUB(&GD->statistics.atom_string_space, slen);
@@ -946,6 +1281,10 @@ collectAtoms(void)
   size_t index;
   int i, last=false;
   Atom temp, next, prev = NULL;	 /* = NULL to keep compiler happy */
+  PL_blob_t *type;
+
+  for(type = GD->atoms.types; type; type = type->next)
+    type->unregistered = 0;	/* recomputed by the scan below */
 
   for(index=GD->atoms.builtin, i=MSB(index); !last; i++)
   { size_t upto = (size_t)2<<i;
@@ -970,7 +1309,9 @@ collectAtoms(void)
       } else
       {	ATOMIC_AND(&a->references, ~ATOM_MARKED_REFERENCE);
         if ( ATOM_REF_COUNT(ref) == 0 )
-	  unregistered++;
+	{ unregistered++;
+	  add_type_units(a);
+	}
       }
     }
   }
@@ -1003,6 +1344,8 @@ collectAtoms(void)
   maybe_free_atom_tables();
 
   GD->atoms.unregistered = GD->atoms.non_garbage = unregistered;
+  for(type = GD->atoms.types; type; type = type->next)
+    type->non_garbage = type->unregistered;
 
   return reclaimed;
 }
@@ -1084,6 +1427,50 @@ PL_agc_hook(PL_agc_hook_t new)
 }
 
 
+/* A type that declared a gc_margin gets its own budget.  Same shape as the
+   global rule, so that a type whose blobs turn out to be *live* stops
+   asking: non_garbage grows at the next sweep and absorbs them.
+*/
+
+static void
+considerAGCType(const PL_blob_t *type)
+{ if ( GD->atoms.margin != 0 &&		/* agc_margin 0 disables all AGC */
+       type->gc_margin != 0 &&
+       type->unregistered >= type->non_garbage + type->gc_margin )
+  { DEBUG(MSG_AGC_CONSIDER,
+	  Sdprintf("Signal AGC for <%s>.  Unregistered %zd, non-garbage %zd, "
+		   "margin %zd\n", type->name, type->unregistered,
+		   type->non_garbage, type->gc_margin));
+    signalGCThread(SIG_ATOM_GC);
+  }
+}
+
+
+/* Is a collection wanted?  Used to re-test when the request is picked up,
+   as time has passed since it was raised.  Must agree with considerAGC()
+   and considerAGCType() or a raised request is dropped on the floor.
+*/
+
+bool
+AGC_wanted(void)
+{ PL_blob_t *type;
+
+  if ( GD->atoms.margin == 0 )		/* AGC disabled */
+    return false;
+
+  if ( GD->atoms.unregistered >= GD->atoms.non_garbage + GD->atoms.margin )
+    return true;
+
+  for(type = GD->atoms.types; type; type = type->next)
+  { if ( type->gc_margin != 0 &&
+	 type->unregistered >= type->non_garbage + type->gc_margin )
+      return true;
+  }
+
+  return false;
+}
+
+
 static void
 considerAGC(void)
 { if ( GD->atoms.margin != 0 &&
@@ -1129,7 +1516,9 @@ register_atom(volatile Atom p)
     if ( ATOM_REF_COUNT(nref) != 0 )
     { if ( COMPARE_AND_SWAP_UINT(&p->references, ref, nref) )
       { if ( ATOM_REF_COUNT(nref) == 1 )
-	  ATOMIC_DEC(&GD->atoms.unregistered);
+	{ ATOMIC_DEC(&GD->atoms.unregistered);
+	  del_type_units(p);
+	}
 	return nref;
       }
     } else
@@ -1205,9 +1594,28 @@ unregistering  in  LD->atoms.unregistered  and  mark    this  atom  from
 markAtomsOnStacks().
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+As soon as we drop the last reference to `p`, AGC may reclaim the atom.
+destroyAtom() then sets p->type to ATOM_TYPE_INVALID, a non-NULL invalid
+pointer.  Normally a running AGC is stopped from doing so because we
+publish the atom in LD->atoms.unregistering, which markAtomsOnStacks()
+marks for us.
+
+This protection does not work while a thread or engine is being cleaned
+up: freePrologThread() sets the thread status to PL_THREAD_EXITED and
+clears ld->magic before calling freePrologLocalData(), after which
+neither forThreadLocalDataUnsuspended() nor markAtomsOnStacks()
+considers this `ld` anymore.  As freePrologLocalData() drops the
+references to all atoms in e.g. the thread's tabling data, this is easy
+to hit.  Therefore we must not access `p` after dropping the last
+reference.  All we need is p->type, so we grab that up front.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
 static void
 unregister_atom(volatile Atom p)
 { unsigned int newref;
+  const PL_blob_t *type = p->type;	/* p may die once we drop the ref */
+  int dropped = false;			/* reached zero registrations */
 
   if ( unlikely(!ATOM_IS_VALID(p->references)) )
   { Sdprintf("OOPS: PL_unregister_atom('%s'): invalid atom\n", p->name);
@@ -1248,6 +1656,8 @@ unregister_atom(volatile Atom p)
         if ( HAS_LD )
 	  LD->atoms.unregistering = p->atom;
 	ATOMIC_INC(&GD->atoms.unregistered);
+	add_type_units(p);
+	dropped = true;
       }
     } while( !COMPARE_AND_SWAP_UINT(&p->references, oldref, newref) );
   }
@@ -1264,6 +1674,16 @@ unregister_atom(volatile Atom p)
     if ( buf )
       PL_free(buf);
     trap_gdb();
+  }
+
+/* This is where GD->atoms.unregistered grows, so this is where the margin
+   can be exceeded.  Without this, the condition is only ever tested when a
+   new atom is created (see lookupBlob()), and dropping the last reference
+   to a lot of atoms reclaims nothing until something else allocates.
+*/
+  if ( dropped )
+  { considerAGC();
+    considerAGCType(type);
   }
 }
 
@@ -1810,9 +2230,42 @@ static
 PRED_IMPL("blob", 2, blob, 0)
 { PRED_LD
   PL_blob_t *bt;
+  atom_t a;
 
   if ( PL_is_blob(A1, &bt) )
+  { if ( PL_get_atom(A1, &a) &&		/* dead blob: report the type it */
+	 (a=deadBlobType(a)) )	/* stands for, not `unavailable' */
+      return PL_unify_atom(A2, a);
+
     return PL_unify_atom(A2, bt->atom_name);
+  }
+
+  return false;
+}
+
+
+/** blob_released(@Term) is semidet
+
+True if Term is a blob whose data was released using PL_free_blob().
+Such a blob still exists as a term and keeps its type, but the object it
+referred to is gone, so every predicate that expects the real thing
+rejects it.
+
+Only blobs can be released; a text atom is reclaimed by the atom garbage
+collector as a whole and its name is valid for as long as it exists.  A
+NULL name therefore identifies a released blob on its own.
+*/
+
+static
+PRED_IMPL("blob_released", 1, blob_released, 0)
+{ PRED_LD
+  atom_t a;
+
+  if ( PL_get_atom(A1, &a) )
+  { Atom x = atomValue(a);
+
+    return !x->name;
+  }
 
   return false;
 }
@@ -2251,10 +2704,173 @@ atom_space(void)
 		 *      PUBLISH PREDICATES	*
 		 *******************************/
 
+		 /*******************************
+		 *      BLOB TYPE PROPERTIES	*
+		 *******************************/
+
+static PL_blob_t *
+blob_type_from_name(term_t t)
+{ GET_LD
+  atom_t name;
+
+  if ( PL_get_atom_ex(t, &name) )
+  { PL_blob_t *type;
+
+    for(type = GD->atoms.types; type; type = type->next)
+    { if ( type->atom_name == name )
+	return type;
+    }
+
+    PL_existence_error("blob_type", t);
+  }
+
+  return NULL;
+}
+
+
+/* The properties of a blob type, in enumeration order.  Absent flags are
+   skipped: unify_blob_property() fails for them without binding anything.
+*/
+
+#define BT_NPROPS 11
+
+static bool
+unify_blob_property(term_t prop, const PL_blob_t *type, int i)
+{ GET_LD
+  atom_t name;
+  int64_t value;
+
+  switch(i)
+  { case 0: return ison(type, PL_BLOB_UNIQUE) && PL_unify_atom(prop, ATOM_unique);
+    case 1: return ison(type, PL_BLOB_TEXT)   && PL_unify_atom(prop, ATOM_text);
+    case 2: return ison(type, PL_BLOB_NOCOPY) && PL_unify_atom(prop, ATOM_nocopy);
+    case 3: return ison(type, PL_BLOB_WCHAR)  && PL_unify_atom(prop, ATOM_wchar);
+    case 4: name = ATOM_rank;	      value = type->rank;	  break;
+    case 5: name = ATOM_padding;      value = type->padding;	  break;
+    case 6: name = ATOM_gc_margin;    value = type->gc_margin;	  break;
+    case 7: name = ATOM_unregistered; value = type->unregistered; break;
+    case 8: name = ATOM_non_garbage;  value = type->non_garbage;  break;
+    case 9: name = ATOM_live;	      value = type->live;	  break;
+    case 10:name = ATOM_space;	      value = type->space;	  break;
+    default:
+      assert(0);
+      return false;
+  }
+
+  return PL_unify_term(prop,
+		       PL_FUNCTOR, PL_new_functor(name, 1),
+		         PL_INT64, value);
+}
+
+
+/** blob_type_property(?Type, ?Property) is nondet.
+ *
+ * True when the registered blob type Type has Property.  See the manual
+ * for the properties; gc_margin(Units) is the only one that can be set,
+ * using set_blob_type/2.
+ */
+
+static
+PRED_IMPL("blob_type_property", 2, blob_type_property, PL_FA_NONDETERMINISTIC)
+{ PRED_LD
+  PL_blob_t *type;
+  size_t state;
+  fid_t fid;
+
+  switch( CTX_CNTRL )
+  { case FRG_FIRST_CALL:
+      if ( !PL_is_variable(A1) && !PL_is_variable(A2) )
+      {	/* Both given: answer once rather than leaving a choice point on
+	   the remaining properties, which is what callers ask for. */
+	int i;
+
+	if ( !(type=blob_type_from_name(A1)) )
+	  return false;
+	for(i=0; i<BT_NPROPS; i++)
+	{ if ( unify_blob_property(A2, type, i) )
+	    return true;
+	}
+	return false;
+      }
+      state = 0;
+      break;
+    case FRG_REDO:
+      state = (size_t)CTX_INT;
+      break;
+    default:
+      return true;
+  }
+
+  if ( !(fid=PL_open_foreign_frame()) )
+    return false;
+
+  for( ; ; state++ )
+  { size_t ti = state/BT_NPROPS;
+    size_t n;
+
+    for(type = GD->atoms.types, n = 0; type && n < ti; type = type->next)
+      n++;
+    if ( !type )
+      break;
+
+    if ( PL_unify_atom(A1, type->atom_name) &&
+	 unify_blob_property(A2, type, (int)(state%BT_NPROPS)) )
+    { PL_close_foreign_frame(fid);
+      ForeignRedoInt(state+1);
+    }
+    PL_rewind_foreign_frame(fid);
+  }
+  PL_close_foreign_frame(fid);
+
+  return false;
+}
+
+
+/** set_blob_type(+Type, +Property) is det.
+ *
+ * Set a property of the registered blob type Type.  Only gc_margin(Units)
+ * can be set; see the manual.
+ */
+
+static
+PRED_IMPL("set_blob_type", 2, set_blob_type, 0)
+{ PRED_LD
+  PL_blob_t *type;
+  atom_t pname;
+  size_t arity;
+  term_t arg;
+
+  if ( !(type=blob_type_from_name(A1)) )
+    return false;
+
+  if ( !PL_get_name_arity(A2, &pname, &arity) || arity != 1 )
+    return PL_type_error("blob_type_property", A2);
+
+  if ( !(arg=PL_new_term_ref()) )
+    return false;
+  _PL_get_arg(1, A2, arg);
+
+  if ( pname == ATOM_gc_margin )
+  { size_t margin;
+
+    if ( !PL_get_size_ex(arg, &margin) )
+      return false;
+    type->gc_margin = margin;
+
+    return true;
+  }
+
+  return PL_domain_error("blob_type_property", A2);
+}
+
+
 BeginPredDefs(atom)
+  PRED_DEF("blob_type_property", 2, blob_type_property, PL_FA_NONDETERMINISTIC)
+  PRED_DEF("set_blob_type", 2, set_blob_type, 0)
   PRED_DEF("current_blob",  2, current_blob, PL_FA_NONDETERMINISTIC)
   PRED_DEF("current_atom", 1, current_atom, PL_FA_NONDETERMINISTIC)
   PRED_DEF("blob", 2, blob, 0)
+  PRED_DEF("blob_released", 1, blob_released, 0)
   PRED_DEF("$atom_references", 2, atom_references, 0)
   PRED_DEF("$atom_completions", 2, atom_completions, 0)
   PRED_DEF("$complete_atom", 3, complete_atom, 0)

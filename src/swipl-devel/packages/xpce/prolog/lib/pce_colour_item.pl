@@ -50,7 +50,7 @@
            ]).
 
 resource(cpalette,      image,  image('16x16/cpalette1.png')).
-resource(trash,         image,  image('16x16/trashcan.png')).
+resource(trash,         image,  image('tool/trashcan.svg')).
 
 default_palette_colour(red).
 default_palette_colour(darkorange).

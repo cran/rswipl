@@ -63,6 +63,7 @@ verification, \pllib{sha} providing cryptographic hash functions and
 \pllib{memfile} providing in-memorty pseudo files.
 
 \input{process.tex}
+\input{desktop.tex}
 \input{filesex.tex}
 \InputIfFileExists{uid.tex}{}{}
 \InputIfFileExists{syslog.tex}{}{}

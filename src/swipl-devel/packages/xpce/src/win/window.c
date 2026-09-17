@@ -52,6 +52,7 @@ initialiseWindow(PceWindow sw, Name label, Size size, DisplayObj display)
 
   assign(sw, scale,                toNum(1.0));
   assign(sw, scroll_offset,	   newObject(ClassPoint, EAV));
+  assign(sw, fixed_graphicals,	   newObject(ClassChain, EAV));
   assign(sw, input_focus,	   OFF);
   assign(sw, has_pointer,	   OFF);
   assign(sw, sensitive,		   ON);
@@ -66,7 +67,12 @@ initialiseWindow(PceWindow sw, Name label, Size size, DisplayObj display)
   sw->ws_ref = NULL;
 
   if ( notDefault(label) || notDefault(display) )
-    frameWindow(sw, newObject(ClassFrame, label, DEFAULT, display, EAV));
+  { FrameObj fr = newObject(ClassFrame, label, DEFAULT, display, EAV);
+
+    if ( !fr )				/* no display; ClassFrame said so */
+      fail;
+    frameWindow(sw, fr);
+  }
 
   succeed;
 }
@@ -172,6 +178,17 @@ unlinkWindow(PceWindow sw)
   unlinkedWindowEvent(sw);
   uncreateWindow(sw);
   unlink_changes_data_window(sw);
+
+					/* A graphical of mine may not be */
+					/* left pointing at me after I am */
+					/* gone.  unlinkDevice() below does */
+					/* this for the scrolling layer. */
+  if ( notNil(sw->fixed_graphicals) )
+  { Graphical gr;
+
+    for_chain(sw->fixed_graphicals, gr, DeviceGraphical(gr, NIL));
+  }
+
   unlinkDevice((Device) sw);
 
   if ( notNil(sw->frame) )
@@ -236,7 +253,7 @@ createWindow(PceWindow sw, PceWindow parent)
       succeed;
     } else
     { if ( isNil(sw->frame) )
-	frameWindow(sw, DEFAULT);
+	TRY(frameWindow(sw, DEFAULT));	/* fails if there is no display */
       if ( !createdFrame(sw->frame) )
 	return send(sw->frame, NAME_create, EAV);
     }
@@ -267,6 +284,9 @@ createWindow(PceWindow sw, PceWindow parent)
       d = sw->frame->display;
     else
       d = CurrentDisplay(sw);
+
+    if ( !d )				/* the window system has none */
+      return errorPce(sw, NAME_noDisplay);
 
     if ( isDefault(sw->colour) )
       assign(sw, colour, d->foreground);
@@ -344,6 +364,33 @@ decorateWindow(PceWindow sw, Name how, Int lb, Int tb, Int rb, Int bb,
 }
 
 
+/* ->window_label: a client of this window -- a terminal running a
+   program that sets the window title, say -- asked for a title.  Where
+   a title belongs depends on where the window is shown, so this is the
+   default rather than the rule: a decorator that already carries a
+   label shows it, and a window without one is titled by its frame.  A
+   window that is displayed somewhere with a place of its own for a
+   title, such as a tab, overrules this.
+
+   Not `->label': that is delegated to the <-decoration, which wraps the
+   window in a window_decorator to put a label on it.
+*/
+
+static status
+windowLabelWindow(PceWindow sw, CharArray label)
+{ FrameObj fr;
+
+  if ( notNil(sw->decoration) &&
+       notNil(((WindowDecorator)sw->decoration)->label_text) )
+    return send(sw->decoration, NAME_label, label, EAV);
+
+  if ( (fr=getFrameWindow(sw, OFF)) )
+    return send(fr, NAME_label, label, EAV);
+
+  fail;
+}
+
+
 PceWindow				/* used in MSW binding */
 userWindow(PceWindow sw)
 { if ( instanceOfObject(sw, ClassWindowDecorator) )
@@ -408,10 +455,39 @@ updatePositionSubWindowsDevice(Device dev)
 
 
 
+/* The <-parent that createWindow() records for a window created inside
+   `parent': a window_decorator paints the window it holds itself, so a
+   window inside one is not a subwindow and carries no <-parent.
+*/
+
+static PceWindow
+subwindow_parent(PceWindow parent)
+{ if ( parent && !instanceOfObject(parent, ClassWindowDecorator) )
+    return parent;
+
+  return NULL;
+}
+
+
 static status
 reparentWindow(PceWindow sw)
-{ if ( !getWindowGraphical((Graphical) sw->device) )
-    uncreateWindow(sw);
+{ PceWindow parent = getWindowGraphical((Graphical) sw->device);
+
+  if ( !parent )
+  { uncreateWindow(sw);
+  } else if ( createdWindow(sw) )
+  { PceWindow was = isNil(sw->parent) ? NULL : sw->parent;
+
+    /* Moved to a window other than the one it was created inside, which
+       is what ->decorate does when it wraps a window that is already a
+       subwindow of another one.  Uncreate it, so that it leaves the
+       <-subwindows of the old parent and is created again under the new
+       one.  Left alone, it stays in a chain that says it is painted at
+       an offset in a window its <-device chain no longer leads to.
+    */
+    if ( subwindow_parent(parent) != was )
+      uncreateWindow(sw);
+  }
 
   succeed;
 }
@@ -639,6 +715,8 @@ inspectWindow(PceWindow sw, EventObj ev)
 }
 
 
+static status eventFixedWindow(PceWindow sw, EventObj ev);
+
 status
 postEventWindow(PceWindow sw, EventObj ev)
 { int rval = FAIL;
@@ -655,6 +733,7 @@ postEventWindow(PceWindow sw, EventObj ev)
 
   if ( isAEvent(ev, NAME_areaEnter) )
   { if ( fr && notNil(fr) &&
+	 focusFollowsMouseFrame(fr) &&
 	 !getHyperedObject(fr, NAME_keyboardFocus, DEFAULT) )
       send(fr, NAME_inputWindow, sw, EAV);
     send(sw, NAME_hasPointer, ON, EAV);
@@ -664,10 +743,17 @@ postEventWindow(PceWindow sw, EventObj ev)
   if ( inspectWindow(sw, ev) )
     goto out;
 
-  if ( isDownEvent(ev) && sw->input_focus == OFF &&
+/* A click makes this window the keyboard focus of the frame.  If the
+ * focus follows the mouse, the window under the pointer already has the
+ * input focus and we must not turn that into an explicit focus, as that
+ * stops the focus from following the pointer.
+ */
+
+  if ( isDownEvent(ev) && fr && notNil(fr) &&
+       (sw->input_focus == OFF || !focusFollowsMouseFrame(fr)) &&
        ( send(sw, NAME_WantsKeyboardFocus, EAV) ||
 	 !getHyperedObject(fr, NAME_keyboardFocus, DEFAULT) ) )
-    send(getFrameWindow(sw, DEFAULT), NAME_keyboardFocus, sw, EAV);
+    send(fr, NAME_keyboardFocus, sw, EAV);
 
   if ( isAEvent(ev, NAME_keyboard) )
   { PceWindow iw;
@@ -712,6 +798,14 @@ postEventWindow(PceWindow sw, EventObj ev)
     goto out;
   }
 
+  /* The fixed layer is painted over the content, so it is offered the
+   * event first -- here rather than in a ->event method, as a window
+   * subclass with one of its own would shadow that.  A window holding
+   * the focus is left alone: a gesture in progress owns the pointer.
+   */
+  if ( isNil(sw->focus) && (rval = eventFixedWindow(sw, ev)) )
+    goto out;
+
   /* This code looks a bit awkward, but prevents a -Warray-bounds
    * warning from gcc-11
    */
@@ -745,7 +839,21 @@ out:
       goto out;
   }
 
-  updateCursorWindow(sw);
+  /* A gesture may have grabbed the pointer while handling this event --
+   * `split_move ->start' does, and the window it grabs for need not be
+   * the one the click landed on.  From here on every pointer event goes
+   * to the grabbing window, so it is its cursor that must show; leaving
+   * it to the next event would only change the cursor once the pointer
+   * moves.
+   */
+  { PceWindow grabbed = ws_grabbing_window();
+
+    if ( grabbed && grabbed != sw && !isFreedObj(grabbed) &&
+	 instanceOfObject(grabbed, ClassWindow) )
+      updateCursorWindow(grabbed);
+    else
+      updateCursorWindow(sw);
+  }
 
   assign(sw, current_event, old_event);
 destroyed:
@@ -924,6 +1032,24 @@ computeWindow(PceWindow sw)
 { if ( notNil(sw->request_compute) )
   { computeGraphicalsDevice((Device) sw);
     computeLayoutDevice((Device) sw);
+
+    /* The fixed layer is placed against <-content_area, which is what is
+     * visible less any scrollbar I draw myself -- and a scrollbar is one
+     * of the graphicals just laid out, and comes and goes without my
+     * geometry changing.  So they are placed last, and every time, which
+     * ->compute makes cheap when the answer has not moved.
+     */
+    if ( notNil(sw->fixed_graphicals) )
+    { Cell cell;
+
+      for_cell(cell, sw->fixed_graphicals)
+      { Graphical gr = cell->value;
+
+	requestComputeGraphical(gr, DEFAULT);
+	ComputeGraphical(gr);
+      }
+    }
+
     computeBoundingBoxWindow(sw);
 
     assign(sw, request_compute, NIL);
@@ -1212,6 +1338,179 @@ RedrawAreaWindow(PceWindow sw, IArea a, int clear)
 }
 
 
+/* <-fixed_graphicals are painted after the content and in the coordinates
+ * of what is on screen rather than of what is being shown: the scroll
+ * translation RedrawAreaWindow() put in is taken out again around them.
+ * That is what makes a grip in the corner of a window stay in the corner
+ * however far the window is scrolled.
+ *
+ * `a' arrives in content coordinates, and view = content + scroll_offset,
+ * so the damaged rectangle is moved by the offset for their benefit and
+ * moved back afterwards.
+ */
+
+/* ->display_fixed: graphical, [point]
+ *
+ * Display a graphical in the layer that does not scroll.  It is a
+ * graphical of mine in every other way -- <-device, <-window, <-frame,
+ * ->compute and events all work as usual -- but it is placed in the
+ * coordinates of what is on screen and painted after the content, so it
+ * stays where it is put however far the window is scrolled and is never
+ * covered by what is in it.  <-visible and <-content_area say where
+ * there is room.
+ */
+
+static status
+displayFixedWindow(PceWindow sw, Graphical gr, Point pos)
+{ if ( gr->device == (Device)sw && memberChain(sw->fixed_graphicals, gr) )
+  { if ( notDefault(pos) )
+      setGraphical(gr, pos->x, pos->y, DEFAULT, DEFAULT);
+    succeed;
+  }
+
+  if ( notNil(gr->device) )
+    send(gr->device, NAME_erase, gr, EAV);
+
+  appendChain(sw->fixed_graphicals, gr);
+  assign(gr, device, (Device)sw);
+  requestComputeGraphical(gr, DEFAULT);	/* it is placed against my size,
+					   which it has yet to see */
+  if ( notDefault(pos) )
+  { Variable var;
+
+    if ( (var = getInstanceVariableClass(classOfObject(gr), NAME_autoAlign)) )
+      sendVariable(var, gr, OFF);
+
+    setGraphical(gr, pos->x, pos->y, DEFAULT, DEFAULT);
+  }
+  qadSendv(gr, NAME_reparent, 0, NULL);
+  DisplayedGraphical(gr, ON);
+
+  succeed;
+}
+
+
+/* Events for the fixed layer.  It is painted over the content, so it is
+ * offered the event first, and it is hit-tested in the coordinates of
+ * what is on screen -- `area == ON' -- because that is where it was
+ * drawn.  Everything else falls through to the ordinary device
+ * behaviour.
+ */
+
+/* <-contains also answers the fixed layer: a fixed graphical is a
+ * graphical of mine like any other, so ->destroy must take it with me
+ * and a tool that walks the visual hierarchy must find it.  Both go
+ * through <-contains.  See `visual ->destroy'.
+ *
+ * A subclass that answers something else of its own -- a browser answers
+ * the dict it shows rather than the graphicals that draw it -- adds its
+ * fixed layer to that with addFixedGraphicalsWindow().
+ */
+
+Chain
+addFixedGraphicalsWindow(PceWindow sw, Chain ch)
+{ if ( notNil(sw->fixed_graphicals) && !emptyChain(sw->fixed_graphicals) )
+  { Chain all = answerObject(ClassChain, EAV);
+    Cell cell;
+
+    if ( ch )
+    { for_cell(cell, ch)
+	appendChain(all, cell->value);
+    }
+    for_cell(cell, sw->fixed_graphicals)
+      appendChain(all, cell->value);
+
+    return all;
+  }
+
+  return ch;
+}
+
+
+static Chain
+getContainsWindow(PceWindow sw)
+{ answer(addFixedGraphicalsWindow(sw, sw->graphicals));
+}
+
+
+/* <-member also finds a graphical of the fixed layer: it is a graphical
+ * of mine, and whoever asks for one by name has no reason to care which
+ * chain it is in.
+ */
+
+static Graphical
+getMemberWindow(PceWindow sw, Name name)
+{ Graphical gr;
+  Cell cell;
+
+  if ( (gr = getMemberDevice((Device)sw, name)) )
+    answer(gr);
+
+  if ( notNil(sw->fixed_graphicals) )
+  { for_cell(cell, sw->fixed_graphicals)
+    { if ( ((Graphical)cell->value)->name == name )
+	answer(cell->value);
+    }
+  }
+
+  fail;
+}
+
+
+static status
+eventFixedWindow(PceWindow sw, EventObj ev)
+{ if ( sw->active != OFF &&
+       notNil(sw->fixed_graphicals) && !emptyChain(sw->fixed_graphicals) )
+  { Cell cell;
+    int ox, oy, x, y;
+
+    offset_windows(sw, ev->window, &ox, &oy);   /* view coordinates: the
+					   same as get_xy_event_window()
+					   with area == ON */
+    x = valInt(ev->x) - ox;
+    y = valInt(ev->y) - oy;
+
+    for_cell(cell, sw->fixed_graphicals)
+    { Graphical gr = cell->value;
+
+      if ( gr->displayed == ON &&
+	   inEventAreaGraphical(gr, toInt(x), toInt(y)) &&
+	   postEvent(ev, gr, DEFAULT) )
+	succeed;
+    }
+  }
+
+  fail;
+}
+
+
+static status
+eraseWindow(PceWindow sw, Graphical gr)
+{ if ( notNil(sw->fixed_graphicals) &&
+       memberChain(sw->fixed_graphicals, gr) )
+  { if ( subGraphical(gr, sw->keyboard_focus) )
+      keyboardFocusWindow(sw, NIL);
+    if ( subGraphical(gr, sw->focus) )
+      focusWindow(sw, NIL, NIL, NIL, NIL);
+
+    if ( gr->displayed == ON )
+      changedAreaGraphical(gr, gr->area->x, gr->area->y,
+			   gr->area->w, gr->area->h);
+
+    deleteChain(sw->recompute, gr);
+    deleteChain(sw->pointed, gr);
+    assign(gr, device, NIL);
+    GcProtect(sw, deleteChain(sw->fixed_graphicals, gr));
+    if ( !isFreedObj(gr) )
+      qadSendv(gr, NAME_reparent, 0, NULL);
+
+    succeed;
+  }
+
+  return eraseDevice((Device)sw, gr);
+}
+
+
 static status
 redrawAreaWindow(PceWindow sw, Area a)
 { Cell cell;
@@ -1221,6 +1520,22 @@ redrawAreaWindow(PceWindow sw, Area a)
 
   for_cell(cell, sw->graphicals)
     RedrawArea(cell->value, a);
+
+  if ( notNil(sw->fixed_graphicals) && !emptyChain(sw->fixed_graphicals) )
+  { int sox = valInt(sw->scroll_offset->x);
+    int soy = valInt(sw->scroll_offset->y);
+
+    r_offset(-sox, -soy);
+    assign(a, x, toInt(valInt(a->x) + sox));
+    assign(a, y, toInt(valInt(a->y) + soy));
+
+    for_cell(cell, sw->fixed_graphicals)
+      RedrawArea(cell->value, a);
+
+    assign(a, x, toInt(valInt(a->x) - sox));
+    assign(a, y, toInt(valInt(a->y) - soy));
+    r_offset(sox, soy);
+  }
 
   if ( notNil(sw->layout_manager) )
       qadSendv(sw->layout_manager, NAME_redrawForeground, 1, (Any*)&a);
@@ -1549,7 +1864,8 @@ view_region(int x, int w, int rx, int rw)
 
 static status				/* update bubble of scroll_bar */
 bubbleScrollBarWindow(PceWindow sw, ScrollBar sb)
-{ Area bb = sw->bounding_box;
+{ ComputeGraphical((Graphical)sw);	/* a stale union latches the bar on */
+  Area bb = sw->bounding_box;
   int x, y, w, h;
   int hor    = (sb->orientation == NAME_horizontal);
   int start  = valInt(hor ? bb->x : bb->y);
@@ -1649,12 +1965,19 @@ updateCursorWindow(PceWindow sw)
 
 status
 geometryWindow(PceWindow sw, Int X, Int Y, Int W, Int H)
-{ CHANGING_GRAPHICAL(sw,
+{ /* A window may be empty.  We used to force 1x1 because some drivers
+   * rejected a zero-sized window, but an XPCE window is our own
+   * artifact -- only the frame is a window of the window system --
+   * so nothing below us cares.  Keeping the size at 0 lets an empty
+   * window (e.g. a dialog holding only a natively displayed
+   * menu_bar) collapse instead of claiming a visible strip.
+   */
+  CHANGING_GRAPHICAL(sw,
 		     { setArea(sw->area, X, Y, W, H);
-		       if ( valInt(sw->area->w) <= 0 )
-			 assign(sw->area, w, ONE);
-		       if ( valInt(sw->area->h) <= 0 )
-			 assign(sw->area, h, ONE);
+		       if ( valInt(sw->area->w) < 0 )
+			 assign(sw->area, w, ZERO);
+		       if ( valInt(sw->area->h) < 0 )
+			 assign(sw->area, h, ZERO);
 		     });
 
   int x, y, w, h;
@@ -1664,6 +1987,18 @@ geometryWindow(PceWindow sw, Int X, Int Y, Int W, Int H)
   y = valInt(sw->area->y);
   w = valInt(sw->area->w);
   h = valInt(sw->area->h);
+
+  /* The fixed layer is placed against my size -- see <-content_area --
+   * so its members work it out again whenever that changes.  ->resize is
+   * no good to them: the window system only sends it once the window has
+   * a surface, and never for a window that is merely re-laid out.
+   */
+  if ( notNil(sw->fixed_graphicals) )
+  { Cell cell;
+
+    for_cell(cell, sw->fixed_graphicals)
+      requestComputeGraphical(cell->value, DEFAULT);
+  }
 
   ws_geometry_window(sw, x, y, w, h, pen);
 
@@ -1719,6 +2054,40 @@ visible_window(PceWindow sw, IArea a)
   a->h -= 2*p;
 
   succeed;
+}
+
+
+/* <-content_area: the part of <-visible that is not taken by chrome of
+ * the window itself.  A window whose scrollbars live in its decorator
+ * has none inside it and this is <-visible; one that displays its own
+ * scroll_bar -- an editor, a terminal -- has that much less room.  It is
+ * where something placed in the corner belongs, so that it does not sit
+ * on top of the bar.
+ */
+
+static Area
+getContentAreaWindow(PceWindow sw)
+{ iarea a;
+  Cell cell;
+
+  visible_window(sw, &a);
+
+  for_cell(cell, sw->graphicals)
+  { Graphical gr = cell->value;
+
+    if ( instanceOfObject(gr, ClassScrollBar) && gr->displayed == ON )
+    { ScrollBar sb = (ScrollBar)gr;
+
+      if ( sb->orientation == NAME_vertical )
+	a.w -= valInt(gr->area->w);
+      else
+	a.h -= valInt(gr->area->h);
+    }
+  }
+
+  answer(answerObject(ClassArea,
+		      toInt(a.x), toInt(a.y), toInt(a.w), toInt(a.h),
+		      EAV));
 }
 
 
@@ -1840,8 +2209,9 @@ frameWindow(PceWindow sw, FrameObj frame)
 
   if ( isDefault(frame) )
   { if ( isNil(sw->frame) )
-      frame = newObject(ClassFrame, EAV);
-    else
+    { if ( !(frame = newObject(ClassFrame, EAV)) )
+	fail;				/* no display; ClassFrame said so */
+    } else
       succeed;
   }
 
@@ -1882,6 +2252,10 @@ getFrameWindow(PceWindow sw, BoolObj create)
   fail;
 }
 
+static PceWindow
+getUserWindowWindow(PceWindow w)
+{ answer(w);
+}
 
 static status
 mergeFramesWindow(PceWindow w1, PceWindow w2)
@@ -1910,24 +2284,66 @@ mergeFramesWindow(PceWindow w1, PceWindow w2)
 }
 
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+<-tile_manager is the object that owns the tile hierarchy this window is
+part of: its <-frame, or the device that displays it (see class tab_frame
+in library(tab_frame)).  It is what relateWindow() asks so that `->below'
+and friends work for both: the manager is left to do the attaching and
+detaching through ->attach_window and ->detach_window.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+Any
+tileManagerWindow(PceWindow sw)
+{ Any manager;
+
+  while(notNil(sw->decoration))
+    sw = sw->decoration;
+
+  if ( notNil(sw->tile) && (manager=managerTile(sw->tile)) )
+    return manager;
+  if ( notNil(sw->frame) )
+    return sw->frame;
+
+  return NULL;
+}
+
+
+static Any
+getTileManagerWindow(PceWindow sw)
+{ Any manager = tileManagerWindow(sw);
+
+  if ( manager )
+    answer(manager);
+
+  fail;
+}
+
+
 static status
 relateWindow(PceWindow sw, Name how, Any to)
 { PceWindow w2 = instanceOfObject(to, ClassWindow) ? to : NIL;
   PceWindow wto = w2;
+  Any manager, old;
 
   if ( notNil(sw->decoration) )
     return relateWindow(sw->decoration, how, to);
   if ( notNil(w2) && notNil(w2->decoration) )
     return relateWindow(sw, how, w2->decoration);
 
-  DeviceGraphical((Graphical)sw, NIL);
   if ( notNil(w2) )
-  { DeviceGraphical((Graphical)w2, NIL);
-    tileWindow(w2, DEFAULT);
-  }
+  { tileWindow(w2, DEFAULT);
+    if ( !(manager=tileManagerWindow(w2)) )
+      DeviceGraphical((Graphical)w2, NIL); /* unmanaged: it may not be */
+  } else				/* displayed on a device */
+    manager = managerTile((TileObj)to);
 
-  if ( createdWindow(sw) && notNil(sw->frame) )
-    send(sw->frame, NAME_delete, sw, EAV);
+  if ( (old=tileManagerWindow(sw)) )
+  { send(old, NAME_detachWindow, sw, EAV);
+  } else
+  { DeviceGraphical((Graphical)sw, NIL);
+    if ( createdWindow(sw) && notNil(sw->frame) )
+      send(sw->frame, NAME_delete, sw, EAV);
+  }
 
   tileWindow(sw, DEFAULT);
 
@@ -1955,6 +2371,9 @@ relateWindow(PceWindow sw, Name how, Any to)
 
     w2 = t2->object;
   }
+
+  if ( manager )
+    return send(manager, NAME_attachWindow, sw, EAV);
 
   mergeFramesWindow(sw, w2);
 
@@ -2058,6 +2477,27 @@ selectionFeedbackWindow(PceWindow sw, Any feedback)
 static Colour
 getForegroundWindow(PceWindow sw)
 { answer(sw->colour);
+}
+
+
+/* <-image: the pixels of this window, as frame<-image gives those of
+ * the whole frame.  The window must be created: what it answers is a
+ * copy of what is on the screen, and there is none before that.
+ */
+
+static Image
+getImageWindow(PceWindow sw)
+{ if ( ws_created_window(sw) )
+  { Image image = ws_image_of_window(sw);
+
+    if ( image )
+      answer(image);
+
+    fail;
+  }
+
+  errorPce(sw, NAME_mustBeCreatedBefore, NAME_image);
+  fail;
 }
 
 
@@ -2192,6 +2632,8 @@ catchAllWindowv(PceWindow sw, Name selector, int argc, Any *argv)
 
 /* Type declarations */
 
+static char *T_displayFixed[] =
+        { "graphical", "position=[point]" };
 static char *T_open[] =
         { "[point]", "display=[display]" };
 static char *T_scrollHV[] =
@@ -2262,6 +2704,8 @@ static vardecl var_window[] =
      NAME_focus, "<-current_event when ->focus was set"),
   IV(NAME_scrollOffset, "point", IV_NONE,
      NAME_internal, "How much the window is scrolled"),
+  IV(NAME_fixedGraphicals, "chain", IV_GET,
+     NAME_organisation, "Graphicals that do not scroll"),
   IV(NAME_popup, "popup*", IV_BOTH,
      NAME_menu, "Popup-menu of the window"),
   IV(NAME_currentEvent, "event*", IV_GET,
@@ -2325,8 +2769,14 @@ static senddecl send_window[] =
      NAME_accelerator, "Handle accelerator (delegate to <-frame)"),
   SM(NAME_decorate, 6, T_decorate, decorateWindow,
      NAME_appearance, "Embed window for scrollbars, etc."),
+  SM(NAME_windowLabel, 1, "char_array", windowLabelWindow,
+     NAME_appearance, "Title a client of this window asked for"),
   SM(NAME_foreground, 1, "[colour]", colourWindow,
      NAME_appearance, "Set foreground colour"),
+  SM(NAME_displayFixed, 2, T_displayFixed, displayFixedWindow,
+     NAME_organisation, "Display a graphical that does not scroll"),
+  SM(NAME_erase, 1, "graphical", eraseWindow,
+     NAME_organisation, "Remove a graphical, scrolling or not"),
   SM(NAME_resize, 0, NULL, resizeWindow,
      NAME_area, "Execute <-resize_message"),
   SM(NAME_catchAll, 2, T_catchAll, catchAllWindowv,
@@ -2398,12 +2848,24 @@ static getdecl get_window[] =
      DEFAULT, "Frame of window (create if not there)"),
   GM(NAME_tile, 0, "tile", NULL, getTileWindow,
      DEFAULT, "Tile of window (create if not there)"),
+  GM(NAME_tileManager, 0, "object", NULL, getTileManagerWindow,
+     NAME_layout, "Frame or device managing my tile"),
+  GM(NAME_userWindow, 0, "window", NULL, getUserWindowWindow,
+     NAME_client, "Self.  Refined in window_decorator"),
   GM(NAME_foreground, 0, "colour", NULL, getForegroundWindow,
      NAME_appearance, "Get foreground colour"),
+  GM(NAME_image, 0, "image", NULL, getImageWindow,
+     NAME_conversion, "Image with the pixels of the window"),
   GM(NAME_changesArea, 0, "area*", NULL, getChangesAreaWindow,
      NAME_repaint, "AABB of pending damage rectangles, or fail if none"),
   GM(NAME_boundingBox, 0, "area", NULL, getBoundingBoxWindow,
      NAME_area, "Union of graphicals"),
+  GM(NAME_member, 1, "graphical", "name", getMemberWindow,
+     NAME_organisation, "Find a graphical of mine by name, fixed or not"),
+  GM(NAME_contains, 0, "chain", NULL, getContainsWindow,
+     DEFAULT, "Graphicals of mine, fixed or not"),
+  GM(NAME_contentArea, 0, "area", NULL, getContentAreaWindow,
+     NAME_scroll, "<-visible less the scrollbars I display myself"),
   GM(NAME_visible, 0, "area", NULL, getVisibleWindow,
      NAME_area, "New area representing visible part"),
   GM(NAME_size, 0, "size", NULL, getSizeGraphical,

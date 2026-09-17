@@ -39,6 +39,7 @@
 :- use_module(library(emacs_extend), []).
 :- use_module(library(print_text)).
 :- use_module(window, [emacs_register_closed_tab/1]).
+:- use_module(library(swi_ide), []).
 :- require([ append/3
            , auto_call/1
            , between/3
@@ -114,17 +115,23 @@
           -                        = button(edit),
           insert_symbol            = button(edit) +
                                      key('\\C-x8RET') + key('\\C-x8s'),
-          -                        = button(edit),
-          editor_preferences       = button(edit),
-          prolog_preferences       = button(edit),
 
           prefix                   = key('\\C-x8'),
 
                                         % BROWSER menu
           prefix                   = key('\\C-x5'),
 
-          split_window             = key('\\C-x2') + key('\\C-x52') + button(browse),
+          split_window             = key('\\C-x2') + button(browse),
+          split_window_right       = key('\\C-x3') + button(browse),
           only_window              = key('\\C-x1') + button(browse),
+          delete_window            = key('\\C-x0') + button(browse),
+          other_window             = key('\\C-xo') + button(browse),
+          new_frame                = key('\\C-x52') + button(browse),
+          -                        = button(browse),
+          history_backward         = key('\\C-\\s-<cursor_left>') +
+                                     button(browse),
+          history_forward          = key('\\C-\\s-<cursor_right>') +
+                                     button(browse),
           -                        = button(browse),
           bookmark_line            = button(browse),
           show_bookmarks           = button(browse),
@@ -136,7 +143,8 @@
           compile                  = button(compile),
 
                                         % HELP menu
-          help                     = button(help),
+          -                        = button(help),
+          help_on_emacs            = button(help),
           help_on_mode             = button(help),
           customise                = button(help),
           -                        = button(help),
@@ -144,10 +152,7 @@
                                         + key('\\C-hb')
                                         + button(help),
           describe_key             = key('\\C-hk') + button(help),
-          describe_function        = key('\\C-hf') + button(help),
-          -                        = button(help),
-          manual_entry             = button(help),
-          xpce_manual              = button(help)
+          describe_function        = key('\\C-hf') + button(help)
         ],
         [
         ]).
@@ -473,10 +478,26 @@ save_some_buffers(_M, Arg:[int]) :->
     ).
 
 
-find_file(_M, File:file) :->
+find_file(M, File:file) :->
     "Find existing file or create new one"::
     new(Buffer, emacs_buffer(File)),
-    send(Buffer, open, tab).
+    send(M, show_buffer, Buffer).
+
+%       A buffer asked for from a pane goes into that pane while the tab
+%       is split: the views were put side by side to be seen together and
+%       a tab of its own would take that away.  A tab holding a single
+%       view is the tab, and there PceEmacs keeps its tab per file.
+
+show_buffer(M, B:emacs_buffer) :->
+    "Show B here if this tab is split, else in a tab of its own"::
+    get(M, frame, Frame),               % my frame, not <-current_frame:
+    (   get(M, views, [_,_|_])          % the request came from here
+    ->  get(M, editor, E),
+        send(E, text_buffer, B)
+    ;   send(@emacs, show_buffer, Frame, B, tab)
+    ),
+    send(Frame, expose),
+    send(B, check_modified_file, Frame).
 
 new(M, File:save_file) :->
     "Create a new file"::
@@ -509,10 +530,9 @@ show_buffer_menu(_M) :->
     send(@emacs, show_buffer_menu).
 
 
-switch_to_buffer(_, Buffer:emacs_buffer) :->
+switch_to_buffer(M, Buffer:emacs_buffer) :->
     "Switch this window to named buffer"::
-    send(Buffer, open, tab).
-%       send(M, text_buffer, Buffer).           % Always in same window
+    send(M, show_buffer, Buffer).
 
 
 kill_buffer(M) :->
@@ -717,6 +737,11 @@ has_processes(M) :->
                  *             INFO             *
                  *******************************/
 
+%       What it says is about the buffer rather than about the mode, and
+%       the list of buffers asks about one that may be in no window at
+%       all, so `emacs_buffer <-properties' builds it.  A mode with more
+%       to say still refines this one -- see `emacs_prolog_mode'.
+
 properties(M) :->
     "Display information-window on buffer"::
     get(M, properties, _).
@@ -724,36 +749,7 @@ properties(M) :->
 properties(M, V:view) :<-
     "Display information-window on buffer"::
     get(M, text_buffer, Buffer),
-    get(Buffer, name, Name),
-    get(Buffer, modified, Modified),
-    get(Buffer, size, Size),
-    get(Buffer, line_number, Lines),
-    get(Buffer, mode, Mode),
-    new(V, view(string('Buffer %s', Name), size(60, 8))),
-    send(V, confirm_done, @off),
-    send(V, tab_stops, vector(200)),
-    send(V, appendf, 'Buffer Name:\t%s\n', Name),
-    send(V, appendf, 'Mode:\t%s\n', Mode),
-    send(V, appendf, 'Modified:\t%s\n', Modified?name),
-    send(V, appendf, 'Size:\t%d characters; %d lines\n', Size, Lines-1),
-    get(Buffer, file, File),
-    (   Modified == @on,
-        File \== @nil
-    ->  get(File, size, FileSize),
-        send(V, appendf, 'File Size:\t%d characters\n', FileSize)
-    ;   true
-    ),
-    (   File \== @nil
-    ->  get(File, absolute_path, Path),
-        send(V, appendf, 'Path:\t%s\n', Path),
-        send(V, appendf, 'Encoding:\t%s (BOM=%s, NL=%s)\n',
-             File?encoding, File?bom, File?newline_mode)
-    ;   send(V, appendf, 'Path:\t<No file>\n')
-    ),
-    send(V, caret, 0),
-    send(new(D, dialog), below, V),
-    send(D, append, button(close, message(V, destroy))),
-    send(V, open_centered, M?frame?area?center).
+    get(Buffer, properties, V).
 
 
                  /*******************************
@@ -877,30 +873,12 @@ git_grep(M, GrepArgs:grep_arguments=string) :->
          string(GrepCommad, GrepArgs),
          string('git-grep %s', GrepArgs)).
 
-
 shell(M) :->
-    "Start interactive shell"::
-    send(M, has_processes),
-    (   get(@emacs, buffer, '*shell*', Buffer)
-    ->  send(Buffer, open)
-    ;   (   get(@pce, environment_variable, 'SHELL', Shell)
-        ->  better_shell(Shell, Shell2),
-            Process = process(Shell2, '-i')
-        ;   get(@pce, operating_system, winnt) % TBD: Windows 95-ME
-        ->  Process = process('cmd.exe')
-        ;   Process = process('sh', '-i')
-        ),
-        new(P, Process),
-        get(M, directory, Dir),
-        send(P, directory, Dir),
-        new(B, emacs_process_buffer(P, '*shell*')),
-        send(B, directory, Dir),
-        send(B, start_process),
-        send(B, open, tab)
-    ).
-
-better_shell('/bin/tcsh', '/bin/csh') :- !.
-better_shell(Shell, Shell).
+    "Start interactive shell in Epilog"::
+    get(M?directory, path, Dir),
+    auto_call(epilog([ profile(shell),
+                       cwd(Dir)
+                     ])).
 
 manual_entry(M, Spec:unix_manual_entry_for=name) :->
     "Lookup Unix manual entry"::
@@ -954,21 +932,125 @@ annotate(M) :->
                  *        MISCELLENEOUS         *
                  *******************************/
 
+%       A tab holds one or more views, laid out by a tile (see class
+%       tab_frame).  These are the Emacs window commands over the views
+%       of the current tab; `C-x 5 2' still opens a frame of its own.
+
+view(M, V:emacs_view) :<-
+    "The view I am running in"::
+    get(M, editor, E),
+    get(E, window, V),
+    send(V, instance_of, emacs_view).
+
+tab(M, TF:tab_frame) :<-
+    "The tab holding my view"::
+    get(M, view, V),
+    get(V, container, tab_frame, TF).
+
+views(M, Views:prolog) :<-
+    "The views of my tab, in layout order"::
+    get(M, tab, TF),
+    get(TF, windows, Chain),
+    chain_list(Chain, Views).
+
 split_window(M) :->
-    "Create another window for this buffer"::
+    "Split the window; new view below"::
+    send(M, split_view, horizontally).
+
+split_window_right(M) :->
+    "Split the window; new view to the right"::
+    send(M, split_view, vertically).
+
+split_view(M, Direction:{horizontally,vertically}) :->
+    "Show my buffer in a new view next to this one"::
+    get(M, view, V),
+    get(M, tab, TF),
     get(M, text_buffer, Buffer),
-    get(Buffer, open, window, Frame),
-    get(Frame, editor, NewEditor),
+    send(TF, split, new(New, emacs_view(Buffer)), V, Direction),
+    send(Buffer, update_label),
+    get(M, caret, Here),
+    send(New?editor, caret, Here),
+    send(TF, arranged).                 % C-x 2 arranges the window by hand
+
+only_window(M) :->
+    "Close the other views of this tab"::
+    get(M, view, V),
+    get(M, views, Views),
+    (   Views = [_,_|_]
+    ->  forall(( member(Other, Views), Other \== V ),
+               send(Other, destroy)),
+        send(V?frame, keyboard_focus, V),
+        get(M, tab, TF),
+        send(TF, arranged)              % and so does C-x 1
+    ;   send(M, report, status, 'Single view')
+    ).
+
+delete_window(M) :->
+    "Close this view, keeping the others of this tab"::
+    get(M, view, V),
+    get(M, views, Views),
+    (   Views = [_,_|_]
+    ->  get(V, frame, Frame),
+        get(M, tab, TF),
+        send(V, destroy),
+        send(TF, arranged),             % and C-x 0
+        (   get(TF, current, New)
+        ->  send(Frame, keyboard_focus, New)
+        ;   true
+        )
+    ;   send(M, report, warning, 'Cannot close the only view of a tab')
+    ).
+
+other_window(M) :->
+    "Move the focus to the next view of this tab"::
+    get(M, view, V),
+    get(M, views, Views),
+    (   next_view(V, Views, Next)
+    ->  send(V?frame, keyboard_focus, Next)
+    ;   send(M, report, status, 'Single view')
+    ).
+
+new_frame(M) :->
+    "Open this buffer in a frame of its own"::
+    get(M, text_buffer, Buffer),
+    get(Buffer, open, window, View),
+    get(View, editor, NewEditor),
     get(M, caret, Here),
     send(NewEditor, caret, Here).
 
-only_window(M) :->
-    "Quit other windows on this buffer"::
-    get(M, text_buffer, Buffer),
-    get(M, editor, Editor),
-    send(Buffer?editors, for_all,
-         if(@arg1 \== Editor,
-            message(@arg1, close))).
+%       next_view(+View, +Views, -Next)
+%
+%       The view after View, wrapping around.  Identity rather than
+%       unification: the views are objects.
+
+next_view(V, Views, Next) :-
+    append(Before, [W|After], Views),
+    W == V,
+    !,
+    (   After = [Next|_]
+    ->  true
+    ;   Before = [Next|_]
+    ).
+
+
+/* The location history is also reachable from the two buttons the mode
+   dialog puts in its tool_bar, but those are not there when the menu
+   bar is displayed natively (MacOS).  The keys follow XCode, as the
+   obvious Command-[ and Command-] are taken by ->undent_region and
+   ->indent_region.
+*/
+
+history_backward(_M) :->
+    "Return to the previous location"::
+    get(@emacs, history, History),
+    send(History, can_backward),
+    send(History, backward).
+
+history_forward(_M) :->
+    "Go to the next location"::
+    get(@emacs, history, History),
+    send(History, can_forward),
+    send(History, forward).
 
 
 save_and_kill(M) :->
@@ -1115,7 +1197,7 @@ font_default(M) :->
 
 :- pce_group(help).
 
-help(_) :->
+help_on_emacs(_) :->
     "Display general help"::
     send(@emacs, help).
 

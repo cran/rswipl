@@ -34,7 +34,7 @@ COMMON(status)	inspectDisplay(DisplayObj d, Graphical gr, EventObj ev);
 COMMON(status)	makeClassDisplay(Class class);
 COMMON(int)	DPI(Any gr);
 COMMON(double)	dpi_scale(Any gr, double px);
-COMMON(status)	hasVisibleFramesDisplay(DisplayObj d);
+COMMON(status)	hasVisibleFramesDisplay(DisplayObj d, BoolObj keep_alive);
 
 /* /staff/jan/src/pl/packages/xpce/src/win/displaymgr.c */
 COMMON(status)	appendDisplayManager(DisplayManager dm, DisplayObj d);
@@ -59,6 +59,7 @@ COMMON(TileObj)	getTileFrame(FrameObj fr);
 COMMON(status)	AppendFrame(FrameObj fr, PceWindow sw);
 COMMON(status)	DeleteFrame(FrameObj fr, PceWindow sw);
 COMMON(PceWindow) getKeyboardFocusFrame(FrameObj fr);
+COMMON(bool)	focusFollowsMouseFrame(FrameObj fr);
 COMMON(status)	redrawFrame(FrameObj fr, Area a);
 COMMON(FrameObj) blockedByModalFrame(FrameObj fr);
 COMMON(status)	eventFrame(FrameObj fr, EventObj ev);
@@ -74,12 +75,15 @@ typedef void *(*for_tile_func)(Any ctx, TileObj t, Int x, Int y, Int w, Int h);
 
 COMMON(status)	unrelateTile(TileObj t);
 COMMON(TileObj)	getRootTile(TileObj t);
+COMMON(Any)	managerTile(TileObj t);
+COMMON(void)	setManagerTile(TileObj t, Any manager);
 COMMON(status)	distribute_stretches(stretch *s, int n, int w);
 COMMON(void)	sum_stretches(stretch *sp, int len, stretch *r);
 COMMON(void)	join_stretches(stretch *stretches, int len, stretch *r);
 COMMON(status)	setTile(TileObj t, Int x, Int y, Int w, Int h);
 COMMON(status)	enforceTile(TileObj t, BoolObj val);
 COMMON(BoolObj)	getCanResizeTile(TileObj t);
+COMMON(status)	rebalanceTile(TileObj t);
 COMMON(status)	updateAdjusterPositionTile(TileObj t);
 COMMON(TileObj)	getSubTileToResizeTile(TileObj t, Point pos);
 COMMON(status)	makeClassTile(Class class);
@@ -91,8 +95,10 @@ COMMON(status)	makeClassView(Class class);
 /* /staff/jan/src/pl/packages/xpce/src/win/window.c */
 COMMON(status)	initialiseWindow(PceWindow sw, Name label, Size size, DisplayObj display);
 COMMON(status)	createdWindow(PceWindow sw);
+COMMON(Any)	tileManagerWindow(PceWindow sw);
 COMMON(status)	grabPointerWindow(PceWindow sw, BoolObj val);
 COMMON(status)	unlinkWindow(PceWindow sw);
+COMMON(Chain)	addFixedGraphicalsWindow(PceWindow sw, Chain ch);
 COMMON(PceWindow) userWindow(PceWindow sw);
 COMMON(status)	updatePositionWindow(PceWindow sw);
 COMMON(status)	resizeWindow(PceWindow sw);

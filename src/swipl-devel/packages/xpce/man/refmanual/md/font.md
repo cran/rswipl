@@ -66,7 +66,7 @@ default fonts for their role.
     (`normal := font(sans, normal, 12)`, `tt := font(mono, normal,
     12)`, ...).  The default list defines `normal`, `bold`,
     `italic`, `small`, `large`, `boldlarge`, `huge`, `boldhuge`,
-    `fixed`, `tt` and `boldtt`.
+    `fixed`, `tt`, `boldtt`, `itt` and `bitt`.
 
 - font.pango_families: chain
     Seed for `@font_families`: pairs that map an xpce generic

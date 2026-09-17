@@ -34,23 +34,52 @@
 
 :- module(test_terminal,
           [ test_terminal/0,
+            test_terminal/1,                     % +Backend
+            test_terminal/2,                     % +Backend, +Unit
+            terminal_test_unit/1,                % ?Unit
             test_terminal_random/2,              % +Sessions, +CommandsPerSession
             test_terminal_random/3               % +Sessions, +CommandsPerSession, +Options
           ]).
 :- encoding(utf8).
 
-/** <module> Integration tests for the xpce terminal + libedit
+/** <module> Integration tests for the terminal + libedit
 
-Drives an epilog terminal end-to-end through its public xpce methods:
+Drives a terminal end-to-end through three primitives:
 
-    - ->send                injects keystrokes (UTF-8 bytes to the PTY)
-    - <-cursor_position     point(col, row) in the visible window
-    - <-row                 string content of a visible row
+    - send a keystroke      (UTF-8 bytes towards the line editor)
+    - read the cursor       point(col, row) in the visible window
+    - read a row            text content of a visible row
 
-Tests create a fresh epilog frame, type and hit keys, drive the event
-loop until output has settled, then assert the cursor position and row
-contents.  Each test owns its frame and destroys it in its cleanup
-clause.
+Tests type and hit keys, drive the event loop until output has settled,
+then assert the cursor position and row contents.
+
+The three primitives are all the suite needs, so it can run against
+more than one terminal.  A *backend* (see the BACKENDS section) says
+which line editor produces the output and which screen we read back;
+term_start/2 opens one and every test then works through the term_*
+primitives rather than through xpce methods directly.  Supported:
+
+    - epilog          the epilog terminal driven by a Prolog thread in
+                      this process; libedit runs with the EPILOG flag
+    - child(Profile)  a child `swipl` started with shell/1 from the
+                      epilog thread, so it runs on the terminal's pty
+                      with TERM taken from Profile.  This is the only
+                      way to exercise libedit's ordinary termcap paths,
+                      the ones every non-epilog terminal uses.
+
+Profile is the name of a terminal description: `xterm', `screen',
+`linux', `ansi', ... and `winconsole', which is not a stock one.
+swipl.exe on a Windows console reads no description at all -- it links
+the fake termcap in packages/libedit/libedit/src/win_ncurses.c -- so
+swipl-winconsole.ti in this directory writes that table out as a
+description, and running against it puts libedit through the same
+decisions the Windows console does.  Both bugs the suite has found so
+far were of that kind, which is the argument for keeping the two in
+step.
+
+The screen is the xpce terminal whichever profile is chosen, so this
+tests what libedit does, not what a Windows console draws.  Nothing
+here can stand in for reading back a real console.
 
 Because the SWI-Prolog prompt includes the command number ("101 ?- "
 rather than just "?- "), column assertions are expressed relative to
@@ -62,6 +91,10 @@ N is the visual-column offset inside the input.
 Run with:
 
     swipl -g test_terminal -t halt packages/xpce/tests/test_terminal.pl
+
+or, for a single backend:
+
+    swipl -g 'test_terminal(child(ansi))' -t halt packages/xpce/tests/test_terminal.pl
 */
 
 :- use_module(library(debug)).
@@ -78,78 +111,1106 @@ setup_headless :-
 :- use_module(library(pce)).
 :- use_module(library(epilog)).
 :- use_module(library(lists)).
+:- use_module(library(apply)).
+:- use_module(library(yall)).
 :- use_module(library(pairs)).
 :- use_module(library(option)).
 :- use_module(library(random)).
 :- use_module(library(aggregate)).
+:- use_module(library(process)).
+:- if(exists_source(library(win_console))).
+:- use_module(library(win_console)).
+:- endif.
 
 test_terminal :-
-    run_tests([ terminal_basic,
-                terminal_nfd,
-                terminal_regression,
-                terminal_wide,
-                terminal_non_bmp,
-                terminal_mixed,
-                terminal_wrap,
-                terminal_resize
-              ]).
+    test_terminal(epilog).
+
+%!  test_terminal(+Backend) is semidet.
+%
+%   Run the suite against Backend.  Units that need a capability the
+%   backend lacks (mouse, selection, ...) are skipped rather than
+%   failed; see term_capability/2.
+
+test_terminal(Backend) :-
+    findall(Unit, terminal_test_unit(Unit), Units),
+    run_units(Backend, Units).
+
+%!  test_terminal(+Backend, +Unit) is semidet.
+%
+%   Run one unit.  The build runs the suite this way, a process per unit
+%   and per backend: the units are independent, and xpce is not -- it has
+%   one thread that may touch an object, so two units cannot share a
+%   process.  See tests/CMakeLists.txt.
+
+test_terminal(Backend, Unit) :-
+    run_units(Backend, [Unit]).
+
+run_units(Backend, Units) :-
+    ensure_terminfo(Backend),
+    setup_call_cleanup(
+        nb_setval(terminal_backend, Backend),
+        run_tests(Units),
+        nb_delete(terminal_backend)).
+
+%!  terminal_test_unit(?Unit) is nondet.
+%
+%   The units of this suite, in one place.  tests/CMakeLists.txt reads
+%   them from here, so adding a unit below is enough to have the build
+%   run it; there is no second list to keep in step.  A unit the backend
+%   cannot support skips itself, see term_capability/2.
+
+terminal_test_unit(terminal_basic).
+terminal_test_unit(terminal_screen).
+terminal_test_unit(terminal_nfd).
+terminal_test_unit(terminal_regression).
+terminal_test_unit(terminal_wide).
+terminal_test_unit(terminal_non_bmp).
+terminal_test_unit(terminal_mixed).
+terminal_test_unit(terminal_background).
+terminal_test_unit(terminal_attributes).
+terminal_test_unit(terminal_mouse).
+terminal_test_unit(terminal_wheel).
+terminal_test_unit(terminal_alt_scroll).
+terminal_test_unit(terminal_mouse_reports).
+terminal_test_unit(terminal_wrap).
+terminal_test_unit(terminal_search).
+terminal_test_unit(terminal_blocks).
+terminal_test_unit(terminal_isearch).
+terminal_test_unit(terminal_selection_matches).
+terminal_test_unit(terminal_input_selection).
+terminal_test_unit(terminal_report).
+terminal_test_unit(terminal_resize).
+terminal_test_unit(terminal_control_keys).
+terminal_test_unit(terminal_function_keys).
+terminal_test_unit(terminal_child_on_terminal).
+
+%!  current_backend(-Backend) is det.
+%
+%   The backend the current run uses.  Defaults to `epilog` so that
+%   running a single unit by hand needs no set-up.
+
+current_backend(Backend) :-
+    (   nb_current(terminal_backend, B)
+    ->  Backend = B
+    ;   Backend = epilog
+    ).
+
+
+		 /*******************************
+		 *           BACKENDS           *
+		 *******************************/
+
+%   A terminal under test is a handle
+%
+%       terminal(Backend, Screen)
+%
+%   Backend says what produces the output:
+%
+%       epilog          - a Prolog thread in this process.  libedit is
+%                         wrapped around the terminal's streams with
+%                         the EPILOG flag set.
+%       child(Profile)  - a child `swipl` running on the terminal's
+%                         pty, started with shell/1 from the epilog
+%                         thread.  libedit sees an ordinary terminal
+%                         and takes its capabilities from TERM, which
+%                         term_profile_term/2 derives from Profile.
+%
+%   Screen says what we read back:
+%
+%       xpce(Frame, TerminalImage)
+%
+%   Everything below this section goes through the term_* primitives;
+%   xpce methods on the terminal appear only in this section.
+
+%!  term_start(+Backend, -T) is det.
+%!  term_stop(+T) is det.
+
+term_start(epilog, terminal(epilog, xpce(Frame, TI))) :-
+    !,
+    epilog_screen(Frame, TI).
+term_start(child(Profile), terminal(child(Profile), xpce(Frame, TI))) :-
+    !,
+    ensure_terminfo(child(Profile)),
+    epilog_screen(Frame, TI),
+    T0 = terminal(epilog, xpce(Frame, TI)),
+    wait_for_prompt(T0),
+    start_child(T0, Profile).
+term_start(console, T) :-
+    T = terminal(console, console),
+    start_console(T).
+
+epilog_screen(Frame, TI) :-
+    epilog([ object(Frame),
+             title('test_terminal'),
+             rows(25),
+             cols(80)
+           ]),
+    get(Frame, current_terminal, TI).
+
+term_stop(terminal(console, console)) :-
+    !,
+    catch(win_console_close, _, true).
+term_stop(terminal(Backend, xpce(Frame, TI))) :-
+    (   Backend = child(_)
+    ->  ignore(stop_child(terminal(Backend, xpce(Frame, TI))))
+    ;   true
+    ),
+    %  Known wart: a terminal whose thread hosted an interactive child
+    %  keeps that thread running after ->destroy, so a child(_) run
+    %  ends with a list of console threads that "wouldn't die".  The
+    %  threads are idle and the run is unaffected; waiting for them
+    %  here only made the suite three times slower.
+    (   object(Frame)
+    ->  in_pce_thread(send(Frame, destroy))
+    ;   true
+    ).
+
+%!  term_send(+T, +Text) is det.
+%
+%   Inject Text into the terminal as if typed.
+
+term_send(terminal(_, console), Text) :-
+    !,
+    win_console_send(Text).
+term_send(terminal(_, xpce(_, TI)), Text) :-
+    send(TI, send, Text).
+
+%!  term_output(+T, +Text) is det.
+%
+%   Write Text to the screen as a program running on the terminal
+%   would, escape sequences and all.  Unlike term_send/2 this does not
+%   go past the line editor: it tests what the screen makes of a
+%   sequence, not what libedit does with it.
+
+term_output(terminal(_, xpce(_, TI)), Text) :-
+    send(TI, insert, Text).
+
+%!  term_typed(+T, +Id, +Buttons) is det.
+%!  term_press(+T, +Code) is det.
+%!  term_type_keys(+T, +Text) is det.
+%!  term_key_press(+T, +Key) is det.
+%
+%   Press a key at the window.  term_send/2 puts bytes on the terminal
+%   instead, which skips both the key bindings and whatever ->typed makes
+%   of the key -- Return is a CR there and a newline in a byte stream --
+%   so only these say what a client really receives.
+%
+%   term_press/2 holds Control down, Code being the control character
+%   that produces; it is BUTTON_control that makes the table look up
+%   \C-<key> rather than <key>, see characterName() in
+%   src/ker/goodies.c.  term_type_keys/2 types text a character at a
+%   time, term_key_press/2 presses a named key such as 'RET'.
+
+term_typed(terminal(_, xpce(Frame, TI)), Id, Buttons) :-
+    send(TI, typed, new(event(Id, Frame, @default, @default, Buttons))).
+
+term_press(T, Code) :-
+    button_control(Control),
+    term_typed(T, Code, Control).
+
+term_type_keys(T, Text) :-
+    atom_codes(Text, Codes),
+    forall(member(Code, Codes),
+           term_typed(T, Code, 0)).
+
+term_key_press(T, Key) :-
+    term_typed(T, Key, 0).
+
+button_control(0x1).			% BUTTON_control, src/h/graphics.h
+button_shift(0x2).			% BUTTON_shift, idem
+button_meta(0x4).			% BUTTON_meta, idem
+button_gui(0x8).			% BUTTON_gui (Apple Command), idem
+click_double(0x020000).			% CLICK_TYPE_double, idem
+
+%!  term_foreground_process(+T, -PID) is semidet.
+%
+%   Process group of the process running in the terminal, if any.
+
+term_foreground_process(terminal(_, xpce(_, TI)), PID) :-
+    get(TI, foreground_process, PID).
+
+%!  term_cursor(+T, -Col, -Row) is det.
+%
+%   Read the logical cursor position: Col is a *visual* column, Row is
+%   0-based from the top of the visible window.
+
+term_cursor(terminal(_, console), Col, Row) :-
+    !,
+    win_console_cursor(Col, Row).
+term_cursor(terminal(_, xpce(_, TI)), Col, Row) :-
+    get(TI, cursor_position, P),
+    get(P, x, Col),
+    get(P, y, Row).
+
+%!  term_row(+T, +Row, -Atom) is det.
+%
+%   Content of visible row Row.  Rows past the end of the screen model
+%   read as '' rather than failing: a display bug should surface as a
+%   mismatched row, not as a helper that quietly fails.
+
+term_row(terminal(_, console), Row, Atom) :-
+    !,
+    win_console_row(Row, Atom).
+term_row(terminal(_, xpce(_, TI)), Row, Atom) :-
+    (   get(TI, row, Row, Str)
+    ->  get(Str, value, Atom)
+    ;   Atom = ''
+    ).
+
+%!  term_cols(+T, -Cols) is det.
+%
+%   Current width of the terminal in columns.
+
+term_cols(terminal(_, console), Cols) :-
+    !,
+    win_console_size(Cols, _).
+term_cols(terminal(_, xpce(_, TI)), Cols) :-
+    get(TI, columns, Cols).
+
+%!  term_rows(+T, -Rows) is det.
+%
+%   Height of the visible window in rows.
+
+term_rows(terminal(_, console), Rows) :-
+    !,
+    win_console_size(_, Rows).
+term_rows(terminal(_, xpce(_, TI)), Rows) :-
+    get(TI, rows, Rows).
+
+%!  term_resize(+T, +WantCols, -GotCols) is det.
+%
+%   Resize the terminal to WantCols columns.  GotCols is the width
+%   actually achieved, which may differ: the xpce terminal derives its
+%   column count from pixels and the font's cell width, so only
+%   certain widths are reachable.
+
+term_resize(T, WantCols, GotCols) :-
+    T = terminal(_, console),
+    !,
+    term_rows(T, Rows),
+    win_console_resize(WantCols, Rows),
+    drive(0.2),
+    term_cols(T, GotCols).
+term_resize(T, WantCols, GotCols) :-
+    T = terminal(_, xpce(_, TI)),
+    xpce_cw(TI, CW),
+    Pixels is round((WantCols + 2) * CW),
+    send(TI, width, Pixels),
+    drive(0.2),
+    term_cols(T, GotCols).
+
+%!  xpce_cw(+TerminalImage, -CW) is det.
+%
+%   Pixel width of one character cell.  The terminal keeps one cell of
+%   margin on either side, hence the +2 (see rlc_resize_pixel_units in
+%   packages/xpce/src/txt/terminal.c).
+
+xpce_cw(TI, CW) :-
+    get(TI, width, W),
+    get(TI, columns, Cols),
+    CW is W/(Cols+2).
+
+%!  term_click(+T, +Col, +Row) is det.
+%!  term_drag(+T, +Col1, +Row1, +Col2, +Row2) is det.
+%
+%   Synthesise a left-button click, and a press-move-release.
+
+term_click(T, Col, Row) :-
+    term_click(T, Col, Row, 0).
+
+term_drag(T, Col1, Row1, Col2, Row2) :-
+    term_drag(T, Col1, Row1, Col2, Row2, 0).
+
+%!  term_click(+T, +Col, +Row, +Buttons) is det.
+%!  term_drag(+T, +Col1, +Row1, +Col2, +Row2, +Buttons) is det.
+%!  term_move(+T, +Col, +Row) is det.
+%
+%   As above, with the modifier mask spelled out, and a bare motion of
+%   the pointer.
+
+term_click(terminal(_, xpce(_, TI)), Col, Row, Buttons) :-
+    cell_pixel(TI, Col, Row, X, Y),
+    send(TI, event, new(_, event(ms_left_down, TI, X, Y, Buttons, 0))),
+    drive(0.1),
+    send(TI, event, new(_, event(ms_left_up, TI, X, Y, Buttons, 0))),
+    drive(0.3).
+
+term_drag(terminal(_, xpce(_, TI)), Col1, Row1, Col2, Row2, Buttons) :-
+    cell_pixel(TI, Col1, Row1, X1, Y1),
+    cell_pixel(TI, Col2, Row2, X2, Y2),
+    send(TI, event, new(_, event(ms_left_down, TI, X1, Y1, Buttons, 0))),
+    drive(0.1),
+    send(TI, event, new(_, event(ms_left_drag, TI, X2, Y2, Buttons, 0))),
+    drive(0.1),
+    send(TI, event, new(_, event(ms_left_up, TI, X2, Y2, Buttons, 0))),
+    drive(0.3).
+
+%   A terminal that does not report the mouse has nothing to do with a
+%   bare motion and says so by failing the event, which is not the
+%   helper's business.
+
+%!  term_double_click(+T, +Col, +Row) is det.
+%!  term_click_elsewhere(+T) is det.
+%
+%   A click the display reports as the second of two, and the click
+%   before it that makes it the second.
+%
+%   Which of the three kinds a click is, is a field of the button mask,
+%   but passing CLICK_TYPE_double does not ask for a double click: it
+%   asks initialiseEvent() for the kind *after* the one before it, which
+%   from a double click is a triple.  Nor does time tell two clicks
+%   apart here -- the events a test synthesises all carry time 0, so
+%   every click is inside the multi-click time of the one before it and
+%   only the distance between them counts.
+%
+%   Hence the click somewhere else first: far enough from anything a
+%   test clicks on to be a single click whatever came before it, which
+%   makes the one after it the second of two.  A test that clicks or
+%   drags where a double click has just been needs one too, or its click
+%   is taken for the third.  Never two in a row: the second of those is
+%   a double click on the bottom row.
+
+term_double_click(T, Col, Row) :-
+    term_click_elsewhere(T),
+    click_double(Double),
+    term_click(T, Col, Row, Double).
+
+term_click_elsewhere(T) :-
+    term_rows(T, Rows),
+    Last is Rows-1,
+    term_click(T, 0, Last, 0).
+
+term_move(terminal(_, xpce(_, TI)), Col, Row) :-
+    cell_pixel(TI, Col, Row, X, Y),
+    ignore(send(TI, event, new(_, event(loc_move, TI, X, Y, 0, 0)))),
+    drive(0.1).
+
+%!  term_wheel(+T, +Col, +Row, +Ticks, +Buttons) is det.
+%
+%   Turn the wheel Ticks notches over cell (Col,Row), positive being
+%   away from the user.  Buttons is the modifier mask.  Unlike a button
+%   event, a wheel event carries how far it turned in its <-rotation
+%   slot rather than as an initialisation argument, 15 degrees to the
+%   notch; see mapWheelMouseEvent() in packages/xpce/src/evt/event.c.
+
+term_wheel(terminal(_, xpce(_, TI)), Col, Row, Ticks, Buttons) :-
+    cell_pixel(TI, Col, Row, X, Y),
+    Rotation is Ticks*15,
+    new(Ev, event(wheel, TI, X, Y, Buttons, 0)),
+    send(Ev, slot, rotation, Rotation),
+    send(TI, event, Ev),
+    drive(0.2).
+
+%!  cell_pixel(+TerminalImage, +Col, +Row, -X, -Y) is det.
+%
+%   Pixel in the middle of a character cell.
+
+cell_pixel(TI, Col, Row, X, Y) :-
+    get(TI, height, H),
+    get(TI, rows, Rows),
+    xpce_cw(TI, CW),
+    CH is H/Rows,
+    X is integer(CW*(Col+1) + CW/2),
+    Y is integer(CH*Row + CH/2).
+
+%!  term_bubble(+T, -Length, -Start, -View) is semidet.
+%
+%   What the terminal tells its scroll bar: the total number of lines,
+%   where the visible part starts and how long it is.  Fails if the
+%   terminal has no scroll bar.
+
+term_bubble(terminal(_, xpce(_, TI)), Length, Start, View) :-
+    get(TI, scroll_bar, SB),
+    SB \== @nil,
+    send(TI, bubble_scroll_bar, SB),
+    get(SB, length, Length),
+    get(SB, start, Start),
+    get(SB, view, View).
+
+%!  term_select_all(+T) is det.
+%!  term_selection(+T, -Atom) is det.
+%!  term_has_selection(+T) is semidet.
+
+term_select_all(terminal(_, xpce(_, TI))) :-
+    send(TI, select_all).
+
+term_selection(terminal(_, xpce(_, TI)), Atom) :-
+    get(TI, selected, Sel),
+    (   Sel == @nil
+    ->  Atom = ''
+    ;   get(Sel, value, Atom)
+    ).
+
+term_has_selection(terminal(_, xpce(_, TI))) :-
+    send(TI, has_selection).
+
+%!  term_selection_string(+T, -Atom) is det.
+%
+%   The selection as the terminal is matching it, '' when it is not
+%   matching it at all.  Unlike <-selected this says what the highlight
+%   is of, which is not every selection.
+
+term_selection_string(terminal(_, xpce(_, TI)), Atom) :-
+    get(TI, selection_string, Sel),
+    (   Sel == @nil
+    ->  Atom = ''
+    ;   get(Sel, value, Atom)
+    ).
+
+%!  term_screenshot(+T, -Pixels) is semidet.
+%
+%   A coarse sample of the pixels of the first two rows of the terminal.
+%   Two samples of the same text differ exactly when it was painted
+%   differently, which is how the suite asserts that an attribute reached
+%   the painter: it need not know which font was chosen, nor where the
+%   cells are.  It cannot know the latter anyway -- Pango lays out a run
+%   as a whole, so the glyphs of a row are not aligned to the cell grid
+%   and two halves of one row cannot be compared with each other.
+%
+%   Sample rather than compare whole images: a full window is a megapixel
+%   read one `get' at a time, and every attribute this distinguishes
+%   changes far more than one pixel in eighty.  The sample must start at
+%   the terminal rather than at the frame: above it sits the menu bar,
+%   which never changes, and a sample of that compares equal whatever the
+%   terminal was told to paint.
+
+term_screenshot(terminal(_, xpce(Frame, TI)), Pixels) :-
+    get(Frame, image, Img),
+    get(Img, size, size(W, H)),
+    get(Frame?area, width, FW),
+    Scale is W/FW,                       % frame <-image is in device pixels
+    term_origin(TI, X0, Y0),
+    findall(P,
+            ( between(0, 200, I),
+              X is round((X0+I*2)*Scale),
+              X < W,
+              between(0, 40, J),
+              Y is round((Y0+J)*Scale),
+              Y < H,
+              get(Img, pixel(X, Y), C),
+              get(C, red, P)
+            ),
+            Pixels).
+
+%!  term_origin(+TerminalImage, -X, -Y) is det.
+%
+%   Top left corner of the terminal in the coordinates of its frame.
+%
+%   Adding the area of the terminal to the area of its window only gives
+%   that while the window is a member of the frame.  An Epilog window sits
+%   in a tab (see library(tab_frame)), where its area is stated in the
+%   coordinates of the tab, so ask for the position on the display and
+%   take the frame off that.
+
+term_origin(TI, X, Y) :-
+    get(TI, display_position, point(DX, DY)),
+    get(TI, frame, Frame),
+    get(Frame, area, area(FX, FY, _, _)),
+    X is DX-FX,
+    Y is DY-FY.
+
+%!  term_find(+T, +From, +For, -Index) is semidet.
+%!  term_find(+T, +From, +For, +Times, +Return, +Case, +Word, -Index) is semidet.
+%!  term_length(+T, -Length) is det.
+%!  term_contents(+T, +From, +Size, -Atom) is det.
+%!  term_select(+T, +From, +To) is det.
+%!  term_scroll_to(+T, +Index) is semidet.
+%
+%   The buffer as a flat sequence of characters.  The short term_find/4
+%   takes <-find's defaults: forwards once, case sensitive, no word
+%   boundaries and the index just past the match.
+
+term_find(terminal(_, xpce(_, TI)), From, For, Index) :-
+    get(TI, find, From, For, Index).
+
+term_find(terminal(_, xpce(_, TI)), From, For, Times, Return, Case, Word,
+          Index) :-
+    get(TI, find, From, For, Times, Return, Case, Word, Index).
+
+term_length(terminal(_, xpce(_, TI)), Length) :-
+    get(TI, length, Length).
+
+term_contents(terminal(_, xpce(_, TI)), From, Size, Atom) :-
+    get(TI, contents, From, Size, String),
+    get(String, value, Atom).
+
+term_select(terminal(_, xpce(_, TI)), From, To) :-
+    send(TI, selection, From, To).
+
+term_scroll_to(terminal(_, xpce(_, TI)), Index) :-
+    send(TI, scroll_to, Index).
+
+%!  term_blocks(+T, -Blocks) is det.
+%
+%   The commands the client has run, as terminal_block objects.
+
+term_blocks(terminal(_, xpce(_, TI)), Blocks) :-
+    get(TI, blocks, Chain),
+    chain_list(Chain, Blocks).
+
+%!  term_block_content(+Block, +What, -Atom) is semidet.
+
+term_block_content(Block, What, Atom) :-
+    get(Block, content, What, String),
+    get(String, value, Atom).
+
+%!  term_search_options(+T, -Options) is semidet.
+%
+%   Which of the boxes on the report bar are ticked, as a list of
+%   `exact_case' and `search_word'.  Fails while they are not shown,
+%   which is whenever no search is running.
+
+%!  term_report(+T, -Text) is semidet.
+%
+%   What the window is showing on its report bar.  That is where an
+%   incremental search says what it is looking for and how many of them
+%   there are, and it is the only place any of it can be read back.
+
+term_search_options(terminal(_, xpce(_, TI)), Options) :-
+    get(TI, device, Window),
+    get(Window, member, epilog_report, Bar),
+    get(Bar, displayed, @on),
+    get(Bar, member, search_options, Menu),
+    get(Menu, displayed, @on),
+    get(Menu, selection, Selection),
+    (   Selection == @nil
+    ->  Options = []
+    ;   chain_list(Selection, Items),
+        maplist([Item,Value]>>get(Item, value, Value), Items, Options)
+    ).
+
+term_report(terminal(_, xpce(_, TI)), Text) :-
+    get(TI, device, Window),
+    get(Window, member, epilog_report, Bar),
+    get(Bar, member, text, Item),
+    get(Item, string, String),
+    get(String, value, Text).
+
+%!  term_report_shown(+T) is semidet.
+%
+%   True when the bar is up at all.  <-term_report answers whatever was
+%   last put on it, message or none, so having nothing to say has to be
+%   told apart from saying nothing.
+
+term_report_shown(terminal(_, xpce(_, TI))) :-
+    get(TI, device, Window),
+    get(Window, member, epilog_report, Bar),
+    get(Bar, displayed, @on).
+
+%!  term_report_status(+T, +Text) is det.
+%!  term_report_placement(+T, +Placement) is det.
+%!  term_report_side(+T, -Side) is semidet.
+%
+%   Put Text on the report bar the way anything that has something to
+%   say does, say where the bar may go, and read back which end of the
+%   window it went to.  <-side fails while the bar is not up at all.
+
+term_report_status(terminal(_, xpce(_, TI)), Text) :-
+    get(TI, device, Window),
+    send(Window, report, status, Text).
+
+term_report_placement(terminal(_, xpce(_, TI)), Placement) :-
+    get(TI, device, Window),
+    get(Window, member, epilog_report, Bar),
+    send(Bar, placement, Placement).
+
+term_report_side(terminal(_, xpce(_, TI)), Side) :-
+    get(TI, device, Window),
+    get(Window, member, epilog_report, Bar),
+    get(Bar, displayed, @on),
+    get(Bar, area, Area),
+    get(Area, y, Y),
+    get(Window, height, Height),
+    (   Y < Height/2
+    ->  Side = top
+    ;   Side = bottom
+    ).
+
+%!  term_selection_rows(+T, -Rows) is semidet.
+%
+%   The rows the two ends of the selection are on, as Start-End.  Fails
+%   when there is no selection.
+
+term_selection_rows(terminal(_, xpce(_, TI)), Start-End) :-
+    get(TI, selection_start, point(_, Start)),
+    get(TI, selection_end, point(_, End)).
+
+%!  term_exact_case(+T, +Bool) is det.
+%!  term_search_word(+T, +Bool) is det.
+%
+%   Set what counts as a match, for a search and for a selection alike.
+%   They outlive both, so a test that sets one must put it back.
+
+term_exact_case(terminal(_, xpce(_, TI)), Bool) :-
+    send(TI, exact_case, Bool).
+
+term_search_word(terminal(_, xpce(_, TI)), Bool) :-
+    send(TI, search_word, Bool).
+
+%!  term_highlight(+T, +Row, -Marks) is det.
+%
+%   What is painted over each column of a visible row, as an atom of
+%   one character per column: `H' for the hit of an incremental search,
+%   `o' for one of its other matches, `S' for the selection and `.' for
+%   a cell drawn from its own attributes.  Trailing `.' are dropped, so
+%   a row with nothing on it comes back as ''.
+%
+%   <-cell_style is the only way in: the terminal hands out its text
+%   and its caret, and would otherwise say nothing at all about how any
+%   of it is painted.
+
+term_highlight(T, Row, Marks) :-
+    T = terminal(_, xpce(_, TI)),
+    term_cols(T, Cols),
+    Last is Cols-1,
+    findall(Mark,
+            ( between(0, Last, Col),
+              (   get(TI, cell_style, Col, Row, Style)
+              ->  highlight_mark(TI, Style, Mark)
+              ;   Mark = '.'
+              )
+            ),
+            All),
+    strip_trailing_dots(All, Marks0),
+    atomic_list_concat(Marks0, Marks).
+
+highlight_mark(TI, Style, Mark) :-
+    (   get(TI, isearch_style, Style)
+    ->  Mark = 'H'
+    ;   get(TI, isearch_other_style, Style)
+    ->  Mark = o
+    ;   get(TI, selection_style, Style)
+    ->  Mark = 'S'
+    ;   Mark = '?'
+    ).
+
+strip_trailing_dots(Marks, Stripped) :-
+    reverse(Marks, Reversed),
+    exclude_leading_dots(Reversed, Tail),
+    reverse(Tail, Stripped).
+
+exclude_leading_dots(['.'|T0], T) :-
+    !,
+    exclude_leading_dots(T0, T).
+exclude_leading_dots(T, T).
+
+%!  term_capability(+T, ?Cap) is nondet.
+%
+%   True when the backend supports Cap:
+%
+%       mouse       - term_click/3 and term_drag/5 work
+%       selection   - the terminal maintains a selection
+%       combining   - the screen model can hold combining marks
+%       non_bmp     - ... and characters outside the BMP
+%       margin_past_last_column
+%                   - a caret waiting to wrap is reported one column
+%                     past the last, rather than on it
+%       wcwidth_font  - the line editor and the screen agree on column
+%                     widths because both ask the terminal (<-cwidth)
+%                     rather than each keeping its own table
+%       program_output
+%                   - term_output/2 works, i.e. we can write to the
+%                     screen without going through the line editor
+%       pty_signals - the window runs its client on a pty whose
+%                     foreground process group it can see, so a process
+%                     started in it gets the control keys
+%       child_on_terminal
+%                   - a process the Prolog thread starts runs on this
+%                     terminal: it writes to the screen and reads what
+%                     is typed at the window
+
+term_capability(terminal(Backend, _), Cap) :-
+    backend_capability(Backend, Cap).
+
+%!  magic_margins is semidet.
+%
+%   True when the line editor believes the terminal defers its wrap,
+%   i.e. when the terminal description it reads has `xenl'.  A caret
+%   the terminal's own reflow left on the right margin is the one thing
+%   the redisplay still predicts from the description rather than
+%   settling itself, so a test of that prediction only makes sense
+%   where the description and the terminal agree.  The terminal is
+%   always the xpce one, which does defer its wrap.
+
+magic_margins :-
+    current_backend(Backend),
+    Backend \== console,       % a console wraps as the column is written
+    (   Backend = child(Profile)
+    ->  term_profile_term(Profile, TERM)
+    ;   getenv('TERM', TERM)
+    ),
+    terminfo_flag(TERM, xenl).
+
+backend_capability(epilog,   mouse).
+backend_capability(epilog,   selection).
+backend_capability(epilog,   combining).
+backend_capability(epilog,   wcwidth_font).
+backend_capability(epilog,   non_bmp).
+backend_capability(epilog,   margin_past_last_column).
+backend_capability(epilog,   program_output).
+backend_capability(child(_), mouse).
+backend_capability(child(_), selection).
+backend_capability(child(_), combining).
+backend_capability(child(_), non_bmp).
+backend_capability(child(_), margin_past_last_column).
+%  `pty_signals' is Unix-only: a Windows pseudo console has no
+%  foreground process group to ask about.  It is epilog-only for a
+%  different reason: a child backend would run the tests against a
+%  grandchild, which is the same code path at three times the cost.
+
+backend_capability(epilog, pty_signals) :-
+    \+ current_prolog_flag(windows, true).
+
+%  `child_on_terminal' holds on both platforms, but for different
+%  reasons: POSIX hands the child the pty, Windows puts it on the
+%  terminal's pseudo console.  Epilog only, as under a child backend
+%  shell/1 would start a grandchild.
+%
+%  Not under Wine, which answers S_OK for a pseudo console and then does
+%  not put the child on it: its output goes to whatever console the
+%  process already had and nothing arrives on the handles passed in.
+
+backend_capability(epilog, child_on_terminal) :-
+    \+ current_prolog_flag(wine_version, _).
+
+%  `program_output' is epilog-only although the screen is the same
+%  object under a child: there the child owns the screen, so writing
+%  behind its back races with its own redisplay.
+%
+%  The console has no mouse or selection we can drive, and a cell holds
+%  one UTF-16 unit, so a base and its combining marks cannot both be
+%  there to read back.  Nothing about `combining' is skipped because it
+%  is hard; it cannot be represented.
+
+%!  needs(+Caps) is semidet.
+%
+%   plunit condition: true when the backend of the current run has all
+%   of Caps.  Used as `condition(needs([mouse]))` so a unit is skipped
+%   rather than failed on a backend that cannot support it.
+
+needs(Caps) :-
+    current_backend(Backend),
+    forall(member(Cap, Caps), backend_capability(Backend, Cap)).
+
+
+		 /*******************************
+		 *         CHILD BACKEND        *
+		 *******************************/
+
+%!  term_profile_term(+Profile, -TERM) is det.
+%
+%   TERM setting for a capability profile.  A profile names the
+%   terminal description libedit will read, which is what decides
+%   which redisplay strategy it uses.  Most profiles are simply the
+%   name of a stock description; `winconsole' is one we bring along.
+
+term_profile_term(winconsole, 'swipl-winconsole') :-
+    !.
+term_profile_term(Profile, Profile).
+
+%!  profile_terminfo_source(+Profile, -File) is semidet.
+%
+%   Terminal description this suite ships for Profile.  There is one:
+%   swipl.exe on a Windows console reads no description at all -- it
+%   links the fake termcap in packages/libedit/libedit/src/win_ncurses.c
+%   -- so to put libedit through the same decisions on a Unix pty we
+%   have to hand it that table as a description of its own.
+
+profile_terminfo_source(winconsole, File) :-
+    source_file(term_profile_term(_,_), Here),
+    file_directory_name(Here, Dir),
+    directory_file_path(Dir, 'swipl-winconsole.ti', File).
+
+%!  ensure_terminfo(+Backend) is det.
+%
+%   Compile the description a profile brings along, and point TERMINFO
+%   at it.  Setting it in this process rather than only in the child's
+%   command line means tput sees it too, so terminfo_string/3 and
+%   magic_margins/0 answer for the same description libedit reads.
+%   ncurses searches $TERMINFO first and the system database after, so
+%   the stock profiles keep working.
+
+:- dynamic terminfo_compiled/1.
+
+ensure_terminfo(Backend) :-
+    (   Backend = child(Profile),
+        profile_terminfo_source(Profile, Source)
+    ->  (   terminfo_compiled(Profile)
+        ->  true
+        ;   terminfo_scratch_dir(Dir),
+            compile_terminfo(Source, Dir),
+            setenv('TERMINFO', Dir),
+            assertz(terminfo_compiled(Profile))
+        )
+    ;   true
+    ).
+
+terminfo_scratch_dir(Dir) :-
+    tmp_file(terminfo, Base),
+    atom_concat(Base, '.d', Dir),
+    make_directory(Dir).
+
+compile_terminfo(Source, Dir) :-
+    process_create(path(tic), ['-o', file(Dir), file(Source)],
+                   [ stdout(null),
+                     stderr(null),
+                     process(PID)
+                   ]),
+    process_wait(PID, Status),
+    (   Status == exit(0)
+    ->  true
+    ;   throw(error(terminfo_compile_failed(Source, Status), _))
+    ).
+
+%!  child_done_marker(-Marker) is det.
+%
+%   Text the epilog thread prints once shell/1 has returned, i.e. once
+%   the child is really gone.  Waiting for "a prompt" instead would
+%   return at once, because the child's own prompt is still on screen;
+%   we would then tear the terminal down with its thread still inside
+%   shell/1.
+
+child_done_marker('<<child-exited>>').
+
+%!  start_child(+T, +Profile) is det.
+%
+%   Start a child `swipl` on the terminal's pty by asking the epilog
+%   thread to run shell/1.  System() (src/os/pl-os.c) dups the calling
+%   thread's user streams onto the child's 0/1/2, and in an epilog
+%   thread those are the terminal's pty, so the child gets the
+%   terminal.  TERM is set on the command line, so it applies to the
+%   child only.
+%
+%   After the child's prompt appears we clear the screen, so the child
+%   starts from row 0 exactly like the epilog backend does.
+
+start_child(T, Profile) :-
+    term_profile_term(Profile, TERM),
+    current_prolog_flag(executable, Exe),
+    child_done_marker(Marker),
+    term_cursor(T, _, ParentRow),
+    format(atom(Cmd),
+           'shell("TERM=~w \'~w\' -q"), format("~~n~w~~n").\n',
+           [TERM, Exe, Marker]),
+    term_send(T, Cmd),
+    (   wait_until(child_started(T, ParentRow), 30)
+    ->  true
+    ;   throw(error(terminal_child_failed(Profile), _))
+    ),
+    key(T, ctrl_l),
+    wait_for_prompt(T).
+
+%!  child_started(+T, +ParentRow) is semidet.
+%
+%   True once the child's own prompt is on screen.  The prompt we typed
+%   the shell/1 goal into is still there, so wait for a prompt *below*
+%   it rather than for "a prompt".
+
+child_started(T, ParentRow) :-
+    term_cursor(T, _, Row),
+    Row > ParentRow,
+    at_prompt(T).
+
+%!  stop_child(+T) is semidet.
+%
+%   Halt the child and wait until the epilog thread reports that
+%   shell/1 has returned.  Fails if the child does not go away, in
+%   which case the terminal is torn down regardless -- there is
+%   nothing better to do at cleanup time.
+
+stop_child(T) :-
+    child_done_marker(Marker),
+    catch(( key(T, ctrl_e),           % whatever the test left on the
+            key(T, ctrl_u),           % line must not swallow the halt
+            term_send(T, 'halt.\n'),
+            wait_until(marker_on_screen(T, Marker), 15)
+          ), _, fail).
+
+marker_on_screen(T, Marker) :-
+    term_rows(T, Rows),
+    between(0, Rows, Row),
+    term_row(T, Row, Line),
+    sub_atom(Line, _, _, _, Marker),
+    !.
+
+
+		 /*******************************
+		 *        CONSOLE BACKEND       *
+		 *******************************/
+
+%!  start_console(+T) is det.
+%
+%   Open a Windows console, put a `swipl' on it and wait for its
+%   prompt.  Unlike the other backends this one reads the screen the
+%   user would be looking at -- conhost's own buffer -- rather than a
+%   terminal of ours, so it is the only one that can show what the
+%   console makes of what libedit writes.
+%
+%   The suite's own output must not be on that console; see
+%   win_console_open/2.
+
+start_console(T) :-
+    current_prolog_flag(executable, Exe),
+    %  A process has one console, so a test that wants a terminal of its
+    %  own gets this one back rather than a second.
+    catch(win_console_close, _, true),
+    win_console_open(80, 25),
+    format(atom(Cmd), '"~w" -q', [Exe]),
+    win_console_spawn(Cmd),
+    (   wait_until(at_prompt(T), 30)
+    ->  true
+    ;   throw(error(terminal_console_failed(Cmd), _))
+    ),
+    check_console_interprets_escapes(T),
+    key(T, ctrl_l),
+    wait_for_prompt(T).
+
+%!  check_console_interprets_escapes(+T) is det.
+%
+%   The line editor writes cursor motion as escape sequences and hands
+%   them to WriteConsole().  A console acts on those only with
+%   ENABLE_VIRTUAL_TERMINAL_PROCESSING set, which the line editor turns
+%   on for itself as it starts up.  Where that does not take, the
+%   sequences land in the screen buffer as text.
+%
+%   Test the screen rather than the mode word: wine's console accepts
+%   the flag and ignores it, so the flag says everything is fine while
+%   every row reads back full of escapes.  An ESC anywhere on screen
+%   means no assertion about content can hold, so say that once instead
+%   of letting it look like forty failures.
+
+check_console_interprets_escapes(T) :-
+    term_rows(T, Rows),
+    Last is Rows-1,
+    (   between(0, Last, Row),
+        term_row(T, Row, Line),
+        sub_atom(Line, _, 1, _, '\e')
+    ->  win_console_mode(_In, Out),
+        throw(error(console_does_not_interpret_escapes(Row, Line, Out), _))
+    ;   true
+    ).
 
 
 		 /*******************************
 		 *       SETUP / TEARDOWN       *
 		 *******************************/
 
-%   We create one epilog terminal per test UNIT (via begin_tests/2's
-%   setup and cleanup options) and reuse it across the tests of the
-%   unit.  Each test's own setup calls reset_input/1 to clear whatever
-%   the previous test left on the command line, so tests see a fresh
-%   empty prompt without the overhead of spawning a new window.
+%   We create one terminal per test UNIT (via begin_tests/2's setup
+%   and cleanup options) and reuse it across the tests of the unit.
+%   Each test's own setup calls reset_input/1 to clear whatever the
+%   previous test left on the command line, so tests see a fresh empty
+%   prompt without the overhead of spawning a new terminal.
 
-%!  start_terminal(-Frame, -Terminal) is det.
+%!  start_terminal(-Terminal) is det.
 %
-%   Create a fresh epilog terminal and wait for the initial prompt.
-%   Frame is the epilog_frame; Terminal is its prolog_terminal.
+%   Open a terminal for the current backend and wait for the initial
+%   prompt.
 
-start_terminal(Frame, Terminal) :-
-    epilog([ object(Frame),
-             title('test_terminal'),
-             rows(25),
-             cols(80)
-           ]),
-    get(Frame, current_terminal, Terminal),
+start_terminal(Terminal) :-
+    current_backend(Backend),
+    term_start(Backend, Terminal),
+    wait_for_prompt(Terminal),
+    sync_client(Terminal),
+    wait_settled(Terminal).
+
+%!  sync_client(+Terminal) is det.
+%
+%   Wait until the client has written everything it still had to say
+%   about the state it starts in.  Waiting for the prompt does not
+%   cover that, and neither does waiting for the screen to stop
+%   changing: the window sends the client a SIGWINCH while it is still
+%   settling on its size, and the client answers that with a redraw of
+%   its input line.  The redraw paints the prompt where the prompt
+%   already is, so it leaves nothing for wait_settled/1 to see, and a
+%   test that cleared the screen in the meantime finds the prompt back
+%   on top of what it painted.
+%
+%   Type a character instead and wait for the client to echo it.  The
+%   echo can only come after everything the client had queued before
+%   it, so seeing it proves the redraw has been and gone.  ^U takes the
+%   character away again, which leaves the empty prompt we started
+%   from.  Gives up rather than failing, as wait_settled/1 does.
+
+sync_client(Terminal) :-
+    type(Terminal, x),
+    ignore(wait_until(echoed(Terminal, x), 5)),
+    key(Terminal, ctrl_u),
     wait_for_prompt(Terminal).
 
-%!  stop_terminal(+Frame) is det.
+echoed(Terminal, Char) :-
+    cursor(Terminal, _, Row),
+    row_text(Terminal, Row, Line),
+    atom(Line),
+    sub_atom(Line, _, _, _, Char).
 
-stop_terminal(Frame) :-
-    (   object(Frame)
-    ->  in_pce_thread(send(Frame, destroy))
-    ;   true
-    ).
+%!  wait_settled(+Terminal) is det.
+%
+%   Wait until the screen stops changing.  Waiting for the prompt is not
+%   enough: it is drawn while the rest of the banner is still on its way,
+%   and on a machine running several of these at once the rest can arrive
+%   after a test has painted the screen and overwrite what it painted.
+%
+%   Polls rather than sleeps, so it costs what it has to and no more, and
+%   waits longer where waiting is needed.  Gives up rather than failing:
+%   a terminal that never goes quiet is the test's problem to report.
+
+wait_settled(Terminal) :-
+    screen_signature(Terminal, Sig),
+    wait_settled(Terminal, Sig, 0, 0).
+
+wait_settled(_Terminal, _Prev, Still, _Polls) :-
+    Still >= 5,                         % nothing moved for five rounds
+    !.
+wait_settled(_Terminal, _Prev, _Still, Polls) :-
+    Polls >= 500,                       % ... or it never stops
+    !.
+wait_settled(Terminal, Prev, Still, Polls) :-
+    wait(0.01),
+    screen_signature(Terminal, Sig),
+    (   Sig == Prev
+    ->  Still1 is Still+1
+    ;   Still1 = 0
+    ),
+    Polls1 is Polls+1,
+    wait_settled(Terminal, Sig, Still1, Polls1).
+
+screen_signature(Terminal, Rows) :-
+    term_rows(Terminal, N),
+    Last is N-1,
+    findall(Row,
+            ( between(0, Last, I),
+              term_row(Terminal, I, Row)
+            ),
+            Rows).
+
+%!  stop_terminal(+Terminal) is det.
+
+stop_terminal(Terminal) :-
+    term_stop(Terminal).
 
 %!  setup_unit is det.
 %!  cleanup_unit is det.
 %
-%   Unit-level hooks: open/close the epilog terminal shared by all
-%   tests in a PLUnit unit.  The frame and terminal references are
-%   stashed in a non-backtrackable global so individual tests can
-%   retrieve them through current_test_terminal/1.
+%   Unit-level hooks: open/close the terminal shared by all tests in a
+%   PLUnit unit.  The handle is stashed in a non-backtrackable global
+%   so individual tests can retrieve it through
+%   current_test_terminal/1.
 
 setup_unit :-
-    start_terminal(Frame, Terminal),
-    nb_setval(terminal_test, Frame-Terminal).
+    start_terminal(Terminal),
+    nb_setval(terminal_test, Terminal).
 
 cleanup_unit :-
-    (   nb_current(terminal_test, Frame-_)
+    (   nb_current(terminal_test, Terminal)
     ->  nb_delete(terminal_test),
-        stop_terminal(Frame)
+        stop_terminal(Terminal)
     ;   true
     ).
 
 %!  current_test_terminal(-Terminal) is det.
 
 current_test_terminal(Terminal) :-
-    nb_getval(terminal_test, _-Terminal).
+    nb_getval(terminal_test, Terminal).
 
 %!  test_begin(-Terminal) is det.
 %
@@ -173,29 +1234,133 @@ reset_input(Terminal) :-
     key(Terminal, ctrl_l),
     wait_for_prompt(Terminal).
 
+%!  set_bracketed_paste(+Terminal, +Bool) is det.
+%
+%   Turn libedit's bracketed paste mode on or off in the client, and
+%   wait until it has confirmed the new state.  Used to take away the
+%   fallback signal that a line editor owns the input, which is the
+%   situation of a client editing in vi mode.
+
+set_bracketed_paste(Terminal, Bool) :-
+    set_el_option(Terminal, bracketed_paste, Bool).
+
+%!  set_prompt_marks(+Terminal, +Bool) is det.
+%
+%   Turn the OSC 133 prompt marks on or off in the client, and wait
+%   until it has confirmed the new state.
+
+set_prompt_marks(Terminal, Bool) :-
+    set_el_option(Terminal, prompt_marks, Bool).
+
+%!  set_el_option(+Terminal, +Name, +Bool) is det.
+%
+%   Set a boolean el_set/2 option in the client and wait until el_get/2
+%   reports it back.  The reply is printed rather than trusted: a
+%   client that did not take the option would otherwise leave the test
+%   asserting the behaviour of the state it meant to leave behind.
+
+set_el_option(Terminal, Name, Bool) :-
+    reset_input(Terminal),
+    format(atom(Goal),
+           'el_set(user_input, ~w(~w)), \c
+            el_get(user_input, ~w(B)), format("~w=~~w~~n", [B]).',
+           [Name, Bool, Name, Name]),
+    type(Terminal, Goal),
+    key(Terminal, enter),
+    format(atom(Marker), '~w=~w', [Name, Bool]),
+    assertion(wait_until(marker_on_screen(Terminal, Marker), 15)),
+    assertion(wait_for_prompt(Terminal)).
+
+%!  rows_above(+Terminal, +N) is semidet.
+%
+%   Make sure the prompt has at least N rows above it by running
+%   queries until it has moved far enough down.  How far down a
+%   terminal starts out differs per backend, so a test that needs room
+%   above the input line asks for it rather than assuming it.
+%
+%   Submitting an empty line would not do: the reader wants a term, so
+%   it answers with the continuation prompt rather than a new query.
+
+rows_above(Terminal, N) :-
+    rows_above(Terminal, N, N).
+
+rows_above(Terminal, N, Tries) :-
+    cursor(Terminal, _, Row),
+    (   Row >= N
+    ->  true
+    ;   Tries > 0,
+        type(Terminal, 'true.'),
+        key(Terminal, enter),
+        wait_for_prompt(Terminal),
+        Tries1 is Tries - 1,
+        rows_above(Terminal, N, Tries1)
+    ).
+
 
 		 /*******************************
-		 *   xpce ↔ Prolog CONVERSION   *
+		 *          SHORTHANDS          *
 		 *******************************/
 
 %!  cursor(+Terminal, -Col, -Row) is det.
-%
-%   Read the logical cursor position.  <-cursor_position returns an
-%   xpce Point object; unpack it into Prolog integers.
-
-cursor(Terminal, Col, Row) :-
-    get(Terminal, cursor_position, P),
-    get(P, x, Col),
-    get(P, y, Row).
-
 %!  row_text(+Terminal, +Row, -Atom) is det.
 %
-%   Read the content of a visible row as a Prolog atom.  <-row
-%   returns an xpce String; pull its value out.
+%   Shorthands for the two readback primitives, kept because the tests
+%   below use them on nearly every line.
+
+cursor(Terminal, Col, Row) :-
+    term_cursor(Terminal, Col, Row).
 
 row_text(Terminal, Row, Atom) :-
-    get(Terminal, row, Row, Str),
-    get(Str, value, Atom).
+    term_row(Terminal, Row, Atom).
+
+%!  out(+Terminal, +Text) is det.
+%
+%   Write to the screen as a program running on the terminal would,
+%   escape sequences and all, and let the screen settle.  Text may be a
+%   list of atomics, which saves the tests a format/3 to glue a
+%   sequence and its payload together.
+
+out(T, Parts) :-
+    is_list(Parts),
+    !,
+    atomic_list_concat(Parts, Text),
+    out(T, Text).
+out(T, Text) :-
+    term_output(T, Text),
+    drive(0.05).
+
+%!  alt_screen(+T, +Text) is det.
+%!  normal_screen(+T) is det.
+%
+%   Enter the alternate screen (DEC private mode 1049) with Text on its
+%   top row, and leave it again.
+
+alt_screen(T, Text) :-
+    out(T, ['\e[?1049h\e[H', Text]).
+
+normal_screen(T) :-
+    out(T, '\e[?1049l').
+
+%!  buffer(+T, +Text) is det.
+%
+%   Leave Text as the entire buffer, scroll back and all: ED 3 lets go
+%   of the saved lines and ED 2 of the window, which together start the
+%   ring over.  Without the first a test would see whatever the ones
+%   before it left behind.
+
+buffer(T, Text) :-
+    out(T, '\e[3J\e[H\e[2J'),
+    out(T, Text).
+
+%!  scrollback(+T, +N) is det.
+%
+%   Clear the screen and write N numbered lines.  N is more than the
+%   screen holds, so the first ones end up in the scroll back.
+
+scrollback(T, N) :-
+    out(T, '\e[2J\e[H'),
+    forall(between(1, N, I),
+           out(T, ['line', I, '\r\n'])).
 
 
 		 /*******************************
@@ -249,7 +1414,10 @@ wait_until_(Goal, Deadline) :-
 %   Wait for an xpce event while dispatching input.
 
 wait(Time) :-
-    pce_principal:pce_dispatch(-1, Time).
+    (   current_backend(console)
+    ->  sleep(Time)
+    ;   pce_principal:pce_dispatch(-1, Time)
+    ).
 
 %!  wait_for_prompt(+Terminal) is semidet.
 %
@@ -264,7 +1432,25 @@ at_prompt(Terminal) :-
     cursor(Terminal, _, Row),
     row_text(Terminal, Row, Line),
     atom(Line),
-    sub_atom(Line, _, _, 0, '?- ').
+    (   sub_atom(Line, _, _, 0, '?- ')
+    ->  true
+    ;   %  A console pads every row to the full width, so the space
+        %  after the prompt cannot be told from the padding and is
+        %  trimmed away with it.
+        sub_atom(Line, _, _, 0, '?-')
+    ).
+
+%!  waiting_for(+Terminal, +Prompt) is semidet.
+%
+%   True when the caret sits at the end of a row ending in Prompt.
+%   Used to wait for a goal that prompts for itself, where there is no
+%   toplevel prompt to wait for.
+
+waiting_for(Terminal, Prompt) :-
+    cursor(Terminal, _, Row),
+    row_text(Terminal, Row, Line),
+    atom(Line),
+    sub_atom(Line, _, _, 0, Prompt).
 
 %!  prompt_col(+Terminal, -Col) is det.
 %
@@ -285,45 +1471,303 @@ prompt_col(Terminal, Col) :-
 %   terminal has a chance to echo.  Text may be an atom or a string.
 
 type(Terminal, Text) :-
-    send(Terminal, send, Text),
+    term_send(Terminal, Text),
     drive(0.1).
 
 %!  key(+Terminal, +Name) is det.
 %
-%   Send a symbolic key.  Uses the byte sequences libedit expects on a
-%   VT-style terminal.
+%   Send a symbolic key.
 
+key(terminal(console, _), Name) :-
+    !,
+    console_key(Name),
+    drive(0.05).
 key(Terminal, Name) :-
-    key_bytes(Name, Bytes),
+    key_bytes(Terminal, Name, Bytes),
     atom_codes(Atom, Bytes),
-    send(Terminal, send, Atom),
+    term_send(Terminal, Atom),
     drive(0.05).
 
-% ctrl bytes --------------------------------------------------------------
-key_bytes(ctrl_a,         [0x01]).
-key_bytes(ctrl_b,         [0x02]).
-key_bytes(ctrl_d,         [0x04]).
-key_bytes(ctrl_e,         [0x05]).
-key_bytes(ctrl_f,         [0x06]).
-key_bytes(ctrl_k,         [0x0B]).
-key_bytes(ctrl_l,         [0x0C]).
-key_bytes(ctrl_u,         [0x15]).
-key_bytes(backspace,      [0x7F]).          % libedit treats DEL as backspace
-key_bytes(enter,          [0'\r]).
-key_bytes(tab,            [0'\t]).
+%!  console_key(+Name) is det.
+%
+%   Press a key on a Windows console.  The editor bindings are control
+%   characters and go as themselves; the rest are keys the console
+%   reports as key codes, and letting it turn those into the escape
+%   sequence the editor reads is part of what a console run is for.
+
+console_key(Name) :-
+    editor_key_bytes(Name, Bytes),
+    !,
+    atom_codes(Atom, Bytes),
+    win_console_send(Atom).
+console_key(Name) :-
+    win_console_key(Name).
+
+%!  key_bytes(+Terminal, +Name, -Bytes) is det.
+%
+%   Byte sequence for a symbolic key.  Control and Meta keys are
+%   bindings inside the line editor and mean the same on every
+%   terminal.  The cursor and editing keys belong to the terminal, and
+%   the terminal here is always the xpce one, which sends the VT
+%   sequences below (see typedTerminalImage() in
+%   packages/xpce/src/txt/terminal.c).
+%
+%   Whether the line editor makes anything of them is another matter:
+%   it binds the keys its terminal description gives it, so on a
+%   description that has no Delete key at all -- `ansi' and `vt100'
+%   have none -- ESC [ 3 ~ is not a key press but four characters to
+%   type.  Drive those operations through the editor binding that does
+%   the same thing instead, so a test of the redisplay does not fail
+%   over a key the terminal cannot report.
+
+key_bytes(_Terminal, Name, Bytes) :-
+    editor_key_bytes(Name, Bytes),
+    !.
+key_bytes(Terminal, Name, Bytes) :-
+    terminal_key(Name, Cap, Sequence, Fallback),
+    (   term_terminfo(Terminal, TERM),
+        terminfo_string(TERM, Cap, _)
+    ->  Bytes = Sequence
+    ;   editor_key_bytes(Fallback, Bytes)
+    ).
+
+% Line editor bindings: the same bytes everywhere ------------------------
+editor_key_bytes(ctrl_a,         [0x01]).
+editor_key_bytes(ctrl_b,         [0x02]).
+editor_key_bytes(ctrl_d,         [0x04]).
+editor_key_bytes(ctrl_e,         [0x05]).
+editor_key_bytes(ctrl_f,         [0x06]).
+editor_key_bytes(ctrl_k,         [0x0B]).
+editor_key_bytes(ctrl_l,         [0x0C]).
+editor_key_bytes(ctrl_n,         [0x0E]).
+editor_key_bytes(ctrl_p,         [0x10]).
+editor_key_bytes(ctrl_u,         [0x15]).
+editor_key_bytes(backspace,      [0x7F]).   % libedit treats DEL as backspace
+editor_key_bytes(enter,          [0'\r]).
+editor_key_bytes(tab,            [0'\t]).
 % Meta = ESC prefix on VT terminals
-key_bytes(meta_b,         [0'\e, 0'b]).
-key_bytes(meta_f,         [0'\e, 0'f]).
-key_bytes(meta_d,         [0'\e, 0'd]).
-key_bytes(meta_backspace, [0'\e, 0x7F]).
-% ANSI CSI sequences
-key_bytes(home,           [0'\e, 0'[, 0'H]).
-key_bytes(end,            [0'\e, 0'[, 0'F]).
-key_bytes(cursor_up,      [0'\e, 0'[, 0'A]).
-key_bytes(cursor_down,    [0'\e, 0'[, 0'B]).
-key_bytes(cursor_right,   [0'\e, 0'[, 0'C]).
-key_bytes(cursor_left,    [0'\e, 0'[, 0'D]).
-key_bytes(delete,         [0'\e, 0'[, 0'3, 0'~]).
+editor_key_bytes(meta_b,         [0'\e, 0'b]).
+editor_key_bytes(meta_f,         [0'\e, 0'f]).
+editor_key_bytes(meta_d,         [0'\e, 0'd]).
+editor_key_bytes(meta_backspace, [0'\e, 0x7F]).
+
+% Keys of the terminal itself: name, the terminfo capability that says
+% whether the line editor knows this key, the bytes the xpce terminal
+% sends for it, and the editor binding for the same operation to fall
+% back on when it does not.
+terminal_key(cursor_up,    kcuu1, [0'\e, 0'[, 0'A],       ctrl_p).
+terminal_key(cursor_down,  kcud1, [0'\e, 0'[, 0'B],       ctrl_n).
+terminal_key(cursor_right, kcuf1, [0'\e, 0'[, 0'C],       ctrl_f).
+terminal_key(cursor_left,  kcub1, [0'\e, 0'[, 0'D],       ctrl_b).
+terminal_key(home,         khome, [0'\e, 0'[, 0'H],       ctrl_a).
+terminal_key(end,          kend,  [0'\e, 0'[, 0'F],       ctrl_e).
+terminal_key(delete,       kdch1, [0'\e, 0'[, 0'3, 0'~],  ctrl_d).
+
+%!  terminfo_string(+TERM, +Cap, -Bytes) is semidet.
+%
+%   Value of a terminfo string capability, or failure when TERM has no
+%   such capability.  Asks tput, and remembers the answer -- including
+%   "no such capability", recorded as (-) -- so each is looked up once.
+
+:- dynamic terminfo_cache/3.                % TERM, Cap, Bytes or (-)
+
+terminfo_string(TERM, Cap, Bytes) :-
+    (   terminfo_cache(TERM, Cap, Cached)
+    ->  true
+    ;   (   catch(tput(TERM, Cap, Found), _, fail)
+        ->  Cached = Found
+        ;   Cached = (-)
+        ),
+        assertz(terminfo_cache(TERM, Cap, Cached))
+    ),
+    Cached \== (-),
+    Bytes = Cached.
+
+%!  terminfo_flag(+TERM, +Cap) is semidet.
+%
+%   True when TERM has the boolean capability Cap.  tput reports those
+%   in its exit status rather than on standard output.
+
+terminfo_flag(TERM, Cap) :-
+    (   terminfo_cache(TERM, Cap, Cached)
+    ->  true
+    ;   (   catch(tput_status(TERM, Cap), _, fail)
+        ->  Cached = true
+        ;   Cached = (-)
+        ),
+        assertz(terminfo_cache(TERM, Cap, Cached))
+    ),
+    Cached == true.
+
+tput_status(TERM, Cap) :-
+    process_create(path(tput), ['-T', TERM, Cap],
+                   [ stdout(null),
+                     stderr(null),
+                     process(PID)
+                   ]),
+    process_wait(PID, Status),
+    Status == exit(0).
+
+tput(TERM, Cap, Bytes) :-
+    process_create(path(tput), ['-T', TERM, Cap],
+                   [ stdout(pipe(Out)),
+                     stderr(null),
+                     process(PID)
+                   ]),
+    setup_call_cleanup(
+        read_string(Out, _, String),
+        process_wait(PID, Status),
+        close(Out)),
+    Status == exit(0),
+    String \== "",
+    string_codes(String, Bytes).
+
+%!  term_terminfo(+Terminal, -TERM) is semidet.
+%
+%   Name of the terminal description the line editor on the other end
+%   is reading.
+
+term_terminfo(terminal(child(Profile), _), TERM) :-
+    !,
+    term_profile_term(Profile, TERM).
+term_terminfo(terminal(epilog, _), TERM) :-
+    getenv('TERM', TERM).                   % as fix_term/0 left it
+
+
+		 /*******************************
+		 *         MOUSE HELPERS        *
+		 *******************************/
+
+%!  click(+Terminal, +Col, +Row) is det.
+%!  drag(+Terminal, +Col1, +Row1, +Col2, +Row2) is det.
+%
+%   Synthesise a left-button click, and a press-move-release.
+
+click(T, Col, Row) :-
+    term_click(T, Col, Row).
+
+click(T, Col, Row, Buttons) :-
+    term_click(T, Col, Row, Buttons).
+
+drag(T, Col1, Row1, Col2, Row2) :-
+    term_drag(T, Col1, Row1, Col2, Row2).
+
+move(T, Col, Row) :-
+    term_move(T, Col, Row).
+
+%!  wheel(+T, +Col, +Row, +Ticks) is det.
+%!  wheel(+T, +Col, +Row, +Ticks, +Buttons) is det.
+%
+%   Turn the wheel over a cell; positive Ticks is up (away from the
+%   user), which scrolls back.
+
+wheel(T, Col, Row, Ticks) :-
+    wheel(T, Col, Row, Ticks, 0).
+
+wheel(T, Col, Row, Ticks, Buttons) :-
+    term_wheel(T, Col, Row, Ticks, Buttons).
+
+
+		 /*******************************
+		 *      FOREGROUND CHILD        *
+		 *******************************/
+
+%!  start_foreground(+T, +Command) is det.
+%!  stop_foreground(+T) is det.
+%
+%   Run Command in the terminal with shell/1 and wait until it owns the
+%   pty.  stop_foreground/1 gets rid of it again and is a no-op when
+%   the test already did.
+
+start_foreground(T, Command) :-
+    format(atom(Goal), 'shell("~w").\n', [Command]),
+    term_send(T, Goal),
+    (   wait_until(term_foreground_process(T, _), 15)
+    ->  true
+    ;   throw(error(terminal_no_foreground_process(Command), _))
+    ).
+
+stop_foreground(T) :-
+    (   term_foreground_process(T, _)
+    ->  press(T, ctrl_c),
+        wait_until(\+ term_foreground_process(T, _), 15)
+    ;   true
+    ),
+    wait_for_prompt(T).
+
+%!  press(+T, +Key) is det.
+%
+%   Press a control key at the window and let the terminal settle.
+
+press(T, Key) :-
+    control_code(Key, Code),
+    term_press(T, Code),
+    drive(0.2).
+
+control_code(ctrl_c, 0x03).
+control_code(ctrl_d, 0x04).
+control_code(ctrl_x, 0x18).
+
+%!  echo_client(-Command) is det.
+%!  start_echo_client(+T) is det.
+%!  client_reads(+T, +Expected) is semidet.
+%
+%   What the terminal sends its client is otherwise invisible: nothing
+%   on this side sees the bytes and the line editor is not reading
+%   them.  echo_client/1 is a command to run in the terminal that reads
+%   them and prints them back with the escapes made visible, and
+%   client_reads/2 asks it what it got by typing a `#' and Return: the
+%   line discipline hands the line over and the row that comes back is
+%   what the terminal sent, `#' and all.
+%
+%   Expected == '' therefore says the terminal sent nothing, which
+%   waiting for something not to appear cannot: that can only time out.
+%
+%   start_echo_client/1 runs the client and waits until it is ready.
+%   The shell claims the pty before its `stty -echo' has run, and until
+%   that has, the line discipline echoes what we type on top of what
+%   the client reads back -- a key pressed in that window arrives
+%   twice.  The marker carries a quote so that the command line, which
+%   the line editor does echo, cannot match it.
+%
+%   `cat -v' runs in the C locale because the BSD one, which is what
+%   MacOS has, escapes per character rather than per byte: in a UTF-8
+%   locale it passes the 0xC2 of a two-byte sequence through as itself
+%   and only escapes the second byte, so a mouse report encoded as
+%   UTF-8 (DEC private mode 1005) comes back as `ÂM-^E' rather than
+%   as `M-BM-^E'.  What the tests are about is the bytes the terminal
+%   sent, so the byte-wise reading is the one to ask for.
+
+echo_client('stty -echo; echo ECHO''''-CLIENT-READY; LC_ALL=C cat -v').
+
+echo_client_marker('ECHO-CLIENT-READY').
+
+start_echo_client(T) :-
+    echo_client(Cmd),
+    start_foreground(T, Cmd),
+    echo_client_marker(Marker),
+    (   wait_until(marker_on_screen(T, Marker), 15)
+    ->  true
+    ;   throw(error(terminal_echo_client_not_ready, _))
+    ).
+
+client_reads(T, Expected) :-
+    atom_concat(Expected, '#', Line),
+    term_type_keys(T, '#'),
+    key(T, enter),
+    wait_until(row_on_screen(T, Line), 15).
+
+%!  row_on_screen(+T, +Text) is semidet.
+%
+%   True when a visible row holds exactly Text.  marker_on_screen/2
+%   matches a substring, which cannot tell `#' from `^[[B#'.
+
+row_on_screen(T, Text) :-
+    term_rows(T, Rows),
+    between(0, Rows, Row),
+    term_row(T, Row, Line),
+    Line == Text,
+    !.
 
 
 		 /*******************************
@@ -358,39 +1802,14 @@ fill_codes([C|T], I) :-
     I1 is I + 1,
     fill_codes(T, I1).
 
-%!  cw_of(+Terminal, -CW) is det.
+%!  resize_cols(+Terminal, +WantCols, -GotCols) is det.
 %
-%   Pixel width of one character cell of the terminal's current font,
-%   derived from the current geometry.  Call this BEFORE any resize so
-%   the geometry still reflects the initial cols=80 setup from
-%   start_terminal/2.
+%   Resize the terminal to WantCols columns and pump the event loop so
+%   the resize-driven libedit refresh lands before we read rows.
+%   GotCols is the width actually achieved; see term_resize/3.
 
-cw_of(Terminal, CW) :-
-    get(Terminal, width, W),
-    CW is W / 82.                       % 80 cols + 2-char margin
-
-%!  cols_for_pixels(+CW, +Pixels, -Cols) is det.
-%
-%   Inverse of rlc_resize_pixel_units: for a requested pixel width,
-%   compute the column count the terminal will end up with.  Mirrors
-%   `max(20, w/cw) - 2` in packages/xpce/src/txt/terminal.c.
-
-cols_for_pixels(CW, Pixels, Cols) :-
-    Raw is Pixels / CW,
-    truncate(Raw, RawCols),
-    Cols is max(20, RawCols) - 2.
-
-truncate(F, I) :-
-    I is truncate(F).
-
-%!  resize_width(+Terminal, +Pixels) is det.
-%
-%   Resize the terminal to Pixels wide and pump the event loop so the
-%   SIGWINCH-driven libedit refresh lands before we read rows.
-
-resize_width(Terminal, Pixels) :-
-    send(Terminal, width, Pixels),
-    drive(0.2).
+resize_cols(Terminal, WantCols, GotCols) :-
+    term_resize(Terminal, WantCols, GotCols).
 
 %!  rows_of(+Terminal, +FromRow, +Count, -Atoms) is det.
 %
@@ -418,8 +1837,77 @@ assert_cursor(Terminal, ExpCol, ExpRow) :-
     ;   format(user_error,
                "cursor: expected (~w, ~w), got (~w, ~w)~n",
                [ExpCol, ExpRow, Col, Row]),
+        report_cursor_row(Terminal, Row),
+        dump_screen(Terminal, 'caret is not where it should be'),
         assertion((Col =:= ExpCol, Row =:= ExpRow))
     ).
+
+%!  margin_col(+Terminal, -Col) is det.
+%
+%   The column the caret reports once a row has been filled to its right
+%   edge and the wrap is still pending.
+%
+%   A terminal with delayed wrap parks the caret one past the last
+%   column and says so: on an 80-column xpce terminal, 80.  A console
+%   holds the same state but has no column 80 to name it with -- its
+%   columns are 0..79 -- and reports the last one instead.  The state is
+%   the same either way, so ask the terminal what it calls it rather
+%   than writing one terminal's answer into the tests.
+
+margin_col(Terminal, Col) :-
+    term_cols(Terminal, Cols),
+    (   term_capability(Terminal, margin_past_last_column)
+    ->  Col = Cols
+    ;   Col is Cols-1
+    ).
+
+%!  prompt_prefix(+Line, +Width, -Prompt) is det.
+%
+%   The first Width characters of Line, padded with spaces when Line is
+%   shorter than that.  On a console the space after the prompt cannot
+%   be told from the padding of an otherwise empty row and is trimmed
+%   away with it, leaving a row one character shorter than the column
+%   the caret is in.
+
+prompt_prefix(Line, Width, Prompt) :-
+    atom_length(Line, Len),
+    (   Len >= Width
+    ->  sub_atom(Line, 0, Width, _, Prompt)
+    ;   Pad is Width - Len,
+        length(Spaces, Pad),
+        maplist(=(0' ), Spaces),
+        atom_codes(Padding, Spaces),
+        atom_concat(Line, Padding, Prompt)
+    ).
+
+%!  dump_screen(+Terminal, +Tag) is det.
+%
+%   Print every non-empty row.  For a failure that is about what is
+%   *not* on the screen, the screen is the evidence.
+
+dump_screen(Terminal, Tag) :-
+    term_rows(Terminal, Rows),
+    Last is Rows-1,
+    format(user_error, "    screen (~w):~n", [Tag]),
+    forall(( between(0, Last, Row),
+             row_text(Terminal, Row, Line),
+             Line \== ''
+           ),
+           format(user_error, "      ~w: ~q~n", [Row, Line])).
+
+%!  report_cursor_row(+Terminal, +Row) is det.
+%
+%   Print the row the caret is on and how wide its content is.  Where a
+%   caret lands at the right margin, what settles whether the terminal
+%   or the line editor is at fault is whether the last column was
+%   written at all.
+
+report_cursor_row(Terminal, Row) :-
+    term_cols(Terminal, Cols),
+    row_text(Terminal, Row, Line),
+    atom_length(Line, Len),
+    format(user_error, "    row ~w holds ~w of ~w columns: ~q~n",
+           [Row, Len, Cols, Line]).
 
 %!  assert_row(+Terminal, +Row, +Expected) is det.
 %
@@ -429,9 +1917,25 @@ assert_row(Terminal, Row, Expected) :-
     row_text(Terminal, Row, Line),
     (   Line == Expected
     ->  true
-    ;   format(user_error,
-               "row ~w: expected ~q, got ~q~n", [Row, Expected, Line]),
+    ;   format(user_error, "row ~w: expected ~q, got ~q~n",
+               [Row, Expected, Line]),
+        report_codes(Expected, Line),
         assertion(Line == Expected)
+    ).
+
+%!  report_codes(+Expected, +Got) is det.
+%
+%   Print both as code points as well.  A terminal that cannot draw the
+%   characters under test draws both sides as the same row of question
+%   marks, which says nothing about how they differ.
+
+report_codes(Expected, Got) :-
+    atom_codes(Expected, EC),
+    atom_codes(Got, GC),
+    (   EC == GC
+    ->  true
+    ;   format(user_error, "    expected codes: ~w~n", [EC]),
+        format(user_error, "         got codes: ~w~n", [GC])
     ).
 
 %!  assert_input(+Terminal, +Row, +ExpectedInput) is det.
@@ -448,6 +1952,8 @@ assert_input(Terminal, Row, ExpectedInput) :-
     ;   format(user_error,
                "input row ~w: expected ~q, got ~q (full: ~q)~n",
                [Row, ExpectedInput, Input, Line]),
+        report_codes(ExpectedInput, Input),
+        dump_screen(Terminal, 'input row does not match'),
         assertion(Input == ExpectedInput)
     ).
 
@@ -460,6 +1966,11 @@ assert_input(Terminal, Row, ExpectedInput) :-
 strip_prompt(Line, Rest) :-
     (   sub_atom(Line, Before, 3, _, '?- ')
     ->  After is Before + 3,
+        sub_atom(Line, After, _, 0, Rest)
+    ;   %  On a console the space after the prompt cannot be told from
+        %  the padding of an otherwise empty row, and goes with it.
+        sub_atom(Line, Before, 2, 0, '?-')
+    ->  After is Before + 2,
         sub_atom(Line, After, _, 0, Rest)
     ;   Rest = Line
     ).
@@ -491,6 +2002,34 @@ test(home_end, [setup(test_begin(T))]) :-
     key(T, ctrl_e),
     assert_cursor(T, End, R).
 
+test(program_clears_the_screen, [setup(test_begin(T))]) :-
+    %  A program that clears the screen with ESC [ 2 J must have it
+    %  cleared.  On Windows the standard streams are wrapped by an
+    %  emulation of our own, src/pl-ntconsole.c, which acted on SGR and
+    %  quietly ate every other sequence -- so this cleared nothing and
+    %  wrote nothing either.
+    %
+    %  ESC [ 2 J alone, without the ESC [ H that usually goes with it:
+    %  moving the caret as well would leave the line editor painting
+    %  from a position it did not choose, which is a different question
+    %  from whether the screen was cleared.
+    rows_above(T, 3),
+    cursor(T, _, PromptRow),
+    Above is PromptRow - 2,
+    row_text(T, Above, Before),
+    assertion(Before \== ''),
+    type(T, 'format(user_error, "\\e[2J", []).'),
+    key(T, enter),
+    assertion(wait_for_prompt(T)),
+    row_text(T, Above, After),
+    (   After == ''
+    ->  true
+    ;   format(user_error,
+               "row ~w was ~q before the clear and ~q after~n",
+               [Above, Before, After]),
+        assertion(After == '')
+    ).
+
 test(kill_to_start, [setup(test_begin(T))]) :-
     cursor(T, P, R),
     type(T, foo),
@@ -504,11 +2043,600 @@ test(kill_to_start, [setup(test_begin(T))]) :-
 
 
 		 /*******************************
+		 *      TEST: SCREEN EDITS      *
+		 *******************************/
+
+%   Escape sequences that rearrange whole lines: IL (`ESC [ Ps L'),
+%   DL (`ESC [ Ps M'), the reverse index (`ESC M') they share their
+%   implementation with, and the scrolling region (`ESC [ Ps ; Ps r')
+%   that bounds all three.  These write to the screen rather than to
+%   the line editor, so they say what the terminal makes of the
+%   sequence.
+
+:- begin_tests(terminal_screen,
+               [ condition(needs([program_output])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+%!  paint(+T, +Lines) is det.
+%
+%   Clear the screen and write Lines to it, one per row from the top.
+%   The screen does not turn a newline into a carriage return, so the
+%   lines carry their own.
+
+paint(T, Lines) :-
+    out(T, '\e[2J\e[H'),
+    forall(member(Line, Lines),
+           out(T, [Line, '\r\n'])).
+
+%!  assert_rows(+T, +Expected) is det.
+%
+%   Expected holds the content of the rows from the top of the screen.
+
+assert_rows(T, Expected) :-
+    length(Expected, Len),
+    rows_of(T, 0, Len, Rows),
+    (   Rows == Expected
+    ->  true
+    ;   format(user_error, "rows ~q, expected ~q~n", [Rows, Expected]),
+        assertion(Rows == Expected)
+    ).
+
+%!  numbered_lines(+From, +To, -Lines) is det.
+
+numbered_lines(From, To, Lines) :-
+    findall(Line,
+            ( between(From, To, N),
+              format(atom(Line), 'l~w', [N])
+            ), Lines).
+
+nine_lines(T) :-
+    numbered_lines(1, 9, Lines),
+    paint(T, Lines).
+
+%!  full_screen(+T, -Painted) is det.
+%
+%   Write a numbered line to every row of the screen.  That is one line
+%   more than fits: the last carriage return scrolls the screen, so
+%   Painted, the content of the rows afterwards, runs from l2 to the
+%   last line and ends in the caret's own empty row.
+
+full_screen(T, Painted) :-
+    term_rows(T, Rows),
+    numbered_lines(1, Rows, Lines),
+    paint(T, Lines),
+    numbered_lines(2, Rows, Text),
+    append(Text, [''], Painted),
+    assert_rows(T, Painted).
+
+test(delete_lines, [setup(current_test_terminal(T))]) :-
+    nine_lines(T),
+    out(T, '\e[3;1H\e[2M'),
+    assert_rows(T, [l1,l2,l5,l6,l7,l8,l9,'','']),
+    assert_cursor(T, 0, 2).
+
+test(delete_lines_to_bottom, [setup(current_test_terminal(T))]) :-
+    %  More lines than the screen holds: everything from the caret
+    %  down goes, and the caret's own row is left empty.
+    nine_lines(T),
+    out(T, '\e[5;1H\e[99M'),
+    assert_rows(T, [l1,l2,l3,l4,'','','','','']).
+
+test(insert_lines, [setup(current_test_terminal(T))]) :-
+    nine_lines(T),
+    out(T, '\e[2;1H\e[3L'),
+    assert_rows(T, [l1,'','','',l2,l3,l4,l5,l6,l7,l8,l9,'']),
+    assert_cursor(T, 0, 1).
+
+%       IL and DL leave the caret in the column it was in.  ECMA-48
+%       takes it to the line home position, but no terminal a client is
+%       written against does that: xterm and tmux both leave the column
+%       alone, and an editor that opens a line in the middle of one and
+%       writes on it wrote at the left margin here.
+
+test(insert_lines_keeps_the_column, [setup(current_test_terminal(T))]) :-
+    nine_lines(T),
+    out(T, '\e[2;5H\e[L'),
+    assert_cursor(T, 4, 1),
+    out(T, 'X'),
+    assert_rows(T, [l1,'    X',l2,l3,l4,l5,l6,l7,l8,l9,'']).
+
+test(delete_lines_keeps_the_column, [setup(current_test_terminal(T))]) :-
+    nine_lines(T),
+    out(T, '\e[2;5H\e[M'),
+    assert_cursor(T, 4, 1),
+    out(T, 'X'),
+    assert_rows(T, [l1,'l3  X',l4,l5,l6,l7,l8,l9,'']).
+
+test(insert_lines_pushes_off_the_screen,
+     [setup(current_test_terminal(T))]) :-
+    %  A full screen has no room below, so what is pushed past the
+    %  last row is lost rather than added to the scroll back.
+    full_screen(T, Painted),
+    out(T, '\e[1;1H\e[2L'),
+    once(append(Kept, [_Last,_Empty], Painted)), % pushed off the bottom
+    assert_rows(T, ['',''|Kept]).
+
+test(delete_lines_in_scroll_region, [setup(current_test_terminal(T))]) :-
+    %  What emacs sends to take a line out of a window: a scrolling
+    %  region around the window, DL inside it, region back to the whole
+    %  screen.  Without DECSTBM the delete pulled up everything below,
+    %  taking the mode line and the echo area with it.
+    full_screen(T, [Top,_Killed,Third|Below]),
+    out(T, '\e[1;3r\e[2;1H\e[1M\e[1;25r'),
+    assert_rows(T, [Top,Third,''|Below]).
+
+test(line_feed_scrolls_the_region_only,
+     [setup(current_test_terminal(T))]) :-
+    %  A line feed on the last row of the region scrolls the region
+    %  rather than the screen: the rows below it stay put and nothing
+    %  goes to the scroll back.
+    full_screen(T, [_Top,Second,Third|Below]),
+    out(T, '\e[1;3r\e[3;1H\n\e[1;25r'),
+    assert_rows(T, [Second,Third,''|Below]).
+
+%!  one_line(+T, +Text) is det.
+%
+%   Clear the screen and write Text to the top row, leaving the caret
+%   at its end.
+
+one_line(T, Text) :-
+    out(T, ['\e[2J\e[H', Text]).
+
+test(erase_to_end_of_line, [setup(current_test_terminal(T))]) :-
+    one_line(T, abcdef),
+    out(T, '\e[1;4H\e[K'),
+    assert_rows(T, [abc]).
+
+test(erase_to_start_of_line, [setup(current_test_terminal(T))]) :-
+    %  EL 1 erases up to and including the caret and leaves the rest of
+    %  the row where it is.  The parameter was ignored, so this erased
+    %  the other half of the line.
+    one_line(T, abcdef),
+    out(T, '\e[1;4H\e[1K'),
+    assert_rows(T, ['    ef']).
+
+test(erase_whole_line, [setup(current_test_terminal(T))]) :-
+    one_line(T, abcdef),
+    out(T, '\e[1;4H\e[2K'),
+    assert_rows(T, ['']).
+
+test(erase_characters, [setup(current_test_terminal(T))]) :-
+    %  ECH blanks columns without moving what follows them.
+    one_line(T, abcdef),
+    out(T, '\e[1;3H\e[2X'),
+    assert_rows(T, ['ab  ef']).
+
+test(erase_above, [setup(current_test_terminal(T))]) :-
+    paint(T, [l1,l2,l3]),
+    out(T, '\e[2;2H\e[1J'),
+    assert_rows(T, ['','  ',l3]).
+
+test(scroll_up_and_down_in_region, [setup(current_test_terminal(T))]) :-
+    %  SU and SD move the content of the region and leave the caret
+    %  where it is.  Both stay inside the region.
+    full_screen(T, [_Top,Second,Third|Below]),
+    out(T, '\e[1;3r\e[2;1H\e[1S'),
+    assert_rows(T, [Second,Third,''|Below]),
+    assert_cursor(T, 0, 1),
+    out(T, '\e[1T\e[1;25r'),
+    assert_rows(T, ['',Second,Third|Below]).
+
+test(scroll_up_without_a_region, [setup(current_test_terminal(T))]) :-
+    %  Without a region the window scrolls as a whole, the way a line
+    %  feed on the last row does.
+    full_screen(T, Painted),
+    out(T, '\e[3S'),
+    append([_,_,_], Rest, Painted),
+    append(Rest, ['','',''], Expected),
+    assert_rows(T, Expected).
+
+test(tab_stops, [setup(current_test_terminal(T))]) :-
+    %  Tabs stop every eight columns until HTS (ESC H) says otherwise,
+    %  and CBT walks the same stops backwards.
+    out(T, '\ec'),                      % RIS: default stops again
+    one_line(T, 'a\tb'),
+    assert_rows(T, ['a       b']),
+    assert_cursor(T, 9, 0),
+    out(T, '\e[1;1H\e[2I'),             % two tabs forward, writing nothing
+    assert_cursor(T, 16, 0),
+    assert_rows(T, ['a       b']),
+    out(T, '\e[3;7H\eH'),               % a stop on the 7th column
+    out(T, '\e[3;1H\tb'),
+    assert_rows(T, ['a       b','','      b']),
+    out(T, '\e[3;13H\e[Z'),             % back to the stop on column 9
+    assert_cursor(T, 8, 2),
+    out(T, '\e[Z'),                     % and to the one HTS set
+    assert_cursor(T, 6, 2).
+
+test(clear_tab_stops, [setup(current_test_terminal(T))]) :-
+    term_cols(T, Cols),
+    Margin is Cols-1,
+    out(T, '\ec\e[3g'),                 % no stops at all
+    out(T, '\t'),
+    assert_cursor(T, Margin, 0),        % a tab runs into the margin
+    out(T, '\e[2;5H\eH\e[2;1H\t'),      % one stop, on the 5th column
+    assert_cursor(T, 4, 1),
+    out(T, '\e[2;5H\e[g\e[2;1H\t'),     % and away again
+    assert_cursor(T, Margin, 1).
+
+test(erase_display_drops_the_rows, [setup(current_test_terminal(T))]) :-
+    %  A row the screen no longer reaches is still in the ring, and
+    %  both the painter and <-row walk the ring: erasing the display
+    %  has to let go of the text or it stays on the screen.
+    paint(T, [l1,l2,l3,l4]),
+    out(T, '\e[2J'),
+    assert_rows(T, ['','','','']),
+    paint(T, [l1,l2,l3,l4]),
+    out(T, '\e[2;1H\e[J'),              % and the same from the caret down
+    assert_rows(T, [l1,'','','']).
+
+test(clear_command, [setup(current_test_terminal(T))]) :-
+    %  What /bin/clear sends for TERM=xterm.  ED 2 empties the window
+    %  and ED 3 then finds nothing saved, so it starts the ring over:
+    %  the slots it lands on must not hand back the text they held.
+    term_rows(T, Rows),
+    More is Rows*2,
+    scrollback(T, More),
+    out(T, '\e[H\e[2J\e[3J'),
+    length(Empty, Rows),
+    maplist(=(''), Empty),
+    assert_rows(T, Empty),
+    out(T, after),
+    assert_rows(T, [after]).
+
+test(repeat_character, [setup(current_test_terminal(T))]) :-
+    %  REP repeats the last character written.
+    out(T, '\ec-\e[4b\e[2;1Hx\e[b'),
+    assert_rows(T, ['-----',xx]).
+
+test(autowrap_off, [setup(current_test_terminal(T))]) :-
+    %  With DECAWM off the last column takes every further character
+    %  and the caret stays with it.
+    term_cols(T, Cols),
+    Margin is Cols-1,
+    numlist(1, Cols, Ns),
+    findall(a, member(_, Ns), As),
+    atomic_list_concat(As, Line),       % one full row of a's
+    out(T, ['\ec\e[?7l', Line, bcd]),
+    assert_cursor(T, Margin, 0),
+    atom_concat(Head, a, Line),
+    atom_concat(Head, d, Expected),     % b and c were overwritten
+    assert_rows(T, [Expected]),
+    out(T, ['\e[?7h\e[2;1H', Line, x]), % and wrapping again
+    assert_rows(T, [Expected,Line,x]).
+
+test(soft_reset, [setup(current_test_terminal(T))]) :-
+    %  DECSTR is part of terminfo's is2, so it runs when a full screen
+    %  application starts: it must put the scrolling region back.
+    full_screen(T, [_Top,Second|Below]),
+    out(T, '\e[1;3r\e[!p'),
+    out(T, '\e[1;1H\e[1M'),             % a delete the region would bound
+    assert_rows(T, [Second|Below]).
+
+test(save_and_restore_cursor, [setup(current_test_terminal(T))]) :-
+    %  DECSC/DECRC (ESC 7 / ESC 8) are what terminfo's sc/rc use; they
+    %  carry the attributes along with the position.
+    out(T, '\e[2J\e[H'),
+    out(T, '\e[2;3H\e7\e[5;1Hlow\e8here'),
+    assert_rows(T, ['','  here','','','low']),
+    assert_cursor(T, 6, 1).
+
+test(index_and_next_line, [setup(current_test_terminal(T))]) :-
+    %  IND (ESC D) moves down in the column it is in, NEL (ESC E) moves
+    %  down to the start of the next row.
+    out(T, '\e[2J\e[Habc\eDd\eEe'),
+    assert_rows(T, [abc,'   d',e]).
+
+test(reverse_index, [setup(current_test_terminal(T))]) :-
+    %  ESC M on the top row inserts a line there, the same operation
+    %  IL performs.
+    paint(T, [l1,l2,l3]),
+    out(T, '\e[1;1H\eM'),
+    assert_rows(T, ['',l1,l2,l3,'']).
+
+test(clear_screen_starts_over, [setup(current_test_terminal(T))]) :-
+    %  What cls/0 in library(shell) sends.  ED 3 drops the scroll back,
+    %  so ED 2 finds no saved lines and starts the ring over -- on the
+    %  slots that hold the oldest lines of the session.  Nothing of them
+    %  may show: the reported symptom was the banner coming back with
+    %  the next prompt written over its first characters.
+    term_rows(T, Rows),
+    Lines is Rows*2,                    % more than the screen holds
+    numbered_lines(1, Lines, Text),
+    paint(T, Text),
+    out(T, '\e[3J\e[H\e[2J'),
+    out(T, '\e[3J\r'),
+    out(T, 'X'),
+    Blanks is Rows-1,
+    length(Empty, Blanks),
+    maplist(=(''), Empty),
+    assert_rows(T, ['X'|Empty]).
+
+test(alternate_screen_round_trip, [setup(current_test_terminal(T))]) :-
+    paint(T, [l1,l2,l3]),
+    alt_screen(T, 'ALT'),
+    assert_rows(T, ['ALT','','']),
+    normal_screen(T),
+    assert_rows(T, [l1,l2,l3]).
+
+test(alternate_screen_restores_the_caret,
+     [ setup(current_test_terminal(T)),
+       cleanup(normal_screen(T))
+     ]) :-
+    %  The caret comes back with the screen: what is written next -- the
+    %  prompt, after a pager quits -- goes where it was, not to the top.
+    paint(T, [l1,l2,l3]),
+    out(T, '\e[2;3H'),
+    cursor(T, C, R),
+    alt_screen(T, 'ALT'),
+    out(T, '\e[5;10Hx'),
+    normal_screen(T),
+    assert_cursor(T, C, R).
+
+test(scrolling_region_after_the_alternate_screen,
+     [ setup(current_test_terminal(T)),
+       cleanup(normal_screen(T))
+     ]) :-
+    %  DECSTBM homes the caret, so a client that leaves a region behind
+    %  must have it reset before the screen comes back, not after: that
+    %  is the order end_console_session() sends them in.
+    paint(T, [l1,l2,l3]),
+    out(T, '\e[2;3H'),
+    cursor(T, C, R),
+    alt_screen(T, 'ALT'),
+    out(T, '\e[1;5r'),                  % a region the client leaves set
+    out(T, '\e[r\e[?1049l'),            % reset, then the normal screen
+    assert_cursor(T, C, R).
+
+test(leaving_an_alternate_screen_never_entered,
+     [setup(current_test_terminal(T))]) :-
+    %  A stray rmcup must not blank the window: there is nothing saved
+    %  to bring back, so erasing first would leave it empty for good.
+    %  One arrives out of a Windows pseudo console as its client goes.
+    paint(T, [l1,l2,l3]),
+    normal_screen(T),
+    assert_rows(T, [l1,l2,l3]).
+
+test(entering_the_alternate_screen_twice,
+     [ setup(current_test_terminal(T)),
+       cleanup(normal_screen(T))
+     ]) :-
+    %  The second smcup is ignored rather than saving the alternate
+    %  screen over the normal one, which would be gone for good.
+    paint(T, [l1,l2,l3]),
+    alt_screen(T, 'ALT'),
+    alt_screen(T, 'ALT-AGAIN'),
+    normal_screen(T),
+    assert_rows(T, [l1,l2,l3]).
+
+test(resizing_the_alternate_screen_rewraps_the_one_under_it,
+     [ setup(current_test_terminal(T)),
+       cleanup(( normal_screen(T), resize_cols(T, 80, _) ))
+     ]) :-
+    %  The normal screen is given back and taken again around the
+    %  resize, so that its lines are rewrapped with the rest of the
+    %  buffer rather than cut off at the new width in the copies they
+    %  were saved into.
+    term_cols(T, Cols0),
+    Len is Cols0-10,
+    length(Codes, Len),
+    maplist(=(0'x), Codes),
+    atom_codes(Long, Codes),
+    paint(T, [Long]),
+    alt_screen(T, 'ALT'),
+    Narrow is Cols0-20,
+    resize_cols(T, Narrow, Cols),
+    normal_screen(T),
+    sub_atom(Long, 0, Cols, _, Head),
+    sub_atom(Long, Cols, _, 0, Tail),
+    assert_rows(T, [Head, Tail]).
+
+%!  osc133_block(+T, +Command, +Lines) is det.
+%
+%   Write what a client that marks its prompts (OSC 133) writes for one
+%   command: the prompt, the line the user entered and the output it
+%   produced.  The terminal makes a terminal_block of the marks, and a
+%   block is what folds.
+
+osc133_block(T, Command, Lines) :-
+    out(T, ['\e]133;A\a?- \e]133;B\a', Command, '\r\n\e]133;C\a']),
+    forall(member(Line, Lines),
+           out(T, [Line, '\r\n'])),
+    out(T, '\e]133;D\a').
+
+%!  folded_screen(+T, -Block) is det.
+%
+%   Start the buffer over with a line and two commands on it, the first
+%   of them folded away.  Block is the folded one.  What matters is that
+%   it hides more lines than the window has rows: they are still under
+%   the window, and an application that takes it writes over them.  The
+%   line above it is what the window must go on showing.
+
+folded_screen(T, Block) :-
+    T = terminal(_, xpce(_, TI)),
+    send(TI, fold_previous, @off),      % what the class says; these
+                                        % tests fold by hand
+    out(T, '\e[3J\e[H\e[2J'),           % start the ring over
+    out(T, 'top\r\n'),
+    term_rows(T, Rows),
+    Hidden is Rows+5,
+    numbered_lines(1, Hidden, Long),
+    osc133_block(T, 'one.', Long),
+    osc133_block(T, 'two.', [t1,t2,t3]),
+    term_blocks(T, Blocks),
+    once(( member(Block, Blocks),
+           term_block_content(Block, command, 'one.')
+         )),
+    send(Block, fold).
+
+test(alternate_screen_over_a_closed_fold,
+     [setup(current_test_terminal(T))]) :-
+    %  The rows the alternate screen takes over and the lines it writes
+    %  over are not the same while a fold is closed.  Saving a row per
+    %  line gave back what the fold hid and dropped everything below it,
+    %  which is the screen `help/0' left behind.
+    folded_screen(T, Block),
+    Screen = [top, '?- one.', '?- two.', t1, t2, t3],
+    assert_rows(T, Screen),
+    alt_screen(T, 'ALT'),
+    normal_screen(T),
+    assert_rows(T, Screen),
+    assertion(get(Block, folded, @on)),
+    assertion(term_block_content(Block, command, 'one.')).
+
+test(writing_under_a_closed_fold_does_not_scroll,
+     [setup(current_test_terminal(T))]) :-
+    %  The window scrolls when the caret runs off its bottom row.  A
+    %  closed fold takes lines off the window, so counting lines rather
+    %  than rows scrolled a window that had room for the caret still,
+    %  and what was above the fold walked off the top.
+    folded_screen(T, _),
+    osc133_block(T, 'three.', [t4]),
+    assert_rows(T, [top, '?- one.', '?- two.', t1, t2, t3, '?- three.', t4]).
+
+test(placing_the_caret_over_a_closed_fold_counts_rows,
+     [setup(current_test_terminal(T))]) :-
+    %  CUP names a row of the window.  Counting lines put the caret in
+    %  the text a closed fold hides, where what the client wrote next
+    %  never showed up.
+    folded_screen(T, _),
+    out(T, '\e[3;1HXX'),                 % the third row holds `?- two.'
+    assert_rows(T, [top, '?- one.', 'XX two.', t1, t2, t3]).
+
+test(the_alternate_screen_gives_back_what_a_fold_hides,
+     [setup(current_test_terminal(T))]) :-
+    %  A fold hides text from the eye and not from the buffer: what is
+    %  under it comes back with the screen it belongs to.
+    folded_screen(T, Block),
+    alt_screen(T, 'ALT'),
+    normal_screen(T),
+    assertion(\+ marker_on_screen(T, 'l30')),
+    send(Block, unfold),
+    assertion(marker_on_screen(T, 'l30')),
+    assertion(marker_on_screen(T, '?- two.')).
+
+%!  folded_session(+T, -Rows) is det.
+%
+%   A session of marked commands that is longer than the window, every
+%   one of them folded, as `fold_previous' leaves it.  Two things come
+%   of that and the test below needs both: the commands above the
+%   window are folds that stay while an application has the window, and
+%   the blocks of the ones inside it name the very lines the
+%   application writes over.
+%
+%   Written in one go: a command per out/2 would spend a second of the
+%   test on waiting for the screen to settle.
+
+folded_session(T, Rows) :-
+    T = terminal(_, xpce(_, TI)),
+    send(TI, fold_previous, @off),      % these tests fold by hand
+    out(T, '\e[3J\e[H\e[2J'),           % start the ring over
+    term_rows(T, Rows),
+    N is Rows+10,
+    findall(Text,
+            ( between(1, N, I),
+              findall(L, ( between(1, 3, J),
+                           format(atom(L), 'out~w-~w\r\n', [I,J])
+                         ), Ls),
+              atomic_list_concat(Ls, Out),
+              format(atom(Text),
+                     '\e]133;A\a?- \e]133;B\agoal~w.\r\n\e]133;C\a~w\e]133;D\a',
+                     [I, Out])
+            ), Texts),
+    out(T, Texts),
+    term_blocks(T, Blocks),
+    forall(member(B, Blocks), send(B, fold)).
+
+%!  alt_lines(+T, +From, +To) is det.
+%
+%   Write numbered lines to the alternate screen, the last of them
+%   without a newline after it, as a full screen application paints.
+
+alt_lines(T, From, To) :-
+    findall(L, ( between(From, To, K),
+                 ( K =:= To -> Nl = '' ; Nl = '\r\n' ),
+                 format(atom(L), 'alt~w~w', [K, Nl])
+               ), Ls),
+    out(T, Ls).
+
+test(scrolling_an_alternate_screen_over_folded_blocks,
+     [ setup(current_test_terminal(T)),
+       cleanup(normal_screen(T))
+     ]) :-
+    %  The blocks of the session name lines the application writes over,
+    %  and they name them again as it fills the window: the ring
+    %  positions are the same.  Stamping the fold bits from them there
+    %  marked the application's own rows as hidden, which took them off
+    %  the screen and put the caret in the middle of it -- `less' on a
+    %  session with folds, coming up scrambled.
+    folded_session(T, Rows),
+    alt_screen(T, ''),
+    alt_lines(T, 1, Rows),
+    Scroll = 5,
+    forall(between(1, Scroll, K),
+           ( M is Rows+K,
+             out(T, ['\r\n', alt, M]) )),
+    First is Scroll+1,
+    Last is Rows+Scroll,
+    findall(L, ( between(First, Last, K),
+                 format(atom(L), 'alt~w', [K])
+               ), Expected),
+    assert_rows(T, Expected).
+
+test(an_alternate_screen_erasing_keeps_the_blocks_under_it,
+     [setup(current_test_terminal(T))]) :-
+    %  ED 0 is how a full screen application redraws, and what it erases
+    %  is its own screen.  Sweeping the blocks there let go of the ones
+    %  naming the lines under it, which are coming back: the session
+    %  returned from `less' with its folds open.
+    folded_screen(T, Block),
+    Screen = [top, '?- one.', '?- two.', t1, t2, t3],
+    alt_screen(T, 'ALT'),
+    out(T, '\e[H\e[J'),                 % redraw: home, then erase below
+    normal_screen(T),
+    assert_rows(T, Screen),
+    assertion(get(Block, folded, @on)).
+
+test(the_alternate_screen_gives_back_the_line_it_started_on,
+     [setup(current_test_terminal(T))]) :-
+    %  The last line of the buffer is a line like any other and on the
+    %  screen with the rest.  Counting up to it and saving the lines
+    %  before it dropped whatever had been written without a newline
+    %  after it, which is the prompt the application was started from.
+    buffer(T, 'aap\r\nnoot\r\nmies'),
+    alt_screen(T, 'ALT'),
+    normal_screen(T),
+    assert_rows(T, [aap, noot, mies]).
+
+test(a_private_prefix_swallows_its_sequence,
+     [setup(current_test_terminal(T))]) :-
+    %  ECMA-48 reserves 0x3c..0x3f as parameter prefixes, and a
+    %  sequence carrying one means nothing without it.  The kitty
+    %  keyboard protocol uses `<' and `=' where the caret uses a bare
+    %  `u': `CSI < u', which Claude Code writes when it exits, left a
+    %  stray `u' on the screen and `CSI > 5 u' moved the caret.
+    buffer(T, 'A\e[<uB\e[>5uC\e[=1;1uD'),
+    assert_rows(T, ['ABCD']).
+
+test(the_caret_is_saved_and_restored_without_one,
+     [setup(current_test_terminal(T))]) :-
+    %  The other half of the above: a bare `CSI s' / `CSI u' is still
+    %  SCOSC / SCORC.
+    buffer(T, '12345\e[s\rXX\e[uZ'),
+    assert_rows(T, ['XX345Z']).
+
+:- end_tests(terminal_screen).
+
+
+		 /*******************************
 		 *        TEST: NFD TEXT        *
 		 *******************************/
 
 :- begin_tests(terminal_nfd,
-               [ setup(setup_unit),
+               [ condition(needs([combining])),
+                 setup(setup_unit),
                  cleanup(cleanup_unit)
                ]).
 
@@ -656,7 +2784,10 @@ test(refresh_wide_at_cursor_uses_visual_col, [setup(test_begin(T))]) :-
     cursor(T, _, GotRow),
     assertion(GotRow =:= R).
 
-test(insert_midline_preserves_trailing_combiner, [setup(test_begin(T))]) :-
+test(insert_midline_preserves_trailing_combiner,
+     [ condition(needs([combining])),
+       setup(test_begin(T))
+     ]) :-
     cursor(T, P, R),
     %  Fill a line with NFD clusters up to just below visual width so
     %  the next insert definitely exceeds b->width in cells but still
@@ -682,7 +2813,10 @@ make_nfd_codes(N, [0'a, 0x300 | T]) :-
     N1 is N - 1,
     make_nfd_codes(N1, T).
 
-test(delete_wide_cluster_midline, [setup(test_begin(T))]) :-
+test(delete_wide_cluster_midline,
+     [ condition(needs([non_bmp])),
+       setup(test_begin(T))
+     ]) :-
     cursor(T, P, R),
     atom_codes(Buf, [0x1F929, 0x1F929, 0x1F929,
                      0'j, 0'j, 0'n, 0's]),
@@ -697,7 +2831,10 @@ test(delete_wide_cluster_midline, [setup(test_begin(T))]) :-
                           0'j, 0'j, 0'n, 0's]),
     assert_input(T, R, Expected).
 
-test(delete_nfd_cluster_midline, [setup(test_begin(T))]) :-
+test(delete_nfd_cluster_midline,
+     [ condition(needs([combining])),
+       setup(test_begin(T))
+     ]) :-
     cursor(T, P, R),
     atom_codes(Buf, [ 0'f, 0x300, 0'f,
                       0'j, 0x300, 0'j,
@@ -722,7 +2859,10 @@ test(delete_nfd_cluster_midline, [setup(test_begin(T))]) :-
                            0'z, 0x300 ]),
     assert_input(T, R, Expected).
 
-test(insert_nfd_at_home_with_nfd_buffer, [setup(test_begin(T))]) :-
+test(insert_nfd_at_home_with_nfd_buffer,
+     [ condition(needs([combining])),
+       setup(test_begin(T))
+     ]) :-
     cursor(T, P, R),
     atom_codes(Ygrave, [0'y, 0x300]),
     atom_codes(Agrave, [0'a, 0x300]),
@@ -737,6 +2877,30 @@ test(insert_nfd_at_home_with_nfd_buffer, [setup(test_begin(T))]) :-
     assert_cursor(T, Col1, R),
     atom_concat(Agrave, Buffer, Expected),
     assert_input(T, R, Expected).
+
+test(delete_wide_before_nfd,
+     [ condition(needs([combining])),
+       setup(test_begin(T))
+     ]) :-
+    %  Insert a wide character in front of NFD text and take it away
+    %  again.  Found by test_terminal_random/2 and Windows-only: libedit
+    %  removed the two columns as two CSI P sequences, and we delete
+    %  whole grapheme clusters, so the second one ate the cluster behind
+    %  the wide character -- 'ǹ' vanished from the display.  U+4E2D is
+    %  wide in the BMP, so this exercises the cluster arithmetic without
+    %  also involving surrogate pairs.
+    cursor(T, P, R),
+    atom_codes(Buffer, [0'q, 0x300, 0'n, 0x300, 0'o]),
+    type(T, Buffer),
+    Col0 is P + 3,
+    assert_cursor(T, Col0, R),
+    key(T, home),
+    type(T, '中'),
+    Col1 is P + 2,
+    assert_cursor(T, Col1, R),
+    key(T, backspace),
+    assert_cursor(T, P, R),
+    assert_input(T, R, Buffer).
 
 :- end_tests(terminal_regression).
 
@@ -842,7 +3006,10 @@ test(smp_delete_forward_is_one_cluster, [setup(test_begin(T))]) :-
     atom_codes(Empty, []),
     assert_input(T, R, Empty).
 
-test(smp_midline_insert, [setup(test_begin(T))]) :-
+test(smp_midline_insert,
+     [ condition(needs([non_bmp])),
+       setup(test_begin(T))
+     ]) :-
     %   Type an ASCII context, step the cursor into the middle of it,
     %   then insert a non-BMP cluster.  Verifies the pair lands in the
     %   buffer as a single cluster and the display advances by two
@@ -917,7 +3084,10 @@ test(cursor_left_from_end_lands_before_emoji, [setup(test_begin(T))]) :-
     BeforeU is P + 12,
     assert_cursor(T, BeforeU, R).           % before the preceding 'ü'
 
-test(insert_before_final_emoji, [setup(test_begin(T))]) :-
+test(insert_before_final_emoji,
+     [ condition(needs([combining])),
+       setup(test_begin(T))
+     ]) :-
     cursor(T, P, R),
     mixed_line(L),
     type(T, L),
@@ -941,10 +3111,613 @@ test(insert_before_final_emoji, [setup(test_begin(T))]) :-
 
 
 		 /*******************************
+		 *      TEST: BACKGROUND IO     *
+		 *******************************/
+
+:- begin_tests(terminal_background,
+               [ setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+%!  bg_row(+Terminal, +Text, -Row) is semidet.
+%
+%   Row is the first visible row whose content is exactly Text.
+
+bg_row(T, Text, Row) :-
+    between(0, 24, Row),
+    row_text(T, Row, Line),
+    atom(Line),
+    atom_concat(Text, Padding, Line),
+    \+ sub_atom(Padding, _, _, _, ' '),         % trailing blanks only
+    !.
+
+input_row_holds(T, Row, Input) :-
+    row_text(T, Row, Line),
+    strip_prompt(Line, Got),
+    Got == Input.
+
+test(thread_output_keeps_input_line, [setup(test_begin(T))]) :-
+    %  Output from another thread while the user is typing must not be
+    %  written into the input line.  libedit takes the line off the
+    %  screen, lets the output through, and paints the line back below
+    %  it -- without waiting for the next keystroke.
+    type(T, 'thread_create((sleep(1),writeln(from_thread)),_,[detached(true)]).'),
+    key(T, enter),
+    assertion(wait_for_prompt(T)),
+    prompt_col(T, P),
+    Input = 'foo(Bar)',
+    type(T, Input),
+    (   wait_until(bg_row(T, from_thread, _), 15)
+    ->  true
+    ;   dump_screen(T, 'waiting for output from the other thread')
+    ),
+    assertion(bg_row(T, from_thread, _)),
+    bg_row(T, from_thread, OutRow),
+    InputRow is OutRow + 1,
+    %  The line comes back on its own account, a moment after the output
+    %  it was taken down for.  Wait for it rather than reading the screen
+    %  the instant the output lands.
+    (   wait_until(input_row_holds(T, InputRow, Input), 5)
+    ->  true
+    ;   dump_screen(T, 'input line did not come back below the output')
+    ),
+    assert_input(T, InputRow, Input),
+    atom_length(Input, Len),
+    ExpCol is P + Len,
+    assert_cursor(T, ExpCol, InputRow).
+
+:- end_tests(terminal_background).
+
+:- begin_tests(terminal_attributes,
+               [ setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+%!  attribute_shot(+T, +Sgr, -Pixels) is det.
+%
+%   Paint a row of identical glyphs wrapped in Sgr and sample the window.
+%   The trailing line is there because the last line written lags a
+%   moment; it is the same in every shot, so it cancels out.
+
+attribute_shot(T, Sgr, Pixels) :-
+    out(T, '\e[2J\e[H'),
+    out(T, [Sgr, 'HHHHHHHHHHHHHHHHHHHH\e[0m\r\n', '.\r\n']),
+    drive(0.3),
+    term_screenshot(T, Pixels).
+
+test(sgr_selects_a_font, [setup(test_begin(T))]) :-
+    %  The caret is off for the whole test: it blinks, and a blinking
+    %  caret puts a difference in every pair of shots.
+    assertion(wait_for_prompt(T)),
+    out(T, '\e[?25l'),
+    drive(0.3),
+    attribute_shot(T, '',            Plain),
+    attribute_shot(T, '',            Plain2),
+    attribute_shot(T, '\e[1m',       Bold),
+    attribute_shot(T, '\e[3m',       Italic),
+    attribute_shot(T, '\e[1;3m',     BoldItalic),
+    attribute_shot(T, '\e[3m\e[23m', ItalicOff),
+    attribute_shot(T, '\e[1m\e[22m', BoldOff),
+    out(T, '\e[?25h'),
+    %  Without this the rest says nothing: it is what shows that two
+    %  shots of the same text do compare equal.
+    assertion(Plain == Plain2),
+    %  Bold and SGR 22 are the reference.  They worked before italic
+    %  existed, so a failure here is the harness rather than the feature.
+    assertion(Plain \== Bold),
+    assertion(Plain == BoldOff),
+    %  SGR 3 reaches the painter and SGR 23 takes it away again.
+    assertion(Plain \== Italic),
+    assertion(Plain == ItalicOff),
+    %  <-font, <-bold_font, <-italic_font and <-bold_italic_font are four
+    %  different fonts, so bold italic is neither of the two on its own.
+    assertion(BoldItalic \== Plain),
+    assertion(BoldItalic \== Bold),
+    assertion(BoldItalic \== Italic).
+
+:- end_tests(terminal_attributes).
+
+
+		 /*******************************
+		 *        TEST: MOUSE           *
+		 *******************************/
+
+:- begin_tests(terminal_mouse,
+               [ condition(needs([mouse, selection])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+test(click_moves_the_caret, [setup(test_begin(T))]) :-
+    %  A click in the line being edited puts the caret there.  The
+    %  terminal cannot place the caret itself -- the line belongs to
+    %  the client -- so it asks, by sending as many cursor keys as
+    %  there are grapheme clusters in between.  Assert the caret moves
+    %  by the distance clicked rather than to an absolute column: the
+    %  pixel-to-cell mapping is the terminal's business, and a
+    %  synthesised event does not carry the offset a real one has.
+    type(T, 'hello world, this is the input line'),
+    drive(0.3),
+    cursor(T, End, R),
+    click(T, 12, R),
+    cursor(T, C1, R1),
+    assertion(R1 =:= R),
+    assertion(C1 < End),
+    click(T, 20, R),                    % eight cells further right
+    cursor(T, C2, R2),
+    assertion(R2 =:= R),
+    (   C2 =:= C1+8
+    ->  true
+    ;   format(user_error,
+               "caret went from ~w to ~w, expected ~w~n", [C1, C2, C1+8]),
+        assertion(C2 =:= C1+8)
+    ),
+    click(T, 20, R),                    % clicking again changes nothing
+    assert_cursor(T, C2, R).
+
+test(click_moves_the_caret_without_bracketed_paste,
+     [ setup(test_begin(T)),
+       cleanup(set_bracketed_paste(T, true))
+     ]) :-
+    %  Bracketed paste is only the fallback evidence that a line editor
+    %  owns the input, and libedit turns it off in vi mode, where the
+    %  ESC[200~ start marker cannot be dispatched as a binding.  The
+    %  OSC 133 prompt marks say the same thing outright, so the caret
+    %  keeps following the mouse without it.
+    set_bracketed_paste(T, false),
+    type(T, 'hello world, this is the input line'),
+    drive(0.3),
+    cursor(T, End, R),
+    click(T, 12, R),
+    cursor(T, C1, R1),
+    assertion(R1 =:= R),
+    assertion(C1 < End),
+    click(T, 20, R),                    % eight cells further right
+    cursor(T, C2, R2),
+    assertion(R2 =:= R),
+    assertion(C2 =:= C1+8).
+
+test(no_signal_no_caret_move,
+     [ setup(test_begin(T)),
+       cleanup(( set_prompt_marks(T, true),
+                 set_bracketed_paste(T, true)
+               ))
+     ]) :-
+    %  el_set/2 takes the marks away again, for a terminal that would
+    %  print them rather than read them.  With bracketed paste gone as
+    %  well the client says nothing at all about the line it is
+    %  editing, and the terminal leaves the caret alone.
+    set_prompt_marks(T, false),
+    set_bracketed_paste(T, false),
+    type(T, 'hello world, this is the input line'),
+    drive(0.3),
+    cursor(T, C, R),
+    click(T, 12, R),
+    assert_cursor(T, C, R).
+
+test(click_moves_the_caret_without_a_prompt, [setup(test_begin(T))]) :-
+    %  Prolog writes no prompt for a read that starts where the output
+    %  left the caret, so there is no prompt to mark; the input is
+    %  still marked, and still edited.
+    type(T, 'format("name: "), read_line_to_string(user_input, S), \c
+             format("[~w]~n", [S]).'),
+    key(T, enter),
+    assertion(wait_until(waiting_for(T, 'name: '), 15)),
+    type(T, 'abcdefgh'),
+    drive(0.3),
+    cursor(T, End, R),
+    Back is End-4,
+    click(T, Back, R),
+    %  Reported with the row and the screen rather than as a bare
+    %  comparison: this is the one caret assertion in the suite that a
+    %  redraw can move.  libedit has no prompt here, so the line starts
+    %  at column 0 as far as it is concerned; a full refresh -- a
+    %  SIGWINCH, or a size change it notices at a keypress -- paints the
+    %  input over `name: ' and leaves the caret six columns to the left
+    %  of where the click asked for it.  A dump says so at a glance.
+    assert_cursor(T, Back, R),
+    type(T, 'XY'),
+    key(T, enter),
+    assertion(wait_until(marker_on_screen(T, '[abcdXYefgh]'), 15)),
+    assertion(wait_for_prompt(T)).
+
+test(click_in_the_prompt_goes_to_the_input, [setup(test_begin(T))]) :-
+    %  A click in front of the input is a click in the prompt, and the
+    %  caret goes to the start of the input.  OSC 133 B says where that
+    %  is, so the terminal stops there rather than asking the client to
+    %  walk into its own prompt.  A line editor clamps such a walk
+    %  anyway, which is why this asserts where the caret ends up rather
+    %  than how many keys it took.
+    prompt_col(T, P),
+    type(T, 'hello'),
+    drive(0.3),
+    cursor(T, _, R),
+    click(T, 0, R),
+    assert_cursor(T, P, R).
+
+test(click_outside_the_input_line, [setup(test_begin(T))]) :-
+    %  Only the line being edited follows the mouse; a click anywhere
+    %  else still just starts a selection.  Push the prompt down first
+    %  so there is a row above it to click on: how far down a terminal
+    %  starts out is a property of the backend, not of the behaviour
+    %  under test.
+    rows_above(T, 2),
+    type(T, 'hello'),
+    drive(0.3),
+    cursor(T, C, R),
+    Above is R-2,
+    assertion(Above >= 0),
+    click(T, 5, Above),
+    assert_cursor(T, C, R).
+
+test(click_while_reading_one_char, [setup(test_begin(T))]) :-
+    %  A client reading a single character is not editing a line: it
+    %  would take the ESC of the first cursor key we send as its
+    %  answer.  libedit turns bracketed paste off around such a read
+    %  and the terminal takes that as its cue to leave the caret alone,
+    %  so the click sends nothing at all and the character the user
+    %  types next is still the one the client gets.
+    type(T, 'format("pick: "), get_single_char(C), format("got ~w~n", [C]).'),
+    key(T, enter),
+    assertion(wait_until(waiting_for(T, 'pick: '), 15)),
+    cursor(T, Col, Row),
+    click(T, 1, Row),
+    drive(0.3),
+    assert_cursor(T, Col, Row),
+    assertion(waiting_for(T, 'pick: ')),
+    type(T, x),
+    assertion(wait_until(marker_on_screen(T, 'got 120'), 15)),
+    assertion(wait_for_prompt(T)).
+
+test(drag_selects_and_leaves_the_caret, [setup(test_begin(T))]) :-
+    type(T, 'hello world, this is the input line'),
+    drive(0.3),
+    cursor(T, C, R),
+    drag(T, 10, R, 20, R),
+    assert_cursor(T, C, R),
+    assertion(term_has_selection(T)).
+
+test(click_on_a_wrapped_row, [setup(test_begin(T))]) :-
+    %  The input spans two rows; a click on the first row moves the
+    %  caret back into it.
+    filler(120, Xs),
+    type(T, Xs),
+    drive(0.4),
+    cursor(T, _, LastRow),
+    FirstRow is LastRow-1,
+    click(T, 20, FirstRow),
+    cursor(T, C, R),
+    assertion(R =:= FirstRow),
+    click(T, 28, FirstRow),
+    cursor(T, C2, R2),
+    assertion(R2 =:= FirstRow),
+    assertion(C2 =:= C+8).
+
+:- end_tests(terminal_mouse).
+
+
+		 /*******************************
+		 *        TEST: WHEEL           *
+		 *******************************/
+
+/** <section> What the wheel does
+
+    Turning the wheel means different things depending on what runs on
+    the terminal, and always scrolling our own scroll back is the one
+    thing no other terminal does:
+
+      - Nothing in particular: scroll the scroll back.
+      - A full screen application, i.e. one on the alternate screen:
+        there is no scroll back to scroll there.
+      - An application that asked for mouse reports: the wheel is a
+        button like any other and the application decides.
+*/
+
+:- begin_tests(terminal_wheel,
+               [ condition(needs([mouse, program_output])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+test(wheel_scrolls_the_scrollback, [setup(current_test_terminal(T))]) :-
+    scrollback(T, 60),
+    row_text(T, 0, Before),
+    wheel(T, 10, 5, 3),
+    row_text(T, 0, After),
+    assertion(Before \== After).
+
+test(alt_screen_has_no_scrollback,
+     [ setup(current_test_terminal(T)),
+       cleanup(( out(T, '\e[?1007h'), normal_screen(T) ))
+     ]) :-
+    %  The lines the alternate screen replaced belong to the normal
+    %  screen: an application owns the window until it gives them back,
+    %  and scrolling them into view is never what the wheel was for.
+    %
+    %  Alternate scroll off: this is about our own scroll back, not
+    %  about the cursor keys the wheel otherwise sends the application
+    %  -- which the client on this terminal would answer.
+    scrollback(T, 60),
+    alt_screen(T, 'ALT-SCREEN'),
+    out(T, '\e[?1007l'),
+    wheel(T, 10, 5, 3),
+    assert_row(T, 0, 'ALT-SCREEN').
+
+test(alt_screen_scrollbar_is_full,
+     [ setup(current_test_terminal(T)),
+       cleanup(normal_screen(T))
+     ]) :-
+    %  ... and the scroll bar must say so rather than offering a bubble
+    %  that scrolls nowhere.
+    scrollback(T, 60),
+    alt_screen(T, 'ALT-SCREEN'),
+    term_rows(T, Rows),
+    term_bubble(T, Length, Start, View),
+    assertion([Length,Start,View] == [Rows,0,Rows]).
+
+:- end_tests(terminal_wheel).
+
+
+		 /*******************************
+		 *      TEST: ALT SCROLL        *
+		 *******************************/
+
+%   Alternate scroll (DEC private mode 1007): what the terminal sends
+%   its client is otherwise invisible, so these tests run a client that
+%   reads it back; see client_reads/2.
+
+:- begin_tests(terminal_alt_scroll,
+               [ condition(needs([mouse, program_output, pty_signals])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+alt_scroll_begin(T) :-
+    current_test_terminal(T),
+    start_echo_client(T),
+    alt_screen(T, '').
+
+alt_scroll_end(T) :-
+    normal_screen(T),
+    stop_foreground(T).
+
+test(wheel_down_sends_cursor_down,
+     [ setup(alt_scroll_begin(T)),
+       cleanup(alt_scroll_end(T))
+     ]) :-
+    %  What makes the wheel scroll `less' and `man': they never asked
+    %  for a mouse, so the terminal turns the wheel into the keys they
+    %  do read -- three lines to the notch, as everywhere else.
+    wheel(T, 10, 5, -1),
+    assertion(client_reads(T, '^[[B^[[B^[[B')).
+
+test(wheel_up_sends_cursor_up,
+     [ setup(alt_scroll_begin(T)),
+       cleanup(alt_scroll_end(T))
+     ]) :-
+    wheel(T, 10, 5, 1),
+    assertion(client_reads(T, '^[[A^[[A^[[A')).
+
+test(application_cursor_keys,
+     [ setup(alt_scroll_begin(T)),
+       cleanup(alt_scroll_end(T))
+     ]) :-
+    %  DECCKM (mode 1) decides how a cursor key is spelled, and these
+    %  are cursor keys like any other.
+    out(T, '\e[?1h'),
+    wheel(T, 10, 5, -1),
+    assertion(client_reads(T, '^[OB^[OB^[OB')),
+    out(T, '\e[?1l').
+
+test(alt_scroll_can_be_switched_off,
+     [ setup(alt_scroll_begin(T)),
+       cleanup(( out(T, '\e[?1007h'), alt_scroll_end(T) ))
+     ]) :-
+    out(T, '\e[?1007l'),
+    wheel(T, 10, 5, -1),
+    assertion(client_reads(T, '')).
+
+test(shift_wheel_is_not_the_applications,
+     [ setup(alt_scroll_begin(T)),
+       cleanup(alt_scroll_end(T))
+     ]) :-
+    %  Shift is the way out of whatever the application asked for; on
+    %  the alternate screen that leaves the wheel with nothing to do.
+    button_shift(Shift),
+    wheel(T, 10, 5, -1, Shift),
+    assertion(client_reads(T, '')).
+
+test(normal_screen_wheel_is_ours,
+     [ setup(( current_test_terminal(T),
+               start_echo_client(T) )),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  Off the alternate screen the wheel scrolls the scroll back and
+    %  the client hears nothing of it, whatever it is running.
+    wheel(T, 10, 5, 1),
+    assertion(client_reads(T, '')).
+
+:- end_tests(terminal_alt_scroll).
+
+
+		 /*******************************
+		 *      TEST: MOUSE REPORTS     *
+		 *******************************/
+
+%   Mouse reporting (DEC private modes 9, 1000, 1002 and 1003, encoded
+%   as asked for by 1005, 1006 or 1015).  As with alternate scroll, the
+%   reports are read back from a client that echoes what it is sent.
+%
+%   The cell clicked on is (10,5) throughout, which the wire format
+%   counts from one as column 11, row 6.
+
+:- begin_tests(terminal_mouse_reports,
+               [ condition(needs([mouse, program_output, pty_signals])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+reports_begin(T) :-
+    current_test_terminal(T),
+    start_echo_client(T).
+
+reports_end(T) :-
+    out(T, '\e[?1003l\e[?1002l\e[?1000l\e[?9l\e[?1006l\e[?1015l\e[?1005l'),
+    stop_foreground(T).
+
+%!  tracking(+T, +Modes) is det.
+%
+%   Ask for the mouse as an application would, Modes being the DEC
+%   private modes it sets.
+
+tracking(T, Modes) :-
+    forall(member(Mode, Modes),
+           out(T, ['\e[?', Mode, 'h'])).
+
+test(sgr_reports_press_and_release,
+     [ setup(reports_begin(T)),
+       cleanup(reports_end(T))
+     ]) :-
+    tracking(T, [1000, 1006]),
+    click(T, 10, 5),
+    assertion(client_reads(T, '^[[<0;11;6M^[[<0;11;6m')).
+
+test(default_encoding_is_the_x10_one,
+     [ setup(reports_begin(T)),
+       cleanup(reports_end(T))
+     ]) :-
+    %  Without 1006 the report is CSI M and three bytes, each 32 more
+    %  than the number it stands for: button 0 is a space, column 11 a
+    %  `+', row 6 an `&'.  A release says only that a button came up,
+    %  which is button 3, a `#'.
+    tracking(T, [1000]),
+    click(T, 10, 5),
+    assertion(client_reads(T, '^[[M +&^[[M#+&')).
+
+test(urxvt_encoding,
+     [ setup(reports_begin(T)),
+       cleanup(reports_end(T))
+     ]) :-
+    tracking(T, [1000, 1015]),
+    click(T, 10, 5),
+    assertion(client_reads(T, '^[[32;11;6M^[[35;11;6M')).
+
+test(wheel_is_a_button,
+     [ setup(reports_begin(T)),
+       cleanup(reports_end(T))
+     ]) :-
+    %  Buttons 64 and 65, one report per notch and no release.  This is
+    %  what `less --mouse' and emacs read, and it is why they scroll in
+    %  a terminal that reports and not in one that scrolls itself.
+    tracking(T, [1000, 1006]),
+    wheel(T, 10, 5, -1),
+    assertion(client_reads(T, '^[[<65;11;6M')),
+    wheel(T, 10, 5, 2),
+    assertion(client_reads(T, '^[[<64;11;6M^[[<64;11;6M')).
+
+test(drags_need_button_event_tracking,
+     [ setup(reports_begin(T)),
+       cleanup(reports_end(T))
+     ]) :-
+    %  1000 reports the two ends of a drag but not the way there;
+    %  1002 adds the motion, marked with the motion flag (32).
+    tracking(T, [1000, 1006]),
+    drag(T, 10, 5, 20, 5),
+    assertion(client_reads(T, '^[[<0;11;6M^[[<0;21;6m')),
+    tracking(T, [1002]),
+    drag(T, 10, 5, 20, 5),
+    assertion(client_reads(T, '^[[<0;11;6M^[[<32;21;6M^[[<0;21;6m')).
+
+test(motion_needs_any_event_tracking,
+     [ setup(reports_begin(T)),
+       cleanup(reports_end(T))
+     ]) :-
+    %  A pointer that moves with no button down is 1003's business
+    %  alone, and only where it enters a new cell: button 3 (no
+    %  button) plus the motion flag is 35.
+    tracking(T, [1002, 1006]),
+    move(T, 10, 5),
+    assertion(client_reads(T, '')),
+    tracking(T, [1003]),
+    move(T, 11, 5),
+    move(T, 11, 5),
+    assertion(client_reads(T, '^[[<35;12;6M')).
+
+test(x10_tracking_reports_presses_only,
+     [ setup(reports_begin(T)),
+       cleanup(reports_end(T))
+     ]) :-
+    tracking(T, [9, 1006]),
+    click(T, 10, 5),
+    assertion(client_reads(T, '^[[<0;11;6M')).
+
+test(modifiers_are_reported,
+     [ setup(reports_begin(T)),
+       cleanup(reports_end(T))
+     ]) :-
+    button_control(Control),
+    tracking(T, [1000, 1006]),
+    click(T, 10, 5, Control),
+    assertion(client_reads(T, '^[[<16;11;6M^[[<16;11;6m')).
+
+test(shift_click_is_the_users,
+     [ setup(reports_begin(T)),
+       cleanup(reports_end(T))
+     ]) :-
+    %  Shift is the way out of an application that took the mouse: it
+    %  is never reported, so selecting and pasting keep working.
+    button_shift(Shift),
+    tracking(T, [1000, 1006]),
+    click(T, 10, 5, Shift),
+    assertion(client_reads(T, '')).
+
+test(tracking_can_be_switched_off,
+     [ setup(reports_begin(T)),
+       cleanup(reports_end(T))
+     ]) :-
+    tracking(T, [1000, 1006]),
+    out(T, '\e[?1000l'),
+    click(T, 10, 5),
+    assertion(client_reads(T, '')).
+
+test(utf8_encoding,
+     [ setup(reports_begin(T)),
+       cleanup(( resize_cols(T, 80, _), reports_end(T) ))
+     ]) :-
+    %  1005 is the default encoding with the three numbers written as
+    %  UTF-8 code points rather than as bytes, so it says nothing until
+    %  a number passes 127 -- which takes a terminal wider than the 96th
+    %  column.  `cat -v' spells the bytes out: the single 0x85 of the
+    %  default is `M-^E', the two of its UTF-8 form are `M-BM-^E'.
+    resize_cols(T, 120, Cols),
+    assertion(Cols >= 101),
+    tracking(T, [1000]),
+    click(T, 100, 5),
+    assertion(client_reads(T, '^[[M M-^E&^[[M#M-^E&')),
+    tracking(T, [1005]),
+    click(T, 100, 5),
+    assertion(client_reads(T, '^[[M M-BM-^E&^[[M#M-BM-^E&')).
+
+test(reporting_takes_the_wheel_from_alternate_scroll,
+     [ setup(reports_begin(T)),
+       cleanup(( normal_screen(T), reports_end(T) ))
+     ]) :-
+    %  Both could claim the wheel on the alternate screen.  An
+    %  application that asked for reports gets them; alternate scroll
+    %  is for the ones that did not.
+    alt_screen(T, ''),
+    tracking(T, [1000, 1006]),
+    wheel(T, 10, 5, -1),
+    assertion(client_reads(T, '^[[<65;11;6M')).
+
+:- end_tests(terminal_mouse_reports).
+
+
+		 /*******************************
 		 *        TEST: RESIZE          *
 		 *******************************/
 
-%   These tests drive `send(Terminal, width, Pixels)` while a line is
+%   These tests resize the terminal while a line is
 %   being edited and check that libedit+xpce re-wrap the current input
 %   correctly at the new column count.  The tests currently fail on
 %   the known resize-while-editing bug (stale rows from the pre-resize
@@ -960,19 +3733,19 @@ test(insert_before_final_emoji, [setup(test_begin(T))]) :-
 %!  cleanup_unit_resize is det.
 %
 %   Extend the shared terminal setup/cleanup so we also remember the
-%   initial pixel width of the terminal.  Each resize test restores
-%   that width first (via resize_test_begin/1) so a previous test's
-%   resize doesn't leak into the next one.
+%   initial width of the terminal.  Each resize test restores that
+%   width first (via resize_test_begin/1) so a previous test's resize
+%   doesn't leak into the next one.
 
 setup_unit_resize :-
     setup_unit,
     current_test_terminal(T),
-    get(T, width, W),
-    nb_setval(terminal_resize_initial_width, W).
+    term_cols(T, Cols),
+    nb_setval(terminal_resize_initial_cols, Cols).
 
 cleanup_unit_resize :-
-    (   nb_current(terminal_resize_initial_width, _)
-    ->  nb_delete(terminal_resize_initial_width)
+    (   nb_current(terminal_resize_initial_cols, _)
+    ->  nb_delete(terminal_resize_initial_cols)
     ;   true
     ),
     cleanup_unit.
@@ -986,12 +3759,10 @@ cleanup_unit_resize :-
 
 resize_test_begin(T) :-
     current_test_terminal(T),
-    (   nb_current(terminal_resize_initial_width, W0)
-    ->  get(T, width, W),
-        (   W =:= W0
-        ->  true
-        ;   resize_width(T, W0)
-        )
+    (   nb_current(terminal_resize_initial_cols, Cols0),
+        term_cols(T, Cols),
+        Cols =\= Cols0
+    ->  resize_cols(T, Cols0, _)
     ;   true
     ),
     reset_input(T).
@@ -1010,19 +3781,18 @@ resize_test_begin(T) :-
 type_and_wait(T, Text) :-
     cursor(T, Col0, Row0),
     atom_length(Text, Len),
-    cw_of(T, CW),
-    get(T, width, W),
-    Cols is max(20, truncate(W / CW)) - 2,
+    term_cols(T, Cols),
     TotalCells is Col0 + Len,
     LastCell is TotalCells - 1,
     LastRow is Row0 + LastCell // Cols,
     LastCol is LastCell mod Cols,
     NextCol is LastCol + 1,
+    margin_col(T, Margin),
     (   NextCol < Cols
     ->  ExpCol = NextCol, ExpRow = LastRow
-    ;   ExpCol = Cols,    ExpRow = LastRow
+    ;   ExpCol = Margin,  ExpRow = LastRow
     ),
-    send(T, send, Text),
+    term_send(T, Text),
     wait_until(cursor_at(T, ExpCol, ExpRow), 5).
 
 cursor_at(T, Col, Row) :-
@@ -1062,16 +3832,13 @@ test(resize_welcome_line, [setup(resize_test_begin(T))]) :-
     %  exactly two rows at the new width.  The bug manifests as an
     %  extra (duplicated) prompt row appearing after the resize.
     cursor(T, P, R),
-    cw_of(T, CW),
     Input = 'Welcome to SWI-Prolog (threaded, 64 bits, version 10.1.5-43-g7b3ac1193-DIRTY)',
     type_and_wait(T, Input),
     atom_length(Input, InputLen),
     %  Pick a width that gives NewCols such that the first row holds
     %  prompt + most of the input and the second row holds the tail.
     TargetCols = 73,
-    NewPixels is round((TargetCols + 2) * CW),
-    resize_width(T, NewPixels),
-    cols_for_pixels(CW, NewPixels, NewCols),
+    resize_cols(T, TargetCols, NewCols),
     assertion(NewCols == TargetCols),
     %  First row: prompt + first (NewCols - P) chars of the input.
     HeadLen is NewCols - P,
@@ -1098,14 +3865,11 @@ test(resize_ascii_shrink, [setup(resize_test_begin(T))]) :-
     %  the rows (stripping the prompt once) must reproduce the input
     %  exactly — so there can be no duplicated prefix.
     cursor(T, P, R),
-    cw_of(T, CW),
     Len = 150,
     filler(Len, Xs),
     type_and_wait(T, Xs),
     TargetCols = 40,			% comfortably forces 3+ rows
-    NewPixels is round((TargetCols + 2) * CW),
-    resize_width(T, NewPixels),
-    cols_for_pixels(CW, NewPixels, NewCols),
+    resize_cols(T, TargetCols, NewCols),
     assertion((NewCols >= 30, NewCols =< 50)),
     %  Number of rows the wrapped line occupies (prompt only counts on
     %  first row).
@@ -1135,16 +3899,296 @@ test(resize_ascii_shrink, [setup(resize_test_begin(T))]) :-
 
 test(resize_ascii_grow, [setup(resize_test_begin(T))]) :-
     cursor(T, P, R),
-    cw_of(T, CW),
     filler(150, Xs),
     type_and_wait(T, Xs),
-    NewPixels is round((P + 160) * CW),
-    resize_width(T, NewPixels),
-    cols_for_pixels(CW, NewPixels, NewCols),
+    WantCols is P + 158,
+    resize_cols(T, WantCols, NewCols),
     assertion(NewCols >= P + 150),
     assert_input(T, R, Xs),
     rows_of(T, 0, 3, Rows),
     assert_single_prompt(Rows).
+
+test(resize_to_exact_row_multiple,
+     [ condition(magic_margins),
+       setup(resize_test_begin(T))
+     ]) :-
+    %  Shrink to a width the input fills exactly: prompt + input is a
+    %  whole number of rows, so the caret ends on the right margin.  A
+    %  terminal with magic margins leaves it there rather than opening
+    %  the row below, and libedit must rewind by one row less when it
+    %  repaints.  It rewound one row too far and painted the input over
+    %  the line above the prompt, eating it.
+    %
+    %  Needs a terminal description that says so: this is the one place
+    %  where the redisplay predicts the caret from the description
+    %  rather than settling it, so where the two disagree -- TERM=ansi
+    %  on the xpce terminal -- libedit rewinds by the wrong amount and
+    %  there is nothing it could have done about it.
+    %  Run a goal first: its output gives us a known line above the
+    %  prompt, which is what the bug ate.
+    type(T, 'true.'),
+    key(T, enter),
+    assertion(wait_for_prompt(T)),
+    cursor(T, P, R),
+    assertion(R > 0),
+    TargetCols = 54,
+    Len is 2*TargetCols - P,            % exactly two rows after the resize
+    filler(Len, Xs),
+    type_and_wait(T, Xs),
+    row_text(T, R, PromptLine),
+    prompt_prefix(PromptLine, P, Prompt),
+    R0 is R - 1,
+    row_text(T, R0, Above0),
+    resize_cols(T, TargetCols, NewCols),
+    assertion(NewCols == TargetCols),
+    %  The prompt row moved (the input needs one row more than it did
+    %  at 80 columns), so find it by its prompt rather than from the
+    %  caret: at the right margin the caret sits below the last row of
+    %  the input.  The line above the prompt must still be there.
+    prompt_row(T, Prompt, PromptRow),
+    AboveRow is PromptRow - 1,
+    row_text(T, AboveRow, Above1),
+    (   Above1 == Above0
+    ->  true
+    ;   format(user_error,
+               "line above the prompt: expected ~q, got ~q~n",
+               [Above0, Above1]),
+        assertion(Above1 == Above0)
+    ),
+    RowsNeeded is (P + Len + NewCols - 1) // NewCols,
+    rows_of(T, PromptRow, RowsNeeded, DisplayRows),
+    assert_single_prompt(DisplayRows),
+    DisplayRows = [First|Rest],
+    strip_prompt(First, FirstTail),
+    maplist(trim_trailing_spaces, [FirstTail|Rest], Trimmed),
+    atomic_list_concat(Trimmed, Joined),
+    assertion(Joined == Xs).
+
+%!  prompt_rows(+Terminal, +Prompt, -Rows) is det.
+%!  prompt_row(+Terminal, +Prompt, -Row) is semidet.
+%
+%   All visible rows that start with Prompt, and the last of them.
+
+prompt_rows(T, Prompt, Rows) :-
+    atom_length(Prompt, PL),
+    findall(I,
+            ( between(0, 24, I),
+              row_text(T, I, Line),
+              sub_atom(Line, 0, PL, _, Prompt)
+            ), Rows).
+
+prompt_row(T, Prompt, Row) :-
+    prompt_rows(T, Prompt, Rows),
+    last(Rows, Row).
+
+test(key_after_resize_uses_new_width,
+     [ setup(resize_test_begin(T))
+     ]) :-
+    %  Resize, then press a key.  The resize must reach libedit before
+    %  the key is acted on: ^A moves the caret up by as many rows as
+    %  libedit believes the input occupies, and with the width it had
+    %  before the resize that is the wrong row -- the repaint then
+    %  leaves a copy of the first row behind.  On Windows nothing
+    %  interrupts the read, so the size has to be polled after it.
+    %  Needs a terminal of its own: a resize in an earlier test leaves
+    %  libedit's size already in step.
+    cursor(T, P, R),
+    row_text(T, R, PromptLine),
+    prompt_prefix(PromptLine, P, Prompt),
+    TargetCols = 60,
+    %  One character past four whole rows at the new width: the last
+    %  row holds a single character, so the row count changes and the
+    %  caret's row offset with it.
+    Len is 4*TargetCols + 1 - P,
+    filler(Len, Xs),
+    type_and_wait(T, Xs),
+    resize_cols(T, TargetCols, NewCols),
+    key(T, ctrl_a),
+    drive(0.2),
+    %  Exactly one prompt on the screen: a repaint that started on the
+    %  wrong row leaves a second copy of the first row above it.  The
+    %  terminal is this test's own, so the prompt of the line being
+    %  edited is the only one there is.
+    prompt_rows(T, Prompt, PromptRows),
+    last(PromptRows, PromptRow),
+    (   PromptRows = [_]
+    ->  true
+    ;   format(user_error, "prompt on rows ~q, expected one~n", [PromptRows]),
+        assertion(PromptRows = [_])
+    ),
+    assert_cursor(T, P, PromptRow),
+    RowsNeeded is (P + Len + NewCols - 1) // NewCols,
+    rows_of(T, PromptRow, RowsNeeded, DisplayRows),
+    assert_single_prompt(DisplayRows),
+    DisplayRows = [First|Rest],
+    strip_prompt(First, FirstTail),
+    maplist(trim_trailing_spaces, [FirstTail|Rest], Trimmed),
+    atomic_list_concat(Trimmed, Joined),
+    assertion(Joined == Xs).
+
+test(shrink_move_caret_widen,
+     [ setup(resize_test_begin(T))
+     ]) :-
+    %  Shrink, walk the caret to the start and back to the end, widen,
+    %  then ^A.  Going to the end moves the caret down one row per
+    %  wrapped row, and a terminal that took each of those moves for a
+    %  line break turned every continuation of the input into a hard
+    %  line: rewrapping on the next resize reflowed the pieces on their
+    %  own and left parts of the old layout on the screen.
+    cursor(T, P, R),
+    row_text(T, R, PromptLine),
+    prompt_prefix(PromptLine, P, Prompt),
+    Len is 321 - P,
+    filler(Len, Xs),
+    type_and_wait(T, Xs),
+    resize_cols(T, 39, _),
+    key(T, ctrl_a),
+    drive(0.2),
+    key(T, ctrl_e),
+    drive(0.2),
+    resize_cols(T, 60, _),
+    key(T, ctrl_a),
+    drive(0.2),
+    prompt_rows(T, Prompt, PromptRows),
+    last(PromptRows, PromptRow),
+    (   PromptRows = [_]
+    ->  true
+    ;   format(user_error, "prompt on rows ~q, expected one~n", [PromptRows]),
+        assertion(PromptRows = [_])
+    ),
+    assert_cursor(T, P, PromptRow),
+    RowsNeeded is (P + Len + 59) // 60,
+    rows_of(T, PromptRow, RowsNeeded, DisplayRows),
+    DisplayRows = [First|Rest],
+    strip_prompt(First, FirstTail),
+    maplist(trim_trailing_spaces, [FirstTail|Rest], Trimmed),
+    atomic_list_concat(Trimmed, Joined),
+    assertion(Joined == Xs).
+
+test(selection_survives_resize,
+     [ condition(needs([selection])),
+       setup(resize_test_begin(T))
+     ]) :-
+    %  Rewrapping rebuilds the ring of lines the selection points into,
+    %  so the anchors have to be carried across with the text.  They
+    %  were not, and a selection made before a resize covered something
+    %  else afterwards.
+    type(T, 'true.'),
+    key(T, enter),
+    assertion(wait_for_prompt(T)),
+    filler(200, Xs),
+    type_and_wait(T, Xs),
+    term_select_all(T),
+    term_selection(T, Text0),
+    resize_cols(T, 60, _),
+    term_selection(T, Text1),
+    (   Text1 == Text0
+    ->  true
+    ;   format(user_error,
+               "selection changed over the resize:~n  before: ~q~n  after:  ~q~n",
+               [Text0, Text1]),
+        assertion(Text1 == Text0)
+    ).
+
+test(resize_wrapped_row_ending_in_a_space, [setup(resize_test_begin(T))]) :-
+    %  Put a space in the last column of the first row.  libedit does
+    %  not write trailing blanks, so unless it is made to, the row ends
+    %  with the newline that moves to the next one rather than with a
+    %  wrap -- and the terminal, which rewraps on resize, reads that as
+    %  a hard line break and reflows the input into the wrong number of
+    %  rows, leaving a copy of a row on the screen.
+    type(T, 'true.'),
+    key(T, enter),
+    assertion(wait_for_prompt(T)),
+    cursor(T, P, R),
+    assertion(R > 0),
+    row_text(T, R, PromptLine),
+    prompt_prefix(PromptLine, P, Prompt),
+    RowAbove is R-1,
+    row_text(T, RowAbove, Above0),
+    FirstCols = 70,                     % the space ends the second row
+    HeadLen is 2*FirstCols - P - 1,     % once we are at FirstCols
+    filler(HeadLen, Head),
+    filler(30, Tail),
+    atomic_list_concat([Head, ' ', Tail], Xs),
+    type_and_wait(T, Xs),
+    %  The first resize repaints, and the repaint is where libedit
+    %  would drop the trailing space; the second one rewraps whatever
+    %  structure that left behind.
+    resize_cols(T, FirstCols, _),
+    TargetCols = 68,
+    resize_cols(T, TargetCols, NewCols),
+    assertion(NewCols == TargetCols),
+    prompt_row(T, Prompt, PromptRow),
+    AboveRow is PromptRow - 1,
+    row_text(T, AboveRow, Above1),
+    (   Above1 == Above0
+    ->  true
+    ;   format(user_error,
+               "line above the prompt: expected ~q, got ~q~n",
+               [Above0, Above1]),
+        assertion(Above1 == Above0)
+    ),
+    atom_length(Xs, Len),
+    RowsNeeded is (P + Len + NewCols - 1) // NewCols,
+    rows_of(T, PromptRow, RowsNeeded, DisplayRows),
+    assert_single_prompt(DisplayRows),
+    DisplayRows = [First|Rest],
+    strip_prompt(First, FirstTail),
+    maplist(trim_trailing_spaces, [FirstTail|Rest], Trimmed),
+    atomic_list_concat(Trimmed, Joined),
+    normalize_space(atom(JoinedN), Joined),
+    normalize_space(atom(XsN), Xs),
+    assertion(JoinedN == XsN).
+
+test(edit_wrapped_input_after_resize, [setup(resize_test_begin(T))]) :-
+    %  Resize the window, then edit an input line that wraps.  Every
+    %  cursor motion libedit makes is computed from the column count it
+    %  believes the terminal has, so if the resize never reached it the
+    %  redraw lands on the wrong row: ^A repaints the head of the line
+    %  over its last row instead of moving to the prompt.  Reported for
+    %  Epilog on Windows, where a resize raises no SIGWINCH.
+    cursor(T, P, R),
+    TargetCols = 100,
+    resize_cols(T, TargetCols, NewCols),
+    assertion(NewCols == TargetCols),
+    Len = 200,
+    filler(Len, Xs),
+    %  type_and_wait/2 waits for the cursor position it derives from
+    %  the column count, which is what this test is checking; wait for
+    %  the position we computed from NewCols instead: the last cell of
+    %  the input is P+Len-1.
+    LastCell is P + Len - 1,
+    ExpRow is R + LastCell // NewCols,
+    ExpCol is LastCell mod NewCols + 1,
+    assertion(ExpCol < NewCols),
+    type(T, Xs),
+    wait_until(cursor_at(T, ExpCol, ExpRow), 5),
+    %  Move to the start of the line: the cursor must land on the
+    %  prompt row, not somewhere in the wrapped tail.
+    key(T, ctrl_a),
+    drive(0.2),
+    assert_cursor(T, P, R),
+    %  Replace the character at offset 5 and check the whole line.
+    key(T, cursor_right),
+    key(T, cursor_right),
+    key(T, cursor_right),
+    key(T, cursor_right),
+    key(T, cursor_right),
+    key(T, backspace),
+    type(T, 'Z'),
+    drive(0.2),
+    sub_atom(Xs, 0, 4, _, Head),
+    sub_atom(Xs, 5, _, 0, Tail),
+    atomic_list_concat([Head, 'Z', Tail], Expected),
+    RowsNeeded is (P + Len + NewCols - 1) // NewCols,
+    rows_of(T, R, RowsNeeded, DisplayRows),
+    assert_single_prompt(DisplayRows),
+    DisplayRows = [First|Rest],
+    strip_prompt(First, FirstTail),
+    maplist(trim_trailing_spaces, [FirstTail|Rest], Trimmed),
+    atomic_list_concat(Trimmed, Joined),
+    assertion(Joined == Expected).
 
 test(resize_below_window_scrolls, [setup(resize_test_begin(T))]) :-
     %   Type a long input and then shrink the terminal so the
@@ -1162,7 +4206,6 @@ test(resize_below_window_scrolls, [setup(resize_test_begin(T))]) :-
     %     - that slice ends at the tail of the input,
     %     - no prompt is visible (it's scrolled off).
     cursor(T, P, _R),
-    cw_of(T, CW),
     WindowSize = 25,
     TargetCols = 25,
     %   Pick total chars as an exact multiple of NewCols so the last
@@ -1173,9 +4216,7 @@ test(resize_below_window_scrolls, [setup(resize_test_begin(T))]) :-
     Len is TotalChars - P,
     filler(Len, Xs),
     type_and_wait(T, Xs),
-    NewPixels is round((TargetCols + 2) * CW),
-    resize_width(T, NewPixels),
-    cols_for_pixels(CW, NewPixels, NewCols),
+    resize_cols(T, TargetCols, NewCols),
     assertion(NewCols == TargetCols),
     assertion(TotalRows > WindowSize),
     LastRow is WindowSize - 1,
@@ -1225,6 +4266,41 @@ exclude_trailing_empty(List, Kept) :-
 drop_empty_prefix([''|T], R) :- !, drop_empty_prefix(T, R).
 drop_empty_prefix(L, L).
 
+test(resize_keeps_a_prompt_the_program_wrote,
+     [ setup(resize_test_begin(T)),
+       cleanup(resize_cols(T, 80, _))
+     ]) :-
+    %  A read that starts where the output left the caret has no prompt
+    %  of its own: `format("name: ")' put those columns there as
+    %  ordinary output.  libedit is told about them anyway (it is handed
+    %  them as the front of its prompt), so the resize repaints the
+    %  prompt and leaves the input where it was.  Without that libedit
+    %  takes the line to start in column 0 and the redraw paints
+    %  `abcdefgh' over `name: '.
+    type(T, 'format("name: "), read_line_to_string(user_input, S), \c
+             format("[~w]~n", [S]).'),
+    key(T, enter),
+    assertion(wait_until(waiting_for(T, 'name: '), 15)),
+    type(T, 'abcdefgh'),
+    drive(0.3),
+    cursor(T, Col, Row),
+    row_text(T, Row, Before),
+    resize_cols(T, 78, _),
+    drive(0.3),
+    row_text(T, Row, After),
+    assertion(After == Before),
+    assert_cursor(T, Col, Row),
+    %  And the line is still the one being edited, at the offset the
+    %  screen shows rather than six columns to the left of it.
+    key(T, ctrl_a),
+    drive(0.3),
+    Start is Col-8,
+    assert_cursor(T, Start, Row),
+    key(T, ctrl_e),
+    key(T, enter),
+    assertion(wait_until(marker_on_screen(T, '[abcdefgh]'), 15)),
+    assertion(wait_for_prompt(T)).
+
 :- end_tests(terminal_resize).
 
 
@@ -1237,7 +4313,7 @@ drop_empty_prefix(L, L).
                  cleanup(cleanup_unit)
                ]).
 
-%   Terminal width is 80 columns (see start_terminal/2).  With a prompt
+%   Terminal width is 80 columns (see term_start/2).  With a prompt
 %   of width P (captured per test), the first input row can hold
 %   80 - P columns before wrapping to the next row.  When the cursor
 %   reaches the edge it moves to column 0 of the next row (no
@@ -1273,10 +4349,11 @@ test(input_fills_first_row_exactly, [setup(test_begin(T))]) :-
     %  cursor stays in the pending-wrap state at (80, R); the physical
     %  move to (0, R+1) only happens when the NEXT base arrives.
     cursor(T, P, R),
+    margin_col(T, Margin),
     Fill is 80 - P,
     filler(Fill, Xs),
     type_await(T, Xs, 80, R),
-    assert_cursor(T, 80, R).
+    assert_cursor(T, Margin, R).
 
 test(input_wraps_one_char_past_row, [setup(test_begin(T))]) :-
     %  One extra character past 80-P lands at column 1 of the next row.
@@ -1324,18 +4401,21 @@ test(cursor_right_across_wrap, [setup(test_begin(T))]) :-
     Steps is 80 - P,
     %  Send all cursor_rights at once and drive once at the end — far
     %  faster than drive/1 after each individual key.
-    key_bytes(cursor_right, Bytes),
+    key_bytes(T, cursor_right, Bytes),
     length(Runs, Steps),
     maplist(=(Bytes), Runs),
     append(Runs, All),
     atom_codes(Burst, All),
-    send(T, send, Burst),
+    term_send(T, Burst),
     drive(0.5),
     assert_cursor(T, 0, R2),
     key(T, cursor_right),
     assert_cursor(T, 1, R2).
 
-test(wide_char_prewraps_at_row_edge, [setup(test_begin(T))]) :-
+test(wide_char_prewraps_at_row_edge,
+     [ condition(needs([combining])),
+       setup(test_begin(T))
+     ]) :-
     %  Fill the row leaving exactly one column empty (cursor at col 79
     %  on row R), then type a wide emoji.  It does not fit in the
     %  remaining single column so it pre-wraps: the last cell of row R
@@ -1367,7 +4447,8 @@ nfd_codes(N, [0'a, 0x300 | T]) :-
     nfd_codes(N1, T).
 
 test(nfd_fills_first_row_exactly,
-     [ setup(test_begin(T))
+     [ condition(needs([combining])),
+       setup(test_begin(T))
      ]) :-
     %  Typing exactly (80-P) NFD clusters fills the row to its visual
     %  edge.  Same pending-wrap semantics as the narrow fill test:
@@ -1382,7 +4463,8 @@ test(nfd_fills_first_row_exactly,
     assert_cursor(T, 80, R).
 
 test(nfd_one_cluster_wraps_to_next_row,
-     [ setup(test_begin(T))
+     [ condition(needs([combining])),
+       setup(test_begin(T))
      ]) :-
     %  (80-P)+1 NFD clusters: last one should land at column 0 of the
     %  next row, cursor at column 1.  Currently fails because the wrap
@@ -1396,7 +4478,8 @@ test(nfd_one_cluster_wraps_to_next_row,
     assert_cursor(T, 1, R2).
 
 test(nfd_cluster_kept_whole_at_wrap_boundary,
-     [ setup(test_begin(T))
+     [ condition(needs([combining])),
+       setup(test_begin(T))
      ]) :-
     %  When typing one NFD cluster more than fits on row R, the extra
     %  cluster must appear as a complete `à` on row R+1 — not a bare
@@ -1411,7 +4494,8 @@ test(nfd_cluster_kept_whole_at_wrap_boundary,
     assert_row(T, R2, OneCluster).
 
 test(cursor_left_across_wrap_nfd,
-     [ setup(test_begin(T))
+     [ condition(needs([combining])),
+       setup(test_begin(T))
      ]) :-
     %  After filling row R with (80-P) clusters and wrapping one more
     %  onto R+1, two cursor-lefts should land on the last cluster of
@@ -1429,7 +4513,1766 @@ test(cursor_left_across_wrap_nfd,
     LastCol is 80 - 1,
     assert_cursor(T, LastCol, R).
 
+test(edit_at_right_margin_stays_on_row,
+     [ setup(test_begin(T))
+     ]) :-
+    %  Fill the row exactly to the right margin, then replace the last
+    %  character.  The replacement must appear on the input row.
+    %
+    %  This is the Windows-only regression reported on Discourse (thread
+    %  "Progressing the SWI-Prolog environment", post 101): the new
+    %  character showed up on the row *above* the line being edited, and
+    %  from there on every redraw was anchored one row too high, so the
+    %  screen filled up from the bottom.
+    %
+    %  xpce's terminal implements xterm's delayed wrap: the base that
+    %  lands in the last column leaves the caret at column 80 with the
+    %  wrap still pending.  libedit only resolves that pending wrap (by
+    %  writing ' ' and backspacing over it) when the terminal
+    %  description advertises `xn`.  The fake termcap libedit uses on
+    %  Windows, packages/libedit/libedit/src/win_ncurses.c, reports `am`
+    %  but not `xn`, so libedit assumed the terminal had wrapped by
+    %  itself and every following cursor motion -- which cancels the
+    %  pending wrap -- acted one row too high.  On Unix library(epilog)
+    %  forces TERM=xterm, which has xenl, so this only ever failed on
+    %  Windows.
+    %
+    %  test_begin/1 ends with ^L, which leaves the prompt on row 0.  Run
+    %  a trivial goal first so that there *is* a row above the input row
+    %  for a misplaced character to land on.
+    type(T, 'true.'),
+    key(T, enter),
+    wait_for_prompt(T),
+    cursor(T, P, R),
+    assertion(R > 0),
+    Fill is 80 - P,
+    filler(Fill, Xs),
+    type_await(T, Xs, 80, R),
+    key(T, backspace),
+    type(T, '1'),
+    Head is Fill - 1,
+    sub_atom(Xs, 0, Head, _, Prefix),
+    atom_concat(Prefix, '1', Expected),
+    assert_input(T, R, Expected),
+    margin_col(T, Margin),
+    assert_cursor(T, Margin, R).
+
 :- end_tests(terminal_wrap).
+
+
+		 /*******************************
+		 *         TEST: SEARCH         *
+		 *******************************/
+
+/** <section> Searching the buffer
+
+    <-find, <-length and <-contents see the buffer as a flat sequence of
+    characters, and ->selection and ->scroll_to take an index in that
+    same space.  What the tests below are really about is the seam
+    between the two models: the buffer is a ring of lines of cells, and
+    a cell is not a character -- a wide character owns two of them and
+    the second holds nothing.
+*/
+
+:- begin_tests(terminal_search,
+               [ condition(needs([program_output, selection])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+%!  three_lines(+T) is det.
+%
+%   `hello', `world' and `hello again', which give two occurrences of
+%   `hello' with something in between and a `world' that shares no
+%   prefix with either.
+
+three_lines(T) :-
+    buffer(T, 'hello\r\nworld\r\nhello again').
+
+test(length_is_the_length_of_the_contents, [setup(test_begin(T))]) :-
+    three_lines(T),
+    term_length(T, Length),
+    term_contents(T, 0, Length, All),
+    atom_length(All, Length).
+
+test(contents_separates_lines_with_one_newline, [setup(test_begin(T))]) :-
+    %  A single newline, not the "\r\n" that <-selected hands to
+    %  another program: two characters would make the distance between
+    %  the start and the end of a match depend on how many line breaks
+    %  it spans.
+    three_lines(T),
+    term_contents(T, 0, 11, Text),
+    assertion(Text == 'hello\nworld').
+
+test(find_returns_the_end_by_default, [setup(test_begin(T))]) :-
+    %  As text_buffer<-find does: `return' defaults to `end' going
+    %  forwards.  Surprising, but shared.
+    three_lines(T),
+    term_find(T, 0, world, Index),
+    assertion(Index == 11).
+
+test(find_returns_the_start_on_request, [setup(test_begin(T))]) :-
+    three_lines(T),
+    term_find(T, 0, world, @default, start, @default, @default, Index),
+    assertion(Index == 6).
+
+test(find_fails_without_a_match, [setup(test_begin(T))]) :-
+    three_lines(T),
+    \+ term_find(T, 0, 'nowhere at all', _).
+
+test(find_searches_backwards, [setup(test_begin(T))]) :-
+    three_lines(T),
+    term_length(T, Length),
+    term_find(T, Length, hello, -1, start, @default, @default, Index),
+    assertion(Index == 12).                 % the second one
+
+test(find_repeats_past_the_hit, [setup(test_begin(T))]) :-
+    %  Every repeat must move on.  find_textbuffer() leaves the cursor
+    %  on the match it found, so there `times' beyond the first finds
+    %  the same place again.
+    three_lines(T),
+    term_find(T, 0, hello, 2, start, @default, @default, Index),
+    assertion(Index == 12).
+
+test(find_ignores_case_on_request, [setup(test_begin(T))]) :-
+    three_lines(T),
+    \+ term_find(T, 0, 'HELLO', _),
+    term_find(T, 0, 'HELLO', @default, start, @off, @default, Index),
+    assertion(Index == 0).
+
+test(find_honours_word_boundaries, [setup(test_begin(T))]) :-
+    buffer(T, 'foobar foo'),
+    term_find(T, 0, foo, @default, start, @default, @on, Index),
+    assertion(Index == 7).                  % not the one inside `foobar'
+
+test(find_crosses_a_soft_wrap, [setup(test_begin(T))]) :-
+    %  A line the terminal wrapped is one line to whoever reads it: the
+    %  break exists in the ring, not in the text.
+    term_cols(T, Columns),
+    Pad is Columns-3,
+    length(Codes, Pad),
+    maplist(=(0'x), Codes),
+    atom_codes(Padding, Codes),
+    buffer(T, [Padding, 'SPLITME']),
+    term_find(T, 0, 'SPLITME', @default, start, @default, @default, Index),
+    assertion(Index == Pad).
+
+test(find_does_not_cross_a_hard_break, [setup(test_begin(T))]) :-
+    three_lines(T),
+    \+ term_find(T, 0, helloworld, _),
+    term_find(T, 0, 'hello\nworld', @default, start, @default, @default,
+              Index),
+    assertion(Index == 0).
+
+test(contents_skips_the_half_of_a_wide_character, [setup(test_begin(T))]) :-
+    %  The right half of a wide character is a cell that holds no
+    %  character, and the index space is characters: had we counted the
+    %  cell, a zero would show up in the text and everything behind it
+    %  would sit one index too far along.
+    atom_codes(Emoji, [0x1F929, 0xFE0F]),   % as terminal_wide uses it
+    buffer(T, ['a', Emoji, 'b']),
+    term_length(T, Length),
+    term_contents(T, 0, Length, All),
+    atom_codes(All, Codes),
+    assertion(Codes == [0'a, 0x1F929, 0xFE0F, 0'b]),
+    term_find(T, 0, b, @default, start, @default, @default, Index),
+    assertion(Index == 3).
+
+test(selection_takes_a_hit, [setup(test_begin(T))]) :-
+    three_lines(T),
+    term_find(T, 0, world, @default, start, @default, @default, From),
+    To is From+5,
+    term_select(T, From, To),
+    term_selection(T, Selected),
+    assertion(Selected == world).
+
+test(selection_swaps_an_inverted_range, [setup(test_begin(T))]) :-
+    %  The painter walks the ring from the start of the selection to its
+    %  end and draws nothing sensible if the start comes last.
+    three_lines(T),
+    term_select(T, 11, 6),
+    term_selection(T, Selected),
+    assertion(Selected == world).
+
+test(selection_clears, [setup(test_begin(T))]) :-
+    three_lines(T),
+    term_select(T, 6, 11),
+    assertion(term_has_selection(T)),
+    term_select(T, @default, @default),
+    assertion(\+ term_has_selection(T)).
+
+test(selection_clamps_to_the_buffer, [setup(test_begin(T))]) :-
+    three_lines(T),
+    term_select(T, 6, 100000),
+    term_selection(T, Selected),
+    assertion(sub_atom(Selected, 0, _, _, world)),
+    assertion(sub_atom(Selected, _, _, 0, 'hello again')).
+
+test(scroll_to_reaches_the_scrollback, [setup(test_begin(T))]) :-
+    scrollback(T, 60),
+    term_bubble(T, _, Before, _),
+    term_find(T, 0, line3, @default, start, @default, @default, Index),
+    term_scroll_to(T, Index),
+    drive(0.1),
+    term_bubble(T, _, After, _),
+    assertion(After < Before),
+    term_rows(T, Rows),
+    Last is Rows-1,
+    assertion(( between(0, Last, Row), row_text(T, Row, line3) )).
+
+test(scroll_to_leaves_a_visible_line_alone, [setup(test_begin(T))]) :-
+    %  An incremental search asks for this on every keystroke; a window
+    %  that moves when it need not is one the eye cannot follow.
+    scrollback(T, 60),
+    term_bubble(T, _, Before, _),
+    term_length(T, Length),
+    term_scroll_to(T, Length),
+    drive(0.1),
+    term_bubble(T, _, After, _),
+    assertion(After == Before).
+
+test(scroll_to_fails_on_the_alternate_screen,
+     [ setup(test_begin(T)),
+       cleanup(normal_screen(T))
+     ]) :-
+    %  The lines under a full-screen application are not in the ring, so
+    %  there is nothing to scroll to and the application owns the window.
+    scrollback(T, 60),
+    alt_screen(T, 'ALT-SCREEN'),
+    \+ term_scroll_to(T, 0).
+
+:- end_tests(terminal_search).
+
+
+		 /*******************************
+		 *       TEST: ISEARCH          *
+		 *******************************/
+
+/** <section> Incremental search
+
+    Ctrl-Shift-F puts a focus function in the way of ->typed, which then
+    sees every key until the search ends.  That is what most of these
+    tests are about: while the search runs, the keys are the window's
+    and nothing must reach the process on the terminal -- not the
+    letters that are typed, and not the Return or the Escape that ends
+    the search, which would otherwise submit a line to whatever is
+    reading.
+
+    The buffer never grows while a search runs, so its length is the
+    evidence: a key that leaked to the client comes back as output.
+*/
+
+		 /*******************************
+		 *      DRIVING A SEARCH        *
+		 *******************************/
+
+%!  isearch(+T) is det.
+%!  isearch_key(+T, +Key) is det.
+%!  isearch_type(+T, +Text) is det.
+%
+%   Start a search and drive it.  These press keys at the window with
+%   term_typed/3 rather than putting bytes on the terminal: the focus
+%   function is reached through ->typed and nothing else.
+
+isearch(T) :-
+    button_control(Control),
+    button_shift(Shift),
+    Buttons is Control \/ Shift,
+    term_typed(T, 0'\006, Buttons),         % Ctrl-Shift-F
+    drive(0.2).
+
+isearch_key(T, Letter) :-
+    Code is Letter /\ 0x1f,
+    button_control(Control),
+    term_typed(T, Code, Control),
+    drive(0.2).
+
+isearch_type(T, Text) :-
+    atom_codes(Text, Codes),
+    forall(member(Code, Codes), term_typed(T, Code, 0)),
+    drive(0.2).
+
+isearch_named_key(T, Key) :-
+    term_typed(T, Key, 0),
+    drive(0.2).
+
+isearch_meta(T, Letter) :-
+    button_meta(Meta),
+    term_typed(T, Letter, Meta),
+    drive(0.2).
+
+%!  isearch_stop(+T) is det.
+%
+%   End a search that is still running and put back what it changed.  A
+%   test that leaves a search behind hands the next one a Ctrl-Shift-F
+%   that repeats its search string rather than starting over, and the
+%   two flags that say what counts as a match outlive a search on
+%   purpose.
+
+isearch_stop(T) :-
+    T = terminal(_, xpce(_, TI)),
+    (   get(TI, focus_function, @nil)
+    ->  true
+    ;   isearch_key(T, 0'G)
+    ),
+    send(TI, exact_case, @off),         % they outlive a search, so a
+    send(TI, search_word, @off).        % test that sets one must undo it
+
+%!  on_screen(+T, +Text) is semidet.
+%!  screen_row(+T, +Text, -Row) is semidet.
+%
+%   Row is the visible row that holds exactly Text.
+
+on_screen(T, Text) :-
+    screen_row(T, Text, _).
+
+screen_row(T, Text, Row) :-
+    term_rows(T, Rows),
+    Last is Rows-1,
+    between(0, Last, Row),
+    row_text(T, Row, Text),
+    !.
+
+:- begin_tests(terminal_isearch,
+               [ condition(needs([program_output, selection])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+test(isearch_selects_what_it_finds,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    scrollback(T, 60),
+    isearch(T),
+    isearch_type(T, line42),
+    term_selection(T, Selected),
+    assertion(Selected == line42).
+
+test(isearch_narrows_as_you_type,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    scrollback(T, 60),
+    isearch(T),
+    isearch_type(T, line4),
+    term_selection(T, First),
+    assertion(First == line4),
+    isearch_type(T, '2'),
+    term_selection(T, Second),
+    assertion(Second == line42).
+
+test(isearch_backspace_widens_again,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    scrollback(T, 60),
+    isearch(T),
+    isearch_type(T, line42),
+    isearch_named_key(T, 'BS'),
+    term_selection(T, Selected),
+    assertion(Selected == line4).
+
+test(isearch_escape_keeps_the_hit, [setup(test_begin(T))]) :-
+    scrollback(T, 60),
+    isearch(T),
+    isearch_type(T, line42),
+    isearch_named_key(T, 'ESC'),
+    assertion(term_has_selection(T)),
+    term_selection(T, Selected),
+    assertion(Selected == line42).
+
+test(isearch_abort_gives_back_view_and_selection, [setup(test_begin(T))]) :-
+    %  ^G is the way out that pretends the search never happened.
+    %  line12 and not line5: `line5' is a prefix of line50..line59,
+    %  which are on the screen, so the search would never leave it.
+    scrollback(T, 60),
+    term_bubble(T, _, Before, _),
+    isearch(T),
+    isearch_type(T, line12),
+    term_bubble(T, _, Searching, _),
+    assertion(Searching < Before),          % it scrolled to the hit
+    isearch_key(T, 0'G),
+    term_bubble(T, _, After, _),
+    assertion(After == Before),
+    assertion(\+ term_has_selection(T)).
+
+test(isearch_keys_do_not_reach_the_client, [setup(test_begin(T))]) :-
+    %  Nothing is written while a search runs, so the buffer standing
+    %  still is what says the keys stayed at the window.
+    scrollback(T, 60),
+    term_length(T, Before),
+    isearch(T),
+    isearch_type(T, line42),
+    isearch_key(T, 0'S),
+    isearch_key(T, 0'R),
+    isearch_key(T, 0'G),
+    drive(0.3),
+    term_length(T, After),
+    assertion(After == Before).
+
+test(isearch_escape_does_not_reach_the_client, [setup(test_begin(T))]) :-
+    scrollback(T, 60),
+    term_length(T, Before),
+    isearch(T),
+    isearch_type(T, line42),
+    isearch_named_key(T, 'ESC'),
+    drive(0.3),
+    term_length(T, After),
+    assertion(After == Before).
+
+test(isearch_return_does_not_reach_the_client, [setup(test_begin(T))]) :-
+    %  The one that costs the most if it gets through: a Return at a
+    %  shell prompt runs whatever is on the input line.
+    scrollback(T, 60),
+    term_length(T, Before),
+    isearch(T),
+    isearch_type(T, line42),
+    isearch_named_key(T, 'RET'),
+    drive(0.3),
+    term_length(T, After),
+    assertion(After == Before).
+
+test(isearch_holds_the_view_against_output,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  Output normally pulls the window back to the caret.  While the
+    %  user is driving the view, it must not: at a live prompt bytes
+    %  keep arriving and the search would be thrown back to the bottom
+    %  between one keystroke and the next.
+    scrollback(T, 60),
+    isearch(T),
+    isearch_type(T, line12),
+    assertion(on_screen(T, line12)),
+    out(T, 'noise\r\n'),
+    drive(0.3),
+    assertion(on_screen(T, line12)).
+
+test(isearch_wraps_after_a_warning,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  Emacs' two-step wrap: running out only says so, and the attempt
+    %  after that starts over at the far end.  The two hits are a
+    %  screenful apart, so which one the search is on is the one that
+    %  is on the screen.
+    buffer(T, 'HIT alpha\r\n'),
+    forall(between(1, 50, I), out(T, ['filler', I, '\r\n'])),
+    out(T, 'HIT omega\r\n'),
+    isearch(T),
+    isearch_type(T, 'HIT'),
+    assertion(on_screen(T, 'HIT omega')),   % the nearest one, going back
+    assertion(\+ on_screen(T, 'HIT alpha')),
+    isearch_key(T, 0'R),
+    assertion(on_screen(T, 'HIT alpha')),   % ... and the one before it
+    assertion(\+ on_screen(T, 'HIT omega')),
+    isearch_key(T, 0'R),
+    assertion(on_screen(T, 'HIT alpha')),   % nothing left: it only warns
+    isearch_key(T, 0'R),
+    assertion(on_screen(T, 'HIT omega')).   % and now it wraps
+
+test(isearch_backspace_stays_on_the_hit,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  Backspace looks again from where the search is looking from, not
+    %  one on from the hit: what is shorter still matches where the
+    %  longer thing did, and the search has no business walking past it.
+    %  The two hits are a screenful apart, so the one on the screen says
+    %  which the search is on.
+    buffer(T, 'HIT alpha\r\n'),
+    forall(between(1, 50, I), out(T, ['filler', I, '\r\n'])),
+    out(T, 'HIT omega\r\n'),
+    isearch(T),
+    isearch_type(T, 'HIT o'),               % only omega has this
+    assertion(on_screen(T, 'HIT omega')),
+    isearch_named_key(T, 'BS'),             % `HIT ' still matches there
+    assertion(on_screen(T, 'HIT omega')),
+    assertion(\+ on_screen(T, 'HIT alpha')).
+
+test(isearch_backspace_gives_back_what_narrowing_took,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  Narrowing walks the hit away from what it was standing on as
+    %  soon as that no longer matches; widening again has to give it
+    %  back, rather than keeping whatever the longer string reached.
+    buffer(T, 'format\r\nforall\r\nformat'),
+    isearch(T),
+    isearch_type(T, for),
+    term_highlight(T, 2, Third),
+    assertion(Third == 'HHH'),              % the last one, going back
+    isearch_type(T, a),
+    term_highlight(T, 1, Middle),
+    assertion(Middle == 'HHHH'),            % only `forall' has `fora'
+    isearch_named_key(T, 'BS'),
+    term_highlight(T, 2, Back),
+    assertion(Back == 'HHH').
+
+test(isearch_backspace_returns_to_the_last_repeat,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  ... but no further back than the last ^S or ^R: a repeat is the
+    %  user saying "not that one, the next", and backspace is not an
+    %  undo of that.
+    buffer(T, 'format\r\nforall\r\nformat'),
+    isearch(T),
+    isearch_type(T, for),
+    isearch_key(T, 0'R),                    % on to `forall'
+    term_highlight(T, 1, Middle),
+    assertion(Middle == 'HHH'),
+    isearch_type(T, m),                     % `form': not there any more
+    term_highlight(T, 0, First),
+    assertion(First == 'HHHH'),
+    isearch_named_key(T, 'BS'),
+    term_highlight(T, 1, Back),
+    assertion(Back == 'HHH').               % back to where ^R left it
+
+test(isearch_counts_the_matches,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  Which of them we are on and how many there are, counted from the
+    %  start of the buffer whichever way the search is going -- so a
+    %  search backwards starts at the last of them and counts down.
+    buffer(T, 'format\r\nforall\r\nformat\r\nformat'),
+    isearch(T),
+    isearch_type(T, for),
+    term_report(T, Last),
+    assertion(sub_atom(Last, _, _, _, '(4/4)')),
+    isearch_key(T, 0'R),
+    term_report(T, Third),
+    assertion(sub_atom(Third, _, _, _, '(3/4)')),
+    isearch_type(T, a),                     % `fora': only `forall' has it
+    term_report(T, Only),
+    assertion(sub_atom(Only, _, _, _, '(1/1)')).
+
+test(isearch_counts_overlapping_matches,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  A repeat steps a single character, so a match that overlaps the
+    %  one before it is a place the search can get to and has to be in
+    %  the tally.
+    buffer(T, 'aaaa'),
+    isearch(T),
+    isearch_type(T, aa),
+    term_report(T, Report),
+    assertion(sub_atom(Report, _, _, _, '(3/3)')).
+
+test(isearch_counts_nothing_when_it_finds_nothing,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    buffer(T, 'format\r\nforall'),
+    isearch(T),
+    isearch_type(T, 'nowhere'),
+    term_report(T, Report),
+    assertion(\+ sub_atom(Report, _, _, _, '/')).
+
+test(isearch_toggles_case_and_word,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  M-c and M-w change what counts as a match, and the search looks
+    %  again at once: `Format' is a match until case matters, and the
+    %  `format' inside `formatting' until whole words do.
+    buffer(T, 'Format\r\nformatting\r\nformat'),
+    isearch(T),
+    isearch_type(T, format),
+    term_report(T, All),
+    assertion(sub_atom(All, _, _, _, '(3/3)')),
+    isearch_meta(T, 0'c),
+    term_report(T, Cased),
+    assertion(sub_atom(Cased, _, _, _, '(2/2)')),
+    isearch_meta(T, 0'c),
+    isearch_meta(T, 0'w),
+    term_report(T, Worded),
+    assertion(sub_atom(Worded, _, _, _, '(2/2)')).
+
+test(isearch_shows_what_the_boxes_stand_at,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    buffer(T, 'format\r\nformat'),
+    isearch(T),
+    isearch_type(T, format),
+    term_search_options(T, None),
+    assertion(None == []),
+    isearch_meta(T, 0'c),
+    term_search_options(T, Case),
+    assertion(Case == [exact_case]),
+    isearch_meta(T, 0'w),
+    term_search_options(T, Both),
+    assertion(msort(Both, [exact_case, search_word])).
+
+test(isearch_boxes_go_away_with_the_search,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    buffer(T, 'format\r\nformat'),
+    isearch(T),
+    isearch_type(T, format),
+    assertion(term_search_options(T, _)),
+    isearch_key(T, 0'G),
+    assertion(\+ term_search_options(T, _)).
+
+test(isearch_control_w_takes_the_rest_of_the_word,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    buffer(T, 'the terminal image is here\r\nand something else'),
+    isearch(T),
+    isearch_type(T, ter),
+    isearch_key(T, 0'W),
+    term_selection(T, Word),
+    assertion(Word == terminal),
+    isearch_key(T, 0'W),                % again: on to the next word
+    term_selection(T, Two),
+    assertion(Two == 'terminal image').
+
+test(isearch_control_w_stays_on_the_line,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  A search string with a line break in it matches almost nothing,
+    %  so the word behind the last one on a line is not a word to take.
+    buffer(T, 'the terminal image is here\r\nand something else'),
+    isearch(T),
+    isearch_type(T, here),
+    isearch_key(T, 0'W),
+    term_selection(T, Selected),
+    assertion(Selected == here).
+
+test(isearch_highlights_the_other_matches_on_the_page,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  The hit is one style and the rest another, so the eye can find
+    %  where else the thing is without walking the search there.
+    buffer(T, 'aa HIT bb HIT cc\r\nsecond HIT line'),
+    isearch(T),
+    isearch_type(T, 'HIT'),
+    term_highlight(T, 0, First),
+    term_highlight(T, 1, Second),
+    assertion(First  == '...ooo....ooo'),
+    assertion(Second == '.......HHH').
+
+test(isearch_highlight_follows_the_search_string,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    buffer(T, 'HIT one\r\nHITTER two'),
+    isearch(T),
+    isearch_type(T, 'HIT'),
+    term_highlight(T, 0, Three),
+    assertion(Three == ooo),
+    isearch_type(T, 'T'),                   % HITT: only the second line
+    term_highlight(T, 0, Four),
+    assertion(Four == ''),
+    isearch_named_key(T, 'BS'),             % and back again
+    term_highlight(T, 0, Again),
+    assertion(Again == ooo).
+
+test(isearch_highlight_goes_away_with_the_search,
+     [ setup(test_begin(T))
+     ]) :-
+    buffer(T, 'aa HIT bb HIT cc'),
+    isearch(T),
+    isearch_type(T, 'HIT'),
+    term_highlight(T, 0, Searching),
+    assertion(Searching \== ''),
+    isearch_key(T, 0'G),
+    term_highlight(T, 0, Done),
+    assertion(Done == '').
+
+test(isearch_highlights_only_the_page,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  A match in the scroll back is not painted, because it is not on
+    %  the screen; scrolling to it is what brings it into view, and the
+    %  painter looks again every time it draws.
+    buffer(T, 'HIT alpha\r\n'),
+    forall(between(1, 50, I), out(T, ['filler', I, '\r\n'])),
+    out(T, 'HIT omega\r\n'),
+    isearch(T),
+    isearch_type(T, 'HIT'),
+    assertion(on_screen(T, 'HIT omega')),
+    assertion(\+ on_screen(T, 'HIT alpha')),
+    forall(( term_rows(T, Rows),
+             Last is Rows-1,
+             between(0, Last, Row),
+             row_text(T, Row, Text),
+             Text \== 'HIT omega'
+           ),
+           ( term_highlight(T, Row, Marks),
+             assertion(Marks == '')
+           )),
+    isearch_key(T, 0'R),                    % now alpha is the page
+    screen_row(T, 'HIT alpha', AlphaRow),
+    term_highlight(T, AlphaRow, Alpha),
+    assertion(Alpha == 'HHH').
+
+test(isearch_refuses_the_alternate_screen,
+     [ setup(test_begin(T)),
+       cleanup(normal_screen(T))
+     ]) :-
+    %  The lines an application replaces are not in the ring, so there
+    %  is nothing to find and nowhere to scroll.
+    scrollback(T, 60),
+    alt_screen(T, 'ALT-SCREEN'),
+    isearch(T),
+    assertion(\+ term_has_selection(T)),
+    assert_row(T, 0, 'ALT-SCREEN').
+
+:- end_tests(terminal_isearch).
+
+		 /*******************************
+		 *      SELECTION MATCHES       *
+		 *******************************/
+
+:- begin_tests(terminal_selection_matches,
+               [ condition(needs([program_output, selection])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+%!  select_match(+T, +Text) is det.
+%!  select_match(+T, +Text, +Times) is det.
+%
+%   Select the first, resp. the Times-th, occurrence of Text in the
+%   buffer.  <-find answers the index just past a match, which with the
+%   length of what was looked for gives the region ->selection wants.
+
+select_match(T, Text) :-
+    select_match(T, Text, 1).
+
+select_match(T, Text, Times) :-
+    term_find(T, 0, Text, Times, end, @on, @off, End),
+    atom_length(Text, Len),
+    Start is End-Len,
+    term_select(T, Start, End).
+
+%!  match_options(+T) is det.
+%
+%   Put back what counts as a match.  Both flags outlive the selection
+%   that used them, as they outlive a search.
+
+match_options(T) :-
+    term_select(T, @default, @default),     % a double-clicked word asks
+    term_exact_case(T, @off),               % for word mode; it goes with
+    term_search_word(T, @off).              % the selection that asked
+
+test(selection_highlights_the_other_matches,
+     [ setup(test_begin(T))
+     ]) :-
+    %  What a search shows while it runs, without having to type what
+    %  is already on the screen: the selection in its own style and the
+    %  other places it occurs in the style of a search's other matches.
+    buffer(T, 'aa HIT bb HIT cc\r\nsecond HIT line'),
+    select_match(T, 'HIT'),
+    term_highlight(T, 0, First),
+    term_highlight(T, 1, Second),
+    assertion(First  == '...SSS....ooo'),
+    assertion(Second == '.......ooo').
+
+test(dragging_out_a_word_looks_for_it,
+     [ condition(needs([mouse])),
+       setup(test_begin(T))
+     ]) :-
+    %  The way a selection is really made: the highlight follows the
+    %  drag, and the tally arrives when the button comes up.
+    buffer(T, 'aa HIT bb HIT cc'),
+    term_drag(T, 3, 0, 6, 0),
+    term_selection(T, Selected),
+    assertion(Selected == 'HIT'),
+    term_highlight(T, 0, Marks),
+    assertion(Marks == '...SSS....ooo'),
+    term_report(T, Report),
+    assertion(Report == 'Selection: HIT (1/2)').
+
+test(selection_reports_how_many_there_are,
+     [ setup(test_begin(T))
+     ]) :-
+    buffer(T, 'aa HIT bb HIT cc\r\nsecond HIT line'),
+    select_match(T, 'HIT'),
+    term_report(T, Report),
+    assertion(Report == 'Selection: HIT (1/3)').
+
+test(selection_that_occurs_once_says_nothing,
+     [ setup(test_begin(T))
+     ]) :-
+    %  Nowhere to walk to, so a plain selection and an empty bar.
+    buffer(T, 'alpha beta gamma'),
+    select_match(T, beta),
+    term_highlight(T, 0, Marks),
+    assertion(Marks == '......SSSS'),
+    assertion(\+ term_report_shown(T)).
+
+test(selection_highlight_goes_with_the_selection,
+     [ setup(test_begin(T))
+     ]) :-
+    buffer(T, 'aa HIT bb HIT cc'),
+    select_match(T, 'HIT'),
+    term_highlight(T, 0, Selected),
+    assertion(Selected == '...SSS....ooo'),
+    term_select(T, @default, @default),
+    term_highlight(T, 0, Cleared),
+    assertion(Cleared == ''),
+    assertion(\+ term_report_shown(T)).
+
+test(blank_selection_is_not_looked_for,
+     [ setup(test_begin(T))
+     ]) :-
+    %  A drag over the space between words would otherwise light up
+    %  every gap on the page.
+    buffer(T, 'aa  bb  cc'),
+    term_select(T, 2, 4),
+    term_highlight(T, 0, Marks),
+    assertion(Marks == '..SS'),
+    assertion(\+ term_report_shown(T)).
+
+test(selection_over_a_line_break_is_not_looked_for,
+     [ setup(test_begin(T))
+     ]) :-
+    %  More than a line is not the kind of thing one picks out to find
+    %  the rest of.
+    buffer(T, 'HIT one\r\nHIT two'),
+    term_find(T, 0, one, One),
+    term_find(T, One, 'HIT', Second),
+    Start is One-3,
+    term_select(T, Start, Second),
+    term_highlight(T, 0, First),
+    assertion(sub_atom(First, 0, 4, _, '....')).
+
+test(single_character_needs_word_mode,
+     [ setup(test_begin(T)),
+       cleanup(match_options(T))
+     ]) :-
+    %  One character matches far too much to be worth showing, unless
+    %  whole-word matching is on and one character can be a word.
+    buffer(T, 'a b a b a'),
+    select_match(T, a),
+    term_highlight(T, 0, Plain),
+    assertion(Plain == 'S'),
+    term_search_word(T, @on),
+    term_highlight(T, 0, Worded),
+    assertion(Worded == 'S...o...o').
+
+test(selection_follows_the_case_box,
+     [ setup(test_begin(T)),
+       cleanup(match_options(T))
+     ]) :-
+    buffer(T, 'Hit hit HIT'),
+    select_match(T, 'Hit'),
+    term_highlight(T, 0, Insensitive),
+    assertion(Insensitive == 'SSS.ooo.ooo'),
+    term_exact_case(T, @on),
+    term_highlight(T, 0, Sensitive),
+    assertion(Sensitive == 'SSS').
+
+test(selection_shows_the_match_boxes,
+     [ setup(test_begin(T)),
+       cleanup(match_options(T))
+     ]) :-
+    %  The two boxes decide what the tally counted, so they belong with
+    %  it as they belong with a search.
+    buffer(T, 'aa HIT bb HIT cc'),
+    select_match(T, 'HIT'),
+    term_search_options(T, None),
+    assertion(None == []),
+    term_exact_case(T, @on),
+    term_search_options(T, Cased),
+    assertion(Cased == [exact_case]).
+
+test(selection_takes_over_from_the_search,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  Ending a search on its hit leaves that hit selected, so the
+    %  matches it was showing become the matches the selection shows
+    %  rather than blinking out.
+    buffer(T, 'aa HIT bb HIT cc'),
+    isearch(T),
+    isearch_type(T, 'HIT'),
+    term_highlight(T, 0, Searching),
+    assertion(Searching == '...ooo....HHH'),
+    isearch_named_key(T, 'ESC'),
+    term_highlight(T, 0, Selected),
+    assertion(Selected == '...ooo....SSS'),
+    term_report(T, Report),
+    assertion(Report == 'Selection: HIT (2/2)').
+
+test(selection_is_not_looked_for_while_searching,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  The search owns the overlay: the hit is the selection, and
+    %  matching it as well would be matching the same string twice.
+    buffer(T, 'aa HIT bb HIT cc'),
+    select_match(T, 'HIT'),
+    isearch(T),
+    assertion(\+ term_has_selection(T)),
+    term_highlight(T, 0, Marks),
+    assertion(Marks == '').
+
+test(control_r_searches_on_from_the_selection,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  As if the search had been started where the selection is: the
+    %  first ^R steps off it onto the match before it, and what was an
+    %  other match becomes the hit.
+    buffer(T, 'aa HIT bb HIT cc'),
+    select_match(T, 'HIT', 2),
+    term_highlight(T, 0, Before),
+    assertion(Before == '...ooo....SSS'),
+    isearch_key(T, 0'R),
+    term_highlight(T, 0, After),
+    assertion(After == '...HHH....ooo'),
+    term_report(T, Report),
+    assertion(Report == 'ISearch backward: HIT (1/2)').
+
+test(control_s_searches_on_the_other_way,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    buffer(T, 'aa HIT bb HIT cc'),
+    select_match(T, 'HIT'),
+    isearch_key(T, 0'S),
+    term_highlight(T, 0, After),
+    assertion(After == '...ooo....HHH'),
+    term_report(T, Report),
+    assertion(Report == 'ISearch forward: HIT (2/2)').
+
+test(searching_on_is_an_ordinary_search,
+     [ setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  Everything the focus function does is there from the first key:
+    %  a repeat walks on, and Escape leaves the hit selected, which
+    %  lights its own matches again.
+    buffer(T, 'aa HIT bb HIT cc\r\nHIT again'),
+    select_match(T, 'HIT', 3),
+    isearch_key(T, 0'R),
+    isearch_key(T, 0'R),
+    term_report(T, Walked),
+    assertion(Walked == 'ISearch backward: HIT (1/3)'),
+    isearch_named_key(T, 'ESC'),
+    term_highlight(T, 0, Row0),
+    assertion(Row0 == '...SSS....ooo'),
+    term_report(T, Report),
+    assertion(Report == 'Selection: HIT (1/3)').
+
+test(giving_up_gives_the_selection_back,
+     [ setup(test_begin(T))
+     ]) :-
+    %  ^G gives back the view and what was picked, so a search one did
+    %  not mean to make costs nothing.
+    buffer(T, 'aa HIT bb HIT cc'),
+    select_match(T, 'HIT', 2),
+    isearch_key(T, 0'R),
+    isearch_key(T, 0'G),
+    term_selection(T, Selected),
+    assertion(Selected == 'HIT'),
+    term_highlight(T, 0, Back),
+    assertion(Back == '...ooo....SSS').
+
+test(searching_on_needs_a_selection_to_look_for,
+     [ setup(test_begin(T)),
+       cleanup(match_options(T))
+     ]) :-
+    %  Without one the method fails, and typedKeyBinding() failing is
+    %  what hands ^S and ^R to whatever is reading from the terminal --
+    %  ^R is the line editor's own history search.
+    T = terminal(_, xpce(_, TI)),
+    buffer(T, 'a b a b a'),
+    term_select(T, @default, @default),
+    assertion(get(TI, selection_string, @nil)),
+    assertion(\+ send(TI, isearch_selection_backward)),
+    select_match(T, a),                     % one character: not looked for
+    assertion(get(TI, selection_string, @nil)),
+    assertion(\+ send(TI, isearch_selection_forward)),
+    term_search_word(T, @on),               % now it is
+    assertion(\+ get(TI, selection_string, @nil)),
+    assertion(send(TI, isearch_selection_forward)),
+    isearch_key(T, 0'G).
+
+test(double_click_looks_for_a_whole_word,
+     [ condition(needs([mouse])),
+       setup(test_begin(T)),
+       cleanup(match_options(T))
+     ]) :-
+    %  Picking a word says to look for that word, not for the letters it
+    %  happens to be made of, so `Barn' is not one of them.
+    buffer(T, 'Bar Barn Bar'),
+    term_double_click(T, 0, 0),
+    term_selection(T, Selected),
+    assertion(Selected == 'Bar'),
+    term_highlight(T, 0, Marks),
+    assertion(Marks == 'SSS......ooo'),
+    term_report(T, Report),
+    assertion(Report == 'Selection: Bar (1/2)').
+
+test(dragging_out_the_same_word_does_not,
+     [ condition(needs([mouse])),
+       setup(test_begin(T))
+     ]) :-
+    %  Dragging says nothing about words, so the same text picked that
+    %  way matches wherever it occurs.
+    buffer(T, 'Bar Barn Bar'),
+    term_click_elsewhere(T),                % a double click has just been
+    term_drag(T, 0, 0, 3, 0),
+    term_selection(T, Selected),
+    assertion(Selected == 'Bar'),
+    term_highlight(T, 0, Marks),
+    assertion(Marks == 'SSS.ooo..ooo'),
+    term_report(T, Report),
+    assertion(Report == 'Selection: Bar (1/3)').
+
+test(a_one_letter_word_is_a_word,
+     [ condition(needs([mouse])),
+       setup(test_begin(T)),
+       cleanup(match_options(T))
+     ]) :-
+    %  One character is not looked for on its own -- it would light up
+    %  most of the screen -- but a word of one character is a word.
+    buffer(T, 'a b a b a'),
+    term_double_click(T, 0, 0),
+    term_highlight(T, 0, Marks),
+    assertion(Marks == 'S...o...o').
+
+test(the_box_says_what_is_being_matched,
+     [ condition(needs([mouse])),
+       setup(test_begin(T)),
+       cleanup(match_options(T))
+     ]) :-
+    %  The box shows what the tally beside it was counted with, and
+    %  turning it off means what it says even though the flag behind it
+    %  was off all along.
+    buffer(T, 'Bar Barn Bar'),
+    term_double_click(T, 0, 0),
+    term_search_options(T, Worded),
+    assertion(Worded == [search_word]),
+    term_search_word(T, @off),
+    term_search_options(T, Plain),
+    assertion(Plain == []),
+    term_highlight(T, 0, Marks),
+    assertion(Marks == 'SSS.ooo..ooo').
+
+test(searching_on_from_a_word_stays_in_word_mode,
+     [ condition(needs([mouse])),
+       setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    buffer(T, 'Bar Barn Bar'),
+    term_double_click(T, 9, 0),
+    isearch_key(T, 0'R),
+    term_highlight(T, 0, Marks),
+    assertion(Marks == 'HHH......ooo'),
+    term_report(T, Report),
+    assertion(Report == 'ISearch backward: Bar (1/2)').
+
+test(a_search_of_its_own_is_not_in_word_mode,
+     [ condition(needs([mouse])),
+       setup(test_begin(T)),
+       cleanup(isearch_stop(T))
+     ]) :-
+    %  \C-\S-f starts without a selection, so without one to take word
+    %  mode from, whatever the selection before it asked for.
+    buffer(T, 'Bar Barn Bar'),
+    term_double_click(T, 0, 0),
+    isearch(T),
+    isearch_type(T, 'Bar'),
+    term_report(T, Report),
+    assertion(Report == 'ISearch backward: Bar (3/3)').
+
+test(the_matches_follow_what_is_selected_now,
+     [ setup(test_begin(T))
+     ]) :-
+    %  The text under a selection can change without the selection
+    %  itself moving -- an erase, or a client repainting the screen --
+    %  and what is highlighted is what is selected now, not what was
+    %  selected when the selection was made.
+    buffer(T, 'aa HIT bb HIT cc'),
+    select_match(T, 'HIT'),
+    term_selection_string(T, First),
+    assertion(First == 'HIT'),
+    out(T, '\e[Haa ZAP bb HIT cc'),          % same cells, other text
+    term_selection_string(T, Second),
+    assertion(Second == 'ZAP'),
+    term_highlight(T, 0, Marks),
+    assertion(Marks == '...SSS').
+
+test(selection_matches_only_the_page,
+     [ setup(test_begin(T))
+     ]) :-
+    %  As with a search: the painter looks through the page every time
+    %  it draws, and what is in the scroll back is not on it.
+    buffer(T, 'HIT alpha\r\n'),
+    forall(between(1, 50, I), out(T, ['filler', I, '\r\n'])),
+    out(T, 'HIT omega\r\n'),
+    term_length(T, Length),
+    term_find(T, Length, 'HIT', -1, start, @on, @off, Last),
+    End is Last+3,
+    term_select(T, Last, End),
+    assertion(\+ on_screen(T, 'HIT alpha')),
+    forall(( term_rows(T, Rows),
+             LastRow is Rows-1,
+             between(0, LastRow, Row),
+             row_text(T, Row, Text),
+             Text \== 'HIT omega'
+           ),
+           ( term_highlight(T, Row, Marks),
+             assertion(Marks == '')
+           )),
+    term_report(T, Report),
+    assertion(Report == 'Selection: HIT (2/2)').
+
+test(selection_refuses_the_alternate_screen,
+     [ setup(test_begin(T)),
+       cleanup(normal_screen(T))
+     ]) :-
+    %  The ring holds the text under the application, not what is on
+    %  the screen, so there is nothing there to match against.
+    buffer(T, 'aa HIT bb HIT cc'),
+    alt_screen(T, 'HIT HIT'),
+    term_select(T, 0, 3),
+    term_highlight(T, 0, Marks),
+    assertion(\+ sub_atom(Marks, _, _, _, o)).
+
+:- end_tests(terminal_selection_matches).
+
+
+		 /*******************************
+		 *   SELECTION AND THE INPUT    *
+		 *******************************/
+
+/** <section> The selection over the line being edited
+
+    A selection there can be edited: typing replaces it and Delete takes
+    it.  Every other key drops it, as an editor does -- the caret moves
+    or the text changes, and the highlight no longer covers what was
+    picked.  What the key cannot touch stays: the prompt in front of the
+    input is redrawn as it was, and so is everything above it.
+*/
+
+:- begin_tests(terminal_input_selection,
+               [ condition(needs([selection])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+%!  input_typed(+T, +Text) is det.
+%
+%   Type Text at the window and wait until the line editor has put it
+%   on the screen, where it can be selected.
+
+input_typed(T, Text) :-
+    term_type_keys(T, Text),
+    assertion(wait_until(marker_on_screen(T, Text), 10)).
+
+%!  command_output(+T, +Command, +Output) is det.
+%
+%   Run Command at the prompt and wait until the row it wrote is on the
+%   screen and the next prompt is up, so that Output is above the line
+%   being edited.
+
+command_output(T, Command, Output) :-
+    input_typed(T, Command),
+    term_key_press(T, 'RET'),
+    assertion(wait_until(row_on_screen(T, Output), 15)),
+    assertion(wait_for_prompt(T)).
+
+%!  select_text(+T, +Text) is det.
+%!  select_prompt(+T) is det.
+%
+%   Select Text, or the prompt in front of the line being edited.  Both
+%   take the last occurrence: the scroll back holds the prompt of every
+%   command of the session, and may hold what an earlier test typed.
+
+select_text(T, Text) :-
+    select_last(T, Text),
+    assertion(term_selection(T, Text)).
+
+select_prompt(T) :-
+    select_last(T, '?- '),
+    assertion(term_selection(T, '?- ')).
+
+select_last(T, Text) :-
+    term_length(T, Length),
+    term_find(T, Length, Text, -1, end, @on, @off, End),
+    atom_length(Text, Len),
+    Start is End-Len,
+    term_select(T, Start, End).
+
+test(typing_replaces_the_selection, [setup(test_begin(T))]) :-
+    input_typed(T, 'alpha beta'),
+    select_text(T, alpha),
+    term_type_keys(T, 'x'),
+    assertion(wait_until(marker_on_screen(T, 'x beta'), 5)),
+    assertion(\+ term_has_selection(T)).
+
+test(moving_the_caret_drops_the_selection, [setup(test_begin(T))]) :-
+    %  Nothing is deleted and nothing is typed, but the caret is no
+    %  longer where the selection was made and what is typed next lands
+    %  somewhere else.
+    input_typed(T, 'gamma delta'),
+    select_text(T, gamma),
+    term_key_press(T, cursor_left),
+    drive(0.2),
+    assertion(\+ term_has_selection(T)).
+
+test(a_selection_that_reaches_the_input_goes_too,
+     [ setup(test_begin(T)),
+       cleanup(term_select(T, @default, @default))
+     ]) :-
+    %  ->select_all makes one that starts in the output: the part of it
+    %  over the line being edited is stale like any other.
+    input_typed(T, 'epsilon zeta'),
+    term_select_all(T),
+    assertion(term_has_selection(T)),
+    term_key_press(T, cursor_left),
+    drive(0.2),
+    assertion(\+ term_has_selection(T)).
+
+test(the_prompt_keeps_its_selection, [setup(test_begin(T))]) :-
+    %  The prompt in front of the input is redrawn as it was, so a
+    %  selection on it is not stale.  It is also the boundary: one cell
+    %  further is inside the input and would go.
+    input_typed(T, 'eta theta'),
+    select_prompt(T),
+    term_key_press(T, cursor_left),
+    drive(0.2),
+    assertion(term_selection(T, '?- ')).
+
+test(the_output_keeps_its_selection, [setup(test_begin(T))]) :-
+    %  What a command wrote is not the line being edited: the key
+    %  cannot touch it, and it stays to be copied.
+    command_output(T, 'write(iota), nl.', iota),
+    select_text(T, iota),
+    term_key_press(T, cursor_left),
+    drive(0.2),
+    assertion(term_selection(T, iota)).
+
+:- end_tests(terminal_input_selection).
+
+
+		 /*******************************
+		 *         REPORT BAR           *
+		 *******************************/
+
+/** <section> Where the bar with the short messages goes
+
+    It is drawn over a line of the terminal rather than next to it, so
+    the line it takes is the one the user is least likely to be reading:
+    the last, unless that is where the caret or the selection is, in
+    which case the first.  `epilog_report.placement' pins it to either
+    end or takes it away.
+*/
+
+:- begin_tests(terminal_report,
+               [ condition(needs([program_output])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+test(report_bar_can_be_pinned,
+     [ setup(test_begin(T)),
+       cleanup(term_report_placement(T, smart))
+     ]) :-
+    scrollback(T, 30),                  % the caret is on the last row
+    term_report_placement(T, bottom),
+    term_report_status(T, 'pinned'),
+    term_report_side(T, Bottom),
+    assertion(Bottom == bottom),
+    term_report_placement(T, top),
+    term_report_status(T, 'pinned'),
+    term_report_side(T, Top),
+    assertion(Top == top).
+
+test(smart_bar_takes_the_last_line,
+     [ setup(test_begin(T))
+     ]) :-
+    %  Nothing to keep it away: the caret is at the top of a screen
+    %  that has just been cleared.
+    buffer(T, 'alpha'),
+    term_report_status(T, 'out of the way'),
+    term_report_side(T, Side),
+    assertion(Side == bottom).
+
+test(smart_bar_gets_off_the_caret,
+     [ setup(test_begin(T))
+     ]) :-
+    %  The screen is full, so what is being typed is on the last line
+    %  and the bar would cover it.
+    scrollback(T, 30),
+    term_cursor(T, _, Row),
+    term_rows(T, Rows),
+    assertion(Row =:= Rows-1),
+    term_report_status(T, 'not over the caret'),
+    term_report_side(T, Side),
+    assertion(Side == top).
+
+test(smart_bar_gets_off_the_selection,
+     [ condition(needs([selection])),
+       setup(test_begin(T)),
+       cleanup(term_select(T, @default, @default))
+     ]) :-
+    %  What an incremental search walks to is the selection, so a hit
+    %  on the last line moves the bar that reports on it.  The caret is
+    %  put back at the top, as it is the selection that has to do it.
+    term_rows(T, Rows),
+    Last is Rows-1,
+    fill_screen(T, Last, 'HIT'),
+    term_cursor(T, _, Caret),
+    assertion(Caret == 0),
+    term_report_status(T, 'at the bottom'),
+    term_report_side(T, Bottom),
+    assertion(Bottom == bottom),
+    term_find(T, 0, 'HIT', End),
+    Start is End-3,
+    term_select(T, Start, End),
+    term_selection_rows(T, StartRow-EndRow),
+    assertion(StartRow == Last),
+    assertion(EndRow == Last),
+    term_report_status(T, 'on the selection'),
+    term_report_side(T, Top),
+    assertion(Top == top).
+
+%!  fill_screen(+T, +Row, +Text) is det.
+%
+%   Clear the screen, put Text on Row and leave the caret at the top,
+%   so that Row is the only thing on the screen that matters.
+
+fill_screen(T, Row, Text) :-
+    out(T, '\e[3J\e[H\e[2J'),
+    forall(between(1, Row, _), out(T, '\r\n')),
+    out(T, Text),
+    out(T, '\e[H').
+
+test(selection_rows_need_a_selection,
+     [ condition(needs([selection])),
+       setup(test_begin(T))
+     ]) :-
+    term_select(T, @default, @default),
+    assertion(\+ term_selection_rows(T, _)).
+
+test(report_bar_can_be_turned_off,
+     [ setup(test_begin(T)),
+       cleanup(term_report_placement(T, smart))
+     ]) :-
+    term_report_placement(T, none),
+    term_report_status(T, 'not shown'),
+    assertion(\+ term_report_shown(T)).
+
+:- end_tests(terminal_report).
+
+
+
+		 /*******************************
+		 *      CHILD ON THE TERMINAL   *
+		 *******************************/
+
+/** <section> A process started by the Prolog thread runs on the window
+
+    shell/1 hands the child the terminal the calling thread runs on.  On
+    POSIX that is the pty and the kernel does the rest.  Windows has no
+    pty: the child is put on the pseudo console of the window instead,
+    which the terminal hands out for as long as the child holds it.
+
+    Which is why these tests are worth having on both platforms: they
+    say nothing about how it is done, only that the child ends up on
+    the window, and every Windows attempt at this failed in a way this
+    unit would have caught.
+*/
+
+:- begin_tests(terminal_child_on_terminal,
+               [ condition(needs([child_on_terminal])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+test(child_writes_to_the_window, [setup(test_begin(T))]) :-
+    echo_command('CHILD-STDOUT', Cmd),
+    format(atom(Goal), 'shell("~w", _).\n', [Cmd]),
+    term_send(T, Goal),
+    assertion(wait_until(marker_on_screen(T, 'CHILD-STDOUT'), 30)),
+    wait_for_prompt(T).
+
+test(child_exit_status_reaches_prolog, [setup(test_begin(T))]) :-
+    exit_command(3, Cmd),
+    format(atom(Goal), 'shell("~w", St), format("STATUS=~~w~~n", [St]).\n',
+           [Cmd]),
+    term_send(T, Goal),
+    assertion(wait_until(marker_on_screen(T, 'STATUS=3'), 30)),
+    wait_for_prompt(T).
+
+%  The direction that is easy to get wrong: what is typed at the window
+%  must reach the child, not the Prolog thread that started it.  Echo is
+%  off, so the text can only appear on the screen by going through the
+%  child and coming back.
+
+test(child_reads_what_is_typed, [setup(test_begin(T))]) :-
+    start_interactive_shell(T),
+    arithmetic_command(Cmd, Answer),
+    term_type_keys(T, Cmd),
+    term_key_press(T, 'RET'),
+    assertion(wait_until(marker_on_screen(T, Answer), 30)),
+    quit_interactive_shell(T).
+
+%  What is typed must appear as it is typed.  A console shows it itself
+%  and so does the line discipline on POSIX; a Windows terminal is
+%  neither, so there the console the child runs on does it.  Nothing is
+%  submitted, so only an echo can put it on the screen.
+
+test(typing_is_echoed, [setup(test_begin(T))]) :-
+    start_interactive_shell(T),
+    term_type_keys(T, 'ECHOED-BACK'),
+    assertion(wait_until(marker_on_screen(T, 'ECHOED-BACK'), 30)),
+    term_key_press(T, 'RET'),		% let the shell make of it what it will
+    wait(0.5),
+    quit_interactive_shell(T).
+
+%  The child is the session leader of a session that owns a terminal,
+%  and BSD kernels, MacOS among them, revoke such a terminal when its
+%  leader exits: the pty is detached from every descriptor on it, ours
+%  as well, and reading or writing them fails with EIO.  Prolog then
+%  dies on the first message it prints -- "Cannot write to user_error"
+%  -- and takes the window with it.  See restore_ctty() in
+%  src/os/pl-os.c and rlc_reclaim_pty() in src/txt/terminal.c.
+%
+%  End of input rather than `exit' because that is the shortest way to
+%  the same place and the one a user runs into.  Pty only: a Windows
+%  child reads a pipe, which carries no end of input.
+
+test(terminal_survives_child_leaving_on_eof,
+     [ condition(needs([pty_signals])),
+       setup(test_begin(T))
+     ]) :-
+    start_interactive_shell(T),
+    press(T, ctrl_d),
+    assertion(wait_until(at_prompt(T), 30)),
+    type(T, 'X is 6*7.'),
+    key(T, enter),
+    assertion(wait_until(marker_on_screen(T, 'X = 42'), 30)).
+
+%  The Prolog thread hands its terminal over for the child and must get
+%  it back: on Windows the console it hands out reads the very pipe the
+%  thread reads.  Run enough children that a stuck one shows up.
+
+test(terminal_still_works_after_many_children, [setup(test_begin(T))]) :-
+    echo_command('ROUND', Cmd),
+    format(atom(Goal), 'shell("~w", _).\n', [Cmd]),
+    forall(between(1, 20, _),
+           ( term_send(T, Goal),
+             assertion(wait_until(at_prompt(T), 30)) )),
+    key(T, ctrl_l),
+    wait_for_prompt(T),
+    type(T, 'X is 6*7.'),
+    key(T, enter),
+    assertion(wait_until(marker_on_screen(T, 'X = 42'), 30)).
+
+%!  echo_command(+Text, -Command) is det.
+%!  exit_command(+Status, -Command) is det.
+%
+%   A shell/1 command that prints Text, respectively exits with Status.
+%   shell/1 runs the POSIX shell on Unix and the command line as given
+%   on Windows, so the two need different words for the same thing.
+
+echo_command(Text, Command) :-
+    (   current_prolog_flag(windows, true)
+    ->  format(atom(Command), 'cmd /c echo ~w', [Text])
+    ;   format(atom(Command), 'echo ~w', [Text])
+    ).
+
+exit_command(Status, Command) :-
+    (   current_prolog_flag(windows, true)
+    ->  format(atom(Command), 'cmd /c exit ~w', [Status])
+    ;   format(atom(Command), 'exit ~w', [Status])
+    ).
+
+%!  start_interactive_shell(+T) is det.
+%!  quit_interactive_shell(+T) is det.
+%
+%   Run an interactive shell on the terminal and leave it again.  A shell
+%   rather than something like `sort' because it ends on a command: there
+%   is no way to send end of input to a child on Windows, where the
+%   terminal is a pipe and ^Z is a convention of the console rather than
+%   something a pipe can carry.
+
+start_interactive_shell(T) :-
+    (   current_prolog_flag(windows, true)
+    ->  Shell = cmd
+    ;   Shell = sh
+    ),
+    format(atom(Goal), 'shell("~w", _).\n', [Shell]),
+    cursor(T, _, Row),
+    term_send(T, Goal),
+    assertion(wait_until(shell_is_reading(T, Row), 30)).
+
+%!  shell_is_reading(+T, +Row) is semidet.
+%
+%   True once the shell wrote its prompt: the cursor left Row, the row
+%   the command was typed on, and sits behind what the shell put on the
+%   row below.
+%
+%   Waiting for the prompt rather than sleeping is what makes the keys
+%   that follow arrive at a shell that is reading.  ^D in particular is
+%   lost otherwise: on an empty line it is end of input to the line
+%   discipline, which hands it to whoever reads next as a zero-length
+%   read.  A shell that has not put its own line editor on the terminal
+%   yet is not reading, and by the time it does the terminal is in raw
+%   mode, where the ^D the line discipline already consumed cannot come
+%   back.
+
+shell_is_reading(T, Row) :-
+    cursor(T, Col, Row1),
+    Row1 > Row,
+    Col > 0.
+
+quit_interactive_shell(T) :-
+    term_type_keys(T, exit),
+    term_key_press(T, 'RET'),
+    assertion(wait_until(at_prompt(T), 30)).
+
+%!  arithmetic_command(-Command, -Answer) is det.
+%
+%   A command whose answer appears nowhere in the command itself, so that
+%   seeing the answer means the child read the line and ran it.  Echoing
+%   what was typed, whoever does the echoing, cannot produce it.
+
+arithmetic_command(Command, '56088') :-
+    (   current_prolog_flag(windows, true)
+    ->  Command = 'set /a 123*456'
+    ;   Command = 'echo $((123*456))'
+    ).
+
+:- end_tests(terminal_child_on_terminal).
+
+
+		 /*******************************
+		 *        CONTROL KEYS          *
+		 *******************************/
+
+/** <section> Control keys and the process running in the terminal
+
+    While a process group of another session owns the pty, the control
+    keys belong to that process: ^C must reach it as an interrupt and
+    ^X as input, rather than acting on the window.  With no such
+    process the window keeps its own bindings, which is what lets ^C
+    interrupt the Prolog thread that runs on this terminal.  See
+    clientOwnsKeyTerminalImage() in packages/xpce/src/txt/terminal.c.
+
+    These tests press keys with press/2 rather than type/2: only what
+    goes through ->typed passes the key bindings, and the bindings are
+    what is under test.
+*/
+
+:- begin_tests(terminal_control_keys,
+               [ condition(needs([pty_signals])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+test(toplevel_has_no_foreground_process, [setup(test_begin(T))]) :-
+    \+ term_foreground_process(T, _).
+
+test(child_becomes_the_foreground_process,
+     [ setup(test_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    start_foreground(T, 'sleep 30'),
+    term_foreground_process(T, PID),
+    assertion(integer(PID)).
+
+test(control_c_interrupts_the_child, [setup(test_begin(T))]) :-
+    start_foreground(T, 'sleep 30'),
+    press(T, ctrl_c),
+    assertion(wait_until(\+ term_foreground_process(T, _), 15)),
+    wait_for_prompt(T).
+
+test(control_x_reaches_the_child,
+     [ setup(test_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    start_echo_client(T),
+    press(T, ctrl_x),
+    key(T, enter),
+    assertion(wait_until(marker_on_screen(T, '^X'), 15)).
+
+test(the_copy_keys_never_reach_the_child,
+     [ setup(test_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  Command-C and Ctrl+Shift-C are the window's own keys.  With
+    %  nothing selected ->copy declines, and the key used to fall
+    %  through to the client: Command-C as a `c' typed into whatever
+    %  was reading, Ctrl+Shift-C as the ^C the keymap makes of it.
+    start_echo_client(T),
+    button_gui(Gui),
+    button_control(Control), button_shift(Shift),
+    CtrlShift is Control \/ Shift,
+    term_typed(T, 0'c, Gui),
+    term_typed(T, 3, CtrlShift),
+    drive(0.2),
+    assertion(client_reads(T, '')).
+
+:- end_tests(terminal_control_keys).
+
+
+		 /*******************************
+		 *     TEST: FUNCTION KEYS      *
+		 *******************************/
+
+%   The keys that are not characters: what the window spells them as
+%   towards the client.  The sequences are xterm's, which is what the
+%   terminfo entries every client reads describe.  As with alternate
+%   scroll, the bytes are read back from a client that echoes them; see
+%   client_reads/2.
+%
+%   F5 and F6 are epilog's debugger keys, and the last two tests are
+%   the two sides of that: while a client owns the terminal they are
+%   its keys, and back at the prompt they are epilog's again.
+
+:- begin_tests(terminal_function_keys,
+               [ condition(needs([program_output, pty_signals])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+fkeys_begin(T) :-
+    current_test_terminal(T),
+    start_echo_client(T).
+
+%!  hit(+T, +Key) is det.
+%!  hit(+T, +Key, +Buttons) is det.
+%
+%   Press a named key, optionally with modifiers held.
+
+hit(T, Key) :-
+    hit(T, Key, 0).
+
+hit(T, Key, Buttons) :-
+    term_typed(T, Key, Buttons),
+    drive(0.05).
+
+test(f1_to_f4_are_ss3,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    forall(member(K, [f1,f2,f3,f4]),
+           hit(T, K)),
+    assertion(client_reads(T, '^[OP^[OQ^[OR^[OS')).
+
+test(f5_to_f12_are_numbered,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    forall(member(K, [f5,f6,f7,f8,f9,f10,f11,f12]),
+           hit(T, K)),
+    assertion(client_reads(
+                  T, '^[[15~^[[17~^[[18~^[[19~^[[20~^[[21~^[[23~^[[24~')).
+
+test(modified_function_keys,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  A modifier turns the SS3 form into a parameterised CSI one and
+    %  adds a second parameter to the numbered form.
+    button_control(Control),
+    button_shift(Shift),
+    hit(T, f1, Control),
+    hit(T, f7, Shift),
+    assertion(client_reads(T, '^[[1;5P^[[18;2~')).
+
+test(shift_tab_is_the_back_tab,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  Shift+Tab is the CBT xterm spells `CSI Z'.  It used to send a
+    %  plain tab, leaving a client that walks a form both ways unable
+    %  to tell the two keys apart.
+    button_shift(Shift),
+    button_control(Control),
+    CtrlShift is Control \/ Shift,
+    hit(T, 'TAB', Shift),
+    hit(T, 'TAB', CtrlShift),
+    assertion(client_reads(T, '^[[Z^[[1;6Z')).
+
+test(tab_is_still_a_tab,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  The other half: without the shift the key is the tab it always
+    %  was.  `cat -v' leaves a tab alone, so what comes back is the
+    %  screen's own expansion of it -- the first tab stop is column 8.
+    hit(T, 'TAB'),
+    assertion(client_reads(T, '        ')).
+
+test(modified_cursor_keys,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    button_control(Control),
+    button_shift(Shift),
+    hit(T, cursor_up, Control),
+    hit(T, cursor_left, Shift),
+    assertion(client_reads(T, '^[[1;5A^[[1;2D')).
+
+test(modified_home_and_end_keys,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  Only the plain keys have a binding (->cursor_end, ->cursor_home);
+    %  with a modifier they used to fall through and were dropped.
+    button_control(Control),
+    button_shift(Shift),
+    hit(T, end),
+    hit(T, end, Control),
+    hit(T, cursor_home, Shift),
+    assertion(client_reads(T, '^[[F^[[1;5F^[[1;2H')).
+
+test(application_mode_leaves_modifiers_alone,
+     [ setup(fkeys_begin(T)),
+       cleanup(( out(T, '\e[?1l'), stop_foreground(T) ))
+     ]) :-
+    %  DECCKM (mode 1) picks between CSI and SS3 for a plain cursor
+    %  key; a modified one is CSI either way.
+    out(T, '\e[?1h'),
+    button_control(Control),
+    hit(T, cursor_up),
+    hit(T, cursor_up, Control),
+    assertion(client_reads(T, '^[OA^[[1;5A')).
+
+test(debugger_keys_go_to_the_client,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  F5 with a modifier is epilog's too (debug_mode, gui_debug), and
+    %  a client that owns the terminal gets all of them.
+    button_control(Control),
+    button_shift(Shift),
+    hit(T, f5, Shift),
+    hit(T, f5, Control),
+    assertion(client_reads(T, '^[[15;2~^[[15;5~')).
+
+test(debugger_keys_are_epilogs_at_the_prompt,
+     [ setup(test_begin(T)),
+       cleanup(( hit(T, f5),
+                 wait_until(\+ marker_on_screen(T, '[trace]'), 15)
+               ))
+     ]) :-
+    %  Nothing owns the terminal here, so F5 is epilog's again: it
+    %  injects `trace', which the top-level shows in its prompt.
+    assertion(\+ marker_on_screen(T, '[trace]')),
+    hit(T, f5),
+    assertion(wait_until(marker_on_screen(T, '[trace]'), 15)).
+
+:- end_tests(terminal_function_keys).
 
 
 		 /*******************************
@@ -1476,12 +6319,16 @@ test_terminal_random(N, M, Options) :-
     must_be(nonneg, M),
     option(seed(Seed), Options, random),
     option(verbose(Verbose), Options, false),
+    option(backend(Backend), Options, epilog),
     set_random(seed(Seed)),
-    format("test_terminal_random: seed=~q sessions=~w commands=~w~n",
-           [Seed, N, M]),
-    setup_call_cleanup(setup_unit,
-                       run_random_sessions(N, M, Verbose),
-                       cleanup_unit).
+    format("test_terminal_random: seed=~q sessions=~w commands=~w backend=~q~n",
+           [Seed, N, M, Backend]),
+    setup_call_cleanup(
+        nb_setval(terminal_backend, Backend),
+        setup_call_cleanup(setup_unit,
+                           run_random_sessions(N, M, Verbose),
+                           cleanup_unit),
+        nb_delete(terminal_backend)).
 
 run_random_sessions(0, _, _) :- !.
 run_random_sessions(N, M, Verbose) :-
@@ -1740,7 +6587,7 @@ pick_weighted([W-Item|Rest], R, Out) :-
 
 apply_terminal(type(cluster(Codes, _)), T) :-
     atom_codes(Atom, Codes),
-    send(T, send, Atom).
+    term_send(T, Atom).
 apply_terminal(cursor_left,  T) :- send_key(T, cursor_left).
 apply_terminal(cursor_right, T) :- send_key(T, cursor_right).
 apply_terminal(home,         T) :- send_key(T, home).
@@ -1749,9 +6596,9 @@ apply_terminal(backspace,    T) :- send_key(T, backspace).
 apply_terminal(delete,       T) :- send_key(T, delete).
 
 send_key(T, Name) :-
-    key_bytes(Name, Bytes),
+    key_bytes(T, Name, Bytes),
     atom_codes(Atom, Bytes),
-    send(T, send, Atom).
+    term_send(T, Atom).
 
 
 		 /*******************************
@@ -1780,7 +6627,7 @@ wait_verified(T, P, R, Prompt, State, Outcome) :-
 %   throws on any non-`ok` outcome.
 
 verify_state(T, P, R, Prompt, state(Cs, Cursor), Outcome) :-
-    W = 80,
+    term_cols(T, W),
     model_layout(Cs, Cursor, P, R, W, ExpCol, ExpRow, RowGroups),
     cursor(T, Col, Row),
     (   Col =:= ExpCol, Row =:= ExpRow
@@ -1850,3 +6697,448 @@ report_failure(_T, P, R, Prompt, state(Cs, Cursor),
     format(user_error, "command history (in order):~n", []),
     forall(member(C, History),
            format(user_error, "    ~q~n", [C])).
+
+
+		 /*******************************
+		 *        SEMANTIC BLOCKS       *
+		 *******************************/
+
+/** Test that the OSC 133 marks of the commandline editor add up to one
+    terminal_block per command, against the real client rather than the
+    escape sequences on their own -- which is where the marks arrive as
+    often as the prompt is drawn rather than as often as it is issued.
+*/
+
+:- begin_tests(terminal_blocks,
+               [ condition(needs([program_output, selection])),
+                 setup(setup_unit),
+                 cleanup(cleanup_unit)
+               ]).
+
+%!  run_goal(+T, +Goal, +Marker) is det.
+%
+%   Type Goal, run it, and wait until Marker is on the screen and the
+%   prompt is back.
+
+run_goal(T, Goal, Marker) :-
+    type(T, Goal),
+    key(T, enter),
+    assertion(wait_until(marker_on_screen(T, Marker), 15)),
+    assertion(wait_for_prompt(T)).
+
+%!  finished_blocks(+T, -Blocks) is det.
+%
+%   The blocks whose output has ended, i.e. everything but the prompt
+%   the terminal is sitting at.
+
+finished_blocks(T, Finished) :-
+    term_blocks(T, Blocks),
+    include([B]>>get(B, end, _), Blocks, Finished).
+
+test(a_command_is_a_block, [setup(test_begin(T))]) :-
+    run_goal(T, 'format("aap~n").', aap),
+    finished_blocks(T, Blocks),
+    last(Blocks, Block),
+    %  the command, and not the return that entered it
+    assertion(term_block_content(Block, command, 'format("aap~n").')),
+    assertion(term_block_content(Block, output, 'aap\ntrue.\n\n')).
+
+test(the_output_ends_at_the_next_prompt, [setup(test_begin(T))]) :-
+    %  The client marks the end of the output with `D' before it asks
+    %  for the next line, so what the block holds stops short of the
+    %  prompt that follows it.
+    run_goal(T, 'format("noot~n").', noot),
+    finished_blocks(T, Blocks),
+    last(Blocks, Block),
+    term_block_content(Block, output, Out),
+    assertion(\+ sub_atom(Out, _, _, _, '?-')).
+
+test(redrawing_the_prompt_adds_no_block, [setup(test_begin(T))]) :-
+    %  `A' and `B' ride inside the prompt string, so libedit emits them
+    %  again on every redisplay.  Typing and taking it back again is
+    %  several of those; the count must not move.
+    run_goal(T, 'format("mies~n").', mies),
+    term_blocks(T, Before),
+    length(Before, N),
+    forall(between(1, 3, _),
+           ( type(T, 'abc'), key(T, ctrl_a), key(T, ctrl_e),
+             key(T, ctrl_u), drive(0.2) )),
+    assertion(wait_for_prompt(T)),
+    term_blocks(T, After),
+    assertion(length(After, N)).
+
+test(clearing_the_screen_drops_what_it_clears, [setup(test_begin(T))]) :-
+    %  ^L asks the client to clear the scroll-back.  The lines a block
+    %  points at go with it, and so does the block.
+    run_goal(T, 'format("weg~n").', weg),
+    term_blocks(T, Before),
+    length(Before, N),
+    key(T, ctrl_l),
+    assertion(wait_for_prompt(T)),
+    term_blocks(T, After),
+    length(After, M),
+    assertion(M < N).
+
+test(each_command_gets_its_own, [setup(test_begin(T))]) :-
+    run_goal(T, 'format("een~n").',  een),
+    run_goal(T, 'format("twee~n").', twee),
+    run_goal(T, 'format("drie~n").', drie),
+    finished_blocks(T, Blocks),
+    length(Blocks, N),
+    assertion(N >= 3),
+    length(Last3, 3),
+    append(_, Last3, Blocks),
+    !,
+    maplist([B,C]>>term_block_content(B, command, C), Last3, Commands),
+    assertion(Commands == ['format("een~n").',
+                           'format("twee~n").',
+                           'format("drie~n").']).
+
+test(a_term_typed_over_several_lines_is_one_block,
+     [setup(test_begin(T))]) :-
+    %  The reader asks for a line at a time until the full stop, so the
+    %  client issues a continuation prompt for each.  It marks those
+    %  with `A;k=s', which is what keeps them one command here.
+    tt_type_lines(T, ['forall(between(1,3,QX),',
+                      '  format("part-~w~n", [QX])).']),
+    assertion(wait_until(marker_on_screen(T, 'part-3'), 15)),
+    assertion(wait_for_prompt(T)),
+    finished_blocks(T, Blocks),
+    last(Blocks, Block),
+    term_block_content(Block, command, Cmd),
+    assertion(sub_atom(Cmd, _, _, _, 'forall(between(1,3,QX),')),
+    assertion(sub_atom(Cmd, _, _, _, 'part-~w')),
+    term_block_content(Block, output, Out),
+    assertion(sub_atom(Out, _, _, _, 'part-1')),
+    assertion(sub_atom(Out, _, _, _, 'part-3')),
+    assertion(\+ sub_atom(Out, _, _, _, 'forall(')).
+
+test(a_continued_command_folds_from_its_first_line,
+     [setup(test_begin(T))]) :-
+    tt_type_lines(T, ['forall(between(1,6,QY),',
+                      '  format("fold-~w~n", [QY])).']),
+    assertion(wait_until(marker_on_screen(T, 'fold-6'), 15)),
+    assertion(wait_for_prompt(T)),
+    finished_blocks(T, Blocks),
+    last(Blocks, Block),
+    assertion(marker_on_screen(T, 'fold-3')),
+    assertion(send(Block, fold)),
+    assertion(\+ marker_on_screen(T, 'fold-3')),
+    assertion(marker_on_screen(T, 'forall(between(1,6,QY),')),
+    assertion(marker_on_screen(T, 'format("fold-~w~n", [QY])).')),
+    assertion(send(Block, unfold)).
+
+test(fold_previous_is_declared_off) :-
+    %  What the class says, not what this machine's Defaults file says:
+    %  the mode is there to be turned on, and a user who has done so must
+    %  not make the suite fail.
+    get(class(prolog_terminal), class_variable, fold_previous, CV),
+    assertion(get(CV, default, @off)).
+
+test(nothing_folds_with_the_mode_off,
+     [setup(tt_fold_previous(T, @off))]) :-
+    tt_marker_goal(fpda, G1, M1), run_goal(T, G1, M1),
+    tt_marker_goal(fpdb, G2, M2), run_goal(T, G2, M2),
+    assertion(marker_on_screen(T, M1)),
+    assertion(marker_on_screen(T, M2)).
+
+test(fold_previous_closes_the_command_before_this_one,
+     [setup(tt_fold_previous(T, @on)), cleanup(tt_fold_previous(_, @off))]) :-
+    tt_marker_goal(fpa, G1, M1), run_goal(T, G1, M1),
+    assertion(marker_on_screen(T, M1)),
+    tt_marker_goal(fpb, G2, M2), run_goal(T, G2, M2),
+    %  entering the second closed the first, and left its command
+    assertion(\+ marker_on_screen(T, M1)),
+    assertion(marker_on_screen(T, G1)),
+    assertion(marker_on_screen(T, M2)),
+    tt_marker_goal(fpc, G3, M3), run_goal(T, G3, M3),
+    assertion(\+ marker_on_screen(T, M2)),
+    assertion(marker_on_screen(T, M3)),
+    %  and nothing was taken out of the buffer
+    assertion(term_find(T, 0, M1, _)),
+    assertion(term_find(T, 0, M2, _)).
+
+test(fold_previous_leaves_a_screenful_scrolling,
+     [setup(tt_fold_previous(T, @on)), cleanup(tt_fold_previous(_, @off))]) :-
+    %  The fold happens while the client is writing: it closes the command
+    %  before as the new one is entered, and the new one then prints more
+    %  than the window holds.
+    tt_marker_goal(fpsa, G1, M1), run_goal(T, G1, M1),
+    T = terminal(_, xpce(_, TI)),
+    get(TI, rows, Rows),
+    Lines is Rows+10,
+    format(atom(Goal),
+           'forall(between(1,~w,QS), format("~~w-~~w~~n", [fpsb, QS])).',
+           [Lines]),
+    format(atom(Last), 'fpsb-~w', [Lines]),
+    run_goal(T, Goal, Last),
+    assertion(marker_on_screen(T, Last)),
+    assertion(\+ marker_on_screen(T, M1)),
+    Bottom is Rows-1,
+    get(TI, row, Bottom, S), get(S, value, A),
+    normalize_space(atom(BottomText), A),
+    assertion(sub_atom(BottomText, _, _, _, '?-')).
+
+test(fold_previous_folds_a_multiline_predecessor_not_itself,
+     [setup(tt_fold_previous(T, @on)), cleanup(tt_fold_previous(_, @off))]) :-
+    tt_marker_goal(fpma, G1, M1), run_goal(T, G1, M1),
+    tt_type_lines(T, ['forall(between(1,2,QM),',
+                      '  format("~w-~w~n", [fpmb, QM])).']),
+    assertion(wait_until(marker_on_screen(T, 'fpmb-2'), 15)),
+    assertion(wait_for_prompt(T)),
+    assertion(\+ marker_on_screen(T, M1)),
+    assertion(marker_on_screen(T, 'fpmb-1')),     % its own output stays
+    finished_blocks(T, Blocks),
+    last(Blocks, Own),
+    assertion(get(Own, folded, @off)).
+
+test(fold_previous_leaves_a_command_unfolded_by_hand,
+     [setup(tt_fold_previous(T, @on)), cleanup(tt_fold_previous(_, @off))]) :-
+    tt_marker_goal(fpua, G1, M1), run_goal(T, G1, M1),
+    tt_marker_goal(fpub, G2, M2), run_goal(T, G2, M2),
+    finished_blocks(T, Blocks),
+    tt_block_of(Blocks, M1, One),
+    assertion(get(One, folded, @on)),
+    send(One, unfold),
+    assertion(marker_on_screen(T, M1)),
+    tt_marker_goal(fpuc, G3, M3), run_goal(T, G3, M3),
+    %  only the one before the new command closes; the reopened one stays
+    assertion(\+ marker_on_screen(T, M2)),
+    assertion(get(One, folded, @off)),
+    assertion(marker_on_screen(T, M1)).
+
+%!  tt_marker_goal(+Tag, -Goal, -Marker) is det.
+%
+%   A goal that prints Marker without containing it, so that finding
+%   Marker on the screen means the output is there and not merely the
+%   command that produced it.
+
+tt_marker_goal(Tag, Goal, Marker) :-
+    format(atom(Goal),  'format("~~w-~~w~~n", [~w, x]).', [Tag]),
+    format(atom(Marker), '~w-x', [Tag]).
+
+%!  tt_fold_previous(-T, +Bool) is det.
+%
+%   Test setup: the terminal with the mode set.  Used for cleanup too,
+%   where the terminal itself is not wanted.
+
+tt_fold_previous(T, Bool) :-
+    test_begin(T),
+    T = terminal(_, xpce(_, TI)),
+    send(TI, fold_previous, Bool).
+
+test(remove_takes_a_command_out_and_the_terminal_goes_on,
+     [setup(test_begin(T))]) :-
+    %  The one that matters: after the lines have gone from under it, the
+    %  client must still be writing where the terminal thinks it is.
+    run_goal(T, 'format("rm-one~n").',   'rm-one'),
+    run_goal(T, 'format("rm-two~n").',   'rm-two'),
+    run_goal(T, 'format("rm-three~n").', 'rm-three'),
+    finished_blocks(T, Before),
+    length(Before, N0),
+    term_length(T, Len0),
+    tt_block_of(Before, 'rm-two', Middle),
+    assertion(send(Middle, remove)),
+    assertion(\+ marker_on_screen(T, 'rm-two')),
+    assertion(marker_on_screen(T, 'rm-one')),
+    assertion(marker_on_screen(T, 'rm-three')),
+    term_length(T, Len1),
+    assertion(Len1 < Len0),
+    finished_blocks(T, After),
+    length(After, N1),
+    assertion(N1 =:= N0-1),
+    assertion(get(Middle, terminal, @nil)),
+    %  the neighbours still say what they printed
+    tt_block_of(After, 'rm-one', One),
+    term_block_content(One, output, OutOne),
+    assertion(sub_atom(OutOne, _, _, _, 'rm-one')),
+    assertion(\+ sub_atom(OutOne, _, _, _, 'rm-three')),
+    %  and the client keeps working
+    run_goal(T, 'format("rm-after~n").', 'rm-after'),
+    assertion(marker_on_screen(T, 'rm-after')),
+    assertion(wait_for_prompt(T)).
+
+test(a_command_typed_over_several_lines_goes_whole,
+     [setup(test_begin(T))]) :-
+    tt_type_lines(T, ['forall(between(1,2,QR),',
+                      '  format("rmm-~w~n", [QR])).']),
+    assertion(wait_until(marker_on_screen(T, 'rmm-2'), 15)),
+    assertion(wait_for_prompt(T)),
+    finished_blocks(T, Blocks),
+    last(Blocks, Block),
+    assertion(marker_on_screen(T, 'forall(between(1,2,QR),')),
+    assertion(send(Block, remove)),
+    assertion(\+ marker_on_screen(T, 'forall(between(1,2,QR),')),
+    assertion(\+ marker_on_screen(T, 'rmm-1')),
+    assertion(\+ marker_on_screen(T, 'format("rmm-~w~n", [QR])).')),
+    run_goal(T, 'format("rmm-after~n").', 'rmm-after').
+
+test(the_command_being_typed_cannot_be_removed, [setup(test_begin(T))]) :-
+    term_blocks(T, Blocks),
+    last(Blocks, Current),
+    assertion(\+ get(Current, end, _)),
+    assertion(\+ send(Current, remove)),
+    assertion(wait_for_prompt(T)).
+
+%!  tt_block_of(+Blocks, +Marker, -Block) is semidet.
+%
+%   The block whose output holds Marker.
+
+tt_block_of(Blocks, Marker, Block) :-
+    member(Block, Blocks),
+    term_block_content(Block, output, Out),
+    sub_atom(Out, _, _, _, Marker),
+    !.
+
+test(a_copy_of_a_command_is_what_was_typed, [setup(test_begin(T))]) :-
+    %  Two things the screen has that the command has not: the return
+    %  that entered it, and the continuation prompt the client drew down
+    %  the left of every line after the first.
+    tt_type_lines(T, ['forall(between(1,2,QC),',
+                      '  format("cp-~w~n", [QC])).']),
+    assertion(wait_until(marker_on_screen(T, 'cp-2'), 15)),
+    assertion(wait_for_prompt(T)),
+    finished_blocks(T, Blocks),
+    last(Blocks, Block),
+    tt_copy(T, Block, command, Copied),
+    assertion(\+ sub_atom(Copied, _, _, _, '|')),
+    assertion(\+ sub_atom(Copied, _, 1, 0, '\n')),
+    %  a single newline between the lines, not the \r\n of a screen
+    %  region: what is copied is a command to be read back
+    assertion(\+ sub_atom(Copied, _, _, _, '\r')),
+    assertion(sub_atom(Copied, _, _, _, '\n')),
+    assertion(sub_atom(Copied, 0, _, _, 'forall(between(1,2,QC),')),
+    assertion(sub_atom(Copied, _, _, 0, 'format("cp-~w~n", [QC])).')).
+
+%!  tt_copy(+T, +Block, +What, -Text) is det.
+%
+%   Put a part of Block on the clipboard and read it back.
+
+tt_copy(terminal(_, xpce(_, TI)), Block, What, Text) :-
+    send(TI, slot, current_block, Block),
+    send(TI, copy_block, What),
+    get(@display, paste, clipboard, String),
+    get(String, value, Text).
+
+test(the_marker_has_a_menu_of_its_own, [setup(test_begin(T))]) :-
+    %  The triangle in the margin is about the one command it stands
+    %  beside; the text beside it is about the terminal.
+    run_goal(T, 'format("menu~n").', menu),
+    finished_blocks(T, Blocks),
+    last(Blocks, Block),
+    tt_head_row(T, Block, Row),
+    T = terminal(_, xpce(_, TI)),
+    tt_gutter_event(TI, Row, Gutter),      % the margin
+    assertion(get(TI, fold_at, Gutter, Block)),
+    tt_event(TI, 8, Row, Text),            % the command itself
+    assertion(\+ get(TI, fold_at, Text, _)),
+    get(TI, block_popup, Popup),
+    assertion(Popup \== @nil),
+    send(TI, update_block_popup, Popup, Gutter),
+    assertion(tt_item_label(Popup, fold_output, 'Hide output')),
+    get(Popup, member, repeat_command, Repeat),
+    assertion(get(Repeat, active, @on)),
+    send(Block, fold),
+    send(TI, update_block_popup, Popup, Gutter),
+    assertion(tt_item_label(Popup, fold_output, 'Show output')),
+    send(Block, unfold).
+
+test(repeat_types_the_command_again, [setup(test_begin(T))]) :-
+    run_goal(T, 'format("again~n").', again),
+    finished_blocks(T, Blocks),
+    last(Blocks, Block),
+    tt_head_row(T, Block, Row),
+    T = terminal(_, xpce(_, TI)),
+    tt_gutter_event(TI, Row, Gutter),
+    get(TI, block_popup, Popup),
+    send(TI, update_block_popup, Popup, Gutter),
+    send(TI, repeat_block),
+    %  it is typed, not entered: the caret sits at the end of it
+    assertion(wait_until(tt_typed(T, 'format("again~n").'), 15)),
+    tt_reset(T).
+
+%!  tt_typed(+T, +Text) is semidet.
+%
+%   True when the row the caret is on holds Text.  What is typed at the
+%   client is echoed a character at a time, and how long that takes is
+%   the client's business: it is a wait, not a fixed pause.
+%
+%   On Windows the pause it replaces was never long enough -- the input
+%   goes to the client over a pipe there and arrives a character to the
+%   dispatch round.
+
+tt_typed(T, Text) :-
+    cursor(T, _, Row),
+    row_text(T, Row, Line),
+    sub_atom(Line, _, _, _, Text).
+
+%!  tt_head_row(+T, +Block, -Row) is semidet.
+%
+%   Row of the window the fold marker of Block is on, found by asking
+%   which row the margin answers for.
+
+tt_head_row(terminal(_, xpce(_, TI)), Block, Row) :-
+    get(TI, rows, N), End is N-1,
+    between(0, End, Row),
+    tt_gutter_event(TI, Row, Ev),
+    get(TI, fold_at, Ev, Block),
+    !.
+
+%!  tt_gutter_event(+TI, +Row, -Event) is det.
+%
+%   An event in the one column of margin the fold marker is drawn in.
+%   cell_pixel/5 counts from the first cell of text, which is past it.
+
+tt_gutter_event(TI, Row, Ev) :-
+    get(TI, height, H),
+    get(TI, rows, Rows),
+    xpce_cw(TI, CW),
+    CH is H/Rows,
+    X is max(0, integer(CW/2)),
+    Y is integer(CH*Row + CH/2),
+    new(Ev, event(ms_right_down, TI, X, Y, 0, 0)).
+
+tt_event(TI, Col, Row, Ev) :-
+    cell_pixel(TI, Col, Row, X, Y),
+    new(Ev, event(ms_right_down, TI, X, Y, 0, 0)).
+
+tt_item_label(Popup, Name, Label) :-
+    get(Popup, member, Name, Item),
+    get(Item, label, L),
+    get(L, value, Label).
+
+tt_reset(T) :-
+    key(T, ctrl_e), key(T, ctrl_u), drive(0.2).
+
+%!  tt_type_lines(+T, +Lines) is det.
+%
+%   Type Lines, pressing Return after each.  All but the last leave the
+%   term unfinished, so the client asks for the next with a continuation
+%   prompt.
+
+tt_type_lines(T, Lines) :-
+    forall(member(Line, Lines),
+           ( type(T, Line), key(T, enter), drive(0.3) )).
+
+test(folding_hides_the_output, [setup(test_begin(T))]) :-
+    run_goal(T, 'forall(between(1,6,X), format("line-~w~n", [X])).', 'line-6'),
+    finished_blocks(T, Blocks),
+    last(Blocks, Block),
+    assertion(marker_on_screen(T, 'line-3')),
+    assertion(send(Block, fold)),
+    assertion(\+ marker_on_screen(T, 'line-3')),
+    assertion(marker_on_screen(T, 'between(1,6,X)')), % the command stays
+    assertion(send(Block, unfold)),
+    assertion(marker_on_screen(T, 'line-3')).
+
+test(a_fold_hides_nothing_from_the_buffer, [setup(test_begin(T))]) :-
+    run_goal(T, 'forall(between(1,6,X), format("kept-~w~n", [X])).', 'kept-6'),
+    finished_blocks(T, Blocks),
+    last(Blocks, Block),
+    term_length(T, Length),
+    assertion(send(Block, fold)),
+    assertion(term_length(T, Length)),
+    assertion(term_find(T, 0, 'kept-3', _)),
+    assertion(send(Block, unfold)).
+
+:- end_tests(terminal_blocks).

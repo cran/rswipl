@@ -1006,12 +1006,11 @@ might not be properly aligned.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 bool
-put_double(DECL_LD Word at, double d, int flags)
+put_double(DECL_LD Word at, double d)
 { Word p;
   word m = mkIndHdr(WORDS_PER_DOUBLE, TAG_FLOAT);
 
-  if ( flags != ALLOW_CHECKED &&
-       !ensureGlobalSpace(2+WORDS_PER_DOUBLE, flags) )
+  if ( !ensureGlobalSpace(2+WORDS_PER_DOUBLE, ALLOW_GC) )
     return false;
 
   p = gTop;
@@ -1502,9 +1501,15 @@ tmp_malloc(size_t size)
 
 void *
 tmp_realloc(void *old, size_t size)
-{ Word sp = old;
-  size_t osize = (size_t)*--sp;
+{ Word sp;
+  size_t osize;
   void *mem;
+
+  if ( !old )
+    return tmp_malloc(size);
+
+  sp    = old;
+  osize = (size_t)*--sp;
 
 #ifdef O_DEBUG
   if ( (mem = tmp_malloc(size)) )
@@ -1526,15 +1531,17 @@ tmp_realloc(void *old, size_t size)
 
 void
 tmp_free(void *mem)
-{ size_t *sp = mem;
-  size_t osize = *--sp;
+{ if ( mem )
+  { size_t *sp = mem;
+    size_t osize = *--sp;
 
 #ifdef O_DEBUG
-  memset(sp, 0xFB, osize+sizeof(size_t));
+    memset(sp, 0xFB, osize+sizeof(size_t));
 #else
-  (void)osize;
+    (void)osize;
 #endif
-  free(sp);
+    free(sp);
+  }
 }
 
 #endif /*MMAP_STACK*/

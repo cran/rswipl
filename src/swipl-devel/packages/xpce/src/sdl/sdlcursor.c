@@ -35,6 +35,8 @@
 #include <h/kernel.h>
 #include <h/graphics.h>
 #include "sdlcursor.h"
+#include "sdlevent.h"
+#include "sdlwindow.h"
 
 static Sheet	cursorNames = NIL;
 
@@ -89,6 +91,64 @@ static struct standardCursor
   { "w_resize",	   SDL_SYSTEM_CURSOR_W_RESIZE },
   { NULL,	   0 }
 };
+
+/* display ->busy_cursor names one cursor for all the frames at once.  SDL
+ * has a single cursor for the application, so hold it here and leave the
+ * per-window cursor alone while it is set: updateCursorWindow() runs after
+ * every event and would otherwise take it straight off again.
+ */
+
+static SDL_Cursor *busy_cursor;
+
+bool
+ws_busy_cursor(void)
+{ return busy_cursor != NULL;
+}
+
+
+/* Put the normal cursor back when the busy period ends.  We cannot
+ * leave that to updateCursorWindow() after the next event: the event
+ * that started the busy period is often the last one for a while (a
+ * key that makes the debugger continue, for example), and it is the
+ * window under the pointer that decides the shape, which need not be
+ * the window that got the event.  The cursor would keep the busy shape
+ * until the user moves the mouse.
+ */
+
+static void
+restore_cursor(void)
+{ PceWindow sw = ws_pointer_window();
+
+  DEBUG(NAME_cursor, Cprintf("Busy cursor done; restoring from %s\n",
+			     sw ? pp(sw) : "(no pointer window)"));
+
+  if ( sw && ws_created_window(sw) )
+  { updateCursorWindow(sw);
+  } else				/* pointer not in one of our */
+  { ASSERT_SDL_MAIN();			/* windows */
+    SDL_SetCursor(SDL_GetDefaultCursor());
+  }
+}
+
+
+void
+ws_set_busy_cursor(CursorObj c)
+{ if ( !c || isNil(c) || isDefault(c) )   /* isDefault: unresolved */
+  { if ( busy_cursor )
+    { busy_cursor = NULL;
+      restore_cursor();
+    }
+  } else
+  { SDL_Cursor *sc = pceCursor2SDL_Cursor(c);
+
+    if ( sc )
+    { ASSERT_SDL_MAIN();
+      busy_cursor = sc;
+      SDL_SetCursor(sc);
+    }
+  }
+}
+
 
 /**
  * Initialize the cursor font resources.

@@ -79,6 +79,25 @@ etc.
 
     The default value is the file("$PCEHOME/Defaults")
 
+- pce-user_defaults: source_sink|char_array*
+    File/rc holding the defaults of whoever is running the program,
+    read after `<-defaults` and therefore winning over it.  The default
+    value is the file("$PCEAPPDATA/Defaults").
+
+    `@nil` reads none, which is how a program says it is not to depend
+    on the preferences of its user -- a test suite wants that, and so
+    does an application that must look the same for everyone.
+    `<-defaults` is read either way: it carries the font bindings, so a
+    program without it would not merely lose preferences, it would look
+    wrong.
+
+    Both are read by the first lookup of a class variable, so this has
+    to be set before then.  From SWI-Prolog it is set by the
+    `xpce_defaults` Prolog flag, which pce_init/3 hands over while XPCE
+    starts: a file name to read that in place of the user's, or `none`
+    to read none.  `swipl -Dxpce_defaults=none` is the way to say it on
+    the command line.
+
     A runtime application that wishes the defauts to be in the resource
     file should do:
 
@@ -518,7 +537,9 @@ etc.
 
 - pce->load_defaults: source_sink
     Loads class_variable object default values from the given
-    source.   Initialisation of XPCE loads <-defaults.
+    source.  XPCE loads `<-defaults` and then `<-user_defaults` itself,
+    on the first lookup of a class variable; this adds to what they
+    said rather than replacing it.
 
     A Defaults file consists of statements.  Each statement is on a
     seperate line.  A statement may be split over several lines by

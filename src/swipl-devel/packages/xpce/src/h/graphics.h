@@ -39,7 +39,9 @@
 		 *        REUSABLE TYPES        *
 		 *******************************/
 
-#define TYPE_FILL "colour|{foreground,background}*"
+#define TYPE_FILL     "colour|gradient|{foreground,background}*"
+#define TYPE_FILL_ARG "[colour|gradient|{foreground,background}]*"
+#define TYPE_FILL_3D  "[colour|gradient|{foreground,background}|elevation]*"
 
 		 /*******************************
 		 *     STRETCHABLE OBJECTS	*
@@ -180,6 +182,8 @@ NewClass(tab)
   ABSTRACT_DIALOG_GROUP
   Size		label_size;		/* Size of the label-box */
   Int		label_offset;		/* X-Offset of the label-box */
+  BoolObj	editable_label;		/* Label can be edited in place */
+  BoolObj	closable;		/* Label carries a close button */
   Name		status;			/* {on_top, hidden} */
   Name		previous_top;		/* Name of element on top before me */
 End;
@@ -195,6 +199,7 @@ End;
 
 NewClass(tab_stack)
   ABSTRACT_DEVICE
+  BoolObj	hide_single_label;	/* Drop the label of a lone tab */
 End;
 
 		/********************************
@@ -218,11 +223,14 @@ NewClass(tileobj)
   Int		verStretch;		/* Vertical stretchability */
   Int		verShrink;		/* Vertical shrinkability */
   BoolObj	canResize;		/* Can be resized by user? */
+  Name		resized;		/* Sizes given by hand (see setTile()) */
   Int		border;			/* Border between subtiles */
+  Int		border_root;		/* Border around the root tile */
   Name		orientation;		/* none, horizontal, vertical */
   Chain		members;		/* subtiles */
   TileObj	super;			/* Super tile */
   Any		object;			/* Object managed */
+  Any		manager;		/* Frame/device managing the root */
   Area		area;			/* Current area of the tile */
   BoolObj		enforced;		/* Enfore layout */
 End;
@@ -524,6 +532,7 @@ NewClass(scrollbar)
   Name		unit;			/* Unit to scroll */
   Int		offset;			/* offset of down from bubble-start */
   BoolObj		auto_hide;		/* if @on, hide automatically */
+  BoolObj	hover;			/* pointer is inside the bar */
 End;
 
 #define SCROLL_PAGE_PROM 900		/* Scroll one page */
@@ -639,7 +648,7 @@ End;
 NewClass(list_browser)
   ABSTRACT_DEVICE
   Dict		dict;			/* dict in which items reside */
-  TextImage	image;			/* The text area */
+  TextImage	text_image;		/* The text area */
   ScrollBar	scroll_bar;		/* The scrollbar */
   TextObj	label_text;		/* Text to display the label */
   Name		status;			/* active/inactive */
@@ -688,6 +697,7 @@ End;
   Name		focus_button;		/* Button that initiated focus */ \
   EventObj	focus_event;		/* Event that grabbed the focus */ \
   Point		scroll_offset;		/* Amount scrolled */ \
+  Chain		fixed_graphicals;	/* Graphicals that do not scroll */ \
   PopupObj	popup;			/* Associated popup */ \
   EventObj	current_event;		/* Currently processed event */ \
   BoolObj	sensitive;		/* Sensitive to events */ \
@@ -746,6 +756,16 @@ NewClass(colour)
   Name		name;			/* Name of the colour (red, ...) */
   Name		kind;			/* `named' or `rgb' */
   Int		rgba;			/* 32-bit encoded RGBA */
+End;
+
+
+NewClass(gradient)
+  Name		kind;			/* `linear' or `radial' */
+  Point		p0;			/* Start point (linear) / start-circle center (radial) */
+  Point		p1;			/* End   point (linear) / end-circle   center (radial) */
+  Num		r0;			/* Num*, radial start-circle radius */
+  Num		r1;			/* Num*, radial end-circle radius */
+  Chain		stops;			/* Chain of tuple(fraction, colour) */
 End;
 
 
@@ -834,6 +854,7 @@ NewClass(frameobj)
   BoolObj	can_delete;		/* User can delete the frame */
   BoolObj	can_resize;		/* User can resize the frame */
   BoolObj	confirm_done;		/* User must confirm delete */
+  BoolObj	keep_alive;		/* Application must not end */
   BoolObj	fitting;		/* We are running ->fit */
   Sheet		wm_protocols;		/* WM protocols understood */
 					/* start private data */
@@ -849,6 +870,7 @@ NewClass(eventobj)
   Int		buttons;		/* Bit mask of button positions */
   Int		x;			/* X coordinate relative to window */
   Int		y;			/* Y coordinate relative to window */
+  Int		rotation;		/* Wheel rotation (degrees) or NIL */
   Point		position;		/* Computed Position */
   uintptr_t	time;			/* Time of event in milliseconds */
 End;
@@ -908,11 +930,12 @@ NewClass(browser)
 End;
 
 NewClass(timer)
-  Real		interval;		/* interval as a real value */
+  Num		interval;		/* interval as a float */
   Code		message;		/* message when timer fires */
   Name		status;			/* {idle,interval,once} */
   BoolObj	service;		/* Operating in service mode? */
-  WsRef		ws_ref;			/* Window System Reference */
+  Int		times;			/* Times left to fire; NIL: no limit */
+  Int		sdl_timer;		/* The SDL timer reference */
 End;
 
 		 /*******************************

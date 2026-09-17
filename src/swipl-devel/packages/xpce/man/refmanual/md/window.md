@@ -742,6 +742,16 @@ kinds of windows:
 
 - window<-frame: create=[bool] -> frame
 
+- window<-image: -> image
+    Image holding the pixels currently shown by this window, on a
+    surface of the window's own size.  A window decorator and any
+    subwindows are included, as they are in `frame<-image`.
+
+    The window must have been created, i.e., its frame must be open:
+    what this answers is a copy of what is on the screen.
+
+    @see frame<-image for the pixels of the whole frame.
+
 - window<-visible: -> area
     New area object reflecting the visible area of the drawing plane.  The
     <-position of this area is the coordinate of the top-left corner of the

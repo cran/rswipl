@@ -34,33 +34,69 @@
 
 :- module(emacs_buffer_menu, []).
 :- use_module(library(pce)).
-:- use_module(library(persistent_frame)).
+:- use_module(library(pane_frame)).
+:- use_module(library(toolbar)).
+:- use_module(library(pce_util), [default/3]).
 :- require([ send_list/3
            ]).
 
-:- pce_autoload(tool_bar, library(toolbar)).
-
-resource(open,      image, image('16x16/open.png')).
+resource(open,      image, image('tool/open.svg')).
 resource(saveall,   image, image('16x16/saveall.png')).
-resource(help,      image, image('16x16/help.png')).
+resource(help,      image, image('tool/help.svg')).
 resource(bookmarks, image, image('16x16/bookmarks.png')).
-resource(buffers,   image, image('32x32/buffers.png')).
 
-:- pce_begin_class(emacs_buffer_menu, persistent_frame,
+/* The buffer menu as a pane.
+
+It used to be a frame of its own, holding a tool bar, the list of buffers
+and a reporter.  It is a `tool_pane' now -- see library(pane_frame) -- so
+it drops into a tab of any window of the IDE or, being a list to pick a
+buffer from, down the left of the editor it was asked for from.  What it
+has to say goes on the status bar of the window it ends up in, so it
+carries no reporter of its own.
+*/
+
+:- pce_begin_class(emacs_buffer_menu, tool_pane,
                    "List showing all PceEmacs buffers").
 
-class_variable(geometry,        geometry,       '211x190+0+125').
+class_variable(pane_side, {above,below,left,right}, left,
+               "The list of buffers is added down the left").
 
-initialise(BM, Emacs:emacs) :->
+%       The pane belongs to whichever window of the IDE it lands in; its
+%       tool bar still acts on @emacs, whose ->find_file and
+%       ->save_some_buffers the buttons send.
+
+initialise(BM, Emacs:[emacs]) :->
     "Create menu for buffer-list"::
-    send(BM, send_super, initialise,
-         'PCE Emacs Buffers', application := Emacs),
-    send(BM, icon, resource(buffers)),
-    send(BM, name, buffer_menu),
-    send(BM, append, new(D, dialog)),
-    send(D, pen, 0),
-    send(D, gap, size(0, 3)),
-    send(D, append, new(TB, tool_bar(Emacs))),
+    default(Emacs, @emacs, TheEmacs),
+    send_super(BM, initialise, buffer_menu),
+    send(BM, append_window, new(D, tool_dialog(TheEmacs))),
+    send(BM, append_window, new(_B, emacs_buffer_browser(TheEmacs)), D, below),
+    send(BM, fill_tool_bar).
+
+                 /*******************************
+                 *            MEMBERS           *
+                 *******************************/
+
+browser(BM, B:emacs_buffer_browser) :<-
+    "The window the buffers are listed in"::
+    get(BM, window, emacs_buffer_browser, B).
+
+tool_bar(BM, TB:tool_bar) :<-
+    "Get the toolbar"::
+    get(BM, window, tool_dialog, D),
+    get(D, tool_bar, @on, TB).
+
+                 /*******************************
+                 *             PANE             *
+                 *******************************/
+
+pane_label(_BM, Label:name) :<-
+    "What my tab is called"::
+    Label = 'Buffers'.
+
+fill_tool_bar(BM) :->
+    "Fill the toolbar"::
+    get(BM, tool_bar, TB),
     send_list(TB, append,
               [ tool_button(find_file,
                             resource(open),
@@ -74,14 +110,11 @@ initialise(BM, Emacs:emacs) :->
                 tool_button(help,
                             resource(help),
                             'Help on PceEmacs')
-              ]),
-
-    send(new(B, emacs_buffer_browser(Emacs)), below, D),
-    send(new(report_dialog), below, B).
+              ]).
 
 selection(BM, B:emacs_buffer*) :->
     "Select emacs buffer"::
-    get(BM, member, browser, Browser),
+    get(BM, browser, Browser),
     (   B == @nil
     ->  send(Browser, selection, @nil)
     ;   get(B, name, Name),
@@ -99,7 +132,7 @@ initialise(B, Emacs:emacs) :->
     "Create for Emacs"::
     send_super(B, initialise, 'Emacs buffers'),
     send(B, name, browser),
-    send(B, open_message, message(@arg1?object, open)),
+    send(B, open_message, message(@arg1?object, open, tab)),
     send(B, tab_stops, vector(150)),
     send(B, attach_popup),
     send(B, dict, Emacs?buffer_list).
@@ -127,23 +160,24 @@ attach_popup(B) :->
          message(B, selection, @arg1)),
     send_list(P, append,
               [ menu_item(open_buffer,
-                          message(Buffer, open)),
+                          message(Buffer, open, tab)),
                 menu_item(open_new_window,
-                          message(Buffer, open, @on),
+                          message(Buffer, open, window),
                           @default, @on),
-                menu_item(identify,
-                          message(Buffer, identify),
+                menu_item(properties,
+                          message(Buffer, properties),
                           @default, @on),
                 menu_item(kill_buffer,
                           message(Buffer, kill))
               ]).
 
 
-drop_files(B, Files:chain, _At:point) :->
+drop_files(_B, Files:chain, _At:point) :->
     "Drag-and-drop interface"::
-    get(B, application, Emacs),
-    send(Files, for_all,
-         message(Emacs, open_file, @arg1)).
+    send(Files, for_all,             % @emacs, not my <-application: every
+         message(@emacs, open_file, @arg1)).  % window of the IDE belongs
+                                     % to @prolog_ide, and opening a source
+                                     % is PceEmacs's to do
 
 :- pce_end_class(emacs_buffer_browser).
 

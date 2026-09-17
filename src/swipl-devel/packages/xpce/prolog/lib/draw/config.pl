@@ -45,13 +45,6 @@
 :- pce_global(@draw_default_arrow, new(arrow)).
 
                  /*******************************
-                 *      CHECK ENVIRONMENT       *
-                 *******************************/
-
-has_printer_class :-
-    get(@pce, convert, win_printer, class, _).
-
-                 /*******************************
                  *         CONFIG STUFF         *
                  *******************************/
 

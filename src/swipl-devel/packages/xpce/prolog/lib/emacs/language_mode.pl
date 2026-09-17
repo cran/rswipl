@@ -748,7 +748,7 @@ expand_tag(M, Tag:[name], TheTag:name) :<-
     ).
 
 
-find_tag(M, Tag:emacs_tag, Where:[{here,tab,window}], Editor:editor) :<-
+find_tag(M, Tag:emacs_tag, Where:[{as_arranged,here,tab,split,window}], Editor:editor) :<-
     "Jump to indicated tag entry"::
     (   get(M, directory, Dir),
         find_tag_from_dir(Dir, TagFile),
@@ -760,8 +760,8 @@ find_tag(M, Tag:emacs_tag, Where:[{here,tab,window}], Editor:editor) :<-
         emacs_update_tags,
         auto_call(emacs_tag(Tag, SearchDir, File, Line))
     ->  new(B, emacs_buffer(File)),
-        get(B, open, Where, Frame),
-        get(Frame, editor, Editor),
+        get(B, open, Where, View),
+        get(View, editor, Editor),
         send(M, location_history),
         send(Editor, line_number, Line),
         adjust_tag(Editor, Tag),
@@ -837,13 +837,26 @@ beginning_of_text_on_line(E) :->
 new_caret_position(M, Caret:int) :->
     "Update line number"::
     send_super(M, new_caret_position, Caret),
+    send(M, show_caret_line, Caret),
+    send(M, highlight_matching_bracket, Caret).
+
+%       Also on its own, from `emacs_view ->pane_exposed': the bar of a
+%       window says what the pane in view has to say, and a pane coming
+%       into view finds it cleared.
+
+show_caret_line(M, Caret:[int]) :->
+    "Say on the bar of my window which line the caret is on"::
+    (   Caret == @default
+    ->  get(M, caret, At)
+    ;   At = Caret
+    ),
     (   get(M, frame, Frame),
         send(Frame, has_send_method, show_line_number)
     ->  get(M, show_line_numbers, How),
         (   How == @off
         ->  send(Frame, show_line_number, @nil)
         ;   (   (   integer(How)
-                ->  Caret =< How
+                ->  At =< How
                 ;   get(M, show_line_numbers, @on)
                 )
             ->  get(M, line_number, Line),
@@ -853,8 +866,7 @@ new_caret_position(M, Caret:int) :->
         ;   true
         )
     ;   true
-    ),
-    send(M, highlight_matching_bracket, Caret).
+    ).
 
 
 show_line_numbers(M, Show:bool) :->
@@ -971,7 +983,7 @@ prolog_manual(M, On:[name]) :->
         ;   prolog_manual(On)
         )
     ->  true
-    ;   send(M, report, "No console for running help/1")
+    ;   send(M, report, warning, "No console for running help/1")
     ).
 
 %!  prolog_manual(+Topic)

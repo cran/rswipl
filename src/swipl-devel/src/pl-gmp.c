@@ -472,9 +472,9 @@ globalMPZ() pushes an mpz type GMP  integer   onto  the local stack. The
 saved version is the _mp_size field, followed by the limps.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define globalMPZ(at, mpz, flags) LDFUNC(globalMPZ, at, mpz, flags)
+#define globalMPZ(at, mpz) LDFUNC(globalMPZ, at, mpz)
 static bool
-globalMPZ(DECL_LD Word at, mpz_t mpz, int flags)
+globalMPZ(DECL_LD Word at, mpz_t mpz)
 { DEBUG(CHK_SECURE, assert(!onStackArea(global, at) &&
 			   !onStackArea(local, at)));
 
@@ -492,8 +492,7 @@ globalMPZ(DECL_LD Word at, mpz_t mpz, int flags)
       return 0;
     }
 
-    if ( !hasGlobalSpace(wsz+MPZ_STACK_EXTRA+2) &&
-	 !ensureGlobalSpace(wsz+MPZ_STACK_EXTRA+2, flags) )
+    if ( !ensureGlobalSpace(wsz+MPZ_STACK_EXTRA+2, ALLOW_GC) )
       return false;
     p = gTop;
     gTop += wsz+MPZ_STACK_EXTRA+2;
@@ -524,9 +523,9 @@ globalMPZ(DECL_LD Word at, mpz_t mpz, int flags)
 }
 
 
-#define globalMPQ(at, mpq, flags) LDFUNC(globalMPQ, at, mpq, flags)
-static int
-globalMPQ(DECL_LD Word at, mpq_t mpq, int flags)
+#define globalMPQ(at, mpq) LDFUNC(globalMPQ, at, mpq)
+static bool
+globalMPQ(DECL_LD Word at, mpq_t mpq)
 { mpz_t num, den;			/* num/den */
 
   num[0] = *mpq_numref(mpq);
@@ -547,12 +546,8 @@ globalMPQ(DECL_LD Word at, mpq_t mpq, int flags)
       return 0;
     }
 
-    if ( !hasGlobalSpace(num_wsz+den_wsz+2+2*MPZ_STACK_EXTRA) )
-    { int rc = ensureGlobalSpace(num_wsz+den_wsz+2+2*MPZ_STACK_EXTRA, flags);
-
-      if ( rc != true )
-	return rc;
-    }
+    if ( !ensureGlobalSpace(num_wsz+den_wsz+2+2*MPZ_STACK_EXTRA, ALLOW_GC) )
+      return false;
     p = gTop;
     gTop += num_wsz+den_wsz+2+2*MPZ_STACK_EXTRA;
 
@@ -1378,47 +1373,43 @@ most compact representation, which is  essential   to  make unify() work
 without any knowledge of the represented data.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define put_mpz(at, mpz, flags) LDFUNC(put_mpz, at, mpz, flags)
-static int
-put_mpz(DECL_LD Word at, mpz_t mpz, int flags)
+#define put_mpz(at, mpz) LDFUNC(put_mpz, at, mpz)
+static bool
+put_mpz(DECL_LD Word at, mpz_t mpz)
 { DEBUG(2,
 	{ char buf[256];
 	  Sdprintf("put_mpz(%s)\n",
 		   mpz_get_str(buf, 10, mpz));
 	});
 
-#if SIZEOF_LONG < SIZEOF_WORD
-  if ( mpz_cmp(mpz, MPZ_MIN_LONG) >= 0 &&
-       mpz_cmp(mpz, MPZ_MAX_LONG) <= 0 )
-#else
   if ( mpz_cmp(mpz, MPZ_MIN_TAGGED) >= 0 &&
        mpz_cmp(mpz, MPZ_MAX_TAGGED) <= 0 )
-#endif
-  { long v = mpz_get_si(mpz);
+  { int64_t v;
 
-    if ( !ensureGlobalSpace(0, flags) )
+#if SIZEOF_LONG < SIZEOF_WORD
+    bool rc = mpz_to_int64(mpz, &v);
+    assert(rc);
+    (void)rc;
+#else
+    static_assertion(sizeof(word) == sizeof(long));
+    v = mpz_get_si(mpz);
+#endif
+
+    if ( !ensureGlobalSpace(0, ALLOW_GC) )
       return false;
 
     *at = consInt(v);
     assert(valInt(*at) == v);
     return true;
   } else
-  { return globalMPZ(at, mpz, flags);
+  { return globalMPZ(at, mpz);
   }
 }
 
 #endif /*O_GMP*/
 
-/* returns one of
-
-  true: ok
-  false: some error
-  GLOBAL_OVERFLOW: no space
-  LOCAL_OVERFLOW: cannot represent (no GMP)
-*/
-
-int
-put_int64(DECL_LD Word at, int64_t l, int flags)
+bool
+put_int64(DECL_LD Word at, int64_t l)
 { word r;
 
   r = consInt(l);
@@ -1431,27 +1422,27 @@ put_int64(DECL_LD Word at, int64_t l, int flags)
     mpz_t mpz;
 
     mpz_init_set_si64(mpz, l);
-    return globalMPZ(at, mpz, flags);
+    return globalMPZ(at, mpz);
 #else
-    return LOCAL_OVERFLOW;
+    return PL_representation_error("int64_t");
 #endif
   }
 }
 
 
-int
-put_uint64(DECL_LD Word at, uint64_t l, int flags)
+bool
+put_uint64(DECL_LD Word at, uint64_t l)
 { if ( (int64_t)l >= 0 )
-  { return put_int64(at, l, flags);
+  { return put_int64(at, l);
   } else
   {
 #ifdef O_BIGNUM
     mpz_t mpz;
 
     mpz_init_set_uint64(mpz, l);
-    return globalMPZ(at, mpz, flags);
+    return globalMPZ(at, mpz);
 #else
-    return LOCAL_OVERFLOW;
+    return PL_representation_error("uint64_t");
 #endif
   }
 }
@@ -1465,44 +1456,40 @@ affected by GC/shift.  The intented scenario is:
 
   { word c;
 
-    if ( (rc=put_number(&c, n, ALLOW_GC)) == true )
+    if ( put_number(&c, n) )
       bindConst(<somewhere>, c);
     ...
   }
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-int				/* true, false, _*OVERFLOW */
-put_number(DECL_LD Word at, Number n, int flags)
+bool
+put_number(DECL_LD Word at, Number n)
 { switch(n->type)
   { case V_INTEGER:
     { word w = consInt(n->value.i);
 
       if ( valInt(w) == n->value.i )
-      { if ( !hasGlobalSpace(0) )
-	{ int rc = ensureGlobalSpace(0, flags);
-
-	  if ( rc != true )
-	    return rc;
-	}
+      { if ( !ensureGlobalSpace(0, ALLOW_GC) )
+	  return false;
 
 	*at = w;
 	return true;
       }
 
-      return put_int64(at, n->value.i, flags);
+      return put_int64(at, n->value.i);
     }
 #ifdef O_BIGNUM
     case V_MPZ:
-      return put_mpz(at, n->value.mpz, flags);
+      return put_mpz(at, n->value.mpz);
     case V_MPQ:
     { if ( mpz_cmp_ui(mpq_denref(n->value.mpq), 1L) == 0 )
-	return put_mpz(at, mpq_numref(n->value.mpq), flags);
+	return put_mpz(at, mpq_numref(n->value.mpq));
       else
-	return globalMPQ(at, n->value.mpq, flags);
+	return globalMPQ(at, n->value.mpq);
     }
 #endif
     case V_FLOAT:
-      return put_double(at, n->value.f, flags);
+      return put_double(at, n->value.f);
   }
 
   assert(0);
@@ -1523,10 +1510,8 @@ PL_unify_number(DECL_LD term_t t, Number n)
     return varBindConst(p, w);
 
   if ( canBind(*p) )
-  { int rc;
-
-    if ( (rc=put_number(&w, n, ALLOW_GC)) != true )
-      return raiseStackOverflow(rc);
+  { if ( !put_number(&w, n) )
+      return false;
 
     p = valTermRef(t);			/* put_number can shift the stacks */
     deRef(p);
@@ -1585,10 +1570,9 @@ PL_unify_number(DECL_LD term_t t, Number n)
 bool
 PL_put_number(DECL_LD term_t t, Number n)
 { word w;
-  int rc;
 
-  if ( (rc=put_number(&w, n, ALLOW_GC)) != true )
-    return raiseStackOverflow(rc);
+  if ( !put_number(&w, n) )
+    return false;
 
   *valTermRef(t) = w;
 

@@ -24,6 +24,8 @@ COMMON(Int)	getGreenColour(Colour c);
 COMMON(Int)	getBlueColour(Colour c);
 COMMON(Colour)	getHiliteColour(Colour c, Real h);
 COMMON(Colour)	getReduceColour(Colour c, Real re);
+COMMON(Colour)	getFadeColour(Colour c, Real f);
+COMMON(Int)	getIntensityColour(Colour c);
 COMMON(status)	makeClassColour(Class class);
 
 /* /swi40/jan/src/pl/packages/xpce/src/gra/coords.c */
@@ -94,6 +96,8 @@ COMMON(status)	geometryDevice(Device dev, Int x, Int y, Int w, Int h);
 COMMON(status)	makeClassDevice(Class class);
 
 /* /swi40/jan/src/pl/packages/xpce/src/gra/ellipse.c */
+COMMON(double)	ellipseNormDistance(int ax, int ay, int aw, int ah,
+				    int px, int py);
 COMMON(status)	makeClassEllipse(Class class);
 
 /* /swi40/jan/src/pl/packages/xpce/src/gra/figure.c */
@@ -218,6 +222,9 @@ COMMON(status)	initialiseNewSlotGraphical(Graphical gr, Variable new);
 COMMON(status)	clipGraphical(Graphical gr, Area a);
 COMMON(status)	unclipGraphical(Graphical gr);
 COMMON(status)	makeClassGraphical(Class class);
+
+/* /swi40/jan/src/pl/packages/xpce/src/gra/gradient.c */
+COMMON(status)	makeClassGradient(Class class);
 
 /* /swi40/jan/src/pl/packages/xpce/src/gra/handle.c */
 COMMON(status)	getXYHandle(Handle h, Graphical gr, Device dev, Int *X, Int *Y);

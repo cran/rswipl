@@ -42,20 +42,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-static atom_t ATOM_stable;
-static atom_t ATOM_compat;
-static atom_t ATOM_compose;
-static atom_t ATOM_decompose;
-static atom_t ATOM_ignore;
-static atom_t ATOM_rejectna;
-static atom_t ATOM_nlf2ls;
-static atom_t ATOM_nlf2ps;
-static atom_t ATOM_nlf2lf;
-static atom_t ATOM_stripcc;
-static atom_t ATOM_casefold;
-static atom_t ATOM_charbound;
-static atom_t ATOM_lump;
-static atom_t ATOM_stripmark;
 
 static atom_t ATOM_category;
 static atom_t ATOM_combining_class;
@@ -381,54 +367,55 @@ unicode_property(term_t code, term_t property, term_t silent)
 		 *	      MAPPING		*
 		 *******************************/
 
+static PL_option_t map_options[] =
+{ PL_OPTION("stable",    OPT_BOOL),
+  PL_OPTION("compat",    OPT_BOOL),
+  PL_OPTION("compose",   OPT_BOOL),
+  PL_OPTION("decompose", OPT_BOOL),
+  PL_OPTION("ignore",    OPT_BOOL),
+  PL_OPTION("rejectna",  OPT_BOOL),
+  PL_OPTION("nlf2ls",    OPT_BOOL),
+  PL_OPTION("nlf2ps",    OPT_BOOL),
+  PL_OPTION("nlf2lf",    OPT_BOOL),
+  PL_OPTION("stripcc",   OPT_BOOL),
+  PL_OPTION("casefold",  OPT_BOOL),
+  PL_OPTION("charbound", OPT_BOOL),
+  PL_OPTION("lump",      OPT_BOOL),
+  PL_OPTION("stripmark", OPT_BOOL),
+  PL_OPTIONS_END
+};
+
 static bool
 get_map_mask(term_t t, int *mask)
-{ int m = 0;
-  term_t tail = PL_copy_term_ref(t);
-  term_t head = PL_new_term_ref();
+{ int stable=FALSE, compat=FALSE, compose=FALSE, decompose=FALSE,
+      ignore=FALSE, rejectna=FALSE, nlf2ls=FALSE, nlf2ps=FALSE,
+      nlf2lf=FALSE, stripcc=FALSE, casefold=FALSE, charbound=FALSE,
+      lump=FALSE, stripmark=FALSE;
+  int m = 0;
 
   if ( PL_get_integer(t, mask) )
     return true;
 
-  while ( PL_get_list(tail, head, tail) )
-  { atom_t a;
-
-    if ( !PL_get_atom_ex(head, &a) )
-      return false;
-    if ( a == ATOM_stable )
-      m |= UTF8PROC_STABLE;
-    else if ( a == ATOM_compat )
-      m |= UTF8PROC_COMPAT;
-    else if ( a == ATOM_compose )
-      m |= UTF8PROC_COMPOSE;
-    else if ( a == ATOM_decompose )
-      m |= UTF8PROC_DECOMPOSE;
-    else if ( a == ATOM_ignore )
-      m |= UTF8PROC_IGNORE;
-    else if ( a == ATOM_rejectna )
-      m |= UTF8PROC_REJECTNA;
-    else if ( a == ATOM_nlf2ls )
-      m |= UTF8PROC_NLF2LS;
-    else if ( a == ATOM_nlf2ps )
-      m |= UTF8PROC_NLF2PS;
-    else if ( a == ATOM_nlf2lf )
-      m |= UTF8PROC_NLF2LF;
-    else if ( a == ATOM_stripcc )
-      m |= UTF8PROC_STRIPCC;
-    else if ( a == ATOM_casefold )
-      m |= UTF8PROC_CASEFOLD;
-    else if ( a == ATOM_charbound )
-      m |= UTF8PROC_CHARBOUND;
-    else if ( a == ATOM_lump )
-      m |= UTF8PROC_LUMP;
-    else if ( a == ATOM_stripmark )
-      m |= UTF8PROC_STRIPMARK;
-    else
-      return PL_domain_error("unicode_mapping", head);
-  }
-
-  if ( !PL_get_nil_ex(tail) )
+  if ( !PL_scan_options(t, OPT_UNKNOWN_ERROR, "unicode_mapping", map_options,
+			&stable, &compat, &compose, &decompose, &ignore,
+			&rejectna, &nlf2ls, &nlf2ps, &nlf2lf, &stripcc,
+			&casefold, &charbound, &lump, &stripmark) )
     return false;
+
+  if ( stable )    m |= UTF8PROC_STABLE;
+  if ( compat )    m |= UTF8PROC_COMPAT;
+  if ( compose )   m |= UTF8PROC_COMPOSE;
+  if ( decompose ) m |= UTF8PROC_DECOMPOSE;
+  if ( ignore )    m |= UTF8PROC_IGNORE;
+  if ( rejectna )  m |= UTF8PROC_REJECTNA;
+  if ( nlf2ls )    m |= UTF8PROC_NLF2LS;
+  if ( nlf2ps )    m |= UTF8PROC_NLF2PS;
+  if ( nlf2lf )    m |= UTF8PROC_NLF2LF;
+  if ( stripcc )   m |= UTF8PROC_STRIPCC;
+  if ( casefold )  m |= UTF8PROC_CASEFOLD;
+  if ( charbound ) m |= UTF8PROC_CHARBOUND;
+  if ( lump )      m |= UTF8PROC_LUMP;
+  if ( stripmark ) m |= UTF8PROC_STRIPMARK;
 
   *mask = m;
 
@@ -732,20 +719,6 @@ install_unicode4pl(void)
   MKATOM(indic_conjunct_break);
 #endif
 
-  MKATOM(stable);
-  MKATOM(compat);
-  MKATOM(compose);
-  MKATOM(decompose);
-  MKATOM(ignore);
-  MKATOM(rejectna);
-  MKATOM(nlf2ls);
-  MKATOM(nlf2ps);
-  MKATOM(nlf2lf);
-  MKATOM(stripcc);
-  MKATOM(casefold);
-  MKATOM(charbound);
-  MKATOM(lump);
-  MKATOM(stripmark);
 
   assert(sizeof(char) == sizeof(uint8_t));
 

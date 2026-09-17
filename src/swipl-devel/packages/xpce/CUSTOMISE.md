@@ -11,12 +11,21 @@ Look-and-feel and other defaults are stored as class-variable bindings
 in two text files:
 
   * `<pcehome>/Defaults` ships with XPCE and holds the system-wide
-    defaults.  The last line of this file pulls in the user file
-    via `#include $PCEAPPDATA/Defaults`.
-  * `$PCEAPPDATA/Defaults` is the per-user file.  On Linux it is
+    defaults.
+  * `$PCEAPPDATA/Defaults` is the per-user file, read after the one
+    above and therefore winning over it.  On Linux it is
     `~/.config/swi-prolog/xpce/Defaults`; on macOS it lives below
     `~/Library/Application Support/swi-prolog/xpce/Defaults`; on
     Windows it is below `%APPDATA%\swi-prolog\xpce\Defaults`.
+
+A program can decline to read the per-user file with the `xpce_defaults`
+Prolog flag: `swipl -Dxpce_defaults=none` reads only the system one, and
+`swipl -Dxpce_defaults=File` reads File in place of the user's.  That is
+for a test suite or an application that must not depend on the
+preferences of whoever is running it; the system file is read either
+way, since it carries the font bindings.  The flag has to be set on the
+command line or before `library(pce)` is loaded, because the files are
+read by the first lookup of a class variable.
 
 The system file is read-only after installation; everything you change
 goes in the per-user file.  `<pcehome>/Defaults.user` is a commented
@@ -25,7 +34,7 @@ per-user `Defaults` the first time you edit your XPCE preferences, so
 you start with a worked example you can uncomment.
 
 In Epilog the per-user file is opened (creating it from
-`Defaults.user` on first use) via _Settings → Preferences → XPCE_, which
+`Defaults.user` on first use) via _Settings → GUI preferences_, which
 runs `prolog_edit_preferences(xpce)` from `library(swi_preferences)` —
 the same hook is available to your own code if you want to drive it
 programmatically.

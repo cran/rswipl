@@ -60,6 +60,7 @@ static status		columnEditor(Editor, Int);
 static status		ChangedRegionEditor(Editor, Int, Int);
 static status		ChangedEditor(Editor);
 static status		nfdStyleEditor(Editor, Style);
+static status		placeholderEditor(Editor, CharArray);
 static status		appendKill(CharArray);
 static status		prependKill(CharArray);
 static status		geometryEditor(Editor, Int, Int, Int, Int);
@@ -154,7 +155,7 @@ initialiseEditor(Editor e, TextBuffer tb, Int w, Int h, Int tmw)
   iw = toInt(valInt(e->size->w) * valInt(fw) + 2 * TXT_X_MARGIN);
   ih = toInt(valInt(e->size->h) * valInt(fh) + 2 * TXT_Y_MARGIN);
 
-  assign(e, image, newObject(ClassTextImage, e, iw, ih, EAV));
+  assign(e, text_image, newObject(ClassTextImage, e, iw, ih, EAV));
   assign(e, scroll_bar, newObject(ClassScrollBar, e, NAME_vertical, EAV));
 
   if ( valInt(tmw) > 0 )
@@ -195,20 +196,21 @@ initialiseEditor(Editor e, TextBuffer tb, Int w, Int h, Int tmw)
   assign(e, dabbrev_reject, NIL);
   assign(e, dabbrev_pos, NIL);
   assign(e, dabbrev_origin, NIL);
+  assign(e, placeholder, NIL);
   assign(e, styles, newObject(ClassSheet, EAV));
 
   e->fragment_cache = newFragmentCache(e);
   e->isearch_cache = newISearchCache(e);
 
-  send(e->image, NAME_cursor, getClassVariableValueObject(e, NAME_cursor), EAV);
-  send(e->image, NAME_set, e->scroll_bar->area->w, ZERO, EAV);
+  send(e->text_image, NAME_cursor, getClassVariableValueObject(e, NAME_cursor), EAV);
+  send(e->text_image, NAME_set, e->scroll_bar->area->w, ZERO, EAV);
   double td = valNum(e->tab_distance) * valNum(getAvgCharWidthFont(e->font));
-  tabDistanceTextImage(e->image, toNum(td));
+  tabDistanceTextImage(e->text_image, toNum(td));
   heightGraphical((Graphical) e->scroll_bar, ih);
   displayDevice(e, e->scroll_bar, DEFAULT);
-  displayDevice(e, e->image, DEFAULT);
+  displayDevice(e, e->text_image, DEFAULT);
   displayDevice(e, e->text_cursor, DEFAULT);
-  ew = add(e->scroll_bar->area->w,e->image->area->w);
+  ew = add(e->scroll_bar->area->w,e->text_image->area->w);
 
   if ( notNil(e->margin) )
   { send(e->margin, NAME_set, ew, EAV);
@@ -254,7 +256,7 @@ unlinkEditor(Editor e)
 
   unlinkDevice((Device) e);
 
-  freeObject(e->image);			/* make sure */
+  freeObject(e->text_image);			/* make sure */
   freeObject(e->scroll_bar);
   freeObject(e->text_cursor);
 
@@ -286,7 +288,7 @@ RedrawAreaEditor(Editor e, Area a)
   if ( e->pen != ZERO )
   { int p = valInt(e->pen);
     int x, y, w, h;
-    int th = valInt(e->image->area->y);
+    int th = valInt(e->text_image->area->y);
 
     initialiseDeviceGraphical(e, &x, &y, &w, &h);
     y += th;
@@ -346,7 +348,7 @@ cloneEditor(Editor e, Editor clone)
 static status
 textBufferEditor(Editor e, TextBuffer tb)
 { if ( e->text_buffer != tb )
-  { TextImage ti = e->image;
+  { TextImage ti = e->text_image;
 
     selectedFragmentEditor(e, NIL);
     send(e->text_buffer, NAME_detach, e, EAV);
@@ -388,10 +390,10 @@ showCaretAtEditor(Editor e, Int caret)
   int displaced = notDefault(caret);
 
   caret = normalise_index(e, isDefault(caret) ? e->caret : caret);
-  if ( get_character_box_textimage(e->image, valInt(caret),
+  if ( get_character_box_textimage(e->text_image, valInt(caret),
 				   &x, &y, &w, &h, &b) )
-  { x += valInt(e->image->area->x);
-    y += valInt(e->image->area->y);
+  { x += valInt(e->text_image->area->x);
+    y += valInt(e->text_image->area->y);
     w = valInt(getAvgCharWidthFont(e->font));
 
     setTextCursor(e->text_cursor,
@@ -413,7 +415,7 @@ updateCursorEditor(Editor e)
 
 
 static status
-electricCaretEditor(Editor e, Int caret, Real time)
+electricCaretEditor(Editor e, Int caret, Num time)
 { TRY( showCaretAtEditor(e, caret) );
 
   if ( !ElectricTimer )
@@ -430,7 +432,7 @@ electricCaretEditor(Editor e, Int caret, Real time)
       intervalTimer(ElectricTimer, time);
   }
 
-  return startTimer(ElectricTimer, NAME_once);
+  return startTimer(ElectricTimer, NAME_once, DEFAULT);
 }
 
 
@@ -464,26 +466,26 @@ the view and the number of lines in the buffer.
 static status
 bubbleScrollBarEditor(Editor e, ScrollBar sb)
 { TextBuffer tb = e->text_buffer;
-  Int start = getStartTextImage(e->image, ONE);
+  Int start = getStartTextImage(e->text_image, ONE);
 
   if ( tb->size < MAXPRECISESCROLLING )
-  { return bubbleScrollBarTextImage(e->image, sb);
+  { return bubbleScrollBarTextImage(e->text_image, sb);
   } else if ( tb->size < MAXLINEBASEDSCROLLING ) /* short, work line-based */
   { Int len   = countLinesEditor(e, ZERO, toInt(tb->size));
     Int first = sub(getLineNumberEditor(e, start), ONE); /* 1-based! */
-    Int view  = countLinesEditor(e, start, e->image->end);
+    Int view  = countLinesEditor(e, start, e->text_image->end);
 
     if ( tb->size > 0 &&
 	 !tisendsline(tb->syntax, Fetch(e, tb->size-1)) )
       incrInt(len);			/* incomplete last line */
-    if ( valInt(e->image->end) > 0 &&
-	 !tisendsline(tb->syntax, Fetch(e, valInt(e->image->end)-1)) )
+    if ( valInt(e->text_image->end) > 0 &&
+	 !tisendsline(tb->syntax, Fetch(e, valInt(e->text_image->end)-1)) )
       incrInt(view);
 
     return bubbleScrollBar(sb, len, first, view);
   } else				/* long, work character-based */
   { Int len  = toInt(tb->size);
-    Int view = getViewTextImage(e->image);
+    Int view = getViewTextImage(e->text_image);
 
     return bubbleScrollBar(sb, len, start, view);
   }
@@ -492,13 +494,13 @@ bubbleScrollBarEditor(Editor e, ScrollBar sb)
 
 static Int
 getStartEditor(Editor e, Int line)
-{ answer(getStartTextImage(e->image, line));
+{ answer(getStartTextImage(e->text_image, line));
 }
 
 
 static Int
 getViewEditor(Editor e)
-{ answer(getViewTextImage(e->image));
+{ answer(getViewTextImage(e->text_image));
 }
 
 
@@ -608,6 +610,23 @@ nfdStyleEditor(Editor e, Style style)
   succeed;
 }
 
+/* What an editor that holds no text shows in place of it, so that an
+ * empty one can say what it is for.  `text_image' paints it -- see
+ * paint_placeholder() in textimage.c -- as that is what covers the text
+ * area and clears it on every redraw.
+ */
+
+static status
+placeholderEditor(Editor e, CharArray placeholder)
+{ if ( e->placeholder != placeholder )
+  { assign(e, placeholder, placeholder);
+    if ( e->text_buffer->size == 0 )
+      changedEntireImageGraphical(e->text_image);  /* no line changed */
+  }
+
+  succeed;
+}
+
 static status
 selectedFragmentStyleEditor(Editor e, Style style)
 { if ( e->selected_fragment_style != style )
@@ -640,7 +659,7 @@ geometryEditor(Editor e, Int x, Int y, Int w, Int h)
 { int ix, iy, iw, ih, mx, mw, sw;
   int pen = valInt(e->pen);
   Area a = e->area;
-  Any sbobj = e->image;
+  Any sbobj = e->text_image;
   int fh = valInt(getHeightFont(e->font));
 
   if ( e->badBoundingBox == ON && (isDefault(w) || isDefault(h)) )
@@ -707,7 +726,7 @@ geometryEditor(Editor e, Int x, Int y, Int w, Int h)
       sbobj = e->margin;
   }
 
-  send(e->image, NAME_set, toInt(ix), toInt(iy), toInt(iw), toInt(ih-iy), EAV);
+  send(e->text_image, NAME_set, toInt(ix), toInt(iy), toInt(iw), toInt(ih-iy), EAV);
   if ( notNil(e->margin) )
     send(e->margin, NAME_set, toInt(mx), toInt(iy), DEFAULT, toInt(ih-iy), EAV);
   if ( notNil(e->scroll_bar) )
@@ -1251,7 +1270,7 @@ getRewindFunctionEditor(Editor e)
 static status
 computeEditor(Editor e)
 { if ( notNil(e->request_compute) )
-  { computeTextImage(e->image);
+  { computeTextImage(e->text_image);
     ensureVisibleEditor(e, DEFAULT, DEFAULT);
     if ( e->request_compute != NAME_showCaretAt )
       updateCursorEditor(e);
@@ -1284,15 +1303,15 @@ static Name
 where_editor(Editor e, Int index)
 { int i = valInt(index);
 
-  if ( i < valInt(getStartTextImage(e->image, ONE)) )
+  if ( i < valInt(getStartTextImage(e->text_image, ONE)) )
     return NAME_above;			/* above window */
 
-  ComputeGraphical(e->image);
-  if ( i < valInt(e->image->end) )
+  ComputeGraphical(e->text_image);
+  if ( i < valInt(e->text_image->end) )
     return NAME_inside;			/* In the window */
 
   if ( i == e->text_buffer->size &&	/* standing on EOF that is in window */
-       e->image->eof_in_window == ON )
+       e->text_image->eof_in_window == ON )
     return NAME_inside;
 
   return NAME_below;
@@ -1301,7 +1320,7 @@ where_editor(Editor e, Int index)
 
 static status
 ensureVisibleEditor(Editor e, Int from, Int to)
-{ TextImage ti = e->image;
+{ TextImage ti = e->text_image;
 
   from = (isDefault(from) ? e->caret : normalise_index(e, from));
   to   = (isDefault(to) ? from : normalise_index(e, to));
@@ -1363,16 +1382,16 @@ static status
 ensureCaretInWindowEditor(Editor e)
 { Int start;
 
-  ComputeGraphical(e->image);
+  ComputeGraphical(e->text_image);
 
-  if ( valInt(e->caret) < valInt(start = getStartTextImage(e->image, ONE)) )
+  if ( valInt(e->caret) < valInt(start = getStartTextImage(e->text_image, ONE)) )
     CaretEditor(e, start);
   else
-  { if ( valInt(e->caret) >= valInt(e->image->end) )
-    { if ( e->image->eof_in_window == ON )
-	CaretEditor(e, e->image->end);
+  { if ( valInt(e->caret) >= valInt(e->text_image->end) )
+    { if ( e->text_image->eof_in_window == ON )
+	CaretEditor(e, e->text_image->end);
       else
-      { long ie = max(0, valInt(e->image->end) - 1);
+      { long ie = max(0, valInt(e->text_image->end) - 1);
 
 	CaretEditor(e, toInt(ie));
       }
@@ -1385,9 +1404,9 @@ ensureCaretInWindowEditor(Editor e)
 
 static Int
 getFirstEditor(Editor e)
-{ ComputeGraphical(e->image);
+{ ComputeGraphical(e->text_image);
 
-  answer(getLineNumberEditor(e, getStartTextImage(e->image, ONE)));
+  answer(getLineNumberEditor(e, getStartTextImage(e->text_image, ONE)));
 }
 
 
@@ -1403,8 +1422,8 @@ getLinesVisibleEditor(Editor e)
 { Int first = getFirstEditor(e);
   Int last;
 
-  last = add(countLinesEditor(e, getStartTextImage(e->image, ONE),
-			      e->image->end), first);
+  last = add(countLinesEditor(e, getStartTextImage(e->text_image, ONE),
+			      e->text_image->end), first);
 
   answer(answerObject(ClassPoint, first, sub(last, ONE), EAV));
 }
@@ -1538,7 +1557,7 @@ event_editor(Editor e, EventObj ev)
 					/* Built-in version */
 
   if ( isAEvent(ev, NAME_button) )
-  { Int where = getIndexTextImage(e->image, ev);
+  { Int where = getIndexTextImage(e->text_image, ev);
     Modifier select_modifier = getClassVariableValueObject(e, NAME_selectModifier);
     Modifier caret_modifier = getClassVariableValueObject(e, NAME_caretModifier);
 
@@ -1874,9 +1893,9 @@ static status
 beginningOfLineEditor(Editor e, Int arg)
 { Int caret;
 
-  if ( e->image->wrap == NAME_word &&
+  if ( e->text_image->wrap == NAME_word &&
        isDefault(arg) &&
-       (caret = getBeginningOfLineCursorTextImage(e->image, e->caret)) )
+       (caret = getBeginningOfLineCursorTextImage(e->text_image, e->caret)) )
   {
   } else
   { caret = getScanTextBuffer(e->text_buffer,
@@ -1892,9 +1911,9 @@ static status
 endOfLineEditor(Editor e, Int arg)
 { Int caret;
 
-  if ( e->image->wrap == NAME_word &&
+  if ( e->text_image->wrap == NAME_word &&
        isDefault(arg) &&
-       (caret = getEndOfLineCursorTextImage(e->image, e->caret)) )
+       (caret = getEndOfLineCursorTextImage(e->text_image, e->caret)) )
   {
   } else
     caret = getScanTextBuffer(e->text_buffer,
@@ -1993,7 +2012,7 @@ pointToBottomOfFileEditor(Editor e, Int arg)
 
 static status
 pointToTopOfWindowEditor(Editor e, Int arg)
-{ return CaretEditor(e, getStartTextImage(e->image, arg));
+{ return CaretEditor(e, getStartTextImage(e->text_image, arg));
 }
 
 
@@ -2002,7 +2021,7 @@ pointToBottomOfWindowEditor(Editor e, Int arg)
 { if ( isDefault(arg) )
     arg = ONE;
 
-  return CaretEditor(e, getStartTextImage(e->image, neg(arg)));
+  return CaretEditor(e, getStartTextImage(e->text_image, neg(arg)));
 }
 
 
@@ -2147,8 +2166,8 @@ caretMoveExtendSelectionEditor(Editor e, Int oldcaret)
 
 static Int
 getUpDownColumnEditor(Editor e)
-{ if ( e->image->wrap == NAME_word )
-    return getUpDownColumnTextImage(e->image, e->caret);
+{ if ( e->text_image->wrap == NAME_word )
+    return getUpDownColumnTextImage(e->text_image, e->caret);
   else
     return getColumnEditor(e, e->caret);
 }
@@ -2167,8 +2186,8 @@ cursorUpEditor(Editor e, Int arg, Int column)
 
   if ( bts & BUTTON_control )
     backwardParagraphEditor(e, arg);
-  else if ( e->image->wrap == NAME_word &&
-	    (caret = getUpDownCursorTextImage(e->image, caret,
+  else if ( e->text_image->wrap == NAME_word &&
+	    (caret = getUpDownCursorTextImage(e->text_image, caret,
 					      neg(arg), column)) )
     return CaretEditor(e, caret);
   else if ( e->text_cursor->displayed == OFF && !isisearchingEditor(e) )
@@ -2196,8 +2215,8 @@ cursorDownEditor(Editor e, Int arg, Int column)
 
   if ( bts & BUTTON_control )
     forwardParagraphEditor(e, arg);
-  else if ( e->image->wrap == NAME_word &&
-	    (caret = getUpDownCursorTextImage(e->image, caret, arg, column)) )
+  else if ( e->text_image->wrap == NAME_word &&
+	    (caret = getUpDownCursorTextImage(e->text_image, caret, arg, column)) )
     return CaretEditor(e, caret);
   else if ( e->text_cursor->displayed == OFF && !isisearchingEditor(e) )
     return scrollUpEditor(e, ONE);
@@ -2420,8 +2439,8 @@ killLineEditor(Editor e, Int arg)
   { if ( tisendsline(e->text_buffer->syntax, Fetch(e, valInt(e->caret))) )
       return killEditor(e, e->caret, add(e->caret, ONE));
 
-    if ( e->image->wrap == NAME_word &&
-	 (end = getEndOfLineCursorTextImage(e->image, e->caret)) )
+    if ( e->text_image->wrap == NAME_word &&
+	 (end = getEndOfLineCursorTextImage(e->text_image, e->caret)) )
     { int i = valInt(end);
       TextBuffer tb = e->text_buffer;
 
@@ -3625,8 +3644,8 @@ changedHitsEditor(Editor e)
 
   if ( notNil(e->search_string) &&
        (len = valInt(getSizeCharArray(e->search_string))) > 0 )
-  { intptr_t start = valInt(e->image->start);
-    intptr_t end   = valInt(e->image->end);
+  { intptr_t start = valInt(e->text_image->start);
+    intptr_t end   = valInt(e->text_image->end);
     TextBuffer tb = e->text_buffer;
     PceString s  = &e->search_string->data;
     int ec = (e->exact_case == ON);
@@ -3813,9 +3832,16 @@ searchDirectionEditor(Editor e, Name dir)
 
 static status
 IsearchEditor(Editor e, EventId id)
-{ Int chr = id;				/* TBD: test for character */
+{ Int chr;				/* TBD: test for character */
   Name cnm = characterName(id);
   Name cmd = getKeyBindingEditor(e, cnm);
+  bool meta = false;
+
+  if ( instanceOfObject(id, ClassEvent) )
+  { meta = (valInt(((EventObj)id)->buttons) & BUTTON_meta);
+    id   = ((EventObj)id)->id;
+  }
+  chr = id;
 
   if ( cmd == NAME_keyboardQuit )	/* abort the search */
   { selection_editor(e, e->search_origin, e->search_origin, NAME_inactive);
@@ -3847,7 +3873,7 @@ IsearchEditor(Editor e, EventId id)
     succeed;
   }
 
-  if ( !isInteger(id) )
+  if ( !isInteger(id) || meta )
   { endIsearchEditor(e, ON);
     fail;
   }
@@ -3870,8 +3896,7 @@ IsearchEditor(Editor e, EventId id)
       fail;
   }
 
-  if ( valInt(chr) < Meta(0) &&
-       tisprint(e->text_buffer->syntax, valInt(chr)) )
+  if ( tisprint(e->text_buffer->syntax, valInt(chr)) )
     return executeSearchEditor(e, chr, DEFAULT);
 
   endIsearchEditor(e, ON);
@@ -4144,15 +4169,15 @@ scrollToEditor(Editor e, Int pos, Int screenline)
 { if ( isDefault(pos) )
     pos = toInt(e->text_buffer->size);
 
-  centerTextImage(e->image, pos, screenline);
+  centerTextImage(e->text_image, pos, screenline);
   return ensureCaretInWindowEditor(e);
 }
 
 
 static status
 centerWindowEditor(Editor e, Int pos)
-{ centerTextImage(e->image, normalise_index(e, pos), DEFAULT);
-  ComputeGraphical(e->image);
+{ centerTextImage(e->text_image, normalise_index(e, pos), DEFAULT);
+  ComputeGraphical(e->text_image);
   updateCursorEditor(e);
 
   succeed;
@@ -4199,7 +4224,7 @@ scrollOneLineDownEditor(Editor e, Int arg)
 
 static status
 lineToTopOfWindowEditor(Editor e, Int arg)
-{ centerTextImage(e->image, normalise_index(e, e->caret),
+{ centerTextImage(e->text_image, normalise_index(e, e->caret),
 		  toInt(UArg(arg) - 1));
 
   return ensureCaretInWindowEditor(e);
@@ -4208,7 +4233,7 @@ lineToTopOfWindowEditor(Editor e, Int arg)
 
 static status
 recenterEditor(Editor e, Int arg)
-{ centerTextImage(e->image, normalise_index(e, e->caret), arg);
+{ centerTextImage(e->text_image, normalise_index(e, e->caret), arg);
   updateCursorEditor(e);
 
   succeed;
@@ -4220,19 +4245,22 @@ scrollVerticalEditor(Editor e, Name dir, Name unit, Int amount)
 { TextBuffer tb = e->text_buffer;
   Int start;
 
+  if ( isNil(tb) || isNil(e->text_image) )
+    fail;				/* editor has been destroyed */
+
   endIsearchEditor(e, OFF);
   markStatusEditor(e, NAME_inactive);
 
   if ( unit == NAME_file )
   { if ( dir == NAME_goto )
     { if ( tb->size < MAXPRECISESCROLLING &&
-	   (start = getScrollStartTextImage(e->image, dir, unit, amount)) )
-      { startTextImage(e->image, start, ZERO);
+	   (start = getScrollStartTextImage(e->text_image, dir, unit, amount)) )
+      { startTextImage(e->text_image, start, ZERO);
 
 	return ensureCaretInWindowEditor(e);
       } else if ( tb->size < MAXLINEBASEDSCROLLING )
       { int size = valInt(countLinesEditor(e, ZERO, toInt(tb->size)));
-	int view = valInt(getLinesTextImage(e->image));
+	int view = valInt(getLinesTextImage(e->text_image));
 	int target = ((size-view)*valInt(amount))/1000;
 	int cp;				/* character-position */
 
@@ -4240,7 +4268,7 @@ scrollVerticalEditor(Editor e, Name dir, Name unit, Int amount)
 	  target = 0;
 
 	cp = start_of_line_n_textbuffer(tb, target+1);
-	centerTextImage(e->image, toInt(cp), ONE);
+	centerTextImage(e->text_image, toInt(cp), ONE);
 	ensureCaretInWindowEditor(e);
       } else
       { long h = (long)(((double)tb->size * (double)valInt(amount)) / 1000.0);
@@ -4250,8 +4278,8 @@ scrollVerticalEditor(Editor e, Name dir, Name unit, Int amount)
       }
     }
   } else
-  { if ( (start = getScrollStartTextImage(e->image, dir, unit, amount)) )
-    { startTextImage(e->image, start, ZERO);
+  { if ( (start = getScrollStartTextImage(e->text_image, dir, unit, amount)) )
+    { startTextImage(e->text_image, start, ZERO);
 
       return ensureCaretInWindowEditor(e);
     }
@@ -4686,9 +4714,9 @@ getReadLineEditor(Editor e)
 
 static StringObj
 getFirstLineEditor(Editor e)
-{ ComputeGraphical(e->image);
+{ ComputeGraphical(e->text_image);
 
-  answer(getLineEditor(e, getStartTextImage(e->image, ONE)));
+  answer(getLineEditor(e, getStartTextImage(e->text_image, ONE)));
 }
 
 
@@ -4859,7 +4887,7 @@ fontEditor(Editor e, FontObj font, FontObj bold)
   if ( e->font != font )
   { assign(e, font, font);
     double td = valNum(e->tab_distance) * valNum(getAvgCharWidthFont(e->font));
-    tabDistanceTextImage(e->image, toNum(td));
+    tabDistanceTextImage(e->text_image, toNum(td));
     setGraphical(e, DEFAULT, DEFAULT, e->size->w, e->size->h);
     updateStyleCursorEditor(e);
     ChangedEditor(e);
@@ -4874,7 +4902,7 @@ tabDistanceEditor(Editor e, Int tab)
 { if ( e->tab_distance != tab )
   { assign(e, tab_distance, tab);
     double d = valNum(tab) * valNum(getAvgCharWidthFont(e->font));
-    tabDistanceTextImage(e->image, toNum(d));
+    tabDistanceTextImage(e->text_image, toNum(d));
     ChangedEditor(e);
   }
 
@@ -4884,37 +4912,37 @@ tabDistanceEditor(Editor e, Int tab)
 
 static status
 tabStopsEditor(Editor e, Vector v)
-{ return tabStopsTextImage(e->image, v);	/* character -> pixels? */
+{ return tabStopsTextImage(e->text_image, v);	/* character -> pixels? */
 }
 
 
 static Vector
 getTabStopsEditor(Editor e)
-{ answer(e->image->tab_stops);
+{ answer(e->text_image->tab_stops);
 }
 
 
 static status
 wrapEditor(Editor e, Name wrap)
-{ return send(e->image, NAME_wrap, wrap, EAV);
+{ return send(e->text_image, NAME_wrap, wrap, EAV);
 }
 
 
 static Name
 getWrapEditor(Editor e)
-{ answer(e->image->wrap);
+{ answer(e->text_image->wrap);
 }
 
 
 status
 backgroundEditor(Editor e, Any bg)
-{ return backgroundTextImage(e->image, bg);
+{ return backgroundTextImage(e->text_image, bg);
 }
 
 
 status
 colourEditor(Editor e, Any c)
-{ return colourGraphical((Graphical)e->image, c);
+{ return colourGraphical((Graphical)e->text_image, c);
 }
 
 
@@ -4968,7 +4996,7 @@ InsertEditor(Editor e, Int where, Int amount)
 
 #undef UPDATE_C_INDEX
 
-  InsertTextImage(e->image, where, amount);
+  InsertTextImage(e->text_image, where, amount);
   if ( notNil(e->kill_location) )
     assign(e, kill_location, NIL);
 
@@ -4979,7 +5007,7 @@ InsertEditor(Editor e, Int where, Int amount)
 static status
 ChangedRegionEditor(Editor e, Int from, Int to)
 { Before(from, to);
-  ChangedRegionTextImage(e->image, from, to);
+  ChangedRegionTextImage(e->text_image, from, to);
   if ( notNil(e->kill_location) )
     assign(e, kill_location, NIL);
 
@@ -4992,7 +5020,7 @@ ChangedFragmentListEditor(Editor e)
 { if ( notNil(e->selected_fragment) &&
        isFreeingObj(e->selected_fragment) ) /* HACK ... */
   { assign(e, selected_fragment, NIL);
-    requestComputeGraphical(e->image, DEFAULT);
+    requestComputeGraphical(e->text_image, DEFAULT);
   }
 
   if ( notNil(e->margin) )
@@ -5067,7 +5095,7 @@ static char *T_fill[] =
 static char *T_indentation[] =
         { "index=[int]", "skip=[regex]" };
 static char *T_electricCaret[] =
-        { "index=int", "seconds=[real]" };
+        { "index=int", "seconds=[num]" };
 static char *T_int_int[] =
         { "int", "int" };
 static char *T_keyBinding[] =
@@ -5106,7 +5134,7 @@ static char *T_hoverFragmentIcon[] =
 static vardecl var_editor[] =
 { SV(NAME_textBuffer, "text_buffer", IV_GET|IV_STORE, textBufferEditor,
      NAME_delegate, "Underlying text"),
-  IV(NAME_image, "text_image", IV_GET,
+  IV(NAME_textImage, "text_image", IV_GET,
      NAME_components, "Screen/redisplay management"),
   IV(NAME_scrollBar, "scroll_bar", IV_GET,
      NAME_components, "Scrollbar for the text"),
@@ -5200,6 +5228,8 @@ static vardecl var_editor[] =
      NAME_internal, "Current dabbrev search mode"),
   IV(NAME_dabbrevCandidates, "chain*", IV_NONE,
      NAME_internal, "Current dabbrev candidates"),
+  SV(NAME_placeholder, "char_array*", IV_GET|IV_STORE, placeholderEditor,
+     NAME_appearance, "Text shown while I hold none"),
   IV(NAME_internalMark, "alien:int", IV_NONE,
      NAME_internal, "Additional mark for internal use"),
   IV(NAME_fragmentCache, "alien:FragmentCache", IV_NONE,
@@ -5349,11 +5379,11 @@ static senddecl send_editor[] =
      NAME_delete, "Kill words forward"),
   SM(NAME_reference, 1, "point", referenceEditor,
      NAME_dialogItem, "Set reference as dialog_item"),
-  SM(NAME_DabbrevExpand, 1, "event_id", DabbrevExpandEditor,
+  SM(NAME_DabbrevExpand, 1, "event|event_id", DabbrevExpandEditor,
      NAME_editContinue, "Focus function"),
-  SM(NAME_Isearch, 1, "event_id", IsearchEditor,
+  SM(NAME_Isearch, 1, "event|event_id", IsearchEditor,
      NAME_editContinue, "Focus function"),
-  SM(NAME_StartIsearch, 1, "event_id", StartIsearchEditor,
+  SM(NAME_StartIsearch, 1, "event|event_id", StartIsearchEditor,
      NAME_editContinue, "Focus function"),
   SM(NAME_WantsKeyboardFocus, 0, NULL, succeedObject,
      NAME_event, "Test if ready to accept input (true)"),
@@ -5660,6 +5690,8 @@ static classvardecl rc_editor[] =
      "`Key = selector' binding list"),
   RC(NAME_pen, "0..", UXWIN("0", "1"),
      "Thickness of box around editor"),
+  RC(NAME_placeholderOpacity, "0.0..1.0", "0.5",
+     "How much of the text colour <-placeholder is written in"),
   RC(NAME_rightMargin, "int", "72",
      "Auto-fill margin width"),
   RC(NAME_selectModifier, "modifier", "s",

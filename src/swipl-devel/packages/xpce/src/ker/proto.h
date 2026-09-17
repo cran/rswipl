@@ -115,8 +115,10 @@ COMMON(status)	errorTypeMismatch(Any rec, Any impl, int arg, Type type, Any val)
 COMMON(void)	pushAnswerObject(Any obj);
 COMMON(void)	deleteAnswerObject(Any obj);
 COMMON(export void) _rewindAnswerStack(AnswerMark *mark, Any obj);
+COMMON(void)	rewindAnswerStackToBase(void);
 COMMON(void)	initAnswerStack(void);
 COMMON(void)	resetAnswerStack(void);
+COMMON(void)	destroyAnswerStack(void);
 COMMON(Int)	countAnswerStack(void);
 
 /* /home/jan/src/pl/packages/xpce/src/ker/getmethod.c */
@@ -273,7 +275,7 @@ COMMON(Any)	getClassVariableValueObject(Any obj, Name name);
 COMMON(status)	obtainClassVariablesObject(Any obj);
 COMMON(status)	convertLoadedObjectObject(Any obj, Int oldversion, Int currentversion);
 COMMON(Any)	getConvertObject(Any ctx, Any x);
-COMMON(status)	CheckObject(Any obj, BoolObj recursive);
+COMMON(status)	CheckObject(Any obj, BoolObj recursive, HashTable checked, BoolObj silent);
 COMMON(status)	errorObjectv(Any obj, Error e, int argc, Any *argv);
 COMMON(Name)	getManIdObject(Any obj);
 COMMON(status)	makeClassObject(Class class);
@@ -331,10 +333,11 @@ COMMON(status)	initialiseSourceLocation(SourceLocation loc,
 COMMON(status)	makeClassSourceLocation(Class class);
 
 /* /home/jan/src/pl/packages/xpce/src/ker/timer.c */
-COMMON(status)	intervalTimer(Timer tm, Real interval);
+COMMON(status)	intervalTimer(Timer tm, Num interval);
 COMMON(status)	executeTimer(Timer tm);
 COMMON(status)	statusTimer(Timer tm, Name stat);
-COMMON(status)	startTimer(Timer tm, Name mode);
+COMMON(void)	releaseTimer(Timer tm);
+COMMON(status)	startTimer(Timer tm, Name mode, Int times);
 COMMON(status)	stopTimer(Timer tm);
 COMMON(status)	makeClassTimer(Class class);
 
@@ -379,6 +382,7 @@ COMMON(status)	makeClassVariable(Class class);
 /* /home/jan/src/pl/packages/xpce/src/ker/classvar.c */
 COMMON(Any)	getValueClassVariable(ClassVariable cv);
 COMMON(ClassVariable) getClassVariableClass(Class class, Name name);
+COMMON(int)	hasClassVariableClass(Class class, Name name);
 COMMON(status)	classVariableValueClass(Class cl, Name name, Any val);
 COMMON(Any)	getClassVariableValueClass(Class cl, Name name);
 COMMON(status)	attach_class_variable(Class cl, Name name, const char *type, const char *def, const char *doc);

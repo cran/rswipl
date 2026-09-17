@@ -37,6 +37,7 @@
 #include "sdl.h"
 #include "sdlinput.h"
 #include "sdlevent.h"
+#include "sdlframe.h"
 #ifndef __WINDOWS__
 #include <pwd.h>
 #include <unistd.h>
@@ -82,11 +83,19 @@ setPceThread(const char *app_name)
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1");
 
     if ( !SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO) )
-    { Cprintf("SDL_Init() failed: %s\n", SDL_GetError());
-      Cprintf("SDL_VIDEODRIVER=%s\n", getenv("SDL_VIDEODRIVER"));
-      return errorPce(NIL, NAME_sdlInitialize);
+    { Name why = CtoName(SDL_GetError());
+      const char *driver = getenv("SDL_VIDEODRIVER");
+
+      /* Leave the thread unclaimed: we are not initialised, and saying
+       * that we are hands every display an object that is not there.
+       * It also allows a retry, e.g., after setting SDL_VIDEODRIVER.
+       */
+      sdl_main_thread = 0;
+      return errorPce(NIL, NAME_sdlInitialize, why,
+		      CtoName(driver ? driver : "<default>"));
     }
     ChangedFrames = globalObject(NAME_changedFrames, ClassChain, EAV);
+    sdl_start_live_resize_watch();
     start_fd_watcher_thread();
 
     /* Register the program's stdin as a drainable console iff it is a
@@ -104,7 +113,10 @@ setPceThread(const char *app_name)
       pceRegisterConsole(STDIN_FILENO, CON_DRAIN_TCFLUSH);
 #endif
 
-    TRY(ws_init_displays());
+    if ( !ws_init_displays() )
+    { sdl_main_thread = 0;
+      fail;
+    }
 
     assign(PCE, window_system_version,  toInt(ws_version()));
     assign(PCE, window_system_revision, toInt(ws_revision()));

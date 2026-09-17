@@ -34,20 +34,19 @@
 */
 
 :- module(start_emacs,
-          [ emacs/0
-          , emacs/1                             % x File
-          , start_emacs/0
-          , emacs_server/0
-          , emacs_toplevel/0
+          [ emacs/0,
+            emacs/1,                            % +File[[:Line]:LinePos]
+            start_emacs/0,
+            emacs_server/0,
+            emacs_toplevel/0
           ]).
 :- use_module(library(pce)).
-:- require([ append/3
-           , maplist/3
-           , unix/1
-           ]).
+:- autoload(library(apply)).
+:- autoload(library(error)).
 
 :- pce_autoload(emacs,      library('emacs/emacs')).
 :- pce_autoload(emacs_view, library('emacs/emacs')).
+:- pce_autoload(emacs_pane, library('emacs/emacs')).
 
 :- pce_global(@emacs_buffers, new(dict)).
 :- pce_global(@emacs, new(emacs(@emacs_buffers))).
@@ -102,8 +101,9 @@ emacs_server :-
 
 emacs :-
     start_emacs,
+    source_placement(Where),
     in_pce_thread((new(Scratch, emacs_buffer(@nil, '*scratch*')),
-                   send(Scratch, open, tab))).
+                   send(Scratch, open, Where))).
 
 %!  emacs(+Location) is det.
 %
@@ -114,29 +114,37 @@ emacs :-
 %     - File:Line:LinePos
 %     - File:Line
 %     - File
+%
+%   Line and LinePos count from 1, as   for edit/1.  The `line_pos` of
+%   an xpce source_location counts from 0.
 
-emacs(File:Line:LinePos) :-
-    integer(Line),
-    integer(LinePos),
-    atom(File),
-    !,
+emacs(File:Line:LinePos), integer(Line), integer(LinePos), atom(File) =>
     start_emacs,
-    new(Loc, source_location(File, Line, LinePos)),
-    in_pce_thread(send(@emacs, goto_source_location, Loc, tab)).
-emacs(File:Line) :-
-    integer(Line),
-    atom(File),
-    !,
+    LinePos0 is max(0, LinePos-1),
+    in_pce_thread(send(@emacs, goto_source_location,
+                       source_location(File, Line, LinePos0))).
+emacs(File:Line), integer(Line), atom(File) =>
     start_emacs,
     in_pce_thread(send(@emacs, goto_source_location,
-                       source_location(File, Line), tab)).
-emacs(File) :-
-    atom(File),
-    !,
+                       source_location(File, Line))).
+emacs(File), atom(File) =>
     start_emacs,
-    in_pce_thread(send(@emacs, open_file, File, tab)).
-emacs(File) :-
+    in_pce_thread(send(@emacs, open_file, File)).
+emacs(File) =>
     domain_error(location, File).
+
+%!  source_placement(-Where) is det.
+%
+%   Where a source the user asks to see is opened: in a window of its
+%   own, in a tab or beside what is there.  This is the setting on the
+%   Settings menu of every window of the IDE.  `@emacs
+%   ->goto_source_location' and ->open_file ask it themselves; the
+%   scratch buffer opens through `emacs_buffer <-open', which means
+%   `here' when it is not told.  Only after start_emacs: the IDE is
+%   loaded with PceEmacs.
+
+source_placement(Where) :-
+    get(@emacs, source_placement, @default, Where).
 
 
 %!  emacs_toplevel is det.

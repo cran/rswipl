@@ -52,9 +52,7 @@ tm_callback(void *udata, SDL_TimerID id, Uint32 interval)
   SDL_PushEvent(&ev);
 
   if ( tm->status == NAME_once )
-  { assign(tm, status, NAME_idle);
-    return 0;
-  }
+    return 0;			/* <-status updated by sdl_timer_event() */
   return interval;
 }
 
@@ -66,12 +64,22 @@ sdl_timer_event(SDL_Event *event)
     if ( !onFlag(tm, F_FREEING|F_FREED) &&
 	 instanceOfObject(tm, ClassTimer) )
     { pceMTLock();
+      bool completed = (tm->status == NAME_once);
+
+      if ( completed )			/* the SDL timer stopped itself */
+	assign(tm, status, NAME_idle);	/* ->message may start it again */
+
       if ( tm->service == ON )
       { ServiceMode(PCE_EXEC_SERVICE, executeTimer(tm));
       } else
       { executeTimer(tm);
       }
+
+      delCodeReference(tm);		/* the event reference */
+      if ( completed )
+	releaseTimer(tm);		/* may destroy tm */
       pceMTUnlock();
+      return true;
     }
     delCodeReference(tm);
     return true;
@@ -83,9 +91,9 @@ sdl_timer_event(SDL_Event *event)
 
 static void
 start_timer(Timer tm)
-{ Uint32 ms = valReal(tm->interval)*1000.0+0.5;
+{ Uint32 ms = valNum(tm->interval)*1000.0+0.5;
   Uint32 id = SDL_AddTimer(ms, tm_callback, tm);
-  tm->ws_ref = (void*)(intptr_t)id;
+  assign(tm, sdl_timer, toInt(id));
 }
 
 
@@ -99,10 +107,10 @@ start_timer(Timer tm)
  */
 void
 ws_status_timer(Timer tm, Name status)
-{ if ( tm->ws_ref )
-  { Uint32 id = (Uint32)(intptr_t)tm->ws_ref;
+{ if ( isInteger(tm->sdl_timer) )
+  { Uint32 id = (Uint32)valInt(tm->sdl_timer);
     SDL_RemoveTimer(id);
-    tm->ws_ref = NULL;
+    assign(tm, sdl_timer, NIL);
   }
 
   if ( status == NAME_repeat || status == NAME_once )

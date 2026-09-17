@@ -337,6 +337,12 @@ static const error_def errors[] =
   { NAME_classVariablesNotObtained, ET_WARNING|EF_PRINT,
     "%O: class-variables have not been obtained" },
 
+					/* Window system */
+  { NAME_sdlInitialize,		0,
+    "%N: Cannot initialise the window system: %s (SDL_VIDEODRIVER=%s)" },
+  { NAME_noDisplay,		0,
+    "%N: No display: the window system could not be initialised" },
+
 					/* Fonts */
   { NAME_noDefaultFont,		ET_FATAL,
     "%N: No default font defined (Pce.Display.no_font)" },

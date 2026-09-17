@@ -360,29 +360,28 @@ get_dtd(term_t t, dtd **dtdp)
 		 *	      NEW/FREE		*
 		 *******************************/
 
+static PL_option_t new_sgml_parser_options[] =
+{ PL_OPTION("dtd", OPT_TERM),
+  PL_OPTIONS_END
+};
+
 static foreign_t
 pl_new_sgml_parser(term_t ref, term_t options)
-{ term_t head = PL_new_term_ref();
-  term_t tail = PL_copy_term_ref(options);
-  term_t tmp  = PL_new_term_ref();
-
-  dtd *dtd = NULL;
+{ dtd *dtd = NULL;
   dtd_parser *p;
+  term_t dtd_opt = 0;
 
-  while ( PL_get_list(tail, head, tail) )
-  { if ( PL_is_functor(head, FUNCTOR_dtd1) )
-    { _PL_get_arg(1, head, tmp);
-
-      if ( PL_is_variable(tmp) )	/* dtd(X) */
-      { dtd = new_dtd(NULL);		/* no known doctype */
-	dtd->references++;
-	unify_dtd(tmp, dtd);
-      } else if ( !get_dtd(tmp, &dtd) )
-	return FALSE;
-    }
+  if ( !PL_scan_options(options, 0, "sgml_parser_option",
+			new_sgml_parser_options, &dtd_opt) )
+    return FALSE;
+  if ( dtd_opt )
+  { if ( PL_is_variable(dtd_opt) )	/* dtd(X) */
+    { dtd = new_dtd(NULL);		/* no known doctype */
+      dtd->references++;
+      unify_dtd(dtd_opt, dtd);
+    } else if ( !get_dtd(dtd_opt, &dtd) )
+      return FALSE;
   }
-  if ( !PL_get_nil(tail) )
-    return sgml2pl_error(ERR_TYPE, "list", tail);
 
   p = new_dtd_parser(dtd);
 
@@ -1860,14 +1859,17 @@ new_parser_data(dtd_parser *p)
 }
 
 
+static PL_option_t open_dtd_options[] =
+{ PL_OPTION("dialect", OPT_TERM),
+  PL_OPTIONS_END
+};
+
 static foreign_t
 pl_open_dtd(term_t ref, term_t options, term_t stream)
 { dtd *dtd;
   dtd_parser *p;
   parser_data *pd;
   IOSTREAM *s;
-  term_t tail = PL_copy_term_ref(options);
-  term_t option = PL_new_term_ref();
 
   if ( !get_dtd(ref, &dtd) )
     return FALSE;
@@ -1876,27 +1878,26 @@ pl_open_dtd(term_t ref, term_t options, term_t stream)
   pd = new_parser_data(p);
   pd->free_on_close = TRUE;
 
-  while( PL_get_list(tail, option, tail) )
-  { if ( PL_is_functor(option, FUNCTOR_dialect1) )
-    { term_t a = PL_new_term_ref();
-      char *s;
+  { term_t dialect = 0;
+    char *dia;
 
-      _PL_get_arg(1, option, a);
-      if ( !PL_get_atom_chars(a, &s) )
-	return sgml2pl_error(ERR_TYPE, "atom", a);
+    if ( !PL_scan_options(options, 0, "dtd_option", open_dtd_options,
+			  &dialect) )
+      return FALSE;
+    if ( dialect )
+    { if ( !PL_get_atom_chars(dialect, &dia) )
+	return sgml2pl_error(ERR_TYPE, "atom", dialect);
 
-      if ( streq(s, "xml") )
+      if ( streq(dia, "xml") )
 	set_dialect_dtd(dtd, p, DL_XML);
-      else if ( streq(s, "xmlns") )
+      else if ( streq(dia, "xmlns") )
 	set_dialect_dtd(dtd, p, DL_XMLNS);
-      else if ( streq(s, "sgml") )
+      else if ( streq(dia, "sgml") )
 	set_dialect_dtd(dtd, p, DL_SGML);
       else
-	return sgml2pl_error(ERR_DOMAIN, "sgml_dialect", a);
+	return sgml2pl_error(ERR_DOMAIN, "sgml_dialect", dialect);
     }
   }
-  if ( !PL_get_nil(tail) )
-    return sgml2pl_error(ERR_TYPE, "list", options);
 
   s = Snew(pd, SIO_OUTPUT|SIO_FBUF, &sgml_stream_functions);
 
@@ -2009,6 +2010,12 @@ pl_sgml_parse(term_t parser, term_t options)
     p->att_rep          = PL_ATOM;
     pd = new_parser_data(p);
   }
+
+  /* Options are scanned by hand rather than through PL_scan_options()
+     because call(Type, Goal) is an arity-2 option that the generic
+     option scanner cannot express.  As a consequence these options are
+     not available as a dict.
+  */
 
   while ( PL_get_list(tail, head, tail) )
   { if ( PL_is_functor(head, FUNCTOR_document1) )

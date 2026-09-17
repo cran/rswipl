@@ -1,9 +1,9 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
+    E-mail:        jan@swi-prolog.org
     WWW:           https://www.swi-prolog.org
-    Copyright (c)  2008-2025, University of Amsterdam
+    Copyright (c)  2008-2026, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
@@ -97,10 +97,6 @@ __Incompatibilities and current limitations__
     distinction. This implies that is_process/1 is incomplete and
     unreliable.
 
-  - It is unclear what the detached(true) option is supposed to do.
-    Disable signals in the child? Use setsid() to detach from the
-    session? The current implementation uses setsid() on Unix systems.
-
   - An extra option env([Name=Value, ...]) is added to
     process_create/3.  As of version 4.1 SICStus added
     environment(List) which _modifies_ the environment.  A
@@ -108,7 +104,6 @@ __Incompatibilities and current limitations__
 
   - Using prolog(Tool) for `Exe` is a SWI-Prolog extension.
 
-@tbd    Implement detached option in process_create/3
 @compat SICStus 4
 */
 
@@ -199,6 +194,13 @@ __Incompatibilities and current limitations__
 %         them. This means that you will   get a permission denied error
 %         if you try and assign  the  newly-created   PID  to  a job you
 %         create yourself.
+%
+%         If neither process(PID) nor any  pipe   is  used  the process
+%         is  moreover  _not  waited  for_:  process_create/3  returns
+%         as soon  as the process  is started and  its exit status  is
+%         not  available.  On POSIX  systems  this  is realised  using
+%         a  second  fork(),  such that  the  process  is inherited by
+%         `init` rather than by us.
 %       - window(+Bool)
 %         If `true`, create a window for the process (Windows only)
 %       - priority(+Priority)
@@ -212,7 +214,7 @@ __Incompatibilities and current limitations__
 %   If the user specifies the  process(-PID)   option,  he __must__ call
 %   process_wait/2 to reclaim the  process.   Without  this  option, the
 %   system will wait for completion of the   process after the last pipe
-%   stream is closed.
+%   stream is closed, unless detached(true) is used.
 %
 %   If the process is not waited for, it  must succeed with status 0. If
 %   not, an process_error is raised.

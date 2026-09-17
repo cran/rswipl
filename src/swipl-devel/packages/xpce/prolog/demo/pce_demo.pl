@@ -87,7 +87,7 @@ open_demo(_F, Browser:browser) :->
     (   (   DictItem == @nil
         ;   get(DictItem, style, title)
         )
-    ->  send(@display, inform, 'First select a demo')
+    ->  send(@display, inform, Browser, @default, 'First select a demo')
     ;   get(DictItem, key, Name),
         (   (   demo(Name, Summary, File, Predicate)
             ;   contribution(Name, Summary, _Author, File, Predicate)
@@ -109,7 +109,7 @@ view_source(_F, Browser:browser) :->
     "View source for a demo program"::
     get(Browser, selection, DictItem),
     (   DictItem == @nil
-    ->  send(@display, inform, 'First select a demo')
+    ->  send(@display, inform, Browser, @default, 'First select a demo')
     ;   get(DictItem, key, Name),
         (   demo(Name, _, File, _)
         ;   contribution(Name, _, _Author, File, _)
@@ -142,7 +142,7 @@ demo('Ispell',
      demo(ispell),
      ispell) :-
     send(@pce, has_feature, process),
-    process_which(ispell, _Path).
+    process_which(path(ispell), _Path).
 
 demo('FontViewer',
      'Examine PCE predefined fonts',
@@ -179,6 +179,11 @@ demo('Drag-and-drop File',
      demo(dragdrop_file),
      dragdrop_file_demo).
 
+demo('Tabs and splitting',
+     'Tabs holding split windows: split, resize, move panes around',
+     demo(tabframe),
+     tab_frame_demo).
+
 demo('Transform',
      'Live figure->transform: rotate, scale and shear a small scene',
      demo(transform),
@@ -194,10 +199,27 @@ demo('Opacity',
      demo(opacity),
      opacity_demo).
 
+demo('Chart gallery',
+     'Curves, axes and bar charts from library(plot)',
+     demo(charts),
+     charts_demo).
+
 demo('London Tube',
      'Interactive London tube map: zoom, pan, search and toggle lines',
      demo(tube_gui),
      london_tube).
+
+demo('xdot',
+     'Graphviz layout viewer: render .dot files (requires graphviz)',
+     demo(xdot_demo),
+     xdot_demo) :-
+    process_which(path(dot), _Path).
+
+demo('Random Terms',
+     'Generate random Prolog terms and show as graph',
+     demo(random_terms_demo),
+     random_terms_demo) :-
+    process_which(path(dot), _Path).
 
 demo('GraphViewer',
      'Visualise a graph represented as Prolog facts',

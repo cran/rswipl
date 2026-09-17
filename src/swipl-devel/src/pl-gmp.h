@@ -45,9 +45,9 @@
 #define	PL_put_number(t, n)		LDFUNC(PL_put_number, t, n)
 #define	get_number(w, n)		LDFUNC(get_number, w, n)
 #define	PL_get_number(t, n)		LDFUNC(PL_get_number, t, n)
-#define	put_int64(p, i, flags)		LDFUNC(put_int64, p, i, flags)
-#define	put_uint64(at, l, flags)	LDFUNC(put_uint64, at, l, flags)
-#define	put_number(at, n, flags)	LDFUNC(put_number, at, n, flags)
+#define	put_int64(p, i)			LDFUNC(put_int64, p, i)
+#define	put_uint64(at, l)		LDFUNC(put_uint64, at, l)
+#define	put_number(at, n)		LDFUNC(put_number, at, n)
 #define get_int64(w, ip)		LDFUNC(get_int64, w, ip)
 #ifdef O_BIGNUM
 #define	get_rational_no_int(w, n)	LDFUNC(get_rational_no_int, w, n)
@@ -60,9 +60,9 @@ bool	PL_unify_number(term_t t, Number n);
 bool	PL_put_number(term_t t, Number n);
 void	get_number(word w, Number n);
 bool	PL_get_number(term_t t, Number n);
-int	put_uint64(Word at, uint64_t l, int flags);
-int	put_int64(Word p, int64_t i, int flags);
-int	put_number(Word at, Number n, int flags);
+bool	put_uint64(Word at, uint64_t l);
+bool	put_int64(Word p, int64_t i);
+bool	put_number(Word at, Number n);
 bool	get_int64(word w, int64_t *ip);
 bool	promoteToFloatNumber(Number n);
 bool	make_same_type_numbers(Number n1, Number n2) WUNUSED;
@@ -98,6 +98,37 @@ void	get_rational_no_int(word w, number *n);
 
 #define O_MY_GMP_ALLOC 1
 #define O_GMP_PRECHECK_ALLOCATIONS 1	/* GMP 4.2.3 uses abort() sometimes */
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+GMP's mpz_realloc() calls abort() if the  size in limbs of the number to
+create does not fit in its bit count type, i.e., if
+
+    limbs > ULONG_MAX/GMP_NUMB_BITS
+
+This check is only performed if `mp_size_t`   is  an `int`, which is the
+case on Windows.  There, `long` is 32 bits   while  `size_t` is 64 bits,
+limiting integers to 512Mb.  As we cannot   recover from abort(), we must
+verify the size of the integers we  create ourselves.  MPZ_MAX_BYTES
+leaves some slack as e.g., mpz_pow_ui()  allocates a few limbs more than
+strictly needed.
+
+maxBigIntSize() is the max size in bytes  of a bignum we are prepared to
+create.  It must both fit in GMP and on the global stack.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+#if O_GMP
+#define MPZ_MAX_BYTES	((size_t)(ULONG_MAX/8) - 1024)
+#else					/* LibBF has no such limit */
+#define MPZ_MAX_BYTES	((size_t)-1)
+#endif
+
+#define maxBigIntSize()	((size_t)globalStackLimit() < MPZ_MAX_BYTES ?	\
+			 (size_t)globalStackLimit() : MPZ_MAX_BYTES)
+
+/* True if the (positive) 64 bit integer `v` fits in an `unsigned long`,
+   the type GMP uses for exponents, roots, etc.
+*/
+#define FITS_ULONG(v)	((uint64_t)(unsigned long)(v) == (uint64_t)(v))
 
 void	initGMP(void);
 void	cleanupGMP(void);

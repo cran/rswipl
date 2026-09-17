@@ -101,7 +101,7 @@ void		unblockGC(int flags);	/* re-allow garbage collect */
 #define ensureLocalSpace_ex(bytes) LDFUNC(ensureLocalSpace_ex, bytes)
 static inline bool
 ensureLocalSpace_ex(DECL_LD size_t bytes)
-{ int rc;
+{ boolex_t rc;
 
   if ( likely(hasLocalSpace(bytes)) )
     return true;
@@ -117,7 +117,7 @@ ensureLocalSpace_ex(DECL_LD size_t bytes)
 
 static inline bool
 ensureStackSpace_ex(DECL_LD size_t gcells, size_t tcells, int flags)
-{ int rc;
+{ boolex_t rc;
 
   if ( hasStackSpace(gcells, tcells) )
     return true;

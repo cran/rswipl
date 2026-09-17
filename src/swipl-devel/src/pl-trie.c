@@ -676,7 +676,7 @@ follow_node(DECL_LD trie *trie, trie_node *n, word value, bool add)
 	LDFUNC(trie_intern_indirect, trie, w, add)
 
 static word
-trie_intern_indirect(DECL_LD trie *trie, word w, int add)
+trie_intern_indirect(DECL_LD trie *trie, word w, bool add)
 { for(;;)
   { if ( trie->indirects )
     { return intern_indirect(trie->indirects, w, add);
@@ -1953,7 +1953,7 @@ unify_key(DECL_LD ukey_state *state, word key)
       { if ( state->umode == uwrite )
 	{ *state->ptr = makeRefG(vi->attributes);
 	} else
-	{ int rc = unify_ptrs(vi->address, p, ALLOW_RETCODE);
+	{ boolex_t rc = unify_ptrs(vi->address, p, ALLOW_RETCODE);
 	  if ( rc != true )
 	    return rc;
 	}
@@ -1976,7 +1976,7 @@ unify_key(DECL_LD ukey_state *state, word key)
 	    { assignAttVar(vi->attributes, p2);
 	    }
 	  } else
-	  { int rc = unify_ptrs(vi->attributes, vi->address, ALLOW_RETCODE);
+	  { boolex_t rc = unify_ptrs(vi->attributes, vi->address, ALLOW_RETCODE);
 	    if ( rc != true )
 	      return rc;
 	  }

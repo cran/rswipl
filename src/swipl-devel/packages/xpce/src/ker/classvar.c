@@ -377,6 +377,33 @@ getClassVariableClass(Class class, Name name)
 }
 
 
+/* As getClassVariableClass(), but without side effects: it neither fills
+ * the class_variable_table cache nor creates sub-class variables.  Used
+ * by Object->_check, which must not modify the object base it traverses.
+ */
+
+int
+hasClassVariableClass(Class class, Name name)
+{ for( ; notNil(class); class = class->super_class )
+  { Cell cell;
+
+    if ( instanceOfObject(class->class_variable_table, ClassHashTable) &&
+	 getMemberHashTable(class->class_variable_table, name) )
+      return TRUE;
+    if ( instanceOfObject(class->class_variables, ClassChain) )
+    { for_cell(cell, class->class_variables)
+      { ClassVariable cv = cell->value;
+
+	if ( cv->name == name )
+	  return TRUE;
+      }
+    }
+  }
+
+  return FALSE;
+}
+
+
 status
 classVariableValueClass(Class cl, Name name, Any val)
 { ClassVariable cv;
@@ -873,21 +900,48 @@ loadDefaultClassVariables(SourceSink f)
 }
 
 
-status
-loadDefaultsPce(Pce pce, SourceSink from)
-{ if ( !ClassVariableTable )
-    ClassVariableTable = globalObject(NAME_defaultTable, ClassChainTable, EAV);
-
-  if ( isDefault(from) )
-    from = checkType(pce->defaults, nameToType(NAME_file), pce);
-
-  if ( from && send(from, NAME_access, NAME_read, EAV) )
+static status
+load_defaults_from(SourceSink from)
+{ if ( from && send(from, NAME_access, NAME_read, EAV) )
   { loadDefaultClassVariables(from);
 
     succeed;
   }
 
   fail;
+}
+
+
+/* Read the class variable defaults.  `from' @default is what the first
+ * lookup of a class variable asks for, and reads both files: the one
+ * that ships with the system and, after it so that it wins, the one
+ * belonging to whoever is running this.  <-user_defaults @nil declines
+ * the second, which is how a program says it is not to depend on the
+ * preferences of its user; see pce_init/3 and the `xpce_defaults'
+ * Prolog flag.
+ *
+ * A file that is not there is passed over rather than complained
+ * about: neither of them has to exist.
+ */
+
+status
+loadDefaultsPce(Pce pce, SourceSink from)
+{ if ( !ClassVariableTable )
+    ClassVariableTable = globalObject(NAME_defaultTable, ClassChainTable, EAV);
+
+  if ( notDefault(from) )
+    return load_defaults_from(from);
+
+  status rc = load_defaults_from(checkType(pce->defaults,
+					   nameToType(NAME_file), pce));
+
+  if ( notNil(pce->user_defaults) )
+  { if ( load_defaults_from(checkType(pce->user_defaults,
+				      nameToType(NAME_file), pce)) )
+      rc = SUCCEED;
+  }
+
+  return rc;
 }
 
 

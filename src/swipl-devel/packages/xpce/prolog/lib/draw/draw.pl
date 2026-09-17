@@ -3,7 +3,7 @@
     Author:        Jan Wielemaker and Anjo Anjewierden
     E-mail:        jan@swi-prolog.org
     WWW:           https://www.swi-prolog.org/projects/xpce/
-    Copyright (c)  1985-2025, University of Amsterdam
+    Copyright (c)  1985-2026, University of Amsterdam
                               SWI-Prolog Solutions b.v.
     All rights reserved.
 
@@ -291,7 +291,6 @@ fill_dialog(Draw, D:dialog) :->
             message(Selection?head, instance_of, connection))),
     new(NonEmptyDrawing, not(message(Canvas?graphicals, empty))),
     new(HasCurrentFile, Canvas?file \== @nil),
-    new(HasMetaFile, ?(@pce, convert, win_metafile, class)),
 
     send(D, append, new(MB, menu_bar(actions))),
 
@@ -329,10 +328,10 @@ fill_dialog(Draw, D:dialog) :->
                           message(Canvas, export_pdf_as),
                           @default, @off,
                           NonEmptyDrawing)
-%              , menu_item('print (Control+P)',
-%                          message(Canvas, print),
-%                          @default, @on,
-%                          NonEmptyDrawing)
+              , menu_item('print (Control+P)',
+                          message(Canvas, print),
+                          @default, @on,
+                          NonEmptyDrawing)
               , menu_item(new_window,
                           message(Draw, new_window),
                           end_group := @on)
@@ -415,32 +414,20 @@ fill_dialog(Draw, D:dialog) :->
                           message(Canvas, paste),
                           @default, @on,
                           message(@prolog, exists_clipboard))
-              , new(ClipBoard, popup(clipboard))
               , menu_item(import_image,
                           message(Canvas, import_image),
                           @default, @on)
               , menu_item(import_frame,
                           message(Canvas, import_frame),
                           @default, @on)
+              , menu_item(copy_as_prolog_source,
+                          message(Canvas, copy_as_prolog_source),
+                          @default, @on)
               , menu_item(clear,
                           and(message(Draw, select_mode),
                               message(Canvas, clear, @on)),
                           @default, @off,
                           NonEmptyDrawing)
-              ]),
-
-    send(ClipBoard, end_group, @on),
-    send(ClipBoard?context, condition, HasMetaFile),
-    send_list(ClipBoard, append,
-              [ menu_item(clip_drawing,
-                          message(Canvas, export_win_metafile, drawing),
-                          condition := NonEmptyDrawing),
-                menu_item(clip_selection,
-                          message(Canvas, export_win_metafile, selection),
-                          condition := NonEmptySelection,
-                          end_group := @on),
-                menu_item(paste,
-                          message(Canvas, import_win_metafile))
               ]),
 
     send(S, multiple_selection, @on),
@@ -467,11 +454,13 @@ fill_dialog(Draw, D:dialog) :->
         send(Canvas, auto_align_mode, @on)
     ;   true
     ),
-    send(D, append, new(DDD, draw_drag_drawing), right),
-    send(DDD, reference, point(0, 10)),
-    send(DDD, alignment, right),
-    send(D, resize_message, message(D, layout, @arg2)).
-
+    (   get(MB, native, @on)
+    ->  true
+    ;   send(D, append, new(DDD, draw_drag_drawing), right),
+        send(DDD, reference, point(0, 10)),
+        send(DDD, alignment, right),
+        send(D, resize_message, message(D, layout, @arg2))
+    ).
 
 exists_clipboard :-
     object(@draw_clipboard).
@@ -491,9 +480,9 @@ fill_toolbar(_D, TB:tool_bar) :->
                 tool_button(save,
                             resource(save),
                             save),
-%                tool_button(print,
-%                            resource(print),
-%                            print),
+                tool_button(print,
+                            resource(print),
+                            print),
                 gap,
                 tool_button(cut_selection,
                             resource(cut),

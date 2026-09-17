@@ -49,7 +49,7 @@ initialise(OB, Manual:man_manual) :->
     send(OB, send_super, initialise, Manual, 'Object Browser'),
 
     new(B, man_summary_browser(man_summary, size(70, 15))),
-    send(B?image, tab_stops, vector(20, 200)),
+    send(B?text_image, tab_stops, vector(20, 200)),
     send(B, name, browser),
     dialog(Dialog),
 
@@ -66,7 +66,7 @@ initialise(OB, Manual:man_manual) :->
 
 dialog(D) :-
     new(D, dialog),
-    new(OB, D?frame),
+    new(OB, ?(D, container, man_frame)),
     send(D, append, new(A, menu(show, marked, @nil))),
     send(A, layout, horizontal),
     send_list(A, append, [documented, all]),

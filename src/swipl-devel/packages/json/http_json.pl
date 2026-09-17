@@ -185,7 +185,7 @@ is_json_content_type(String) :-
     !.
 
 json_read_to(In, Data, Options) :-
-    memberchk(json_object(dict), Options),
+    option(json_object(dict), Options),
     !,
     json_read_dict(In, Data, Options).
 json_read_to(In, Data, Options) :-
@@ -248,7 +248,7 @@ http:post_data_hook(json(Term, Options), Out, HdrExtra) :-
         close(RdHandle)).
 
 json_write_to(Out, Term, Options) :-
-    memberchk(json_object(dict), Options),
+    option(json_object(dict), Options),
     !,
     json_write_dict(Out, Term, Options).
 json_write_to(Out, Term, Options) :-
@@ -284,11 +284,11 @@ http_read_json(Request, JSON, Options) :-
 
 request_to_json(Request, JSON, Options) :-
     option(method(Method), Request),
-    option(content_type(Type), Request),
     (   data_method(Method)
     ->  true
     ;   domain_error(method, Method)
     ),
+    option(content_type(Type), Request),
     (   is_json_content_type(Type)
     ->  true
     ;   domain_error(mimetype, Type)

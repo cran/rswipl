@@ -48,7 +48,7 @@
            , sformat/3
            ]).
 
-resource(help,  image, image('32x32/help.png')).
+resource(help,  image, image('tool/help.svg')).
 
 :- pce_global(@helper, new(helper)).
 :- pce_global(@finder, new(finder)).
@@ -133,7 +133,7 @@ buffer(Helper, Database:name, Interactive:[bool], Buffer:hlp_buffer) :<-
             )
         ;   Interactive == @on,
             (   get(@pce, is_runtime_system, @on)
-            ->  send(@display, inform,
+            ->  send(@display, inform, Helper, @default,
                      'No help available for "%s"', Database),
                 fail
             ;   send(@display, confirm, Helper, @default,
@@ -327,11 +327,11 @@ initialise(E, Data:[file|text_buffer]) :->
     send(E, right_margin, 80),
     send(E, editable, @off),
 
-    send(E?image, recogniser,
+    send(E?text_image, recogniser,
          new(C, click_gesture(left, '', double,
                               message(E, follow)))),
     send(C, condition, E?button),
-    send(E?image, recogniser,
+    send(E?text_image, recogniser,
          popup_gesture(@hlp_editor_popup, right, c)),
 
 

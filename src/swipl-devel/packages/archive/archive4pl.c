@@ -191,10 +191,7 @@ ar_status_str(ar_status status)
 		 *	      CONSTANTS		*
 		 *******************************/
 
-static atom_t ATOM_close_parent;
-static atom_t ATOM_compression;
 static atom_t ATOM_filter;
-static atom_t ATOM_format;
 static atom_t ATOM_all;
 static atom_t ATOM_bzip2;
 static atom_t ATOM_compress;
@@ -577,12 +574,172 @@ enable_type(archive_wrapper *ar, int type,
   }
 }
 
+static int
+add_filter(archive_wrapper *ar, term_t arg)
+{ atom_t c;
+
+  if ( !PL_get_atom_ex(arg, &c) )
+    return FALSE;
+  if ( ar->how == 'w' && ((ar->type & FILTER_MASK) != 0) )
+    return ar_set_status_error(ar, PL_permission_error("set", "filter", arg));
+  if ( c == ATOM_all )
+  { if (ar->how == 'w')
+      return ar_set_status_error(ar, PL_domain_error("write_filter", arg));
+    ar->type |= FILTER_ALL;
+  }
+#ifdef FILTER_BZIP2
+  else if ( c == ATOM_bzip2 )
+    ar->type |= FILTER_BZIP2;
+#endif
+#ifdef FILTER_COMPRESS
+  else if ( c == ATOM_compress )
+    ar->type |= FILTER_COMPRESS;
+#endif
+#ifdef FILTER_GZIP
+  else if ( c == ATOM_gzip )
+    ar->type |= FILTER_GZIP;
+#endif
+#ifdef FILTER_GRZIP
+  else if ( c == ATOM_grzip )
+    ar->type |= FILTER_GRZIP;
+#endif
+#ifdef FILTER_LRZIP
+  else if ( c == ATOM_lrzip )
+    ar->type |= FILTER_LRZIP;
+#endif
+#ifdef FILTER_LZIP
+  else if ( c == ATOM_lzip )
+    ar->type |= FILTER_LZIP;
+#endif
+#ifdef FILTER_LZMA
+  else if ( c == ATOM_lzma )
+    ar->type |= FILTER_LZMA;
+#endif
+#ifdef FILTER_LZOP
+  else if ( c == ATOM_lzop )
+    ar->type |= FILTER_LZOP;
+#endif
+#ifdef FILTER_NONE
+  else if ( c == ATOM_none )
+    ar->type |= FILTER_NONE;
+#endif
+#ifdef FILTER_RPM
+  else if ( c == ATOM_rpm )
+    ar->type |= FILTER_RPM;
+#endif
+#ifdef FILTER_UU
+  else if ( c == ATOM_uu )
+    ar->type |= FILTER_UU;
+#endif
+#ifdef FILTER_XZ
+  else if ( c == ATOM_xz )
+    ar->type |= FILTER_XZ;
+#endif
+  else
+    return ar_set_status_error(ar, PL_domain_error("filter", arg));
+
+  return TRUE;
+}
+
+static int
+add_format(archive_wrapper *ar, term_t arg)
+{ atom_t f;
+
+  if ( !PL_get_atom_ex(arg, &f) )
+    return FALSE;
+  if ( ar->how == 'w' && (( ar->type & FORMAT_MASK ) != 0 ) )
+    return ar_set_status_error(ar, PL_permission_error("set", "format", arg));
+  if ( f == ATOM_all )
+  { if ( ar->how == 'w' )
+      return ar_set_status_error(ar, PL_domain_error("write_format", arg));
+    ar->type |= FORMAT_ALL;
+  }
+#ifdef FORMAT_7ZIP
+  else if ( f == ATOM_7zip )
+    ar->type |= FORMAT_7ZIP;
+#endif
+#ifdef FORMAT_AR
+  else if ( f == ATOM_ar )
+    ar->type |= FORMAT_AR;
+#endif
+#ifdef FORMAT_CAB
+  else if ( f == ATOM_cab )
+    ar->type |= FORMAT_CAB;
+#endif
+#ifdef FORMAT_CPIO
+  else if ( f == ATOM_cpio )
+    ar->type |= FORMAT_CPIO;
+#endif
+#ifdef FORMAT_EMPTY
+  else if ( f == ATOM_empty )
+    ar->type |= FORMAT_EMPTY;
+#endif
+#ifdef FORMAT_GNUTAR
+  else if ( f == ATOM_gnutar )
+    ar->type |= FORMAT_GNUTAR;
+#endif
+#ifdef FORMAT_ISO9660
+  else if ( f == ATOM_iso9660 )
+    ar->type |= FORMAT_ISO9660;
+#endif
+#ifdef FORMAT_LHA
+  else if ( f == ATOM_lha )
+    ar->type |= FORMAT_LHA;
+#endif
+#ifdef FORMAT_MTREE
+  else if ( f == ATOM_mtree )
+    ar->type |= FORMAT_MTREE;
+#endif
+#ifdef FORMAT_RAR
+  else if ( f == ATOM_rar )
+    ar->type |= FORMAT_RAR;
+#endif
+#ifdef FORMAT_RAW
+  else if ( f == ATOM_raw )
+    ar->type |= FORMAT_RAW;
+#endif
+#ifdef FORMAT_TAR
+  else if ( f == ATOM_tar )
+    ar->type |= FORMAT_TAR;
+#endif
+#ifdef FORMAT_XAR
+  else if ( f == ATOM_xar )
+    ar->type |= FORMAT_XAR;
+#endif
+#ifdef FORMAT_ZIP
+  else if ( f == ATOM_zip )
+    ar->type |= FORMAT_ZIP;
+#endif
+  else
+    return ar_set_status_error(ar, PL_domain_error("format", arg));
+
+  return TRUE;
+}
+
+static int
+scan_type_list(archive_wrapper *ar, term_t list,
+	       int (*add)(archive_wrapper *ar, term_t arg))
+{ term_t tail = PL_copy_term_ref(list);
+  term_t head = PL_new_term_ref();
+
+  while( PL_get_list_ex(tail, head, tail) )
+  { if ( !(*add)(ar, head) )
+      return FALSE;
+  }
+
+  return PL_get_nil_ex(tail);
+}
+
+static PL_option_t archive_open_options[] =
+{ PL_OPTION("filters",	    OPT_TERM),
+  PL_OPTION("formats",	    OPT_TERM),
+  PL_OPTION("close_parent", OPT_BOOL),
+  PL_OPTIONS_END
+};
+
 static foreign_t
 archive_open_stream(term_t data, term_t mode, term_t handle, term_t options)
 { archive_wrapper *ar;
-  term_t tail = PL_copy_term_ref(options);
-  term_t head = PL_new_term_ref();
-  term_t arg  = PL_new_term_ref();
   int rc = ARCHIVE_OK;				/* silence compiler */
 
   /* If you make any changes here, also change archive_close() */
@@ -619,152 +776,16 @@ archive_open_stream(term_t data, term_t mode, term_t handle, term_t options)
       return FALSE;
   }
 
-  while( PL_get_list_ex(tail, head, tail) )
-  { atom_t name;
-    size_t arity;
+  { term_t filters = 0, formats = 0;
 
-    if ( !PL_get_name_arity(head, &name, &arity) ||
-	 !PL_get_arg(1, head, arg) )
-      return ar_set_status_error(ar, PL_type_error("option", head));
-    if ( name == ATOM_compression || name == ATOM_filter )
-    { atom_t c;
-
-      if ( !PL_get_atom_ex(arg, &c) )
-	return FALSE;
-      if ( ar->how == 'w' && ((ar->type & FILTER_MASK) != 0) )
-        return ar_set_status_error(ar, PL_permission_error("set", "filter", arg));
-      if ( c == ATOM_all )
-      { if (ar->how == 'w')
-          return ar_set_status_error(ar, PL_domain_error("write_filter", arg));
-	ar->type |= FILTER_ALL;
-      }
-#ifdef FILTER_BZIP2
-      else if ( c == ATOM_bzip2 )
-	ar->type |= FILTER_BZIP2;
-#endif
-#ifdef FILTER_COMPRESS
-      else if ( c == ATOM_compress )
-	ar->type |= FILTER_COMPRESS;
-#endif
-#ifdef FILTER_GZIP
-      else if ( c == ATOM_gzip )
-	ar->type |= FILTER_GZIP;
-#endif
-#ifdef FILTER_GRZIP
-      else if ( c == ATOM_grzip )
-	ar->type |= FILTER_GRZIP;
-#endif
-#ifdef FILTER_LRZIP
-      else if ( c == ATOM_lrzip )
-	ar->type |= FILTER_LRZIP;
-#endif
-#ifdef FILTER_LZIP
-      else if ( c == ATOM_lzip )
-	ar->type |= FILTER_LZIP;
-#endif
-#ifdef FILTER_LZMA
-      else if ( c == ATOM_lzma )
-	ar->type |= FILTER_LZMA;
-#endif
-#ifdef FILTER_LZOP
-      else if ( c == ATOM_lzop )
-	ar->type |= FILTER_LZOP;
-#endif
-#ifdef FILTER_NONE
-      else if ( c == ATOM_none )
-	ar->type |= FILTER_NONE;
-#endif
-#ifdef FILTER_RPM
-      else if ( c == ATOM_rpm )
-	ar->type |= FILTER_RPM;
-#endif
-#ifdef FILTER_UU
-      else if ( c == ATOM_uu )
-	ar->type |= FILTER_UU;
-#endif
-#ifdef FILTER_XZ
-      else if ( c == ATOM_xz )
-	ar->type |= FILTER_XZ;
-#endif
-      else
-	return ar_set_status_error(ar, PL_domain_error("filter", arg));
-    } else if ( name == ATOM_format )
-    { atom_t f;
-
-      if ( !PL_get_atom_ex(arg, &f) )
-	return FALSE;
-      if ( ar->how == 'w' && (( ar->type & FORMAT_MASK ) != 0 ) )
-        return ar_set_status_error(ar, PL_permission_error("set", "format", arg));
-      if ( f == ATOM_all )
-      { if ( ar->how == 'w' )
-          return ar_set_status_error(ar, PL_domain_error("write_format", arg));
-	ar->type |= FORMAT_ALL;
-      }
-#ifdef FORMAT_7ZIP
-      else if ( f == ATOM_7zip )
-	ar->type |= FORMAT_7ZIP;
-#endif
-#ifdef FORMAT_AR
-      else if ( f == ATOM_ar )
-	ar->type |= FORMAT_AR;
-#endif
-#ifdef FORMAT_CAB
-      else if ( f == ATOM_cab )
-	ar->type |= FORMAT_CAB;
-#endif
-#ifdef FORMAT_CPIO
-      else if ( f == ATOM_cpio )
-	ar->type |= FORMAT_CPIO;
-#endif
-#ifdef FORMAT_EMPTY
-      else if ( f == ATOM_empty )
-	ar->type |= FORMAT_EMPTY;
-#endif
-#ifdef FORMAT_GNUTAR
-      else if ( f == ATOM_gnutar )
-	ar->type |= FORMAT_GNUTAR;
-#endif
-#ifdef FORMAT_ISO9660
-      else if ( f == ATOM_iso9660 )
-	ar->type |= FORMAT_ISO9660;
-#endif
-#ifdef FORMAT_LHA
-      else if ( f == ATOM_lha )
-	ar->type |= FORMAT_LHA;
-#endif
-#ifdef FORMAT_MTREE
-      else if ( f == ATOM_mtree )
-	ar->type |= FORMAT_MTREE;
-#endif
-#ifdef FORMAT_RAR
-      else if ( f == ATOM_rar )
-	ar->type |= FORMAT_RAR;
-#endif
-#ifdef FORMAT_RAW
-      else if ( f == ATOM_raw )
-	ar->type |= FORMAT_RAW;
-#endif
-#ifdef FORMAT_TAR
-      else if ( f == ATOM_tar )
-	ar->type |= FORMAT_TAR;
-#endif
-#ifdef FORMAT_XAR
-      else if ( f == ATOM_xar )
-	ar->type |= FORMAT_XAR;
-#endif
-#ifdef FORMAT_ZIP
-      else if ( f == ATOM_zip )
-	ar->type |= FORMAT_ZIP;
-#endif
-      else
-	return ar_set_status_error(ar, PL_domain_error("format", arg));
-    } else if ( name == ATOM_close_parent )
-    { if ( !PL_get_bool_ex(arg, &ar->close_parent) )
-	return FALSE;
-    }
+    if ( !PL_scan_options(options, 0, "archive_option", archive_open_options,
+			  &filters, &formats, &ar->close_parent) )
+      return ar_set_status_error(ar, false);
+    if ( filters && !scan_type_list(ar, filters, add_filter) )
+      return FALSE;
+    if ( formats && !scan_type_list(ar, formats, add_format) )
+      return FALSE;
   }
-  if ( !PL_get_nil_ex(tail) )
-    return FALSE;
 
   if ( ar->how == 'r' )
   { if ( !(ar->type & FILTER_ALL) )
@@ -1362,10 +1383,8 @@ archive_open_entry(term_t archive, term_t stream)
 
 install_t
 install_archive4pl(void)
-{ MKATOM(close_parent);
-  MKATOM(compression);
+{ PL_register_blob_type(&archive_blob);
   MKATOM(filter);
-  MKATOM(format);
   MKATOM(all);
   MKATOM(bzip2);
   MKATOM(compress);
@@ -1413,7 +1432,7 @@ install_archive4pl(void)
   MKFUNCTOR(format,          1);
   MKFUNCTOR(permissions,     1);
 
-  PL_register_foreign("archive_open_stream",  4, archive_open_stream, 0);
+  PL_register_foreign("$archive_open_stream", 4, archive_open_stream, 0);
   PL_register_foreign("archive_property",     3, archive_property,    0);
   PL_register_foreign("archive_close",        1, archive_close,       0);
   PL_register_foreign("archive_next_header",  2, archive_next_header, 0);

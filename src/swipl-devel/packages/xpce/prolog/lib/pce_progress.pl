@@ -158,7 +158,10 @@ value(BP, Val:[int|real]) :->
         PixVal is round((Len-4)*(Val/Scale)),
         send(Box, width, PixVal)
     ),
-    send(BP, synchronise).          % Flush?
+    (   get(BP, window, W)          % make the change visible
+    ->  send(W, flush)
+    ;   true
+    ).
 
 open(BP) :->
     "Open on behalf of a client"::

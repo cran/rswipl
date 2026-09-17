@@ -1,9 +1,9 @@
 /*  Part of SWI-Prolog
 
     Author:        Jan Wielemaker
-    E-mail:        J.Wielemaker@vu.nl
-    WWW:           http://www.swi-prolog.org/projects/xpce/
-    Copyright (c)  2006-2025, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org
+    Copyright (c)  2006-2026, University of Amsterdam
                               VU University Amsterdam
                               CWI, Amsterdam
                               SWI-Prolog Solutions b.v.
@@ -437,14 +437,10 @@ set_xref(Xref) :-
     with_xref(0).
 
 with_xref(Goal) :-
-    current_prolog_flag(xref, Xref),
-    (   Xref == true
-    ->  call(Goal)
-    ;   setup_call_cleanup(
-            set_prolog_flag(xref, true),
-            Goal,
-            set_prolog_flag(xref, Xref))
-    ).
+    setup_call_cleanup(
+        push_prolog_flag(xref, true),
+        Goal,
+        pop_prolog_flag(xref)).
 
 
 %!  set_initial_mode(+Stream, +Options) is det.
@@ -1732,7 +1728,9 @@ extend(M:G, N, M:GX) :-
     callable(G),
     extend(G, N, GX).
 extend(G, N, GX) :-
-    (   compound(G)
+    (   N =:= 0
+    ->  GX = G
+    ;   compound(G)
     ->  compound_name_arguments(G, Name, Args),
         length(Rest, N),
         append(Args, Rest, NArgs),
@@ -2079,6 +2077,8 @@ xref_public_list(File, Src, Options) :-
 %
 %   These predicates fail if File is not a module-file.
 %
+%   @arg  File is a file speficiation for prolog_open_source/2 or a
+%         .qlf file name.  Note this makes a stream a valid input.
 %   @arg  Path is the canonical path to File
 %   @arg  Module is the module defined in Path
 %   @arg  Export is a list of predicate indicators.
@@ -2111,6 +2111,7 @@ xref_public_list(File, Source, Module, Export, Public, Meta, Src) :-
 :- volatile public_list_cache/7.
 
 public_list(Path, Source, Module, Meta, Export, Public, _Options) :-
+    \+ is_stream(Path),
     public_list_cache(Path, Source, Modified,
                       Module0, Meta0, Export0, Public0),
     time_file(Path, ModifiedNow),
@@ -2131,20 +2132,25 @@ public_list(Path, Source, Module, Meta, Export, Public, Options) :-
     t(Module,Meta,Export,Public) = t(Module0,Meta0,Export0,Public0).
 
 public_list_nc(Path, Source, Module, Meta, Export, Public, _Options) :-
+    \+ is_stream(Path),
     public_list_from_index(Path, Module, Meta, Export, Public),
     !,
     qlf_pl_file(Path, Source).
 public_list_nc(Path, Source, Module, [], Export, [], _Options) :-
+    \+ is_stream(Path),
     is_qlf_file(Path),
     !,
     '$qlf_module'(Path, Info),
     _{module:Module, exports:Export, file:Source} :< Info.
 public_list_nc(Path, Path, Module, Meta, Export, Public, Options) :-
-    exists_file(Path),
+    (   is_stream(Path)
+    ;   exists_file(Path)
+    ),
     !,
     prolog_file_directives(Path, Directives, Options),
     public_list(Directives, Path, Module, Meta, [], Export, [], Public, []).
 public_list_nc(Path, Path, Module, [], Export, [], _Options) :-
+    \+ is_stream(Path),
     qlf_pl_file(QlfFile, Path),
     '$qlf_module'(QlfFile, Info),
     _{module:Module, exports:Export} :< Info.
@@ -2945,6 +2951,9 @@ xref_source_file(QSpec, File, Source, Options) :-
     !,
     must_be(acyclic, Spec),
     xref_source_file(Spec, File, Source, Options).
+xref_source_file(Spec, File, _Source, _Options) :-
+    is_stream(Spec), !,
+    File = Spec.
 xref_source_file(Spec, File, Source, Options) :-
     nonvar(Spec),
     prolog:xref_source_file(Spec, File,

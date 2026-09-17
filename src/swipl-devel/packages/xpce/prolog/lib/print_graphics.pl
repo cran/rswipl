@@ -46,8 +46,8 @@ Public methods:
         ->print
         Prints the content of the Window as a single page
 
-        ->save_postscript: [file], [directory]
-        Save content of the Window as PostScript
+        ->save_pdf: [file], [directory]
+        Save content of the Window as PDF
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 
@@ -64,79 +64,31 @@ print(Canvas) :->
     print_canvas(Canvas).
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-There are two routes to print.  On   MS-Windows  printing is achieved by
-drawing on a GDI representing a printer, after which the Windows printer
-driver creates printer-codes and sends them to the printer. The standard
-Windows print dialog is shown by   win_printer->setup. Next we need some
-calculation effort to place our diagram reasonably on the page.
-
-In the Unix world, things go different. In general you make a PostScript
-file and hand this  to  the   print-spooler,  which  will  translate the
-device-independant PostScript to whatever the printer needs.
-
-XPCE doesn't (yet)  try  to  hide   the  difference  between  these  two
-approaches.
+Printing is done by rendering the window   to  a temporary PDF file and
+handing this to the print spooler (see <-print_command_template).
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-print_canvas(Canvas) :-                 % MS-Windows
-    get(@pce, convert, win_printer, class, _),
-    !,
-    (   send(Canvas, has_get_method, default_file),
-        get(Canvas, default_file, Job)
-    ->  true
-    ;   Job = '<unknown job>'
-    ),
-    new(Prt, win_printer(Job)),
-    send(Prt, setup, Canvas),
-    send(Prt, open),
-    get(Canvas, bounding_box, area(X, Y, W, H)),
-    get(@display, dpi, size(DX, DY)),
-    InchW is W/DX,
-    InchH is H/DY,
-
-    get(Prt, size, size(PW0, PH0)),
-    get(Prt, dpi, size(RX, RY)),
-    MarX is RX,                     % default 1 inch margins
-    MarY is RY,
-    PrInchW is (PW0-MarX*2)/RX,
-    PrInchH is (PH0-MarY*2)/RY,
-
-    send(Prt, map_mode, isotropic),
-    (   InchW < PrInchW,
-        InchH < PrInchH             % it fits on the page
-    ->  OX is MarX + ((PrInchW-InchW)/2)*RX,
-        send(Prt, window, area(X, Y, DX, DY)),
-        send(Prt, viewport, area(OX, MarY, RX, RY))
-    ;   Aspect is min(PrInchW/InchW, PrInchH/InchH),
-        ARX is integer(Aspect*RX),
-        ARY is integer(Aspect*RY),
-        send(Prt, window, area(X, Y, DX, DY)),
-        send(Prt, viewport, area(MarX, MarY, ARX, ARY))
-    ),
-    send(Prt, draw_in, Canvas?graphicals),
-    send(Prt, close),
-    free(Prt).
-print_canvas(Canvas) :-                 % Unix/PostScript
+print_canvas(Canvas) :-
     get(Canvas, print_command, Command),
-    new(PsFile, file),
-    send(PsFile, open, write),
-    send(PsFile, append, Canvas?postscript),
-    send(PsFile, append, 'showpage\n'),
-    send(PsFile, close),
-    get(PsFile, absolute_path, File),
-    get(string('%s "%s"', Command, File), value, ShellCommand),
-    pce_shell_command('/bin/sh'('-c', ShellCommand)),
-    send(PsFile, remove),
-    send(PsFile, done),
+    setup_call_cleanup(
+        new(PdfFile, file),             % ->initialise creates it open
+        (   send(PdfFile, close),
+            send(Canvas, pdf, PdfFile),
+            get(PdfFile, absolute_path, File),
+            get(string('%s "%s"', Command, File), value, ShellCommand),
+            pce_shell_command('/bin/sh'('-c', ShellCommand))
+        ),
+        (   send(PdfFile, remove),
+            send(PdfFile, done)
+        )),
     send(Canvas, report, status, 'Sent to printer').
 
 
 print_command(Canvas, Command:name) :<-
-    "Get name of the printer"::
+    "Ask the user for the command that prints the job"::
     get(Canvas, frame, Frame),
-    default_printer(DefPrinter),
     get(Canvas, print_command_template, CmdTempl),
-    print_cmd(CmdTempl, DefPrinter, Cmd),
+    print_cmd(CmdTempl, Cmd),
     new(D, dialog(print_command?label_name)),
     send(D, append, new(P, text_item(print_command, Cmd))),
     send(D, append, button(cancel, message(D, return, @nil))),
@@ -149,29 +101,29 @@ print_command(Canvas, Command:name) :<-
     Answer \== @nil,
     Command = Answer.
 
-default_printer(Printer) :-
-    get(@pce, environment_variable, 'PRINTER', Printer),
-    !.
-default_printer(postscript).
-
-
 print_job_name(_, Job) :<-
     "Default name of the printer job"::
     Job = 'XPCE/SWI-Prolog'.
 
 print_command_template(_, Command) :<-
     "Default command to send a job to the printer"::
-    Command = 'lpr -P%p'.
+    (   get(@pce, environment_variable, 'PRINTER', _)
+    ->  Command = 'lpr -P%p'
+    ;   Command = 'lpr'                 % lpr(1) uses the default queue
+    ).
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-print_cmd(+Template, +Printer, +File,  -Command)   determines  the shell
-command to execute in order to get `File' printed on `Printer' using the
-given template. The substitutions are handled by a regex object.
+print_cmd(+Template, -Command) determines the shell command to execute in
+order to get the job printed, replacing `%p' in Template by the printer
+named by $PRINTER.  The substitutions are handled by a regex object.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-print_cmd(Template, Printer, Cmd) :-
+print_cmd(Template, Cmd) :-
     new(S, string('%s', Template)),
-    substitute(S, '%p', Printer),
+    (   get(@pce, environment_variable, 'PRINTER', Printer)
+    ->  substitute(S, '%p', Printer)
+    ;   true
+    ),
     get(S, value, Cmd),
     free(S).
 
@@ -183,26 +135,22 @@ substitute(S, F, T) :-
 
 
                  /*******************************
-                 *          POSTSCRIPT          *
+                 *              PDF             *
                  *******************************/
 
 
-save_postscript(Canvas, File:file=[file], Directory:directory=[directory]) :->
-    "Save content as PostScript to File"::
+save_pdf(Canvas, File:file=[file], Directory:directory=[directory]) :->
+    "Save content as PDF to File"::
     (   File == @default
     ->  get(@finder, file, save,
-            chain(tuple('PostScript', ps),
-                  tuple('Encapsulated PostScript', eps)),
+            chain(tuple('PDF', pdf)),
             Directory,
-            FileName)
-    ;   FileName = File
+            FileName),
+        new(PdfFile, file(FileName))
+    ;   PdfFile = File           % <-file of @finder returns a name
     ),
-    new(PsFile, file(FileName)),
-    send(PsFile, open, write),
-    send(PsFile, append, Canvas?postscript),
-    send(PsFile, append, 'showpage\n'),
-    send(PsFile, close),
-    send(Canvas, report, status, 'Saved PostScript to %s', PsFile).
+    send(Canvas, pdf, PdfFile),
+    send(Canvas, report, status, 'Saved PDF to %s', PdfFile).
 
 :- pce_end_class(print_graphics).
 

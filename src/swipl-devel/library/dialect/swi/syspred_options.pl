@@ -53,7 +53,8 @@
 		       lock(oneof([none,read,shared,write,exclusive])),
                        reposition(boolean),
 		       wait(boolean),
-		       locale(any)		% no type-check yet
+		       locale(any),		% no type-check yet
+		       unicode_atoms(oneof([accept,nfc,error,reject]))
 		     ]).
 :- predicate_options(system:write_term/3, 3,
 		     [ attributes(oneof([ignore,dots,write,portray])),
@@ -81,7 +82,12 @@
                        quote_non_ascii(boolean),
 		       quoted(boolean),
 		       spacing(oneof([standard,next_argument])),
-		       variable_names(list)
+		       variable_names(list),
+		       dotlists(boolean),
+		       portrayed(boolean),
+		       back_quotes(oneof([codes,chars,string,symbol_char])),
+		       integer_format(atom),
+		       float_format(atom)
 		     ]).
 :- predicate_options(system:write_term/2, 2,
 		     [ pass_to(system:write_term/3, 3)
@@ -97,7 +103,9 @@
 		       term_position(-any),
 		       variable_names(-list),
 		       subterm_positions(-any),
-		       comments(-list)
+		       comments(-list),
+		       unicode_atoms(oneof([accept,nfc,error,reject])),
+		       blob(oneof([error,dead,resolve]))
 		     ]).
 :- predicate_options(system:read_term/3, 3,
 		     [ backquoted_string(boolean),
@@ -111,7 +119,13 @@
 		       subterm_positions(-any),
 		       term_position(-any),
 		       variables(-list),
-		       variable_names(-list)
+		       variable_names(-list),
+		       var_prefix(boolean),
+		       back_quotes(oneof([codes,chars,string,symbol_char])),
+		       quasi_quotations(any),
+		       dotlists(boolean),
+		       unicode_atoms(oneof([accept,nfc,error,reject])),
+		       blob(oneof([error,dead,resolve]))
 		     ]).
 :- predicate_options(system:read_term/2, 2,
 		     [ pass_to(system:read_term/3, 3)
@@ -166,7 +180,8 @@
                             ; compound(oneof(list(atom)))
                             )),
 		       keep(boolean),
-                       warn_not_accessed(boolean)
+                       warn_not_accessed(boolean),
+                       local(boolean)
 		     ]).
 :- predicate_options(system:qsave_program/2, 2,
 		     [ local(nonneg),
@@ -183,6 +198,7 @@
 		       stand_alone(boolean),
 		       emulator(atom)
 		     ]).
+:- if(current_prolog_flag(threads, true)).
 :- predicate_options(system:thread_create/3, 3,
 		     [ affinity(list(integer)),
                        alias(atom),
@@ -212,6 +228,7 @@
 		       deadline(number),
 		       signals(any)
 		     ]).
+:- endif.
 :- predicate_options(system:locale_create/3, 3,
 		     [ alias(atom),
 		       decimal_point(atom),
@@ -250,4 +267,46 @@
                      [ duplicate(oneof([warning,keep,replace])),
                        search(oneof([first,last])),
                        replace(boolean)
+                     ]).
+:- if(current_prolog_flag(threads, true)).
+:- predicate_options(system:thread_wait/2, 2,
+                     [ timeout(number),
+                       deadline(number),
+                       signals((bool;number)),
+                       db(boolean),
+                       wait_preds(any),
+                       modified(-any),
+                       retry_every(number),
+                       module(atom)
+                     ]).
+:- predicate_options(system:thread_update/2, 2,
+                     [ notify(oneof([broadcast,signal])),
+                       module(atom)
+                     ]).
+:- endif.
+:- predicate_options('$syspreds':transaction/2, 2,
+                     [ bulk(boolean)
+                     ]).
+:- predicate_options('$engines':engine_create/4, 4,
+                     [ stack_limit(nonneg),
+                       alias(atom),
+                       inherit_from(any)
+                     ]).
+:- predicate_options(system:zip_open_stream/3, 3,
+                     [ close_parent(boolean)
+                     ]).
+:- predicate_options(system:zipper_open_new_file_in_zip/4, 4,
+                     [ extra(string),
+                       comment(string),
+                       time(number),
+                       method(atom),
+                       level(integer),
+                       zip64(boolean)
+                     ]).
+:- predicate_options(system:zipper_open_current/3, 3,
+                     [ type(oneof([text,binary])),
+                       encoding(encoding),
+                       bom(boolean),
+                       release(boolean),
+                       reposition(boolean)
                      ]).

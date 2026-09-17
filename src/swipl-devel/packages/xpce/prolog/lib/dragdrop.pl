@@ -1,9 +1,10 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        jan@swi.psy.uva.nl
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  1985-2002, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org/projects/xpce/
+    Copyright (c)  1985-2026, University of Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -61,7 +62,7 @@ class_variable(warp,   bool,        @on,
                "Pointer in center?").
 class_variable(button, button_name, left,
                "Button on which gesture operates").
-class_variable(cursor, [cursor],    cross_reverse,
+class_variable(cursor, [cursor],    move,
                "Cursor to display.  @default: use graphical").
 
 active_distance(_G, D) :-
@@ -150,7 +151,7 @@ activate(G, Ev:event) :->
 
 drag(G, Ev:event) :->
     "Find possible ->drop target"::
-    (   send(G, activate)
+    (   send(G, activate, Ev)
     ->  get(G, source, Source),
         (   get(Ev, inside_sub_window, Frame),
             get(Ev, inside_sub_window, Frame, Window),

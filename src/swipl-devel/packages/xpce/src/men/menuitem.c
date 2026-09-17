@@ -68,6 +68,20 @@ unlinkMenuItem(MenuItem mi)
 { if ( notNil(mi->menu) )
     deleteMenu(mi->menu, mi);
 
+  /* A pull-right whose context is this item is ours.  Its own items
+   * refer to it, so it would survive when we let go of it.  Its context
+   * is @nil if unlinkMenu() broke the cycle between it and us.
+   */
+  if ( notNil(mi->popup) &&
+       (mi->popup->context == (Any)mi || isNil(mi->popup->context)) )
+  { PopupObj p = mi->popup;
+
+    addCodeReference(p);
+    assign(mi, popup, NIL);
+    freeObject(p);
+    delCodeReference(p);
+  }
+
   succeed;
 }
 
@@ -198,7 +212,9 @@ popupMenuItem(MenuItem mi, PopupObj p)
   { if ( isNil(p) || (isNil(mi->popup) && notNil(mi->menu)) )
       requestComputeGraphical(mi->menu, DEFAULT); /* HACK */
     assign(mi, popup, p);
-    changedMenuItem(mi);
+    if ( notNil(p) )			/* as <-convert does for a popup */
+      assign(p, context, mi);		/* appended as an item: it is what */
+    changedMenuItem(mi);		/* says where the pull-right hangs */
   }
 
   succeed;

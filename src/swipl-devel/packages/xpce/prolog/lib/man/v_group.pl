@@ -59,7 +59,7 @@ initialise(MB, Manual:man_manual, ModuleName:[name], Label:[name]) :->
     send(MB, send_super, initialise, Manual, Lbl),
 
     send(MB, append, new(V, view('', size(50, 20)))),
-    get(V, image, Image),
+    get(V, text_image, Image),
     send(V, font, normal),
     send(Image, tab_stops, vector(100)),
     send(Image, wrap, none),
@@ -82,7 +82,7 @@ initialise(MB, Manual:man_manual, ModuleName:[name], Label:[name]) :->
                         and(message(@receiver, caret,
                                     @receiver?selection_end),
                             message(@receiver, select_line, newline := @on),
-                            if(message(@receiver?frame,
+                            if(message(?(@receiver, container, man_frame),
                                        show_group_members)),
                             message(@receiver, focus_function, @nil)),
                         message(@receiver, send_class, '_isearch',
@@ -114,7 +114,7 @@ browser(MB, Browser) :<-
 make_man_group_recogniser(R) :-
     IM = @event?receiver,
     E = IM?device,
-    Tool = IM?frame,
+    Tool = ?(IM, container, man_frame),
 
     SelectLine = and(message(E, caret, ?(IM, index, @event)),
                      message(E, select_line, newline := @on)),
@@ -132,7 +132,7 @@ make_man_group_recogniser(R) :-
                 ********************************/
 
 fill_dialog(D) :-
-    get(D, frame, MB),
+    get(D, container, man_frame, MB),
     send(D, append, button(help,   message(MB, help))),
     send(D, append, button(quit,   message(MB, quit))),
     send(D, append, new(label), right).     % reporter

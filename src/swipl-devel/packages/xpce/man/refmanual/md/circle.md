@@ -2,7 +2,7 @@
 
 A circle just an ellipse with equal <-width and <-height.  It's
 border-line may have a <-texture and <-pen. The circle's
-interior may be filled with an image object using ->fill.
+interior may be filled with a colour using ->fill.
 
 @see class ellipse
 
@@ -10,13 +10,10 @@ interior may be filled with an image object using ->fill.
 ## Instance variables {#class-circle-instvars}
 
 - circle<-fill: colour|{foreground,background}*
-    When a fill pattern is defined, this pattern is repeated over the interior
-    of the circle.  The circle is transparent if the fill pattern equals
-    @nil.
+    When a colour is defined, the interior of the circle is filled with
+    this colour.  The circle is transparent if <-fill equals @nil.
 
     **Defaults**: @nil (transparent).
-
-    @see bitmap-status
 
 
 ## Send methods {#class-circle-send}
@@ -28,6 +25,17 @@ interior may be filled with an image object using ->fill.
     Handle general resizing of the circle.  If either <-width or <-height is
     specified this value is used for both parameters.  If both are specified
     the minimum of the two is used for both.
+
+- circle->inside: x=int, y=int
+    Succeed if the point (X, Y) — in the circle's <-device coordinate
+    system — lies inside the circle: (X-cx)² + (Y-cy)² ≤ r².  Bbox
+    corners just miss.
+
+    Same test drives `->in_event_area`; that method additionally
+    inflates the radius by `event_tolerance` pixels so hits within
+    tolerance of the outline still count.
+
+    @see ellipse->inside
 
 - circle->radius: int
     *Inherits description from*: circle<-radius

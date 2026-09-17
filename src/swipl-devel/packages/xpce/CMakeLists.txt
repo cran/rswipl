@@ -10,6 +10,25 @@ set(HAVE_GUI ON)
 
 if(HAVE_GUI)
 
+if(APPLE)
+  # Cocoa headers use blocks, nullability and instancetype, which only
+  # Clang understands, so the Objective-C part must be built by Clang
+  # even when the rest of the system is built by, say, MacPorts GCC.
+  # CMake would otherwise default CMAKE_OBJC_COMPILER to CMAKE_C_COMPILER.
+  # The C/Objective-C boundary in src/sdl/sdlnsmenu.h is plain C, so
+  # mixing the two compilers is safe.
+  if(NOT CMAKE_OBJC_COMPILER)
+    execute_process(COMMAND xcrun --find clang
+		    OUTPUT_VARIABLE XCRUN_CLANG
+		    OUTPUT_STRIP_TRAILING_WHITESPACE
+		    ERROR_QUIET)
+    if(XCRUN_CLANG)
+      set(CMAKE_OBJC_COMPILER ${XCRUN_CLANG})
+    endif()
+  endif()
+  enable_language(OBJC)
+endif()
+
 find_package(SDL3 REQUIRED CONFIG REQUIRED COMPONENTS SDL3-shared)
 find_package(SDL3_image REQUIRED CONFIG)
 find_package(PkgConfig REQUIRED)
@@ -22,6 +41,9 @@ set(GUI_LIBRARIES
     PkgConfig::CAIRO
     PkgConfig::PANGO
     PkgConfig::PANGOCAIRO)
+if(APPLE)
+  list(APPEND GUI_LIBRARIES "-framework Cocoa")
+endif()
 
 if(WIN32)
   set(O_XOS 1)
@@ -54,7 +76,8 @@ file(GLOB files RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/src"
      "${CMAKE_CURRENT_SOURCE_DIR}/src/h/*.h")
 foreach(d ${cdirs})
   file(GLOB tmp RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/src"
-       "${CMAKE_CURRENT_SOURCE_DIR}/src/${d}/*.c")
+       "${CMAKE_CURRENT_SOURCE_DIR}/src/${d}/*.c"
+       "${CMAKE_CURRENT_SOURCE_DIR}/src/${d}/*.m")
   list(APPEND files ${tmp})
 endforeach()
 
@@ -99,7 +122,20 @@ endif()
 ################
 # Tests
 
-test_libs(xpce)
+# XPCE needs a display.  SDL's dummy driver provides a headless one, so the
+# test sets that require a display (bom, selection, image) run everywhere
+# rather than being skipped, and the result does not depend on whether the
+# build host happens to have a window server.
+set(XPCE_TEST_ENV "SDL_VIDEODRIVER=dummy")
+
+# And it must not read the Defaults file of whoever is running the tests:
+# a preference of theirs is not a reason for the suite to fail.  See the
+# `xpce_defaults' flag.
+set(XPCE_TEST_OPTIONS -Dxpce_defaults=none)
+
+test_libs(xpce OPTIONS ${XPCE_TEST_OPTIONS})
+set_tests_properties(xpce:xpce PROPERTIES ENVIRONMENT "${XPCE_TEST_ENV}")
+add_subdirectory(tests)
 
 ################
 # Create indexes

@@ -861,7 +861,6 @@ initialise(DE) :->
     dia_version(Version),
     send(DE, send_super, initialise,
          string('Dialog Editor --- Version %s', Version)),
-    send(DE, icon_label, 'Dialog Editor'),
     send(DE, append, new(TD, dialog)),
     send(new(B, browser), left, new(MD, dialog)),
     send(B, label, 'Dialog windows'),

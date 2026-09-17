@@ -157,15 +157,15 @@ static foreign_t
 atom_ffi_(term_t stream, term_t t)
 { IOSTREAM* s;
   atom_t a;
-  if ( !PL_get_stream(stream, &s, SIO_INPUT) ||
+  if ( !PL_get_stream(stream, &s, SIO_OUTPUT) ||
        !PL_get_atom_ex(t, &a) )
-    return FALSE;
+    return false;
   PL_STRINGS_MARK();
     size_t len;
     const char *sa = PL_atom_nchars(a, &len);
     Sfprintf(s, "/%s/%zd", sa, len);
   PL_STRINGS_RELEASE();
-  return TRUE;
+  return true;
 }
 
 static PL_option_t ffi_options[] =
@@ -491,8 +491,8 @@ ffi_write_int32_(term_t Stream, term_t i)
   if ( !PL_get_stream(Stream, &stream, SIO_OUTPUT) )
     return FALSE;
 
-  PL_qlf_put_int32(v, stream);
-  return PL_release_stream(stream);
+  bool rc = PL_qlf_put_int32(v, stream);
+  return PL_release_stream(stream) && rc;
 }
 
 static foreign_t
@@ -500,39 +500,39 @@ ffi_read_int32_(term_t Stream, term_t i)
 { IOSTREAM* stream;
   int32_t v;
 
-  if ( !PL_get_stream(Stream, &stream, SIO_OUTPUT) )
-    return FALSE;
+  if ( !PL_get_stream(Stream, &stream, SIO_INPUT) )
+    return false;
 
   PL_qlf_get_int32(stream, &v);
 
-  int rc = PL_unify_integer(i, v);
+  bool rc = PL_unify_integer(i, v);
   return PL_release_stream(stream) && rc;
 }
 
 static foreign_t
 ffi_write_int64_(term_t Stream, term_t i)
 { int64_t v;
-  if ( ! PL_cvt_i_int64(i, &v) )
-    return FALSE;
+  if ( !PL_cvt_i_int64(i, &v) )
+    return false;
 
   IOSTREAM* stream;
   if ( !PL_get_stream(Stream, &stream, SIO_OUTPUT) )
-    return FALSE;
+    return false;
 
-  PL_qlf_put_int64(v, stream);
-  return PL_release_stream(stream);
+  bool rc = PL_qlf_put_int64(v, stream);
+  return PL_release_stream(stream) && rc;
 }
 
 static foreign_t
 ffi_read_int64_(term_t Stream, term_t i)
 { IOSTREAM* stream;
-  if ( !PL_get_stream(Stream, &stream, SIO_OUTPUT) )
-    return FALSE;
+  if ( !PL_get_stream(Stream, &stream, SIO_INPUT) )
+    return false;
 
   int64_t v;
   PL_qlf_get_int64(stream, &v);
 
-  int rc = PL_unify_int64(i, v);
+  bool rc = PL_unify_int64(i, v);
   return PL_release_stream(stream) && rc;
 }
 
@@ -550,7 +550,7 @@ static foreign_t
 throw_representation_error_ffi(term_t resource)
 { char *resource_s;
   if ( !PL_get_atom_chars(resource, &resource_s) )
-    return FALSE;
+    return false;
   return PL_representation_error(resource_s);
 }
 

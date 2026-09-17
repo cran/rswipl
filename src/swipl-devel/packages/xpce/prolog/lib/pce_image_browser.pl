@@ -40,7 +40,7 @@
            , ignore/1
            ]).
 
-resource(dir,   image, image('16x16/closedir.png')).
+resource(dir,   image, image('closedir.svg')).
 
 :- pce_begin_class(image_browser, window,
                    "Browser for image files").

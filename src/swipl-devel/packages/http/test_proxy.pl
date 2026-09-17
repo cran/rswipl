@@ -1,16 +1,40 @@
+/*  Part of SWI-Prolog
+
+    Author:        Jan Wielemaker
+    E-mail:        jan@swi-prolog.org
+    WWW:           http://www.swi-prolog.org
+    Copyright (c)  2016-2026, SWI-Prolog Solutions b.v.
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in
+       the documentation and/or other materials provided with the
+       distribution.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+    FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+    COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+    INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+    BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+    LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+    CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+    ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+*/
+
 :- module(test_proxy,
 	  [ test_proxy/0
 	  ]).
-:- asserta(user:file_search_path(foreign, '.')).
-:- asserta(user:file_search_path(foreign, '../clib')).
-:- asserta(user:file_search_path(foreign, '../ssl')).
-:- asserta(user:file_search_path(foreign, '../sgml')).
-:- asserta(user:file_search_path(library, '..')).
-:- asserta(user:file_search_path(library, '../plunit')).
-:- asserta(user:file_search_path(library, '../clib')).
-:- asserta(user:file_search_path(library, '../sgml')).
-:- asserta(user:file_search_path(library, '../ssl')).
-
 :- use_module(library(http/http_header)).
 :- use_module(library(http/http_open)).
 :- use_module(library(http/http_proxy)).
@@ -26,6 +50,11 @@
 :- if(exists_source(library(ssl))).
 :- use_module(library(ssl)).
 :- use_module(library(http/http_ssl_plugin)).
+:- use_module(library(apply), [maplist/3, maplist/2]).
+:- use_module(library(lists), [member/2, append/3]).
+:- use_module(library(random), [random_between/3]).
+:- use_module(library(readutil), [read_line_to_codes/2]).
+
 test_https(true).
 :- else.
 test_https(false).
@@ -131,22 +160,14 @@ start_http_proxy(Port):-
     tcp_listen(Socket, 5),
     pipe(ControlRead, ControlWrite),
     format(atom(Alias), 'http-proxy@~w', [Port]),
-    thread_create(http_proxy_server(Socket, ControlRead), ThreadId,
-		  [alias(Alias)]),
-    assert(http_proxy_control(Port, ThreadId, ControlWrite)).
+    assert(http_proxy_control(Port, Alias, ControlWrite)),
+    thread_create(http_proxy_server(Socket, ControlRead), _ThreadId,
+		  [alias(Alias)]).
 
 stop_http_proxy_server:-
     debug(stop, 'Stopping http proxy server ...', []),
     retract(http_proxy_control(Port, ThreadId, ControlWrite)),
-    close(ControlWrite),
-    catch(setup_call_cleanup(
-	      tcp_connect(localhost:Port, Tmp,
-			  [ bypass_proxy(true)
-			  ]),
-	      true,
-	      close(Tmp)),
-	  E, print_message(warning, stop(http_proxy_server, E))),
-    thread_join(ThreadId, _),
+    stop_control_thread(http_proxy_server, Port, ThreadId, ControlWrite),
     debug(stop, 'ok', []).
 
 http_proxy_server(Socket, ControlRead):-
@@ -251,9 +272,9 @@ http_get_proxy(Code, (Major-Minor), _Headers, Slave, Write):-
     copy_stream_data(Slave, Write).
 
 
-:-dynamic
-	test_socks_mapping/2,
-	test_http_connect_mapping/2.
+:- dynamic
+    test_socks_mapping/2,
+    test_http_connect_mapping/2.
 
 start_socks_server(Port):-
     tcp_socket(Socket),
@@ -262,20 +283,30 @@ start_socks_server(Port):-
     tcp_listen(Socket, 5),
     pipe(ControlRead, ControlWrite),
     format(atom(Alias), 'socks@~w', [Port]),
-    thread_self(Me),
-    thread_create(socks_server(Me, Socket, ControlRead), ThreadId,
-		  [ alias(Alias) ]),
-    assert(socks_control(Port, ThreadId, ControlWrite)),
-    thread_get_message(started).
+    assert(socks_control(Port, Alias, ControlWrite)),
+    thread_create(socks_server(Socket, ControlRead), _ThreadId,
+		  [ alias(Alias) ]).
 
 :- dynamic socks_waiting/1.
 
 stop_socks_server(Port) :-
     socks_control(Port, ThreadId, ControlWrite),
     ignore(thread_wait(socks_waiting(ThreadId), [timeout(5)])),
-    retract(socks_control(Port, ThreadId, ControlWrite)),
     thread_property(ThreadId, id(_0Id)),
     debug(stop, 'Stopping socks server ~p=~p ...', [ThreadId,_0Id]),
+    retract(socks_control(Port, ThreadId, ControlWrite)),
+    stop_control_thread(socks_server, Port, ThreadId, ControlWrite),
+    debug(stop, 'ok', []).
+
+%!  stop_control_thread(+Kind, +Port, +ThreadId, +ControlWrite) is det.
+%
+%   Shared cleanup for a proxy/socks worker thread.  Closes the
+%   ControlWrite pipe end so the worker's ControlRead sees EOF, then
+%   opens a dummy TCP connection to Port to unblock any pending
+%   tcp_accept/3, and finally waits for the thread to terminate.
+
+stop_control_thread(Kind, Port, ThreadId, ControlWrite) :-
+    close(ControlWrite),
     catch_with_backtrace(
 	setup_call_cleanup(
 	    tcp_connect(localhost:Port, Tmp,
@@ -283,13 +314,10 @@ stop_socks_server(Port) :-
 			]),
 	    true,
 	    close(Tmp)),
-	E, print_message(warning, stop(socks_server, E))),
-    thread_join(ThreadId, _),
-    close(ControlWrite),
-    debug(stop, 'ok', []).
+	E, print_message(warning, stop(Kind, E))),
+    thread_join(ThreadId, _).
 
-socks_server(Initiator, Socket, ControlRead) :-
-    thread_send_message(Initiator, started),
+socks_server(Socket, ControlRead) :-
     thread_self(Me),
     thread_property(Me, id(Id)),
     debug(start, 'Started SOCKS server in thread ~p', [Id]),
@@ -418,11 +446,9 @@ shovel_dispatch(Pair, SlaveRead, SlaveWrite, Control, [Stream|More], Done) :-
 
 :- dynamic
     socks_proxy_connection_attempt/1,
-    http_proxy_connection_attempt/1,
-    http_page_serve_attempt/1.
+    http_proxy_connection_attempt/1.
 
-http_endpoint(_Request):-
-    assert(http_page_serve_attempt(?)),
+http_endpoint(_Request) :-
     format('Content-type: text/html~n~nHello', []).
 
 start_servers :-
@@ -473,7 +499,7 @@ add_auth_http_proxy :-
 
 
 :- meta_predicate
-    proxy_test(0,0,-,-).
+    proxy_test(0,0,0,-,-).
 
 proxy_test(Init, Goal, Cleanup, SocksAttempts, HTTPAttempts) :-
     retractall(socks_proxy_connection_attempt(_)),
@@ -716,32 +742,3 @@ test('Test an exotic application-level proxy - http with authentication'):-
     assertion(HTTPProxyAttempts == [authenticated_get(URL)]).
 
 :- end_tests(proxy).
-
-		 /*******************************
-		 *        MESSAGE TRICKS        *
-		 *******************************/
-
-:- meta_predicate
-    catch_messages(0, -).
-
-catch_messages(Goal, Messages) :-
-    nb_setval(messages, []),
-    thread_self(Me),
-    setup_call_cleanup(assert((user:message_hook(Msg, _, _) :-
-				    catch_message(Me, Msg)),
-			      Ref),
-		       once(Goal),
-		       collect_messages(Messages, Ref)).
-
-catch_message(Me, Msg) :-
-    thread_self(Me),
-    !,
-    nb_getval(messages, L0),
-    duplicate_term(Msg, Copy),
-    nb_linkval(messages, [Copy|L0]).
-
-collect_messages(Messages, Ref) :-
-    erase(Ref),
-    nb_getval(messages, L),
-    nb_delete(messages),
-    reverse(L, Messages).

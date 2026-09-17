@@ -35,6 +35,7 @@
 #ifndef SDL_INPUT_H_INCLUDED
 #define SDL_INPUT_H_INCLUDED
 #include "sdluserevent.h"
+#include <SDL3/SDL.h>
 #ifdef __STDC_NO_ATOMICS__
 #define _Atomic(type) volatile type
 #else
@@ -76,6 +77,20 @@ typedef struct
   bool		 pending;	/* We started a ReadFile() */
   CRITICAL_SECTION lock;	/* Lock for async write */
   DWORD		 last_error;	/* ReadFile() failed with this code */
+#else
+  /* Watches that buffer (see watch_buffers()) are drained by the
+   * watcher thread rather than by whoever handles the SDL event.  On
+   * Windows the overlapped ReadFile() above already does that; here we
+   * read into inbuf ourselves.  Without it the console pty is drained
+   * only by the main thread, so a main-thread write that fills it can
+   * never complete -- the one thread that could make room is the one
+   * stuck in write().
+   */
+  char		*inbuf;		/* data read by the watcher thread */
+  size_t	 inbuf_size;	/* allocated size of inbuf */
+  size_t	 inbuf_len;	/* bytes currently held */
+  bool		 inbuf_eof;	/* read() answered 0 */
+  SDL_Mutex	*inbuf_lock;	/* guards the four fields above */
 #endif
   fd_ready_codes code;		/* SDL3 event.user.code */
   Any		userdata;	/* SDL3 event.user.data2 */
@@ -89,10 +104,13 @@ FDWatch *add_socket_to_watch(socket_t fd, int32_t code, void *userdata);
 void	 remove_fd_watch(FDWatch *watch);
 void	 processed_fd_watch(FDWatch *watch);
 
+/* Collect data the watcher thread already read.  Answers 0 at end of
+ * file and -1 on error, as read(2) does. */
+ssize_t  read_watch(FDWatch *watch, char *buffer, size_t size);
+
 #ifdef __WINDOWS__
 FDWatch *add_pipe_to_watch(HANDLE hPipe, int32_t code, void *userdata);
 FDWatch *add_out_pipe_to_watch(HANDLE hPipe);
-ssize_t  read_watch(FDWatch *watch, char *buffer, size_t size);
 ssize_t	 write_watch(FDWatch *watch, const char *buffer, size_t size);
 #endif
 

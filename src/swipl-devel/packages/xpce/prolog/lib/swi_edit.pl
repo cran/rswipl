@@ -1,9 +1,10 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        jan@swi.psy.uva.nl
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  1999-2011, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org/projects/xpce/
+    Copyright (c)  1999-2026, University of Amsterdam
+                              SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -32,7 +33,7 @@
     POSSIBILITY OF SUCH DAMAGE.
 */
 
-:- module(pce_nedit, []).
+:- module(pce_edit, []).
 :- use_module(library(pce)).
 :- use_module(library(pce_meta)).
 
@@ -53,14 +54,14 @@ prolog_edit:locate(class(ClassName), Location) :-       % class(Name)
     atom(ClassName),
     get(@pce, convert, ClassName, class, Class),
     source(Class, Location).
-prolog_edit:locate(SourceLoc, [file(File)|Extra]) :-
+prolog_edit:locate(SourceLoc, Location) :-
     object(SourceLoc),
     send(SourceLoc, instance_of, source_location),
     get(SourceLoc, file_name, File),
     (   get(SourceLoc, line_no, Line),
         Line \== @nil
-    ->  Extra = [line(Line)]
-    ;   Extra = []
+    ->  Location = #{file:File, line:Line}
+    ;   Location = #{file:File}
     ).
 prolog_edit:locate(Object, Location) :-                 % @reference
     source(Object, Location).
@@ -85,7 +86,7 @@ prolog_edit:(locate(->(Receiver, Selector), Location) :- !,
 prolog_edit:(locate(<-(Receiver, Selector), Location) :- !,
         locate(get(Receiver, Selector), Location)).
 
-source(Object, [file(Path)|T]) :-
+source(Object, Location) :-
     object(Object),
     send(Object, has_get_method, source),
     get(Object, source, Loc),
@@ -93,11 +94,25 @@ source(Object, [file(Path)|T]) :-
     get(Loc, file_name, FileName),
     exists_file(FileName),
     absolute_file_name(FileName, Path),
-    get(Loc, line_no, Line),
-    (   integer(Line)
-    ->  T = [line(Line)]
-    ;   T = []
+    !,
+    (   get(Loc, line_no, Line),
+        integer(Line)
+    ->  Location = #{file:Path, line:Line}
+    ;   Location = #{file:Path}
     ).
+source(Class, #{file:Path, line:Line}) :-
+    object(Class),
+    send(Class, instance_of, class),
+    get(Class, slot, make_class_function, Address),
+    Address \== 0,
+    prolog_edit:addr2location(Address, Path, Line).
+source(Method, #{file:Path, line:Line}) :-
+    object(Method),
+    send(Method, instance_of, method),
+    get(Method, slot, function, Address),
+    Address \== 0,
+    prolog_edit:addr2location(Address, Path, Line).
+
 
 receiver_class(Object, Class) :-
     object(Object),
@@ -105,12 +120,12 @@ receiver_class(Object, Class) :-
     get(Object, class_name, Class).
 receiver_class(Class, Class).
 
-method_source(ClassName, send(Selector), [file(File),line(Line)]) :-
+method_source(ClassName, send(Selector), #{file:File, line:Line}) :-
     var(ClassName),
     pce_principal:pce_lazy_send_method(Selector, ClassName, Binder),
     arg(4, Binder, source_location(File, Line)),
     \+ get(@classes, member, ClassName, _).
-method_source(ClassName, get(Selector), [file(File),line(Line)]) :-
+method_source(ClassName, get(Selector), #{file:File, line:Line}) :-
     var(ClassName),
     pce_principal:pce_lazy_get_method(Selector, ClassName, Binder),
     arg(4, Binder, source_location(File, Line)),
@@ -143,9 +158,8 @@ prolog_edit:select_location(Pairs, _Spec, Location) :-
              new(C, button(cancel, message(D, destroy)))),
         send(C, alignment, right),
         send(D, resize_message, message(D, layout, @arg2)),
-        send(D, modal, transient),
         send(D, transient_for, Frame),
-        (   get(D, confirm_centered, Frame?area?center, Rval)
+        (   get(D, confirm_centered, Frame, Rval)
         ->  send(D, destroy),
             Location = Rval
         ;   Location = []

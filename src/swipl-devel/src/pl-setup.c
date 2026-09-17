@@ -48,6 +48,8 @@
 #include "pl-trie.h"
 #include "pl-tabling.h"
 #include "pl-undo.h"
+#include "pl-zip.h"
+#include "pl-wrap.h"
 #include "pl-event.h"
 #include "pl-fli.h"
 #include "pl-funct.h"
@@ -145,6 +147,9 @@ setupProlog(void)
   initRecords();
   DEBUG(1, Sdprintf("Tries ...\n"));
   initTries();
+  initZip();				/* register the remaining blob types */
+  initUndo();				/* so that they exist before the */
+  initWrap();				/* first one is created */
   DEBUG(1, Sdprintf("Tabling ...\n"));
   initTabling();
   DEBUG(1, Sdprintf("Flags ...\n"));
@@ -773,29 +778,14 @@ initTerminationSignals(void)
 }
 #endif /*O_SIGNALS*/
 
-#ifdef O_C_STACK_GUARDED
-static void
-alt_segv_handler(int sig)
-{ GET_LD
-  (void)sig;
-
-  DEBUG(MSG_SIGNAL,
-	Sdprintf("Got C-stack overflow; critical = %d\n",
-		 LD->signal.sig_critical));
-
-  if ( LD->signal.sig_critical )
-  { longjmp(LD->signal.context, true);
-    /*NORETURN*/
-  }
-
-  sigCrashHandler(sig);
-}
-#endif
+/* Handle SIGSEGV on an alternative signal stack, so a C-stack overflow
+   still gets us a crash report.  See O_ALTSIGSTACK.
+*/
 
 bool
-initGuardCStack(void)
+initAltSignalStack(void)
 {
-#ifdef O_C_STACK_GUARDED
+#ifdef O_ALTSIGSTACK
   GET_LD
   stack_t ss = {0};
 
@@ -811,7 +801,7 @@ initGuardCStack(void)
       { struct sigaction sa = {0};
 
 	sa.sa_flags = SA_ONSTACK;
-	sa.sa_handler = alt_segv_handler;
+	sa.sa_handler = sigCrashHandler;
 	sigemptyset(&sa.sa_mask);
 
 	if ( sigaction(SIGSEGV, &sa, NULL) == 0 )
@@ -831,8 +821,7 @@ agc_handler(int sig)
 { GET_LD
   (void)sig;
 
-  if ( GD->statistics.atoms >= GD->atoms.non_garbage + GD->atoms.margin &&
-       !gc_status.blocked )
+  if ( AGC_wanted() && !gc_status.blocked )
     pl_garbage_collect_atoms();
 }
 
@@ -908,7 +897,7 @@ initSignals(DECL_LD)
   { struct signame *sn = signames;
 #ifdef HAVE_OS_SIGNALS
     initTerminationSignals();
-    initGuardCStack();
+    initAltSignalStack();
 #endif /*HAVE_OS_SIGNALS*/
     initBackTrace();
     for( ; sn->name; sn++)
@@ -1078,12 +1067,29 @@ blockSignal(int sig)
   DEBUG(1, Sdprintf("signal %d\n", sig));
 }
 
+/* Give the child of a fork() a clean signal mask.  Only the main
+ * thread processes SIGINT (see start_thread()), so a thread that forks
+ * hands the child a mask with SIGINT blocked, and exec() keeps the
+ * mask where it resets the handlers: ^C would not reach the new
+ * process.  Called from PL_cleanup_fork(), so it may not lock: no
+ * DEBUG() here.
+ */
+
+void
+resetSignalMask(void)
+{ sigset_t set;
+
+  sigemptyset(&set);
+  sigprocmask(SIG_SETMASK, &set, NULL);
+}
+
 #else /*O_SIGNALS && defined(HAVE_SIGPROCMASK)*/
 
 void blockSignals(sigset_t *old) {}
 void unblockSignals(sigset_t *old) {}
 void unblockSignal(int sig) {}
 void blockSignal(int sig) {}
+void resetSignalMask(void) {}
 
 #endif
 
@@ -1797,7 +1803,7 @@ freePrologLocalData(PL_local_data_t *ld)
   if ( ld->tabling.node_pool )
     free_alloc_pool(ld->tabling.node_pool);
 
-#ifdef O_C_STACK_GUARDED
+#ifdef O_ALTSIGSTACK
   if ( ld->signal.alt_stack )
     free(ld->signal.alt_stack);
 #endif

@@ -86,6 +86,29 @@ prolog:console_color(port(fail),             [bold, fg(red)]).
 prolog:console_color(port(redo),             [bold, fg(yellow)]).
 prolog:console_color(port(unify),            [bold, fg(blue)]).
 prolog:console_color(port(exception),        [bold, fg(magenta)]).
+% the goal of successive steps alternates between two backgrounds, which
+% separates the steps of a trace.  The first argument is the port, which
+% allows for colouring the goal by port instead of (or in addition to)
+% striping.
+prolog:console_color(goal(_, odd),           [hfg(yellow), bg8(238)]).
+prolog:console_color(goal(_, even),          [hfg(yellow), bg8(240)]).
+% interactive toplevel.  The command line (prompt and the text typed by
+% the user) has its own background.  The answers to a single query
+% alternate between two backgrounds, which separates the answers of a
+% non-deterministic query.
+prolog:console_color(prompt,                 [bold, fg8(h(cyan)), bg8(21)]).
+prolog:console_color(input,                  [bg8(21)]).
+prolog:console_color(answer(odd),            [bg8(238)]).
+prolog:console_color(answer(even),           [bg8(240)]).
+prolog:console_color(binding(name),          [bold, fg8(h(yellow))]).
+% tag that indicates the kind of a predicate in a list of candidates.
+prolog:console_color(predicate(iso),         [italic, hfg(cyan)]).
+prolog:console_color(predicate(built_in),    [italic, hfg(cyan)]).
+prolog:console_color(predicate(foreign),     [italic, hfg(cyan)]).
+prolog:console_color(predicate(library(_)),  [italic, hfg(green)]).
+prolog:console_color(predicate(module(_)),   [italic, hfg(green)]).
+prolog:console_color(predicate(user),        [italic, fg(default)]).
+prolog:console_color(predicate(undefined),   [italic, fg(red)]).
 % print message. the argument for debug(_) is the debug channel.
 prolog:console_color(message(informational), [hfg(green)]).
 prolog:console_color(message(information),   [hfg(green)]).
@@ -325,6 +348,9 @@ pce_style(terminal_image,
           [ background(black),
             colour(white),
             selection_style(style(background := yellow, colour := black)),
+            isearch_style(style(background := green, colour := black)),
+            isearch_other_style(style(background := pale_turquoise,
+                                      colour := black)),
             ansi_colours(vector(colour(black),	   % black
                                 colour(firebrick1),    % red
                                 colour(forestgreen),   % green

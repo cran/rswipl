@@ -589,7 +589,7 @@ partial_unify_dict(DECL_LD word dict1, word dict2)
   Word in2  = d2->arguments;
   Word end1 = in1+arityFunctor(d1->definition);
   Word end2 = in2+arityFunctor(d2->definition);
-  int rc;
+  boolex_t rc;
 
   /* unify the tags */
   if ( (rc=unify_tags(in1, in2, ALLOW_RETCODE)) != true )
@@ -638,7 +638,7 @@ unify_left_dict(DECL_LD word del, word from)
   Word fin  = fd->arguments;
   Word dend = din+arityFunctor(dd->definition);
   Word fend = fin+arityFunctor(fd->definition);
-  int rc;
+  boolex_t rc;
 
   /* unify the tags */
   if ( (rc=unify_tags(din, fin, ALLOW_RETCODE)) != true )
@@ -1021,54 +1021,82 @@ PL_for_dict(term_t dict,
 }
 
 
+/* pl_dict_pairs() is the number of key-value pairs of `dict`. */
+
+size_t
+pl_dict_pairs(DECL_LD term_t dict)
+{ Word p = valTermRef(dict);
+
+  deRef(p);
+
+  return arityTerm(*p)/2;
+}
+
+
+/* pl_dict_sort_indexes() fills `indexes` (which must have room for
+   `pairs` entries) with the order in which the pairs must be visited to
+   get them in the standard order of terms.  See PL_FOR_DICT_SORTED.
+*/
+
+void
+pl_dict_sort_indexes(DECL_LD term_t dict, size_t *indexes, size_t pairs)
+{ cmp_dict_index_data ctx;
+  Word p = valTermRef(dict);
+
+  deRef(p);
+
+  for(size_t i=0; i<pairs; i++)
+    indexes[i] = i;
+
+  ctx.ld = LD;
+  ctx.data = argTermP(*p,1);
+  ctx.indexes = indexes;
+
+  sort_r(indexes, pairs, sizeof(size_t), cmp_dict_index, &ctx);
+}
+
+
+/* pl_dict_pair() puts the key and value of the i-th pair of `dict` in
+   av+0 and av+1.  If `indexes` is not NULL it defines the order.  Note
+   that the term must be reloaded from the term reference as the stacks
+   may have been shifted since the previous pair.
+*/
+
+void
+pl_dict_pair(DECL_LD term_t dict, const size_t *indexes, size_t i, term_t av)
+{ Word p = valTermRef(dict);
+  size_t in = indexes ? indexes[i]*2+1 : i*2+1;
+  Functor f;
+
+  deRef(p);
+  f = valueTerm(*p);
+  *valTermRef(av+0) = linkValI(&f->arguments[in+1]);
+  *valTermRef(av+1) = linkValI(&f->arguments[in]);
+}
+
+
 int
 pl_for_dict(DECL_LD term_t dict,
 	   int LDFUNCP (*func)(DECL_LD term_t key, term_t value, int last, void *closure),
 	   void *closure,
 	   int flags)
 { term_t av = PL_new_term_refs(2);
-  size_t i, arity, pairs;
-  Word p = valTermRef(dict);
+  size_t i, pairs = pl_dict_pairs(dict);
   size_t index_buf[256];
   size_t *indexes = NULL;
   int rc = 0;
 
-  deRef(p);
-  arity = arityTerm(*p);
-  pairs = arity/2;
-
   if ( (flags&PL_FOR_DICT_SORTED) )
-  { cmp_dict_index_data ctx;
-
-    if ( pairs < 256 )
+  { if ( pairs < 256 )
       indexes = index_buf;
     else if ( !(indexes = malloc(pairs*sizeof(size_t))) )
       return PL_no_memory();
 
-    for(i=0; i<pairs; i++)
-      indexes[i] = i;
-
-    ctx.ld = LD;
-    ctx.data = argTermP(*p,1);
-    ctx.indexes = indexes;
-
-    sort_r(indexes, pairs, sizeof(size_t), cmp_dict_index, &ctx);
+    pl_dict_sort_indexes(dict, indexes, pairs);
   }
 
   for(i=0; i < pairs; )
-  { Word p = valTermRef(dict);
-    size_t in;
-
-    if ( indexes )
-    { in = indexes[i]*2+1;
-    } else
-    { in = i*2+1;
-    }
-
-    deRef(p);
-    Functor f = valueTerm(*p);
-    *valTermRef(av+0) = linkValI(&f->arguments[in+1]);
-    *valTermRef(av+1) = linkValI(&f->arguments[in]);
+  { pl_dict_pair(dict, indexes, i, av);
 
     if ( (rc=LDFUNCP(*func)(av+0, av+1, ++i == pairs, closure)) != 0 )
       break;
@@ -1481,7 +1509,7 @@ PRED_IMPL("get_dict", 5, get_dict, 0)
 
   for(;;)
   { word new;
-    int rc;
+    boolex_t rc;
 
     if ( (rc = put_dict(*valTermRef(dt),
 			1, valTermRef(av), &new)) == true )
@@ -1590,7 +1618,7 @@ static bool
 unify_dict_copy(DECL_LD term_t t, term_t dt, word dict)
 { term_t tmp = PL_new_term_ref(); /* safe, we can allocate 10 */
   word copy;
-  int rc;
+  boolex_t rc;
 
   for(;;)
   { if ( (rc=copy_keys_dict(dict, &copy)) == true )
@@ -1693,7 +1721,7 @@ put_dict4(DECL_LD term_t key, term_t dict, term_t value, term_t newdict)
   { retry:
     Mark(fli_context->mark);
     word new;
-    int rc;
+    boolex_t rc;
 
     if ( (rc = put_dict(*valTermRef(dt),
 			1, valTermRef(av), &new)) == true )
@@ -1795,7 +1823,7 @@ retry:
 
     if ( (vp=dict_lookup_ptr(*valTermRef(mt), key, NULL)) &&
 	 unify_ptrs(vp, valTermRef(A3), ALLOW_GC|ALLOW_SHIFT) )
-    { int rc;
+    { boolex_t rc;
       word new;
 
       if ( (rc=del_dict(*valTermRef(mt), key, &new)) == true )
@@ -1831,7 +1859,7 @@ retry:
   if ( get_create_dict_ex(A1, dt+0) &&
        get_create_dict_ex(A2, dt+1) )
   { Mark(fli_context->mark);
-    int rc = select_dict(*valTermRef(dt+0), *valTermRef(dt+1), &r);
+    boolex_t rc = select_dict(*valTermRef(dt+0), *valTermRef(dt+1), &r);
 
     switch(rc)
     { case true:
@@ -1865,7 +1893,7 @@ retry:
   if ( get_create_dict_ex(A1, dt+0) &&
        get_create_dict_ex(A2, dt+1) )
   { Mark(fli_context->mark);
-    int rc = unify_left_dict(*valTermRef(dt+0), *valTermRef(dt+1));
+    boolex_t rc = unify_left_dict(*valTermRef(dt+0), *valTermRef(dt+1));
 
     switch(rc)
     { case true:
@@ -1893,7 +1921,7 @@ PRED_IMPL(">:<", 2, punify_dict, 0)
 retry:
   if ( get_create_dict_ex(A1, dt+0) &&
        get_create_dict_ex(A2, dt+1) )
-  { int rc = partial_unify_dict(*valTermRef(dt+0), *valTermRef(dt+1));
+  { boolex_t rc = partial_unify_dict(*valTermRef(dt+0), *valTermRef(dt+1));
 
     switch(rc)
     { case true:

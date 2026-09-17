@@ -117,6 +117,7 @@ install_dll(${DLLS_SEC})
 endif()
 
 pkg_doc(utf8proc
+	DEPENDS utf8proc unicode_security uniname
 	SECTION
 	    unicode.pl
 	    unicode_security.pl

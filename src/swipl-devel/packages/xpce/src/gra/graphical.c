@@ -1,9 +1,10 @@
 /*  Part of XPCE --- The SWI-Prolog GUI toolkit
 
     Author:        Jan Wielemaker and Anjo Anjewierden
-    E-mail:        jan@swi.psy.uva.nl
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  1985-2002, University of Amsterdam
+    E-mail:        jan@swi-prolog.org
+    WWW:           https://www.swi-prolog.org/projects/xpce/
+    Copyright (c)  1985-2026, University of Amsterdam
+			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -537,6 +538,22 @@ changedAreaGraphical(Any obj, Int x, Int y, Int w, Int h)
 	}
 					/* end hacks! */
 
+	ox--; oy--; ow+=2; oh+=2;
+	cx--; cy--; cw+=2; ch+=2;
+
+	/* A graphical of the fixed layer is placed in the coordinates of
+	 * what is on screen, while damage is recorded in those of what is
+	 * being shown.  See <-fixed_graphicals in src/win/window.c.
+	 */
+	if ( notNil(sw->fixed_graphicals) &&
+	     memberChain(sw->fixed_graphicals, gr) )
+	{ int sox = valInt(sw->scroll_offset->x);
+	  int soy = valInt(sw->scroll_offset->y);
+
+	  ox -= sox; oy -= soy;
+	  cx -= sox; cy -= soy;
+	}
+
 	changed_window(sw, ox, oy, ow, oh, TRUE);
 	changed_window(sw, cx, cy, cw, ch, offFlag(gr, F_SOLID));
 
@@ -606,6 +623,11 @@ changedImageGraphical(Any obj, Int x, Int y, Int w, Int h)
 	cx += ox;
 	cy += oy;
       }
+
+      cx -= 1; cy -= 1; cw += 2; ch += 2;
+				/* Antialiased strokes and non-integer
+				 * coords can paint just outside the
+				 * integer bounding box. */
 
       if ( instanceOfObject(gr, ClassText) ||
 	   instanceOfObject(gr, ClassDialogItem) )
@@ -832,6 +854,20 @@ RedrawArea(Any obj, Area area)
   else
     ofg = NULL;
 
+/* <-opacity fades what a graphical paints into the surface it shares with
+   the graphicals around it.  A window paints nothing there: it has a
+   surface of its own that the frame composites, so fading a window -- how
+   a frame shows which of its panes has the focus, see library(pane_frame)
+   -- happens where that compositing does, in ws_draw_window().  Nothing is
+   pushed while <-opacity is 1.0, so the ordinary case pays nothing.
+*/
+
+  double op = valNum(gr->opacity);
+  bool use_group = ( op < 1.0 && !instanceOfObject(gr, ClassWindow) );
+
+  if ( use_group )
+    r_push_group();
+
   if ( instanceOfObject(gr, ClassWindow) ) /* Must be quicker */
   { PceWindow sw = (PceWindow) gr;
 
@@ -840,22 +876,18 @@ RedrawArea(Any obj, Area area)
 
     rval = RedrawAreaGraphical(sw, area);
   } else
-  { double op = valNum(gr->opacity);
-    bool use_group = (op < 1.0);
-
-    if ( clearbg )
+  { if ( clearbg )
     { int x, y, w, h;
 
       initialiseDeviceGraphical(obj, &x, &y, &w, &h);
       r_clear(x, y, w, h);
     }
 
-    if ( use_group )
-      r_push_group();
     rval = qadSendv(gr, NAME_RedrawArea, 1, (Any *)&area);
-    if ( use_group )
-      r_pop_group_with_alpha(op);
   }
+
+  if ( use_group )
+    r_pop_group_with_alpha(op);
 
   if ( fix )
     r_unfix_colours(&ctx);
@@ -3379,7 +3411,7 @@ static char *T_graphicsState[] =
 	{ "pen=[0..]", "texture=[texture_name]", "colour=[colour|pixmap]",
 	  "background=[colour|pixmap]" };
 static char *T_drawPoly[] =
-	{ "points=chain|vector", "closed=[bool]", "fill=[colour|image]*" };
+	{ "points=chain|vector", "closed=[bool]", "fill=" TYPE_FILL_ARG };
 static char *T_focus[] =
 	{ "recogniser=[recogniser]", "cursor=[cursor]", "button=[name]" };
 static char *T_drawText[] =
@@ -3399,12 +3431,12 @@ static char *T_inEventArea[] =
 	{ "x=int", "y=int" };
 static char *T_drawArc[] =
 	{ "x=int", "y=int", "w=int", "h=int",
-	  "angle1=[real]", "angle2=[real]", "fill=[colour|image]*" };
+	  "angle1=[real]", "angle2=[real]", "fill=" TYPE_FILL_ARG };
 static char *T_drawFill[] =
-	{ "x=int", "y=int", "w=int", "h=int", "fill=[colour|image]*" };
+	{ "x=int", "y=int", "w=int", "h=int", "fill=" TYPE_FILL_ARG };
 static char *T_drawBox[] =
 	{ "x=int", "y=int", "w=int", "h=int", "radius=[0..]",
-	  "fill=[image|colour|elevation]", "up=[bool]" };
+	  "fill=" TYPE_FILL_3D, "up=[bool]" };
 static char *T_flash[] =
 	{ "area=[area]", "time=[int]" };
 static char *T_containerSizeChanged[] =

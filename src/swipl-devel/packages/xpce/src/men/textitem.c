@@ -49,6 +49,7 @@ static status	resetTextItem(TextItem ti);
 static int	combo_flags(TextItem ti);
 static status	detachTimerTextItem(TextItem ti);
 static int	text_item_clear_width(TextItem ti);
+static int	clear_icon_shown(TextItem ti);
 
 #define STEPPER_BOX_W   14
 #define STEPPER_BOX_GAP 5
@@ -164,7 +165,7 @@ RedrawAreaTextItem(TextItem ti, Area a)
   } else
     repaintText(vt, tx, ty, tw, th);
 
-  if ( clrw > 0 && getSizeCharArray(vt->string) != ZERO )
+  if ( clear_icon_shown(ti) )
   { Image ci = ti->clear_image;
     int iw = valInt(ci->size->w);
     int ih = valInt(ci->size->h);
@@ -529,7 +530,7 @@ forwardCompletionEvent(EventObj ev)
       succeed;
     }
 
-    if ( insideEvent(ev, (Graphical)lb->image) &&
+    if ( insideEvent(ev, (Graphical)lb->text_image) &&
 	 !insideEvent(ev, (Graphical)sb) ) /* HACK: they can overlap a bit */
     { if ( isAEvent(ev, NAME_msLeftDrag) ||
 	   isAEvent(ev, NAME_locMove) )
@@ -812,9 +813,17 @@ combo_flags(TextItem ti)
 }
 
 
+/* The completer is shared with class menu (a ->kind: cycle menu opens
+   it as its combo box), so its client is a dialog_item that need not be
+   a text_item and need not have a <->style at all.
+*/
+
 int
 text_item_combo_width(TextItem ti)
-{ if ( ti->style == NAME_comboBox )
+{ if ( !instanceOfObject(ti, ClassTextItem) )
+    return 0;
+
+  if ( ti->style == NAME_comboBox )
   { int w = ws_combo_box_width((Graphical)ti);
 
     return w >= 0 ? w : dpi_scale(ti, 14);
@@ -832,11 +841,17 @@ text_item_combo_width(TextItem ti)
    space is reserved as soon as a <-clear_image is set (and the style is
    `normal') so the field does not reflow when the icon appears; the icon
    itself is only painted/clickable while the field is non-empty.
+
+   A field the user cannot type in cannot be cleared either, so one that
+   is not <-editable reserves nothing and shows nothing: the whole width
+   is for the text.  `->editable' asks for a recompute, as this changes
+   the width the field asks its dialog for.
 */
 
 static int
 text_item_clear_width(TextItem ti)
-{ if ( notNil(ti->clear_image) && ti->style == NAME_normal )
+{ if ( notNil(ti->clear_image) && ti->style == NAME_normal &&
+       ti->editable == ON )
   { int iw = valInt(ti->clear_image->size->w);
     int ex = (int)valNum(getExFont(ti->value_text->font));
 
@@ -928,7 +943,7 @@ attachTimerTextItem(TextItem ti)
   { Timer t = newObject(ClassTimer, delay,
 			newObject(ClassMessage, ti, NAME_repeat, EAV), EAV);
     attributeObject(ti, NAME_Timer, t);
-    startTimer(t, NAME_once);
+    startTimer(t, NAME_once, DEFAULT);
   }
 
   succeed;
@@ -951,7 +966,7 @@ detachTimerTextItem(TextItem ti)
 static status
 repeatTextItem(TextItem ti)
 { Timer t;
-  Real i = getClassVariableValueObject(ti, NAME_repeatInterval);
+  Num i = getClassVariableValueObject(ti, NAME_repeatInterval);
 
   if ( ti->status == NAME_increment ||
        ti->status == NAME_decrement )
@@ -1082,7 +1097,7 @@ eventTextItem(TextItem ti, EventObj ev)
 	}
       }
 
-      if ( clear_icon_shown(ti) && ti->editable == ON )
+      if ( clear_icon_shown(ti) )
       { Int X, Y;
 	int x, y;
 	int clrw = text_item_clear_width(ti);
@@ -1441,6 +1456,7 @@ editableTextItem(TextItem ti, BoolObj val)
   { assign(ti, editable, val);
     if ( val == OFF && notNil(ti->device) )
       send(ti->device, NAME_advance, ti, EAV);
+    requestComputeGraphical(ti, DEFAULT);  /* the clear icon comes and goes */
     changedDialogItem(ti);
   }
 
@@ -1832,7 +1848,7 @@ static classvardecl rc_textItem[] =
      "@on: ignore case for completion"),
   RC(NAME_repeatDelay, "real", "0.35",
      "Time to wait until start of repeat"),
-  RC(NAME_repeatInterval, "real", "0.06",
+  RC(NAME_repeatInterval, "num", "0.06",
      "Interval between repeats"),
   RC(NAME_look, RC_REFINE, UXWIN("xpce", "win"), NULL),
   RC(NAME_placeholderColour, "colour", "grey60",

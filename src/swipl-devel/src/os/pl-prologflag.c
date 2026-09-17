@@ -250,6 +250,7 @@ setPrologFlag(const char *name, unsigned int flags, ...)
     f->index = 0;
     f->flags = flags;
     f->oneof = NULL;
+    f->pushed = NULL;
     addNewHTableWP(GD->prolog_flag.table, an, f);
     first_def = true;
   }
@@ -326,15 +327,17 @@ clean_prolog_flag(prolog_flag *f)
   oneof *of;
 
   set_flag_type(f, FT_INTEGER);
-  switch(type)
-  { case FT_TERM:
-      PL_erase(f->value.t);
-      break;
-    case FT_ATOM:
-      PL_unregister_atom(f->value.a);
-      break;
-    default:
-      ;
+  if ( !(f->flags & FF_PUSH_ABSENT) )
+  { switch(type)
+    { case FT_TERM:
+	PL_erase(f->value.t);
+	break;
+      case FT_ATOM:
+	PL_unregister_atom(f->value.a);
+	break;
+      default:
+	;
+    }
   }
   memset(&f->value, 0, sizeof(f->value));
 
@@ -342,14 +345,22 @@ clean_prolog_flag(prolog_flag *f)
   { f->oneof = NULL;
     free_oneof(of);
   }
+
+  while ( f->pushed )
+  { prolog_flag *p = f->pushed;
+    f->pushed = p->pushed;
+    p->pushed = NULL;
+    clean_prolog_flag(p);
+    freeHeap(p, sizeof(*p));
+  }
 }
 
-#ifdef O_PLMT
 static prolog_flag *
 copy_prolog_flag(const prolog_flag *f)
 { prolog_flag *copy = allocHeapOrHalt(sizeof(*copy));
 
   *copy = *f;
+  copy->pushed = NULL;
   if ( f->oneof )
     f->oneof->references++;
   switch((f->flags & FT_MASK))
@@ -367,6 +378,7 @@ copy_prolog_flag(const prolog_flag *f)
 }
 
 
+#ifdef O_PLMT
 static void
 copySymbolPrologFlagTable(table_key_t name, table_value_t *value)
 { atom_t key = (atom_t)name;
@@ -576,20 +588,34 @@ checkOnError(term_t value, atom_t a, atom_t key)
 
 
 
-static int
-setFileNameCaseHandling(atom_t a)
+/* Also used before Prolog is started, from -Dfile_name_case_handling=...
+   (see setEarlyDefines() in pl-init.c), hence the plain string interface.
+*/
+
+bool
+setFileNameCaseHandlingName(const char *name)
 { GET_LD
 
-  if ( a == ATOM_case_sensitive )
+  if ( streq(name, "case_sensitive") )
   { setPrologFlagMask(PLFLAG_FILE_CASE);
     setPrologFlagMask(PLFLAG_FILE_CASE_PRESERVING);
-  } else if ( a == ATOM_case_preserving )
+  } else if ( streq(name, "case_preserving") )
   { setPrologFlagMask(PLFLAG_FILE_CASE_PRESERVING);
     clearPrologFlagMask(PLFLAG_FILE_CASE);
-  } else if ( a == ATOM_case_insensitive )
+  } else if ( streq(name, "case_insensitive") )
   { clearPrologFlagMask(PLFLAG_FILE_CASE);
     clearPrologFlagMask(PLFLAG_FILE_CASE_PRESERVING);
   } else
+  { return false;
+  }
+
+  return true;
+}
+
+
+static int
+setFileNameCaseHandling(atom_t a)
+{ if ( !setFileNameCaseHandlingName(PL_atom_chars(a)) )
   { term_t value = PL_new_term_ref();
 
     PL_put_atom(value, a);
@@ -606,13 +632,11 @@ currentFileNameCaseHandling(void)
 { GET_LD
 
   if ( truePrologFlag(PLFLAG_FILE_CASE) )
-  { if ( truePrologFlag(PLFLAG_FILE_CASE_PRESERVING) )
-      return ATOM_case_preserving;
-    else
-      return ATOM_case_insensitive;
-  } else
-  { return ATOM_case_sensitive;
-  }
+    return ATOM_case_sensitive;
+  else if ( truePrologFlag(PLFLAG_FILE_CASE_PRESERVING) )
+    return ATOM_case_preserving;
+  else
+    return ATOM_case_insensitive;
 }
 
 
@@ -1087,6 +1111,7 @@ new_prolog_flag(DECL_LD term_t value, unsigned int flags)
   prolog_flag *f = allocHeapOrHalt(sizeof(*f));
   f->index = 0;
   f->oneof = NULL;
+  f->pushed = NULL;
 
   switch( (flags & FT_MASK) )
   { case FT_FROM_VALUE:
@@ -1130,8 +1155,8 @@ new_prolog_flag(DECL_LD term_t value, unsigned int flags)
       PL_register_atom(f->value.a);
       break;
     case FT_BOOL:
-    { int b;
-      if ( !PL_get_bool_ex(value, &b) )
+    { bool b;
+      if ( !PL_get_stdbool_ex(value, &b) )
 	goto wrong_type;
       f->flags = FT_BOOL;
       f->value.a = (b ? ATOM_true : ATOM_false);
@@ -1171,9 +1196,9 @@ set_flag_value(DECL_LD prolog_flag *f, Module m, atom_t k, term_t value)
 
   switch(f->flags & FT_MASK)
   { case FT_BOOL:
-    { int val;
+    { bool val;
 
-      if ( !PL_get_bool_ex(value, &val) )
+      if ( !PL_get_stdbool_ex(value, &val) )
 	return false;
 
 					/* deal with side-effects */
@@ -1632,6 +1657,192 @@ PRED_IMPL("create_prolog_flag", 3, create_prolog_flag, PL_FA_ISO)
 
   return f != NULL;
 }
+
+
+		 /*******************************
+		 *	  PUSH / POP FLAGS	*
+		 *******************************/
+
+/** push_prolog_flag(+Flag, +Value) is det.
+
+Save the current thread-local value of Flag (or that it does not exist)
+and set it to Value.  Nestable.  See pop_prolog_flag/1.
+*/
+
+/** pop_prolog_flag(+Flag) is det.
+
+Restore the last state saved by push_prolog_flag/2.  If Flag was absent
+at the matching push, it is removed again.  Raises existence_error if
+no matching push exists on the current thread.
+*/
+
+#define put_saved_flag_value(val, saved) \
+	LDFUNC(put_saved_flag_value, val, saved)
+
+static bool
+put_saved_flag_value(DECL_LD term_t val, const prolog_flag *saved)
+{ switch(saved->flags & FT_MASK)
+  { case FT_BOOL:
+    case FT_ATOM:
+      return PL_put_atom(val, saved->value.a);
+    case FT_INTEGER:
+      return PL_put_int64(val, saved->value.i);
+    case FT_FLOAT:
+      return PL_put_float(val, saved->value.f);
+    case FT_TERM:
+      return PL_recorded(saved->value.t, val);
+  }
+  assert(0);
+  return false;
+}
+
+#define ensure_local_flag(k, f) \
+	LDFUNC(ensure_local_flag, k, f)
+
+/* Return a thread-local prolog_flag for `k`.  Unlike the copy-on-write
+   set_prolog_flag path, we force a local copy even when only one thread
+   exists: otherwise a second thread created *between* push and pop
+   would cause an internal set_prolog_flag to COW the flag into LD,
+   leaving the pushed chain stranded in the GD entry and making pop
+   fail to find it.
+*/
+static prolog_flag *
+ensure_local_flag(DECL_LD atom_t k, prolog_flag *f)
+{
+#ifdef O_PLMT
+  if ( !(f->flags & FF_ISLOCAL) )
+  { f = copy_prolog_flag(f);
+    register_local_flag(k, f);
+    PL_register_atom(k);
+  }
+#endif
+  return f;
+}
+
+static
+PRED_IMPL("push_prolog_flag", 2, push_prolog_flag, 0)
+{ PRED_LD
+  atom_t k;
+  Module m = MODULE_parse;
+  term_t key   = PL_new_term_ref();
+  term_t value = A2;
+
+  if ( !PL_strip_module(A1, &m, key) ||
+       !PL_get_atom_ex(key, &k) )
+    return false;
+
+  PL_LOCK(L_PLFLAG);
+  prolog_flag *f = NULL;
+#ifdef O_PLMT
+  if ( LD->prolog_flag.table )
+    f = lookupHTableWP(LD->prolog_flag.table, k);
+#endif
+  if ( !f )
+    f = lookupHTableWP(GD->prolog_flag.table, k);
+
+  bool rc;
+  if ( f )
+  { if ( !check_flag_write_access(f, k, 0) )
+    { PL_UNLOCK(L_PLFLAG);
+      return false;
+    }
+    f = ensure_local_flag(k, f);
+    prolog_flag *saved = copy_prolog_flag(f);
+    rc = set_flag_value(f, m, k, value);
+    if ( rc )
+    { saved->pushed = f->pushed;
+      f->pushed = saved;
+    } else
+    { clean_prolog_flag(saved);
+      freeHeap(saved, sizeof(*saved));
+    }
+  } else
+  { prolog_flag *nf = new_prolog_flag(value, FT_FROM_VALUE);
+    if ( nf )
+    { prolog_flag *absent = allocHeapOrHalt(sizeof(*absent));
+      memset(absent, 0, sizeof(*absent));
+      absent->flags = FT_INTEGER|FF_PUSH_ABSENT;
+      nf->pushed = absent;
+#ifdef O_PLMT
+      register_local_flag(k, nf);
+      PL_register_atom(k);
+#else
+      addNewHTableWP(GD->prolog_flag.table, k, nf);
+      PL_register_atom(k);
+#endif
+      rc = true;
+    } else
+    { rc = false;
+    }
+  }
+  PL_UNLOCK(L_PLFLAG);
+
+  return rc;
+}
+
+static
+PRED_IMPL("pop_prolog_flag", 1, pop_prolog_flag, 0)
+{ PRED_LD
+  atom_t k;
+  Module m = MODULE_parse;
+  term_t key = PL_new_term_ref();
+
+  if ( !PL_strip_module(A1, &m, key) ||
+       !PL_get_atom_ex(key, &k) )
+    return false;
+
+  PL_LOCK(L_PLFLAG);
+  prolog_flag *f = NULL;
+#ifdef O_PLMT
+  bool in_local = false;
+  if ( LD->prolog_flag.table )
+  { f = lookupHTableWP(LD->prolog_flag.table, k);
+    in_local = (f != NULL);
+  }
+#endif
+  if ( !f )
+    f = lookupHTableWP(GD->prolog_flag.table, k);
+
+  if ( !f || !f->pushed )
+  { PL_UNLOCK(L_PLFLAG);
+    term_t ex = PL_new_term_ref();
+    return ( PL_put_atom(ex, k) &&
+	     PL_error(NULL, 0, NULL, ERR_EXISTENCE,
+		      ATOM_pushed_flag, ex) );
+  }
+
+  prolog_flag *prev = f->pushed;
+  bool rc;
+
+  if ( prev->flags & FF_PUSH_ABSENT )
+  { f->pushed = NULL;
+#ifdef O_PLMT
+    if ( in_local )
+      deleteHTableWP(LD->prolog_flag.table, k);
+    else
+#endif
+      deleteHTableWP(GD->prolog_flag.table, k);
+    clean_prolog_flag(f);
+    freeHeap(f, sizeof(*f));
+    PL_unregister_atom(k);
+    freeHeap(prev, sizeof(*prev));
+    rc = true;
+  } else
+  { term_t restore = PL_new_term_ref();
+    rc = put_saved_flag_value(restore, prev);
+    if ( rc )
+    { f->pushed = prev->pushed;
+      prev->pushed = NULL;
+      rc = set_flag_value(f, m, k, restore);
+      clean_prolog_flag(prev);
+      freeHeap(prev, sizeof(*prev));
+    }
+  }
+  PL_UNLOCK(L_PLFLAG);
+
+  return rc;
+}
+
 
 bool
 PL_current_prolog_flag(atom_t name, int type, void *value)
@@ -2127,7 +2338,7 @@ initPrologFlags(void)
   setPrologFlag("win_file_access_check", FT_ATOM,
 		get_win_file_access_check(), 0);
 #endif
-  setPrologFlag("file_name_case_handling", FT_ATOM,
+  setPrologFlag("file_name_case_handling", FT_ATOM|FF_READONLY,
 		stringAtom(currentFileNameCaseHandling()));
   setPrologFlag("path_max", FT_INTEGER|FF_READONLY, (intptr_t)PATH_MAX);
   setPrologFlag("version", FT_INTEGER|FF_READONLY, (intptr_t)PLVERSION);
@@ -2400,6 +2611,7 @@ initPrologFlags(void)
 static void
 setTmpDirPrologFlag(void)
  { char envbuf[PATH_MAX];
+   char plbuf[PATH_MAX];
    char *td = NULL;
 
 #ifdef __unix__
@@ -2410,6 +2622,14 @@ setTmpDirPrologFlag(void)
 
    if (td == (char *) NULL)
      td = SWIPL_TMP_DIR;
+
+   /* The environment holds a path in the syntax of the OS.  Every path
+      Prolog hands out or accepts uses "/", so a file built from this
+      one with directory_file_path/3 would not compare equal to the same
+      file named any other way.
+   */
+   if ( PrologPath(td, plbuf, sizeof(plbuf)) )
+     td = plbuf;
 
    setPrologFlag("tmp_dir", FT_ATOM, td);
 }
@@ -2598,4 +2818,6 @@ BeginPredDefs(prologflag)
   PRED_DEF("create_prolog_flag",   3, create_prolog_flag,   0)
   PRED_DEF("current_prolog_flag",  2, current_prolog_flag,  PL_FA_ISO|NDET)
   PRED_DEF("$current_prolog_flag", 5, dcurrent_prolog_flag, NDET)
+  PRED_DEF("push_prolog_flag",     2, push_prolog_flag,     0)
+  PRED_DEF("pop_prolog_flag",      1, pop_prolog_flag,      0)
 EndPredDefs

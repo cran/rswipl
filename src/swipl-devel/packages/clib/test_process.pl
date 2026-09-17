@@ -66,6 +66,14 @@ has_exe(Name) :-
     absolute_file_name(path(Name), _, Options1),
     !.
 
+%!  prolog_command(+Goal, -Exe, -Argv) is det.
+%
+%   Run Goal using a fresh Prolog process.  Used to create a process
+%   without relying on the tools installed on the target platform.
+
+prolog_command(Goal, Exe, ['-f', none, '-g', Goal, '-t', halt]) :-
+    current_prolog_flag(executable, Exe).
+
 :- begin_tests(process_create, [sto(rational_trees)]).
 
 test(echo, [condition(has_exe(true))]) :-
@@ -130,6 +138,18 @@ test(cwd, [true, condition(( current_prolog_flag(windows, true),
 
 tmp_dir(Dir) :-
     current_prolog_flag(tmp_dir, Dir).
+
+test(detached) :-                       % must not wait for the process
+    prolog_command('sleep(10)', Exe, Argv),
+    get_time(T0),
+    process_create(Exe, Argv,
+		   [ detached(true),
+		     stdin(null),
+		     stdout(null),
+		     stderr(null)
+		   ]),
+    get_time(T1),
+    assertion(T1-T0 < 5).
 
 :- end_tests(process_create).
 

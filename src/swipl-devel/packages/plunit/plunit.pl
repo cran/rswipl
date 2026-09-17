@@ -1081,12 +1081,11 @@ run_test_once(Unit, Name, Progress, Line, Options, Body) :-
     option(occurs_check(Occurs), Options),
     !,
     begin_test(Unit, Name, Line, Progress),
-    current_prolog_flag(occurs_check, Old),
     setup_call_cleanup(
-	set_prolog_flag(occurs_check, Occurs),
+	push_prolog_flag(occurs_check, Occurs),
 	capture_output(run_test_6(Unit, Name, Line, Options, Body, Result),
 		       Output),
-	set_prolog_flag(occurs_check, Old)),
+	pop_prolog_flag(occurs_check)),
     end_test(Unit, Name, Line, Progress),
     report_result(Result, Progress, Output, Options).
 run_test_once(Unit, Name, Progress, Line, Options, Body) :-
@@ -1378,7 +1377,7 @@ cleanup(Module, Options) :-
     ).
 
 success(Unit, Name, Progress, Line, Det, Time, _Output, Options) :-
-    memberchk(fixme(Reason), Options),
+    option(fixme(Reason), Options),
     !,
     (   (   Det == true
 	;   memberchk(nondet, Options)

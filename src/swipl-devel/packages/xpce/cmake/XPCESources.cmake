@@ -17,7 +17,7 @@ set(EVT_SRC	clickgesture.c conngesture.c event.c
 
 set(GNU_SRC	getdate.c)
 
-set(GRA_SRC	arc.c arrow.c bitmap.c box.c circle.c colour.c
+set(GRA_SRC	arc.c arrow.c bitmap.c box.c circle.c colour.c gradient.c
 		connection.c coords.c cursor.c device.c ellipse.c
 		figure.c font.c format.c graphical.c handle.c image.c
 		joint.c line.c link.c listbrowser.c node.c path.c
@@ -71,7 +71,14 @@ set(WIN_SRC	browser.c decorate.c dialog.c display.c
 
 set(SDL_SRC	sdl.c sdldisplay.c sdlfont.c sdlmenu.c sdlwindow.c
 		sdlcolour.c sdldraw.c sdlframe.c sdlstream.c sdlinput.c
-		sdlcursor.c  sdlevent.c    sdlimage.c  sdltimer.c)
+		sdlcursor.c  sdlevent.c    sdlimage.c  sdltimer.c
+		sdlmenubar.c)
+if(APPLE)
+  # The Cocoa half of the native menu bar.  It must be a separate
+  # translation unit: in Objective-C `Class' is a builtin type, so
+  # XPCE's `typedef struct class * Class' would be silently ignored.
+  list(APPEND SDL_SRC sdlnsmenu.m)
+endif()
 if(WIN32)
   set(MSW_SRC	mswin.c msprocess.c msuxnt.c mscolour.c)
 else()
@@ -131,18 +138,20 @@ set(XPCE_DATA_prolog_boot pce_autoload.pl pce_editor.pl pce_error.pl
 
 set(XPCE_DATA_prolog_lib area.pl autowin.pl dragdict.pl dragdrop.pl
     draw_extend.pl edit_dialog.pl emacs_extend.pl emacs_tags.pl file_item.pl
-    find_file_dialog.pl find_file.pl getpass.pl gradient.pl gui_tracer.pl
+    find_file_dialog.pl find_file.pl getpass.pl gui_tracer.pl
     help_message.pl http_client.pl hyper.pl imageops.pl isocomp.pl
     keybinding.pl make_dialog.pl MKINDEX.pl Overview pan_zoom.pl
     password_item.pl pce_arm.pl pce_arrow_item.pl pce_class_index.pl
     pce_colour_item.pl pce_configeditor.pl pce_config.pl pce_cxx_headers.pl
     pce_debug.pl pce_dispatch.pl pce_drop_target.pl
-    pcedraw.pl pce_editable_text.pl pce_edit.pl
+    pcedraw.pl pce_editable_text.pl
     pce_emacs.pl pce_float_item.pl pce_font_item.pl pce_grapher.pl
     pce_graphical_browser.pl pce_helper.pl pce_help_file.pl pce_history.pl
+    pce_icon_button.pl
     pce_identifier_item.pl pce_image_browser.pl pce_image_item.pl
     pce_image.pl pce_main.pl pce_manual.pl pce_meta.pl pce_html_manual.pl
-    pce_objects.pl pce.pl pce_progress.pl
+    pce_objects.pl pce.pl pce_progress.pl pane_frame.pl pane_layouts.pl
+    log_store.pl
     pce_prolog_xref.pl pce_prompter.pl pce_regex_compat.pl pce_renew.pl
     pce_report.pl pce_require.pl pce_select_set_item.pl
     pce_server.pl pce_set_item.pl pce_shell.pl pce_style_item.pl
@@ -153,9 +162,10 @@ set(XPCE_DATA_prolog_lib area.pl autowin.pl dragdict.pl dragdrop.pl
     prolog_predicate_item.pl prolog_predicate.pl qrecompile.pl
     scaledbitmap.pl scan_arguments.pl splash_screen.pl
     stayup_popup.pl swi_compatibility.pl swi_edit.pl
-    swi_hooks.pl swi_ide.pl swi_preferences.pl tabbed_window.pl tabular.pl
+    swi_hooks.pl swi_ide.pl swi_preferences.pl tab_frame.pl
+    tabbed_window.pl tabular.pl
     toc_filesystem.pl toolbar.pl url_image.pl pce_openframes.pl
-    pce_backcomp.pl)
+    pce_backcomp.pl xdot.pl graphviz_term.pl)
 if(EPILOG)
     list(APPEND XPCE_DATA_prolog_lib epilog.pl)
 endif()
@@ -186,6 +196,7 @@ set(XPCE_DATA_prolog_lib_draw align.pl attribute.pl canvas.pl config.pl draw.pl
     exportpl.pl gesture.pl importpl.pl menu.pl README shapes.pl undo.pl)
 
 set(XPCE_DATA_prolog_lib_emacs annotate_mode.pl application.pl bookmarks.pl
+    bookmark_store.pl
     buffer_menu.pl buffer.pl chr_mode.pl c_mode.pl cpp_mode.pl dde_server.pl
     emacs.pl find.pl fundamental_mode.pl gdb.pl
     help.pl history.pl hit_list.pl html_mode.pl java_mode.pl xsb_mode.pl
@@ -213,10 +224,9 @@ set(XPCE_DATA_prolog_lib_math expandmath.pl)
 
 set(XPCE_DATA_prolog_lib_plot axis.pl barchart.pl demo.pl plotter.pl README)
 
-set(XPCE_DATA_prolog_lib_swi pce_debug_monitor.pl swi_console.pl
-    thread_monitor.pl)
+set(XPCE_DATA_prolog_lib_swi pce_debug_monitor.pl)
 if(MULTI_THREADED)
-list(APPEND XPCE_DATA_prolog_lib_swi pce_profile.pl)
+list(APPEND XPCE_DATA_prolog_lib_swi thread_monitor.pl pce_profile.pl)
 endif()
 
 set(XPCE_DATA_prolog_lib_trace browse.pl browse_xref.pl clause.pl
@@ -224,9 +234,8 @@ set(XPCE_DATA_prolog_lib_trace browse.pl browse_xref.pl clause.pl
     query.pl README settings.pl source.pl stack.pl status.pl test.pl
     trace.pl util.pl viewterm.pl)
 
-set(XPCE_DATA_prolog_lib_trace_icons
-    break.png breakpoint.png bug.png classext.png class.png classvar.png
-    debug.png eyes.png get.png ivar.png locate.png nostop.png send.png)
+set(XPCE_DATA_prolog_lib_trace_icons break.png breakpoint.png bug.png
+    debug.png eyes.png locate.png nostop.png)
 
 # SVG Images (must be merged with above)
 list(APPEND XPCE_DATA_prolog_lib_trace_icons
@@ -253,10 +262,12 @@ set(XPCE_DATA_prolog_contrib contrib.pl README)
 
 set(XPCE_DATA_prolog_contrib_rubik maplist.pl README rubikpce.pl rubik.pl)
 
-set(XPCE_DATA_prolog_demo arc.pl chess.pl colour.pl constraint.pl cursor.pl
+set(XPCE_DATA_prolog_demo arc.pl charts.pl chess.pl colour.pl constraint.pl
+    cursor.pl
     dragdrop_file.pl event_hierarchy.pl fontviewer.pl graph.pl hsvcolour.pl
     imageviewer.pl ispell.pl juggler.pl kangaroo.pl opacity.pl pce_demo.pl
-    transform.pl tube_gui.pl tube.pl tube.json)
+    tabframe.pl transform.pl tube_gui.pl tube.pl tube.json
+    xdot_demo.pl xdot_demo.dot random_terms_demo.pl)
 
 set(XPCE_DATA_bitmaps bishop.png box.png bullet.png bullseye.png
     busy_bee.png cassette.png chessboard.png chesssquare.png close.png
@@ -281,7 +292,8 @@ set(XPCE_DATA_bitmaps bishop.png box.png bullet.png bullseye.png
 
     opendir.svg closedir.svg document.svg builtin_classflash.svg
     builtin_class.svg user_classflash.svg user_class.svg sign_alert.svg
-    sign_ok.svg juggler1.svg juggler2.svg juggler3.svg juggler4.svg
+    sign_ok.svg send.svg get.svg ivar.svg classvar.svg
+    juggler1.svg juggler2.svg juggler3.svg juggler4.svg
     juggler5.svg kangaroo_10.svg kangaroo_11.svg kangaroo_1.svg
     kangaroo_2.svg kangaroo_3.svg kangaroo_4.svg kangaroo_5.svg
     kangaroo_6.svg kangaroo_7.svg kangaroo_8.svg kangaroo_9.svg)
@@ -310,7 +322,7 @@ set(XPCE_DATA_bitmaps_tool
     copy.svg distribute.svg open.svg print.svg undo.svg cut.svg
     duplicate.svg paste.svg save.svg trashcan.svg ex_up.svg ex_down.svg
     nav-forward.svg nav-backward.svg user.svg clear-text.svg wipe.svg
-    newdir.svg)
+    newdir.svg drag-pane.svg close-tab.svg new-tab.svg)
 
 set(XPCE_DATA_bitmaps_logo
     New_Unicode_logo.svg)

@@ -371,8 +371,8 @@ canUnifyTermWithGoal(DECL_LD LocalFrame fr)
 	  size_t i, arity = fr->predicate->functor->arity;
 	  bool rval = true;
 
-	  if ( copyRecordToGlobal(t, find->goal.term.term,
-				  ALLOW_GC|ALLOW_SHIFT) < 0 )
+	  if ( !copyRecordToGlobal(t, find->goal.term.term,
+				   ALLOW_GC|ALLOW_SHIFT) )
 	    return false;
 	  for(i=0; i<arity; i++)
 	  { Word a, b;
@@ -819,7 +819,7 @@ traceAction(char *cmd, int port, LocalFrame frame, Choice bfr,
 		debugstatus.skiplevel = levelFrame(frame) - 1;
 		return PL_TRACE_ACTION_CONTINUE;
     case 'd':   FeedBack("depth\n");
-		setPrintOptions(def_arg ? 10 : consInt(num_arg));
+		setPrintOptions(consInt(def_arg ? 10 : num_arg));
 		return PL_TRACE_ACTION_AGAIN;
     case 'w':   FeedBack("write\n");
 		setPrintOptions(ATOM_write);
@@ -970,12 +970,8 @@ put_frame_goal(term_t goal, LocalFrame frame)
 
   if ( !PL_unify_functor(goal, def->functor->functor) )
     return false;
-  if ( tTop+argc > tMax )
-  { int rc;
-
-    if ( (rc=ensureTrailSpace(argc)) != true )
-      return raiseStackOverflow(rc);
-  }
+  if ( !ensureTrailSpace(argc) )
+    return false;
 
   frame = (LocalFrame)valTermRef(fref);
   if ( argc > 0 )
@@ -1901,6 +1897,15 @@ increment the top pointer to point above the furthest argument.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static void
+restoreStandardStreams(void)
+{ if ( PL_thread_self() == 1 && truePrologFlag(PLFLAG_EPILOG) )
+  { restoreStandardStream(SNO_USER_ERROR);
+    restoreStandardStream(SNO_USER_OUTPUT);
+  }
+}
+
+
+static void
 helpInterrupt(void)
 { GET_LD
 
@@ -1959,6 +1964,7 @@ interruptHandler(int sig)
   safe = !LD->critical;
 #endif					/* no async signals; always safe */
 
+  restoreStandardStreams();
   Sreset();
 again:
   if ( safe )
@@ -2519,10 +2525,8 @@ prolog_frame_attribute(term_t frame, term_t what, term_t value)
 #endif
 
     if ( !hasGlobalSpace(0) )
-    { bool rc;
-
-      if ( (rc=ensureGlobalSpace(0, ALLOW_GC)) != true )
-	return raiseStackOverflow(rc);
+    { if ( !ensureGlobalSpace(0, ALLOW_GC) )
+	return false;
       fr = (LocalFrame)valTermRef(fref);
     }
 

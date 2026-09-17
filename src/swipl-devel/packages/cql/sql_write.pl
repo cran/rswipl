@@ -47,6 +47,7 @@
 :-use_module(library(cql/sql_keywords)).
 :-use_module(library(cql/sql_parser), [strip_sql_comments/2]).
 :-use_module(library(cql/cql), [cql_normalize_name/3]).
+:-use_module(library(option), [option/2]).
 
 sql_write(Stream, Term, Options):-
         new_sql_stream(Output),
@@ -59,7 +60,7 @@ dump_sql_stream(sql_stream(Tokens, [], _, _), Stream):-
         format(Stream, '~w', [Atom]).
 
 sql_emit_token(Format, Args, Class, Options, sql_stream(Tokens, Tail, OldClass, Indent), sql_stream(Tokens, NewTail, Class, NewIndent)):-
-        memberchk(errors(html), Options),
+        option(errors(html), Options),
         !,
         format(atom(T2), Format, Args),
         ( fail, Class == OldClass ->
@@ -138,7 +139,7 @@ sql_write_term(view_definition(Name, Columns, Expression, With), Indent, Options
         sql_write_term(Expression, Indent, Options).
 
 sql_write_term(parameter(I), _Indent, Options)--> !,
-        ( {memberchk(parameter_bindings(Bindings), Options)}->
+        ( {option(parameter_bindings(Bindings), Options)}->
             {nth0(I, Bindings, Value)},
             ( {Value = parameter(Name)}->
                 sql_emit_token('~w', [Name], parameter, Options)
@@ -149,7 +150,7 @@ sql_write_term(parameter(I), _Indent, Options)--> !,
             sql_emit_token('?', [], punctuation, Options)
         ).
 sql_write_term(table(Name), Indent, Options)--> !,
-        ( {memberchk(errors(html), Options),
+        ( {option(errors(html), Options),
            strip_sql_comments(Name, identifier(_,RawName))}->
             {format(atom(Token), '<a href="/sql_explorer/~w">', [RawName])},
             sql_append_raw_token(Token),
@@ -171,14 +172,14 @@ sql_write_term(derived_table(Derivation, Correlation, _Type), Indent, Options)--
 sql_write_term(identifier(Schema, Name), Indent, Options)--> !,
         ( {Schema == {no_schema}}->
             {true}
-        ; {memberchk(dbms('PostgreSQL'), Options)}->
+        ; {option(dbms('PostgreSQL'), Options)}->
             % No schema for 'PostgreSQL'
             {true}
         ; {otherwise}->
             sql_write_term(Schema, Indent, Options),
             sql_emit_token('.', [], punctuation, Options)
         ),
-        ( {memberchk(dbms('PostgreSQL'), Options)}->
+        ( {option(dbms('PostgreSQL'), Options)}->
             {strip_sql_comments(Name, NameNoComments),
              cql_normalize_name('PostgreSQL', NameNoComments, Normalized)},
             sql_write_term(Normalized, Indent, Options)
@@ -189,7 +190,7 @@ sql_write_term(identifier(Schema, Name), Indent, Options)--> !,
 sql_write_term(schema(Catalog, Name), Indent, Options)--> !,
         ( {Catalog == {no_catalog}}->
             {true}
-        ; {memberchk(dbms('PostgreSQL'), Options)}->
+        ; {option(dbms('PostgreSQL'), Options)}->
             % No catalog for 'PostgreSQL' either
             {true}
         ; {otherwise}->
@@ -205,7 +206,7 @@ sql_write_term(literal(Value, string), _Indent, Options)--> !,
         sql_write_literal(Value, Options),
         sql_emit_token('\'', [], literal, Options).
 sql_write_term(literal(Value, identifier), _Indent, Options)--> !,
-        ( {memberchk(dbms('PostgreSQL'), Options)},
+        ( {option(dbms('PostgreSQL'), Options)},
           sql_emit_token('"', [], literal, Options),
           sql_write_literal(Value, Options),
           sql_emit_token('"', [], literal, Options)
@@ -290,13 +291,13 @@ sql_write_term(select(Quantifier, Selections, Source, Limit, {no_for}), Indent, 
             sql_write_list_with_newlines(Selections, Indent, [explicit_literals(true)|Options])
         ),
         sql_emit_token(' ', [], punctuation, Options),
-        ( {memberchk(dbms('Microsoft SQL Server'), Options)}->
+        ( {option(dbms('Microsoft SQL Server'), Options)}->
             sql_write_term(Limit, Indent, Options)
         ; {otherwise}->
             {true}
         ),
         sql_write_term(Source, Indent, Options),
-        ( {memberchk(dbms('PostgreSQL'), Options),
+        ( {option(dbms('PostgreSQL'), Options),
            Limit \== {no_limit}}->
             sql_write_term(Limit, Indent, Options)
         ; {otherwise}->
@@ -304,13 +305,13 @@ sql_write_term(select(Quantifier, Selections, Source, Limit, {no_for}), Indent, 
         ).
 
 sql_write_term(column(Name, Type, AllowsNulls, IsIdentity, _Default), Indent, Options)--> !,
-        ( {memberchk(dbms(DBMS), Options)}->
+        ( {option(dbms(DBMS), Options)}->
             {cql_normalize_name(DBMS, Name, NormalizedName)}
         ; {otherwise}->
             {Name = NormalizedName}
         ),
         sql_emit_token('~w ', [NormalizedName], unknown, Options),
-        ( {memberchk(dbms('PostgreSQL'), Options),
+        ( {option(dbms('PostgreSQL'), Options),
            IsIdentity == is_identity(true)} ->
             sql_emit_token(' SERIAL', [], keyword, Options)
         ; {Type = domain(Domain)} ->
@@ -331,7 +332,7 @@ sql_write_term(column(Name, Type, AllowsNulls, IsIdentity, _Default), Indent, Op
 
 
 sql_write_term(select(Quantifier, Selections, Source, Limit, For), Indent, Options)-->
-        {memberchk(dbms('PostgreSQL'), Options),
+        {option(dbms('PostgreSQL'), Options),
         strip_sql_comments(For, for(ForClause)),
         strip_sql_comments(ForClause, xml_path(Separator)),
         strip_sql_comments(Selections, [derived_column(SingleItem, 'text()')])},
@@ -356,7 +357,7 @@ sql_write_term(select(Quantifier, Selections, Source, Limit, For), Indent, Optio
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(select(Quantifier, Selections, Source, Limit, For), Indent, Options)-->
-        {memberchk(dbms('Microsoft SQL Server'), Options),
+        {option(dbms('Microsoft SQL Server'), Options),
         strip_sql_comments(For, for(xml_path(Separator)))},
         !,
         sql_write_term(select(Quantifier, Selections, Source, Limit, {no_for}), Indent, Options),
@@ -382,7 +383,7 @@ sql_write_term(routine(Name, Args), Indent, Options)--> !,
 
 
 sql_write_term(top(percent(N)), Indent, Options)--> !,
-        ( {memberchk(dbms('Microsoft SQL Server'), Options)}->
+        ( {option(dbms('Microsoft SQL Server'), Options)}->
             sql_emit_token('TOP ', [], keyword, Options),
             sql_write_term(N, Indent, Options),
             sql_emit_token('PERCENT ', [], keyword, Options)
@@ -392,7 +393,7 @@ sql_write_term(top(percent(N)), Indent, Options)--> !,
         ).
 
 sql_write_term(top(N), Indent, Options)--> !,
-        ( {memberchk(dbms('Microsoft SQL Server'), Options)}->
+        ( {option(dbms('Microsoft SQL Server'), Options)}->
             sql_emit_token('TOP ', [], keyword, Options),
             sql_write_term(N, Indent, Options)
         ; {otherwise}->
@@ -409,7 +410,7 @@ sql_write_term(column(Qualifier, Name), Indent, Options)--> !,
         ),
         sql_write_and_strip_comments(Name, Indent, Options, StrippedName, Comments),
         ( {reserved_sql_keyword(StrippedName)}->
-            ( {memberchk(dbms('PostgreSQL'), Options)}->
+            ( {option(dbms('PostgreSQL'), Options)}->
                 sql_emit_token('"', [], punctuation, Options),
                 sql_write_term(StrippedName, Indent, Options),
                 sql_emit_token('"', [], punctuation, Options)
@@ -446,7 +447,7 @@ sql_write_term(group_column(Name, Collation), Indent, Options)--> !,
 sql_write_term(derived_column(Column, Alias), Indent, Options)--> !,
         ( {Alias \== {no_alias}}->
             sql_write_and_strip_comments(Column, Indent, Options, RawColumn, Comments1),
-            ( {memberchk(dbms('PostgreSQL'), Options),
+            ( {option(dbms('PostgreSQL'), Options),
               RawColumn = column(_Qualifier, PossibleLiteral),
               strip_sql_comments(PossibleLiteral, literal(Literal, string))}->
                 % If the DBMS is 'PostgreSQL' then when writing out something like
@@ -561,13 +562,13 @@ sql_write_term(element(A), Indent, Options)--> !,
         sql_write_term(A, Indent, Options).
 
 sql_write_term(and(A, B), Indent, Options)-->
-        {memberchk(suppress_collations, Options)},
+        {option(suppress_collations, Options)},
         {should_suppress_collation(A)},
         !,
         sql_write_term(B, Indent, Options).
 
 sql_write_term(and(A, B), Indent, Options)-->
-        {memberchk(suppress_trivial_conditions, Options)},
+        {option(suppress_trivial_conditions, Options)},
         {should_suppress_condition(B)},
         !,
         sql_write_term(A, Indent, Options).
@@ -653,12 +654,12 @@ sql_write_term(permissions(X), Indent, Options)--> !, % TBD: Force normalization
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(getdate({}), _Indent, Options)-->
-        ( {memberchk(dbms('PostgreSQL'), Options) ; memberchk(normalize, Options)}),
+        ( {option(dbms('PostgreSQL'), Options) ; option(normalize, Options)}),
         !,
         sql_emit_token('CURRENT_TIMESTAMP', [], function, Options).
 
 sql_write_term(getdate({}), _Indent, Options)--> % TBD: Force normalization
-        {memberchk(dbms('Microsoft SQL Server'), Options)},
+        {option(dbms('Microsoft SQL Server'), Options)},
         !,
         sql_emit_token('GETDATE', [], function, Options),
         sql_emit_token('()', [], punctuation, Options).
@@ -668,14 +669,14 @@ sql_write_term(dbname({}), _Indent, Options)--> !, % TBD: Force normalization
         sql_emit_token('()', [], punctuation, Options).
 
 sql_write_term(fn_now({}), _Indent, Options)-->
-        ( {memberchk(dbms('PostgreSQL'), Options) ; memberchk(normalize, Options)}), !,
+        ( {option(dbms('PostgreSQL'), Options) ; option(normalize, Options)}), !,
         sql_emit_token('CURRENT_TIMESTAMP', [], function, Options).
 
 sql_write_term(fn_now({}), _Indent, Options)--> !, % TBD: Force normalization
         sql_emit_token('{ fn now() }', [], legacy, Options).
 
 sql_write_term(len(X), Indent, Options)-->
-        {memberchk(dbms('PostgreSQL'), Options)}, !,
+        {option(dbms('PostgreSQL'), Options)}, !,
         % The ANSI string-length function is called CHAR_LENGTH. This is, incredibly, unsupported by SQL Server
         sql_emit_token('CHAR_LENGTH', [], function, Options),
         sql_emit_token('(', [], punctuation, Options),
@@ -689,7 +690,7 @@ sql_write_term(len(X), Indent, Options)--> !,
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(str(X), Indent, Options)-->
-        {memberchk(dbms('PostgreSQL'), Options)},
+        {option(dbms('PostgreSQL'), Options)},
         !,
         % STR in SQL Server is used to convert floats to strings.
         % The default length is 9, and the default precision is 0
@@ -709,7 +710,7 @@ sql_write_term(str(X), Indent, Options)--> !,
 
 sql_write_term(concatenate(A,B), Indent, Options)--> !,
         sql_write_term(A, Indent, Options),
-        ( {memberchk(dbms('Microsoft SQL Server'), Options)}->
+        ( {option(dbms('Microsoft SQL Server'), Options)}->
             sql_emit_token(' + ', [], punctuation, Options)
         ; {otherwise}->
             sql_emit_token(' || ', [], punctuation, Options)
@@ -719,7 +720,7 @@ sql_write_term(concatenate(A,B), Indent, Options)--> !,
 sql_write_term(add_interval(A,B), Indent, Options)--> !,
         sql_write_term(A, Indent, Options),
         sql_emit_token(' + ', [], punctuation, Options),
-        ( {memberchk(dbms('Microsoft SQL Server'), Options)}->
+        ( {option(dbms('Microsoft SQL Server'), Options)}->
             sql_write_term(B, Indent, Options)
         ; {otherwise}->
             sql_emit_token('CAST', [], function, Options),
@@ -773,7 +774,7 @@ sql_write_term(lower(V), Indent, Options)--> !,
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(day(A), Indent, Options)-->
-        {memberchk(dbms('PostgreSQL'), Options)}, !,
+        {option(dbms('PostgreSQL'), Options)}, !,
         sql_emit_token('DATE_PART', [], function, Options),
         sql_emit_token('(', [], punctuation, Options),
         sql_emit_token('\'day\'', [], literal, Options),
@@ -782,7 +783,7 @@ sql_write_term(day(A), Indent, Options)-->
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(month(A), Indent, Options)-->
-        {memberchk(dbms('PostgreSQL'), Options)}, !,
+        {option(dbms('PostgreSQL'), Options)}, !,
         sql_emit_token('DATE_PART', [], function, Options),
         sql_emit_token('(', [], punctuation, Options),
         sql_emit_token('\'month\'', [], literal, Options),
@@ -791,7 +792,7 @@ sql_write_term(month(A), Indent, Options)-->
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(year(A), Indent, Options)-->
-        {memberchk(dbms('PostgreSQL'), Options)}, !,
+        {option(dbms('PostgreSQL'), Options)}, !,
         sql_emit_token('DATE_PART', [], function, Options),
         sql_emit_token('(', [], punctuation, Options),
         sql_emit_token('\'year\'', [], literal, Options),
@@ -818,7 +819,7 @@ sql_write_term(year(A), Indent, Options)--> !, % TBD: Force normalization
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(dateadd(A,B,C), Indent, Options)-->
-        {memberchk(dbms('PostgreSQL'), Options)}, !,
+        {option(dbms('PostgreSQL'), Options)}, !,
         sql_write_and_strip_comments(A, Indent, Options, Class, Comments),
         % Quirk. SQL Server allows implicit cast of 0 to a datetime to get 1/1/1901.
         sql_write_date(C, Indent, Options),
@@ -849,7 +850,7 @@ sql_write_term(dateadd(A,B,C), Indent, Options)--> !, % TBD: Force normalization
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(datepart(A,B), Indent, Options)-->
-        ( {memberchk(dbms('PostgreSQL'), Options) ; memberchk(normalize, Options)}),
+        ( {option(dbms('PostgreSQL'), Options) ; option(normalize, Options)}),
         !,
         sql_emit_token('EXTRACT', [], function, Options),
         sql_emit_token('(', [], punctuation, Options),
@@ -873,7 +874,7 @@ sql_write_term(datepart(A,B), Indent, Options)--> !, % TBD: Force normalization
 
 
 sql_write_term(datename(A,B), Indent, Options)-->
-        {memberchk(dbms('PostgreSQL'), Options)}, !, % Also Oracle
+        {option(dbms('PostgreSQL'), Options)}, !, % Also Oracle
         sql_emit_token('TO_CHAR', [], function, Options),
         sql_emit_token('(', [], punctuation, Options),
         sql_write_term(B, Indent, Options),
@@ -901,7 +902,7 @@ sql_write_term(datename(A,B), Indent, Options)--> !, % TBD: Force normalization
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(datediff(A,B,C), Indent, Options)-->
-        {memberchk(dbms('PostgreSQL'), Options)}, !,
+        {option(dbms('PostgreSQL'), Options)}, !,
         sql_write_and_strip_comments(A, Indent, Options, AA, Comments),
         ( {normalize_date_type(AA, Type)}->
             {true}
@@ -1050,7 +1051,7 @@ sql_write_term(substring(A,B,C), Indent, Options)--> !,
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(charindex(ExpressionToFind, ExpressionToSearch, StartLocation), Indent, Options)-->
-        ( {memberchk(dbms('PostgreSQL'), Options) ; memberchk(normalize, Options)}),
+        ( {option(dbms('PostgreSQL'), Options) ; option(normalize, Options)}),
         !,
         ( {strip_sql_comments(StartLocation, {no_start})}->
             sql_emit_token('POSITION', [], function, Options),
@@ -1087,8 +1088,8 @@ sql_write_term(charindex(A,B,C), Indent, Options)--> !,
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(precision_cast(A,B,C), Indent, Options)--> !,
-        ( {memberchk(dbms('Microsoft SQL Server'), Options),
-           \+memberchk(normalize, Options)}->
+        ( {option(dbms('Microsoft SQL Server'), Options),
+           \+option(normalize, Options)}->
             sql_emit_token('CONVERT', [], function, Options),
             sql_emit_token('(', [], punctuation, Options),
             sql_write_term(A, Indent, Options),
@@ -1169,7 +1170,7 @@ sql_write_term(source(From, Where, GroupBy, OrderBy, Having), Indent, Options)--
         sql_write_term(From, Indent, Options),
         sql_write_term(Where, Indent, Options),
         sql_write_term(GroupBy, Indent, Options),
-        ( {memberchk(dbms('PostgreSQL'), Options)}->
+        ( {option(dbms('PostgreSQL'), Options)}->
             sql_write_term(Having, Indent, Options),
             sql_write_term(OrderBy, Indent, Options)
         ; {otherwise}->
@@ -1197,8 +1198,8 @@ sql_write_term(coalesce(List), Indent, Options)--> !,
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_term(isnull(A, B), Indent, Options)--> !,
-        ( {memberchk(dbms('Microsoft SQL Server'), Options),
-           \+memberchk(normalize, Options)}->
+        ( {option(dbms('Microsoft SQL Server'), Options),
+           \+option(normalize, Options)}->
             sql_emit_token('ISNULL', [], function, Options),
             sql_emit_token('(', [], punctuation, Options),
             sql_write_term(A, Indent, Options),
@@ -1302,7 +1303,7 @@ sql_write_term(collation(C), Indent, Options)--> !,
         sql_write_term(C, Indent, Options).
 
 sql_write_term(collated_factor(F, C), Indent, Options)-->
-        {memberchk(dbms('PostgreSQL'), Options) ; memberchk(suppress_collations, Options)},
+        {option(dbms('PostgreSQL'), Options) ; option(suppress_collations, Options)},
         !,
         sql_write_term(F, Indent, Options),
         sql_write_and_strip_comments(C, Indent, Options, _Collation, Comments),
@@ -1333,7 +1334,7 @@ sql_write_term(sort_key(Key, Collate, Order), Indent, Options)--> !,
             sql_write_term(Collate, Indent, Options)
         ),
         ( {Order == {no_order}} ->
-            ( {memberchk(normalize, Options)}->
+            ( {option(normalize, Options)}->
                 sql_emit_token(' ASC ', [], keyword, Options)
             ; {otherwise}->
                 {true}
@@ -1392,12 +1393,12 @@ sql_write_term(is_null(X), Indent, Options)--> !,
         sql_emit_token(' IS NULL', [], operator, Options).
 
 sql_write_term(union(LHS, RHS, Corresponding), Indent, Options)--> !,
-        ( {memberchk(unions(left), Options)}->
+        ( {option(unions(left), Options)}->
             sql_emit_token('    ', [], punctuation, Options),
             tab_stop(S),
             sql_write_term(LHS, S, Options),
             sql_emit_token('~n~wUNION~n~w', [Indent, Indent], keyword, Options),
-            ( {memberchk(unroll_unions(true), Options),
+            ( {option(unroll_unions(true), Options),
               RHS = union(_, _)}->
                 sql_write_term(RHS, Indent, Options)
             ; {otherwise}->
@@ -1453,7 +1454,7 @@ sql_write_term(except_all(LHS, RHS, Corresponding), Indent, Options)--> !,
 
 sql_write_term({no_with}, _, _)--> !.
 sql_write_term(with(schemabinding), _, Options)--> !,
-        ( {memberchk(dbms('Microsoft SQL Server'), Options)}->
+        ( {option(dbms('Microsoft SQL Server'), Options)}->
             sql_emit_token(' WITH SCHEMABINDING', [], keyword, Options)
         ; {otherwise}->
             {true}
@@ -1543,7 +1544,7 @@ sql_write_and_strip_comments(Term, _Indent, _Options, Term, [])--> [].
 sql_write_comments(meta(Comments, Errors), Indent, Options)--> !,
         ( {Errors == {null}} ->
             {true}
-        ; {memberchk(errors(ErrorMode), Options)}->
+        ; {option(errors(ErrorMode), Options)}->
             ( {ErrorMode == ansi} ->
                 sql_emit_token('~A', [[foreground-red]], machinery, Options)
             ; {ErrorMode == html} ->
@@ -1599,7 +1600,7 @@ sql_end_comments([Comment|Comments], Indent, Options)-->
 sql_end_comment(meta(_, Errors), _Indent, Options)--> !,
         ( {Errors == {null}} ->
             {true}
-        ; {memberchk(errors(ErrorMode), Options)}->
+        ; {option(errors(ErrorMode), Options)}->
             ( {ErrorMode == ansi} ->
                 {format(atom(Code), '~A', [{reset}])},
                 sql_append_raw_token(Code)
@@ -1633,7 +1634,7 @@ sql_write_type(int, _Indent, Options)--> !,
 sql_write_type(smallint, _Indent, Options)--> !,
         sql_emit_token('SMALLINT', [], keyword, Options).
 sql_write_type(tinyint, _Indent, Options)--> !,
-        ( {memberchk(dbms('PostgreSQL'), Options)}->
+        ( {option(dbms('PostgreSQL'), Options)}->
             % 'PostgreSQL' does not have a TINYINT (which is 1 byte). Use SMALLINT (2 bytes) instead
             sql_emit_token('SMALLINT', [], keyword, Options)
         ; {otherwise}->
@@ -1676,7 +1677,7 @@ sql_write_type(double(Precision), Indent, Options)--> !,
         sql_emit_token(')', [], punctuation, Options).
 
 sql_write_type(datetime, _Indent, Options)--> !, % Should normalize
-        ( {memberchk(dbms('PostgreSQL'), Options)}->
+        ( {option(dbms('PostgreSQL'), Options)}->
             sql_emit_token('TIMESTAMP', [], keyword, Options)
         ; {otherwise}->
             sql_emit_token('DATETIME', [], keyword, Options)

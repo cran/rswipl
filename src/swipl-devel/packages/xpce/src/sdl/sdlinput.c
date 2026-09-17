@@ -169,8 +169,133 @@ releaseWatch(FDWatch *watch)
       DeleteCriticalSection(&watch->lock);
   }
 #endif
+#ifndef __WINDOWS__
+  if ( watch->inbuf_lock )
+  { SDL_DestroyMutex(watch->inbuf_lock);
+    watch->inbuf_lock = NULL;
+  }
+  free(watch->inbuf);
+  watch->inbuf = NULL;
+  watch->inbuf_size = watch->inbuf_len = 0;
+  watch->inbuf_eof = false;
+#endif
   watch->state = WATCH_FREE;
 }
+
+#ifndef __WINDOWS__
+
+		 /*******************************
+		 *     WATCHER-SIDE BUFFERING	*
+		 *******************************/
+
+/* Only the terminal is drained by the watcher thread.  Other watches
+ * (sockets, process streams) are read by whoever handles the event and
+ * do not have the writer-is-also-the-reader problem the console has.
+ */
+
+#define WATCH_INBUF_CHUNK 4096
+#define WATCH_INBUF_MAX	  (4*1024*1024)
+
+static bool
+watch_buffers(FDWatch *watch)
+{ return watch->code == FD_READY_TERMINAL;
+}
+
+
+static bool
+watch_has_room(FDWatch *watch)
+{ bool room;
+
+  if ( !watch->inbuf_lock )
+    return true;
+
+  SDL_LockMutex(watch->inbuf_lock);
+  room = watch->inbuf_len < WATCH_INBUF_MAX && !watch->inbuf_eof;
+  SDL_UnlockMutex(watch->inbuf_lock);
+
+  return room;
+}
+
+
+/* Read what is available into the watch.  Runs on the watcher thread. */
+
+static void
+watch_fill(FDWatch *watch)
+{ char buf[WATCH_INBUF_CHUNK];
+  ssize_t count;
+
+  if ( !watch->inbuf_lock &&
+       !(watch->inbuf_lock = SDL_CreateMutex()) )
+    return;
+
+  count = read(watch->fd, buf, sizeof(buf));
+  if ( count < 0 && (errno == EAGAIN || errno == EINTR) )
+    return;
+
+  SDL_LockMutex(watch->inbuf_lock);
+  if ( count <= 0 )
+  { watch->inbuf_eof = true;		/* 0: closed, <0: error */
+  } else if ( watch->inbuf_len + count > watch->inbuf_size )
+  { size_t size = watch->inbuf_size ? watch->inbuf_size : WATCH_INBUF_CHUNK;
+    char *new;
+
+    while( size < watch->inbuf_len + count )
+      size *= 2;
+    if ( (new=realloc(watch->inbuf, size)) )
+    { watch->inbuf = new;
+      watch->inbuf_size = size;
+    }
+  }
+  if ( count > 0 && watch->inbuf_len + count <= watch->inbuf_size )
+  { memcpy(watch->inbuf+watch->inbuf_len, buf, count);
+    watch->inbuf_len += count;
+  }
+  SDL_UnlockMutex(watch->inbuf_lock);
+}
+
+
+ssize_t
+read_watch(FDWatch *watch, char *buffer, size_t size)
+{ ssize_t rc;
+
+  if ( !watch->inbuf_lock )
+    return read(watch->fd, buffer, size);   /* not buffered after all */
+
+  SDL_LockMutex(watch->inbuf_lock);
+  if ( watch->inbuf_len > 0 )
+  { rc = watch->inbuf_len < size ? watch->inbuf_len : size;
+    memcpy(buffer, watch->inbuf, rc);
+    memmove(watch->inbuf, watch->inbuf+rc, watch->inbuf_len-rc);
+    watch->inbuf_len -= rc;
+  } else
+  { rc = watch->inbuf_eof ? 0 : -1;
+    if ( rc == -1 )
+      errno = EAGAIN;
+  }
+  SDL_UnlockMutex(watch->inbuf_lock);
+
+  return rc;
+}
+
+
+/* Is there still buffered data the main thread has not collected? */
+
+static bool
+watch_has_data(FDWatch *watch)
+{ bool has;
+
+  if ( !watch->inbuf_lock )
+    return false;
+
+  SDL_LockMutex(watch->inbuf_lock);
+  has = watch->inbuf_len > 0;
+  SDL_UnlockMutex(watch->inbuf_lock);
+
+  return has;
+}
+
+#endif /*!__WINDOWS__*/
+
 
 static int
 poll_thread_fn(void *unused)
@@ -180,7 +305,20 @@ poll_thread_fn(void *unused)
     FDWatch *watch = fd_meta;
 
     for(int i=0; i<=watch_max; i++, watch++)
-    { if ( watch->state == WATCH_ACTIVE )
+    { bool poll_it = (watch->state == WATCH_ACTIVE);
+
+#ifndef __WINDOWS__
+      /* A buffered watch stays pollable while its event is outstanding,
+	 so the watcher keeps draining even when the main thread is
+	 busy.  It stops only when the buffer is full or at EOF. */
+      if ( !poll_it && watch_buffers(watch) &&
+	   (watch->state == WATCH_PENDING ||
+	    watch->state == WATCH_PROCESSING) &&
+	   watch_has_room(watch) )
+	poll_it = true;
+#endif
+
+      if ( poll_it )
       {
 #ifdef __WINDOWS__
 	if ( watch->hPipe )	/* A pipe/...: use overlapped I/O */
@@ -277,7 +415,10 @@ poll_thread_fn(void *unused)
     for (int i = 1; i < nfds; ++i)
     { if ( (poll_fds[i].revents & POLLIN) )
       { FDWatch *watch = &fd_meta[meta_id[i]];
-	sdl_signal_watch(watch);
+
+	if ( watch_buffers(watch) )
+	  watch_fill(watch);		/* drain now, not on the main thread */
+	sdl_signal_watch(watch);	/* no-op if an event is outstanding */
       }
     }
 #endif/*__WINDOWS__*/
@@ -524,6 +665,10 @@ processed_fd_watch(FDWatch *watch)
 	    if ( watch->fd != 0 )
 	      Cprintf("Re-enabling %d\n", watch->fd));
       unlock_watch_userdata(watch);
+#ifndef __WINDOWS__
+      if ( watch_has_data(watch) )	/* more than one event's worth */
+	sdl_signal_watch(watch);
+#endif
       signal_watcher('=');
     } else if ( watch->state == WATCH_REMOVE )
     { unlock_watch_userdata(watch);

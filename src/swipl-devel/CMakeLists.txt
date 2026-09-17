@@ -74,6 +74,9 @@ option(USE_SIGNALS
 option(USE_GMP
        "Use GNU MP Bignum library (LGPL)"
        ON)
+option(USE_CRMATH
+       "Use correctly rounded CORE_MATH elementary functions"
+       OFF)
 option(USE_TCMALLOC
        "Use Google tcmalloc instead of default malloc"
        ${DEFAULT_USE_TCMALLOC})
@@ -103,6 +106,9 @@ option(INSTALL_DOCUMENTATION
        ON)
 option(BUILD_PDF_DOCUMENTATION
        "Build the PDF manuals from source"
+       OFF)
+option(CHANGELOG
+       "Install machine readable predicate changelog support"
        OFF)
 option(MACOS_UNIVERSAL_BINARY
        "Build a universal binary for x86_64 and arm64"
@@ -170,6 +176,7 @@ set(CMAKE_C_STANDARD 11)
 
 include(Utils)
 include(BuildType)
+include(DSym)
 include(Version)
 include(PGO)
 include(Locations)
@@ -265,8 +272,6 @@ set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "Core_system")
 # Add the core Prolog system
 add_subdirectory(src)
 install(FILES LICENSE README.md DESTINATION ${SWIPL_INSTALL_PREFIX})
-install(FILES customize/edit customize/init.pl customize/README.md
-	DESTINATION ${SWIPL_INSTALL_PREFIX}/customize)
 
 if(INSTALL_DOCUMENTATION)
   include(Documentation)
@@ -288,6 +293,7 @@ if(INSTALL_DOCUMENTATION)
 			    -g "use_module(library(pldoc/man_index))"
 	                    -g save_man_index -t halt
       DEPENDS swipl core doc.html
+      ${SWIPL_RUN_JOB_POOL}
       VERBATIM)
   add_custom_target(
       man_index
@@ -310,8 +316,8 @@ endif(INSTALL_DOCUMENTATION)
 ################################################################
 # Testing
 
-set(SWIPL_TEST_DIRS unprotected core db attvar debug tabling library
-    compile charset eclipse clp GC save files transaction
+set(SWIPL_TEST_DIRS unprotected core_lang core_text db attvar debug tabling
+    library compile charset eclipse clp GC save files transaction
     xsb/basic_tests xsb/ai_tests xsb/ptq xsb/neg_tests xsb/delay_tests
     xsb/wfs_tests xsb/table_tests xsb/incremental_tests xsb/nonmt_tests
     xsb/sub_tests xsb/attv_tests)

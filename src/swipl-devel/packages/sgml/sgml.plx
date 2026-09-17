@@ -945,6 +945,11 @@ documents.
 
 Input is a stream. A full description of the option-list is below.
 
+Note that, because \term{call}{Event, Pred} is a two-argument option,
+these options are processed by a dedicated routine rather than the
+common option handling.  As a result \arg{Options} must be a list and
+cannot be given as a dict.
+
 \begin{description}
     \termitem{document}{-Term}
 A variable that will be unified with a list describing the content of

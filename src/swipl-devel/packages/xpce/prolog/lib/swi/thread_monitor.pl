@@ -39,8 +39,10 @@
           ]).
 :- use_module(library(pce)).
 :- use_module(library(toolbar)).
+:- use_module(library(tabbed_window)).
+:- use_module(library(tab_frame)).
+:- use_module(library(pane_frame)).
 :- use_module(library(pce_report)).
-:- use_module(library(persistent_frame)).
 :- autoload(library(aggregate), [aggregate_all/3]).
 :- autoload(library(gui_tracer), [gtrace/0]).
 :- autoload(library(pce_util), [default/3, send_list/3]).
@@ -56,7 +58,7 @@
 
 /** <module> XPCE-base SWI-Prolog thread monitor
 
-This library defines  the  class   prolog_thread_monitor,  a  frame that
+This library defines  the  class   prolog_thread_monitor,  a  pane  that
 displays the status of threads.
 */
 
@@ -105,6 +107,7 @@ variable(recall,   int,          get,  "Recall last #samples").
 variable(lastcpu,  num*,         get,  "CPU at last call").
 variable(lastwall, num*,         get,  "Wall at last call").
 variable(leftcpu,  int := 0,     none, "Pass-through").
+variable(cpuprec,  int*,	 get,  "CPU Percentage").
 variable(profiling,bool := @off, get,  "Am I being profiled?").
 variable(thread_class, name*,    get,  "Class of the thread").
 variable(debug,    bool*,	 get,  "Debugging status").
@@ -127,6 +130,7 @@ update(TS, Status:prolog, CpuH:[int]) :->
         get(TS, object, History),
         (   State == running
         ->  get(TS, cpu_percentage, CPU),
+            send(TS, slot, cpuprec, CPU),
             CPULine is round(CPU*CPUH/100),
             atom_concat(running_, CPULine, RunningStyle),
             send(TS, state, running, RunningStyle),
@@ -179,9 +183,16 @@ update_label(TS) :->
     ;   send(TS, label, string(" %s [%s]", TID, Postfix))
     ).
 
-label_postfix(console, _,    console).
-label_postfix(_,       @nil, system).
-label_postfix(_,       @on,  debug).
+%       What a thread is said to be: what its class is when that says
+%       something, and otherwise what its debugging is.  A thread that
+%       cannot be debugged used to be called a system thread, which is a
+%       class it may well not be in -- thread_create/3 makes a user
+%       thread, debuggable or not.
+
+label_postfix(console, _,    console) :- !.
+label_postfix(system,  _,    system) :- !.
+label_postfix(_,       @nil, 'no debug') :- !.
+label_postfix(_,       @on,  debug) :- !.
 label_postfix(_,       @off, '').
 
 debug_status(TID, Debug) :-
@@ -360,7 +371,7 @@ gtrace(TS) :->
 
 variable(recall,     int := 360, get, "#samples recalled").
 variable(cpu_height, int := 20,  get, "Height of CPU image").
-class_variable(size, size, size(10, 10)).
+class_variable(size, size, size(20, 10)).
 
 initialise(TB) :->
     send_super(TB, initialise),
@@ -372,7 +383,7 @@ initialise(TB) :->
     send(TB, style, profiling, style(icon := resource(thread_profiling))),
     send(TB, select_message, message(TB, details, @arg1)),
     send(TB, running_styles),
-    send(TB?image, recogniser,
+    send(TB?text_image, recogniser,
          handler(ms_right_down,
                  and(message(TB, selection, ?(TB, dict_item, @event)),
                      new(or)))),
@@ -495,9 +506,13 @@ join_all(TB) :->
          if(@arg1?state \== running,
             message(@arg1, join))).
 
+monitor(TB, TM:prolog_thread_monitor) :<-
+    "The monitor I am part of"::
+    get(TB, container, prolog_thread_monitor, TM).
+
 details(TB, TS:thread_status) :->
     "Show detailed usage of thread"::
-    get(TB?frame, member, thread_window, P),
+    get(TB?monitor, graph_window, P),
     send(P, thread_diagram, TS),
     send(TB, report_status, TS).
 
@@ -517,20 +532,22 @@ report_status(TB, TS:thread_status) :->
         send(TB, report, status,
              'Thread %s/%s ERROR: %s (%.3f sec CPU)',
              Class, TID, Message, RTime)
-    ;   atomic(Status)
-    ->  send(TB, report, status,
-             'Thread %s/%s status: %s (%.3f sec CPU)',
-             Class, TID, Status, RTime)
-    ;   new(S, text_buffer),
-        pce_open(S, write, Out),
-        write_term(Out, Status, [ max_depth(5),
-                                  quoted(true),
-                                  portray(true)
-                                ]),
-        close(Out),
-        send(TB, report, status,
-             'Thread %s/%s status: %s (%.3f sec CPU)',
-             Class, TID, S?contents, RTime)
+    ;   format(string(StatString), '~W',
+               [ Status,
+                 [ max_depth(5),
+                   quoted(true),
+                   portray(true)
+                 ]
+               ]),
+        (   get(TS, cpuprec, Prec),
+            Prec \== @nil
+        ->  send(TB, report, status,
+                 'Thread %s/%s status: %s (%.3f sec; %d%% CPU)',
+                 Class, TID, StatString, RTime, Prec)
+        ;   send(TB, report, status,
+                 'Thread %s/%s status: %s (%.3f sec CPU)',
+                 Class, TID, StatString, RTime)
+        )
     ).
 
 special_exception(error(_,_)).
@@ -711,13 +728,17 @@ percent_location(A, Val:'int|real', Loc:int) :<-
 :- pce_begin_class(thread_window, picture,
                    "Show details of a thread").
 
+monitor(Win, TM:prolog_thread_monitor) :<-
+    "The monitor I am part of"::
+    get(Win, container, prolog_thread_monitor, TM).
+
 thread_diagram(Win, TS:thread_status) :->
     "Show thread-diagram for status"::
     (   get(Win, member, thread_diagram, TD)
     ->  send(TD, attach, TS)
     ;   send(Win, clear, destroy),
         get(Win, axis_length, size(H, V)),
-        get(Win?frame, graphs, Graphs),
+        get(Win?monitor, graphs, Graphs),
         send(Win, display, thread_diagram(TS, Graphs, H, V)),
         send(Win, recenter)
     ).
@@ -735,7 +756,7 @@ axis_length(Win, Size:size) :<-
 resize(Win) :->
     "Window is resized; update display"::
     get(Win, axis_length, size(W,H)),
-    send(Win?frame, recall, W),
+    send(Win?monitor, recall, W),
     (   get(Win, member, thread_diagram, TD)
     ->  send(TD, axis_length, W, H),
         send(Win, recenter)
@@ -759,7 +780,16 @@ graphs(Win, Graphs:chain) :->
 :- pce_end_class(thread_window).
 
 
-:- pce_begin_class(prolog_thread_monitor, persistent_frame,
+/* The thread monitor as a pane.
+
+It used to be a frame of its own, holding the browser, the graphs, a
+menu bar and a reporter.  It is a `tool_pane' now -- see
+library(pane_frame) -- so it drops into a tab of any window of the IDE,
+or beside a terminal or an editor in one, and its menus go on the bar of
+whatever window it ends up in.
+*/
+
+:- pce_begin_class(prolog_thread_monitor, tool_pane,
                    "Monitor thread-activity").
 
 variable(timer,           timer*,  get, "Update timer").
@@ -770,12 +800,9 @@ class_variable(update_interval, num*,  0.2).
 class_variable(graphs,          chain, chain(local,global,trail,cpu)).
 
 initialise(TM) :->
-    send_super(TM, initialise, 'SWI-Prolog thread monitor'),
-    send(TM, append, new(TD, tool_dialog)),
-    send(new(thread_window), right, new(TB, thread_browser)),
-    send(TB, below, TD),
-    send(new(report_dialog), below, TB),
-    send(TM, fill_tool_dialog, TD),
+    send_super(TM, initialise, threads),
+    send(TM, append_window, new(TB, thread_browser)),
+    send(TM, append_window, new(thread_window), TB, right),
     send(TM, update),
     get(TM, update_interval, Time),
     send(TM, update_interval, Time),
@@ -785,26 +812,46 @@ unlink(TM) :->
     send(TM, update_interval, @nil),
     send_super(TM, unlink).
 
-fill_tool_dialog(TM, TD:tool_dialog) :->
-    "Fill menu-bar"::
-    get(TM, member, thread_browser, TB),
-    send_list(TD, append,
-              [ new(File, popup(file)),
-                new(Threads, popup(threads))
-              ]),
-    send_list(File, append,
-              [ menu_item(settings, message(TM, settings)),
-                gap,
-                menu_item(quit, message(TM, destroy))
-              ]),
+                 /*******************************
+                 *            MEMBERS           *
+                 *******************************/
+
+browser(TM, TB:thread_browser) :<-
+    "The list of threads"::
+    get(TM, window, thread_browser, TB).
+
+graph_window(TM, TW:thread_window) :<-
+    "The window the graphs are drawn in"::
+    get(TM, window, thread_window, TW).
+
+                 /*******************************
+                 *             PANE             *
+                 *******************************/
+
+pane_label(_TM, Label:name) :<-
+    "What my tab is called"::
+    Label = 'Threads'.
+
+menu_bar_key(_TM, Key:name) :<-
+    "Every thread monitor asks for the same menu bar"::
+    Key = thread_monitor.
+
+fill_menu_bar(TM, MD:tool_dialog) :->
+    "Put my menu on the bar of the window I am in"::
+    get(MD, popup, threads, @on, Threads),
     send_list(Threads, append,
-              [ menu_item(new,
+              [ menu_item(new_thread,
                           message(@prolog, interactor)),
-                gap,
                 menu_item(join_all,
-                          message(TB, join_all))
+                          message(TM?browser, join_all),
+                          end_group := @on),
+                menu_item(thread_monitor_settings,
+                          message(TM, settings))
               ]).
 
+                 /*******************************
+                 *           SETTINGS           *
+                 *******************************/
 
 update_interval(TM, Interval:'int|real*') :->
     "Set the timer update interval"::
@@ -824,31 +871,31 @@ update_interval(TM, Interval:'int|real*') :->
 
 graphs(TM, Graphs:chain) :->
     send(TM, slot, graphs, Graphs),
-    get(TM, member, thread_window, TW),
-    send(TW, graphs, Graphs).
+    send(TM?graph_window, graphs, Graphs).
 
 
 update(TM) :->
     "Update status"::
-    get(TM, member, thread_browser, TB),
-    send(TB, update).
+    send(TM?browser, update).
 
 selection(TM, Thread:'name|int') :->
     "Select the given thread"::
-    get(TM, member, thread_browser, TB),
+    get(TM, browser, TB),
     get(TB, member, Thread, DI),
     send(TB, selection, DI),
     send(TB, details, DI).
 
 recall(TM, Recall:int) :->
     "#samples recalled"::
-    get(TM, member, thread_browser, TB),
-    send(TB, recall, Recall).
+    send(TM?browser, recall, Recall).
 
 
 settings(TM) :->
     "Edit settings"::
-    send(new(thread_settings_dialog(TM)), open_centered, TM?area?center).
+    (   get(TM, frame, F), F \== @nil
+    ->  send(new(thread_settings_dialog(TM)), open_centered, F?area?center)
+    ;   send(new(thread_settings_dialog(TM)), open)
+    ).
 
 :- pce_end_class(prolog_thread_monitor).
 

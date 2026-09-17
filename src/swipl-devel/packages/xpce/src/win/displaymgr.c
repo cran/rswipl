@@ -2,8 +2,8 @@
 
     Author:        Jan Wielemaker and Anjo Anjewierden
     E-mail:        jan@swi-prolog.org
-    WWW:           http://www.swi.psy.uva.nl/projects/xpce/
-    Copyright (c)  1995-2025, University of Amsterdam
+    WWW:           https://www.swi-prolog.org/projects/xpce/
+    Copyright (c)  1995-2026, University of Amsterdam
 			      SWI-Prolog Solutions b.v.
     All rights reserved.
 
@@ -41,6 +41,7 @@ initialiseDisplayManager(DisplayManager dm)
 { assign(dm, members, newObject(ClassChain, EAV));
   assign(dm, focus_message, NIL);
 
+  obtainClassVariablesObject(dm);
   protectObject(dm);
 
   succeed;
@@ -165,8 +166,6 @@ redrawDisplayManager(DisplayManager dm)
   if ( ChangedWindows && !emptyChain(ChangedWindows) )
   { PceWindow sw = WindowOfLastEvent();
 
-    obtainClassVariablesObject(dm);
-
     TestBreakDraw(dm);
     if ( sw && memberChain(ChangedWindows, sw) )
       pceRedrawWindow(sw);
@@ -239,14 +238,14 @@ TheDisplayManager(void)
 }
 
 static status
-hasVisibleFramesDisplayManager(DisplayManager dm)
+hasVisibleFramesDisplayManager(DisplayManager dm, BoolObj keep_alive)
 { if ( notNil(dm->members) )
   { Cell cell;
 
     for_cell(cell, dm->members)
     { DisplayObj dsp = cell->value;
       if ( !onFlag(dsp, F_FREED|F_FREEING) )
-      { if ( hasVisibleFramesDisplay(dsp) )
+      { if ( hasVisibleFramesDisplay(dsp, keep_alive) )
 	  succeed;
       }
     }
@@ -281,8 +280,9 @@ static senddecl send_displayManager[] =
      NAME_display, "Attach a new display to the manager"),
   SM(NAME_redraw, 0, NULL, redrawDisplayManager,
      NAME_event, "Flush all pending changes to the screen"),
-  SM(NAME_hasVisibleFrames, 0, NULL, hasVisibleFramesDisplayManager,
-     NAME_organisation, "True if there is at least one visible frame")
+  SM(NAME_hasVisibleFrames, 1, "keep_alive=[bool]",
+     hasVisibleFramesDisplayManager,
+     NAME_organisation, "True if there is a visible (keep_alive) frame")
 };
 
 /* Get Methods */

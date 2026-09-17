@@ -46,6 +46,13 @@
             crypto_data_hkdf/4,         % +Data, +Length, -Bytes, +Options
             ecdsa_sign/4,               % +Key, +Data, -Signature, +Options
             ecdsa_verify/4,             % +Key, +Data, +Signature, +Options
+            ed25519_new_keypair/1,      % -KeyPair
+            ed25519_seed_keypair/2,     % +Seed, -KeyPair
+            ed25519_keypair_public_key/2,   % +KeyPair, -PublicKey
+            ed25519_sign/4,             % +KeyPair, +Data, -Signature, +Options
+            ed25519_verify/4,           % +PublicKey, +Data, +Signature, +Options
+            curve25519_generator/1,     % -Generator
+            curve25519_scalar_mult/3,   % +Scalar, +Point, -Result
             crypto_data_decrypt/6,      % +CipherText, +Algorithm, +Key, +IV, -PlainText, +Options
             crypto_data_encrypt/6,      % +PlainText, +Algorithm, +Key, +IV, -CipherText, +Options
             hex_bytes/2,                % ?Hex, ?List
@@ -63,10 +70,10 @@
             crypto_curve_generator/2,   % +Curve, -Generator
             crypto_curve_scalar_mult/4  % +Curve, +Scalar, +Point, -Result
           ]).
-:- autoload(library(apply),[foldl/4,maplist/3]).
+:- autoload(library(apply),[foldl/4,maplist/2,maplist/3]).
 :- autoload(library(base64),[base64_encoded/3]).
 :- autoload(library(error),[must_be/2,domain_error/2]).
-:- autoload(library(lists),[append/3,select/3,reverse/2]).
+:- autoload(library(lists),[append/2,append/3,select/3,reverse/2]).
 :- autoload(library(option),[option/3,option/2]).
 
 :- use_foreign_library(foreign(crypto4pl)).
@@ -512,6 +519,203 @@ ecdsa_verify(public_key(ec(Private,Public0,Curve)), Data0, Signature0, Options) 
     hex_bytes(Public0, Public),
     hex_bytes(Signature0, Signature),
     '_crypto_ecdsa_verify'(ec(Private,Public,Curve), Data, Enc, Signature).
+
+
+                 /*******************************
+                 *            ED25519           *
+                 *******************************/
+
+%!  ed25519_new_keypair(-KeyPair) is det.
+%
+%   KeyPair is a new Ed25519 key  pair,   created  from  32 random bytes
+%   obtained with crypto_n_random_bytes/2. It contains the private key
+%   and must be kept absolutely secret. See ed25519_seed_keypair/2.
+
+ed25519_new_keypair(KeyPair) :-
+    crypto_n_random_bytes(32, Seed),
+    ed25519_seed_keypair(Seed, KeyPair).
+
+%!  ed25519_seed_keypair(+Seed, -KeyPair) is det.
+%
+%   Deterministically  derive  an  Ed25519  key   pair  from  Seed,  32
+%   arbitrary bytes.  Seed can be  chosen  at random using
+%   crypto_n_random_bytes/2  or  derived  from  input  keying  material
+%   using crypto_data_hkdf/4.
+%
+%   KeyPair  is  a  hexadecimal  atom  denoting  the  key  pair  in
+%   PKCS#8 v2 format (RFC 5958, RFC 8410), the format also used by
+%   ``openssl genpkey -algorithm ed25519``.  It contains the private key
+%   and must be kept absolutely secret.  It can be used for signing
+%   with ed25519_sign/4, and its public key is obtained with
+%   ed25519_keypair_public_key/2.
+
+ed25519_seed_keypair(Seed0, KeyPair) :-
+    key_bytes(Seed0, 32, Seed),
+    '_crypto_ed25519_seed_public_key'(Seed, PublicKey),
+    append([[0x30,81,           % SEQUENCE of 81 bytes
+             2,1,1,             % INTEGER 1: version v2, public key included
+             0x30,5,            % privateKeyAlgorithm: SEQUENCE of 5 bytes
+             6,3,43,101,112,    % OBJECT IDENTIFIER 1.3.101.112 (Ed25519)
+             4,34,4,32],        % privateKey: OCTET STRING of an OCTET STRING
+            Seed,
+            [0x81,33,0],        % publicKey: [1] IMPLICIT BIT STRING, 0 unused
+            PublicKey], Bytes),
+    hex_bytes(KeyPair, Bytes).
+
+%!  ed25519_keypair_public_key(+KeyPair, -PublicKey) is det.
+%
+%   PublicKey is  the public key  of KeyPair, a hexadecimal  atom.  The
+%   public key is used for signature verification with ed25519_verify/4
+%   and can be shared freely.
+
+ed25519_keypair_public_key(KeyPair, PublicKey) :-
+    keypair_bytes(KeyPair, Bytes),
+    length(Prefix, 51),
+    append(Prefix, Public, Bytes),
+    hex_bytes(PublicKey, Public).
+
+%!  ed25519_sign(+KeyPair, +Data, -Signature, +Options) is det.
+%
+%   Create an Ed25519 (RFC 8032) signature for Data with the private
+%   key of KeyPair, as created by ed25519_new_keypair/1 or obtained
+%   with load_private_key/3.  Signature is a hexadecimal atom.
+%
+%   Options:
+%
+%     - encoding(+Encoding)
+%     Encoding to use for Data.  Default is `utf8`.  Alternatives are
+%     `octet`, `text` and `hex`.  Note that this differs from
+%     ecdsa_sign/4 and rsa_sign/4, which default to `hex` because they
+%     are typically applied to a _hash_ of the data.  Ed25519 signs the
+%     data itself.
+
+ed25519_sign(KeyPair, Data0, Signature, Options) :-
+    keypair_private_key(KeyPair, Seed),
+    option(encoding(Enc0), Options, utf8),
+    hex_encoding(Enc0, Data0, Enc, Data),
+    '_crypto_ed25519_sign'(Seed, Data, Enc, Bytes),
+    hex_bytes(Signature, Bytes).
+
+%!  ed25519_verify(+PublicKey, +Data, +Signature, +Options) is semidet.
+%
+%   True iff Signature can be verified as the Ed25519 signature for
+%   Data, using PublicKey.
+%
+%   Options are as for ed25519_sign/4.
+
+ed25519_verify(Key, Data0, Signature0, Options) :-
+    public_key_bytes(Key, PublicKey),
+    option(encoding(Enc0), Options, utf8),
+    hex_encoding(Enc0, Data0, Enc, Data),
+    key_bytes(Signature0, 64, Signature),
+    '_crypto_ed25519_verify'(PublicKey, Data, Enc, Signature).
+
+keypair_private_key(KeyPair, Seed) :-
+    keypair_bytes(KeyPair, Bytes),
+    length(Prefix, 16),
+    append(Prefix, Rest, Bytes),
+    length(Seed, 32),
+    append(Seed, _, Rest).
+
+keypair_bytes(private_key(ed25519(KeyPair)), Bytes) :-
+    !,
+    key_bytes(KeyPair, 83, Bytes).
+keypair_bytes(KeyPair, Bytes) :-
+    key_bytes(KeyPair, 83, Bytes).
+
+public_key_bytes(public_key(ed25519(Key)), Bytes) :-
+    !,
+    key_bytes(Key, 32, Bytes).
+public_key_bytes(Key, Bytes) :-
+    key_bytes(Key, 32, Bytes).
+
+%!  key_bytes(+Spec, +Length, -Bytes) is det.
+%
+%   Bytes is the list of Length bytes denoted by Spec.  A list of
+%   integers is a list of bytes, as produced by crypto_n_random_bytes/2.
+%   Anything else is a hexadecimal atom, string or list of characters,
+%   as produced by hex_bytes/2.
+
+key_bytes(Spec, Length, Bytes) :-
+    (   is_list(Spec),
+        maplist(integer, Spec)
+    ->  must_be(list(between(0,255)), Spec),
+        Bytes = Spec
+    ;   hex_bytes(Spec, Bytes)
+    ),
+    (   length(Bytes, Length)
+    ->  true
+    ;   domain_error(bytes(Length), Spec)
+    ).
+
+
+                 /*******************************
+                 *            X25519            *
+                 *******************************/
+
+%!  curve25519_generator(-Generator) is det.
+%
+%   Points on  Curve25519 are  hexadecimal atoms  denoting the
+%   u-coordinate  of  the  Montgomery  curve.   Generator  is  the
+%   generator point of Curve25519.
+
+curve25519_generator(Generator) :-
+    length(Zeroes, 31),
+    maplist(=(0), Zeroes),
+    hex_bytes(Generator, [9|Zeroes]).
+
+%!  curve25519_scalar_mult(+Scalar, +Point, -Result) is semidet.
+%
+%   Result is the point _Scalar*Point_ on Curve25519, as mandated by
+%   X25519 (RFC 7748).  Scalar is an integer between 0 and 2^256-1, or
+%   32 bytes.  Fails if Point has small order, i.e., if the result
+%   would be the point at infinity.
+%
+%   Alice and Bob can use  this   to  establish a shared secret, where
+%   Generator is obtained with curve25519_generator/1:
+%
+%     1. Alice creates a random integer _a_ and sends _As = a*Generator_
+%        to Bob.
+%     2. Bob creates a random integer _b_ and sends _Bs = b*Generator_
+%        to Alice.
+%     3. Alice computes _Rs = a*Bs_.
+%     4. Bob computes _Rs = b*As_.
+%     5. Alice and Bob use crypto_data_hkdf/4 on Rs with suitable (same)
+%        parameters to obtain keys and initialization vectors for
+%        symmetric encryption.
+%
+%   If _a_ and _b_ are kept secret, this method is considered very
+%   secure.
+
+curve25519_scalar_mult(Scalar0, Point0, Result) :-
+    (   integer(Scalar0)
+    ->  integer_key_bytes(Scalar0, 32, Scalar)
+    ;   key_bytes(Scalar0, 32, Scalar)
+    ),
+    key_bytes(Point0, 32, Point),
+    '_crypto_curve25519_scalar_mult'(Scalar, Point, Bytes),
+    hex_bytes(Result, Bytes).
+
+%!  integer_key_bytes(+Integer, +Length, -Bytes) is det.
+%
+%   Bytes is the little-endian representation of Integer using Length
+%   bytes, the byte order mandated by X25519.
+
+integer_key_bytes(Integer, Length, Bytes) :-
+    must_be(nonneg, Integer),
+    (   Integer >> (8*Length) =:= 0
+    ->  true
+    ;   domain_error(bytes(Length), Integer)
+    ),
+    integer_bytes(Length, Integer, Bytes).
+
+integer_bytes(0, _, []) :-
+    !.
+integer_bytes(Length0, Integer, [Byte|Bytes]) :-
+    Byte is Integer /\ 0xff,
+    Integer1 is Integer>>8,
+    Length is Length0-1,
+    integer_bytes(Length, Integer1, Bytes).
 
 
 %!  hex_bytes(?Hex, ?List) is det.
@@ -984,6 +1188,15 @@ sandbox:safe_primitive(crypto:crypto_data_hkdf(_,_,_,_)).
 
 sandbox:safe_primitive(crypto:ecdsa_sign(_,_,_,_)).
 sandbox:safe_primitive(crypto:ecdsa_verify(_,_,_,_)).
+
+sandbox:safe_primitive(crypto:ed25519_new_keypair(_)).
+sandbox:safe_primitive(crypto:ed25519_seed_keypair(_,_)).
+sandbox:safe_primitive(crypto:ed25519_keypair_public_key(_,_)).
+sandbox:safe_primitive(crypto:ed25519_sign(_,_,_,_)).
+sandbox:safe_primitive(crypto:ed25519_verify(_,_,_,_)).
+
+sandbox:safe_primitive(crypto:curve25519_generator(_)).
+sandbox:safe_primitive(crypto:curve25519_scalar_mult(_,_,_)).
 
 sandbox:safe_primitive(crypto:rsa_sign(_,_,_,_)).
 sandbox:safe_primitive(crypto:rsa_verify(_,_,_,_)).

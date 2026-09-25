@@ -43,14 +43,11 @@
 	    class_basis_add/3,
 	    class_basis_drop/2,
 	    class_basis_pivot/3,
-	    class_get_clp/2,
 	    class_get_prio/2,
-	    class_put_prio/2,
-	    ordering/1,
-	    arrangement/2
+	    class_put_prio/2
 	  ]).
 
-:- use_module(ordering, [combine/3, ordering/1, arrangement/2]).
+:- use_module(ordering, [combine/3]).
 :- use_module(library(lists), [append/3]).
 
 % called when two classes are unified: the allvars lists are appended to eachother, as well as the basis
@@ -74,9 +71,6 @@ class_new(Class,CLP,All,AllT,Basis) :-
 
 class_get_prio(Class,Priority) :-
 	get_attr(Class,clpqr_class,class(_,_,_,_,Priority)).
-
-class_get_clp(Class,CLP) :-
-	get_attr(Class,clpqr_class,class(CLP,_,_,_,_)).
 
 class_put_prio(Class,Priority) :-
 	get_attr(Class,clpqr_class,class(CLP,All,AllT,Basis,_)),

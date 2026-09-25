@@ -70,6 +70,7 @@
 	    unconstrained/4,
 	    var_intern/2,
 	    var_intern/3,
+	    var_intern/4,
 	    var_with_def_assign/2,
 	    var_with_def_intern/4,
 	    maximize/1,
@@ -196,7 +197,7 @@ deref_var(X,Lin) :-
 	(   get_attr(X,clpqr_itf,Att)
 	->  (   \+ arg(1,Att,clpr)
 	    ->  throw(error(permission_error('mix CLP(Q) variables with',
-		'CLP(R) variables:',X),context(_)))
+		'CLP(R) variables:',X),context(_,_)))
 	    ;   arg(4,Att,lin(Lin))
 	    ->  true
 	    ;   setarg(2,Att,type(t_none)),
@@ -238,10 +239,15 @@ var_with_def_assign(Var,Lin) :-
 % Makes Lin the linear equation of new variable Var, makes all variables of
 % Lin, and Var of the same class and bounds Var by type(Type) and
 % strictness(Strictness)
+%
+% Var is always a variable the solver invents for itself: a slack variable,
+% the target of an optimisation or the witness of a disequation.  It is
+% therefore marked auxiliary (argument 7), so that projection can eliminate
+% it again rather than report it as part of an answer.
 
 var_with_def_intern(Type,Var,Lin,Strict) :-
 	put_attr(Var,clpqr_itf,t(clpr,type(Type),strictness(Strict),lin(Lin),
-	    order(_),n,n,n,n,n,n)),	% check uses
+	    order(_),n,aux,n,n,n,n)),	% check uses
 	Lin = [_,_|Hom],
 	get_or_add_class(Var,Class),
 	same_class(Hom,Class).
@@ -251,8 +257,17 @@ var_with_def_intern(Type,Var,Lin,Strict) :-
 %
 
 var_intern(Type,Var,Strict) :-
+	var_intern(Type,Var,Strict,n).
+
+% var_intern(Type,Var,Strictness,Aux)
+%
+% As var_intern/3.  Aux is aux if Var is a slack variable introduced by the
+% solver and n if it is a variable the user wrote down; see
+% var_with_def_intern/4.
+
+var_intern(Type,Var,Strict,Aux) :-
 	put_attr(Var,clpqr_itf,t(clpr,type(Type),strictness(Strict),
-	    lin([0.0,0.0,l(Var*1.0,Ord)]),order(Ord),n,n,n,n,n,n)),
+	    lin([0.0,0.0,l(Var*1.0,Ord)]),order(Ord),n,Aux,n,n,n,n)),
 	get_or_add_class(Var,_Class).
 
 % TODO
@@ -293,15 +308,6 @@ export_binding(Y,X) :-
 	->  X = 0.0
 	;   Y = X
 	).
-
-% 'solve_='(Nf)
-%
-% Solves linear equation Nf = 0 where Nf is in normal form.
-
-'solve_='(Nf) :-
-	deref(Nf,Nfd),	% dereferences and turns Nf into solvable form Nfd
-	solve(Nfd).
-
 % 'solve_=\\='(Nf)
 %
 % Solves linear inequality Nf =\= 0 where Nf is in normal form.
@@ -392,18 +398,24 @@ inf(Expression,Inf,Vector,Vertex) :-
 	% in normal form
 	wait_linear(Expression,Nf,inf_lin(Nf,Inf,Vector,Vertex)).
 
-inf_lin(Lin,_,Vector,_) :-
-	deref(Lin,Lind),
-	var_with_def_intern(t_none,Dep,Lind,0),	% make new variable Dep = Lind
-	determine_active_dec(Lind),	% minimizes Lind
-	iterate_dec(Dep,Inf),
-	vertex_value(Vector,Values),
-	nb_setval(inf,[Inf|Values]),
-	fail.
-inf_lin(_,Infimum,_,Vertex) :-
-	catch(nb_getval(inf,L),_,fail),
-	nb_delete(inf),
-	assign([Infimum|Vertex],L).
+% The optimum is found by pivoting and then thrown away again by the
+% failure driven loop, which undoes those pivots.  It is carried across in
+% a mutable term local to this call rather than in a global variable, which
+% would clobber a global of the same name in the calling program.
+
+inf_lin(Lin,Infimum,Vector,Vertex) :-
+	State = state(none),
+	(   deref(Lin,Lind),
+	    var_with_def_intern(t_none,Dep,Lind,0),	% make new variable Dep = Lind
+	    determine_active_dec(Lind),	% minimizes Lind
+	    iterate_dec(Dep,Inf),
+	    vertex_value(Vector,Values),
+	    nb_setarg(1,State,[Inf|Values]),
+	    fail
+	;   arg(1,State,L),
+	    L = [_|_],
+	    assign([Infimum|Vertex],L)
+	).
 
 % assign(L1,L2)
 %
@@ -452,23 +464,6 @@ iterate_dec(OptVar,Opt) :-
 	;   Status = optimum,
 	    Opt is R + I
 	).
-
-% iterate_inc(OptVar,Opt)
-%
-% Increases the bound on the variables of the linear equation of OptVar as much
-% as possible and returns the resulting optimal bound in Opt. Fails if for some
-% variable, a status of unlimited is found.
-
-iterate_inc(OptVar,Opt) :-
-	get_attr(OptVar,clpqr_itf,Att),
-	arg(4,Att,lin([I,R|H])),
-	inc_step(H,Status),
-	(   Status = applied
-	->  iterate_inc(OptVar,Opt)
-	;   Status = optimum,
-	    Opt is R + I
-	).
-
 %
 % Status = {optimum,unlimited(Indep,DepT),applied}
 % If Status = optimum, the tables have not been changed at all.
@@ -889,47 +884,10 @@ solve(H,Lin,_,Bind0,BindT) :-
 	    rcbl(Basis,Bind1,BindT)
 	).
 
-%
-% Much like solve, but we solve for a particular variable of type t_none
-%
-
-% solve_x(H,Lin,I,X,[Bind|BindT],BindT)
-%
-%
-
-solve_x(Lin,X) :-
-	Lin = [I,_|H],
-	solve_x(H,Lin,I,X,Bindings,[]),
-	export_binding(Bindings).
-
-solve_x([],_,I,_,Bind0,Bind0) :-
-	!,
-	I >= -1.0e-10, % I =:= 0: redundant or trivially unsat
-	I =< 1.0e-10.
-
-solve_x(H,Lin,_,X,Bind0,BindT) :-
-	sd(H,[],ClassesUniq,9-9-0,_,NV,NVT),
-	get_attr(X,clpqr_itf,Att),
-	arg(5,Att,order(OrdX)),
-	isolate(OrdX,Lin,Lin1),
-	(   arg(6,Att,class(NewC))
-	->  class_allvars(NewC,Deps),
-	    (   ClassesUniq = [_] % rank increasing
-	    ->	bs_collect_bindings(Deps,OrdX,Lin1,Bind0,BindT)
-	    ;   Bind0 = BindT,
-		bs(Deps,OrdX,Lin1)
-	    ),
-	    eq_classes(NV,NVT,ClassesUniq)
-	;   setarg(4,Att,lin(Lin1)),
-	    Lin1 = [Inhom,_|Hom],
-	    bs_collect_binding(Hom,X,Inhom,Bind0,BindT),
-	    eq_classes(NV,NVT,ClassesUniq)
-	).
-
 % solve_ord_x(Lin,OrdX,ClassX)
 %
-% Does the same thing as solve_x/2, but has the ordering of X and its class as
-% input. This also means that X has a class which is not sure in solve_x/2.
+% Like solve/1, but solves for the particular variable with ordering OrdX,
+% whose class ClassX is known.
 
 solve_ord_x(Lin,OrdX,ClassX) :-
 	Lin = [I,_|H],
@@ -1234,27 +1192,6 @@ detach_bounds_vlv(OrdV,Lin,Class,Var,NewLin) :-
 	;   NewLin = Lin,
 	    class_basis_drop(Class,Var)
 	).
-
-% ----------------------------- manipulate the basis --------------------------
-
-% basis_drop(X)
-%
-% Removes X from the basis of the class to which X belongs.
-
-basis_drop(X) :-
-	get_attr(X,clpqr_itf,Att),
-	arg(6,Att,class(Cv)),
-	class_basis_drop(Cv,X).
-
-% basis(X,Basis)
-%
-% Basis is the basis of the class to which X belongs.
-
-basis(X,Basis) :-
-	get_attr(X,clpqr_itf,Att),
-	arg(6,Att,class(Cv)),
-	class_basis(Cv,Basis).
-
 % basis_add(X,NewBasis)
 %
 % NewBasis is the result of adding X to the basis of the class to which X
@@ -1276,28 +1213,6 @@ basis_pivot(Leave,Enter) :-
 	class_basis_pivot(Cv,Enter,Leave).
 
 % ----------------------------------- pivot -----------------------------------
-
-% pivot(Dep,Indep)
-%
-% The linear equation of variable Dep, is transformed into one of variable
-% Indep, containing Dep. Then, all occurrences of Indep in linear equations are
-% substituted by this new definition
-
-%
-% Pivot ignoring rhs and active states
-%
-
-pivot(Dep,Indep) :-
-	get_attr(Dep,clpqr_itf,AttD),
-	arg(4,AttD,lin(H)),
-	arg(5,AttD,order(OrdDep)),
-	get_attr(Indep,clpqr_itf,AttI),
-	arg(5,AttI,order(Ord)),
-	arg(5,AttI,class(Class)),
-	delete_factor(Ord,H,H0,Coeff),
-	K is -1.0/Coeff,
-	add_linear_ff(H0,K,[0.0,0.0,l(Dep* -1.0,OrdDep)],K,Lin),
-	backsubst(Class,Ord,Lin).
 
 % pivot_a(Dep,Indep,IndepT,DepT)
 %

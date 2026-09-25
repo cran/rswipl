@@ -134,6 +134,7 @@ typedef struct
 #define LDFUNC_DECLARATIONS
 
 static bool	destroy_answer_trie(trie *atrie);
+static bool	delayed_destroy_table(trie *atrie);
 static void	free_worklist(worklist *wl);
 static void	clean_worklist(worklist *wl);
 static void	destroy_depending_worklists(worklist *wl0);
@@ -921,6 +922,13 @@ delete_depending_answers(worklist *wl, TmpBuffer wlset)
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 destroy_depending_worklists(worklist *wl) destroys worklists that have
 answers pointing to this worklist and its answers.
+
+(*) Such a table may be under evaluation, in which case we may not destroy
+it now: free_worklist() releases the worklist the running evaluation is
+using.  abolish_table() obeys the same restriction for the table it is
+asked to abolish; it applies to the tables the abolish cascades into as
+well.  delayed_destroy_table() schedules these for destruction as their
+evaluation completes.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static void
@@ -934,7 +942,8 @@ destroy_depending_worklists(worklist *wl0)
   { worklist *wl = popBuffer(&wlset, worklist *);
 
     delete_depending_answers(wl, &wlset);
-    destroy_answer_trie(wl->table);
+    if ( !delayed_destroy_table(wl->table) )   /* (*) */
+      destroy_answer_trie(wl->table);
   }
   discardBuffer(&wlset);
 }
@@ -1634,6 +1643,13 @@ is definitely invalid and can be removed from the answer trie.
 
 Answer to propagate is <wl,panswer> with truth result.
 This answer is propagate to `answer`
+
+(*) The propagation runs over the delay  lists and can reach answers of a
+table that  completed in an  earlier SCC,  e.g., when
+'$tbl_wkl_add_answer'/4 makes an answer of a re-evaluated table
+unconditional.  Such  a  worklist has  no  component any  more (see
+complete_worklist()); the count only  drives answer completion of the
+component being simplified.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
 static bool
@@ -1663,7 +1679,7 @@ propagate_to_answer(spf_agenda *agenda, worklist *wl,
 	    DEBUG(MSG_TABLING_SIMPLIFY,
 		  Sdprintf("   found (SCC=%zd, simplifications = %zd)\n",
 			   pointerToInt(wl->component),
-			   wl->component->simplifications));
+			   wl->component ? wl->component->simplifications : 0));
 
 	    if ( d->answer == NULL )
 	    { if ( result == false &&
@@ -1675,7 +1691,8 @@ propagate_to_answer(spf_agenda *agenda, worklist *wl,
 	    }
 
 	    found = true;
-	    wl->component->simplifications++;
+	    if ( wl->component )	/* (*) */
+	      wl->component->simplifications++;
 
 	    if ( res )			/* remove member from conjunction */
 	    { d->variant = DV_DELETED;
@@ -1708,20 +1725,68 @@ propagate_to_answer(spf_agenda *agenda, worklist *wl,
 }
 
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+answer_delays_on(answer, atrie) is true if `answer` still has a delay
+element that refers to the answer trie `atrie`, i.e., if `answer` belongs
+in the `delays` buffer of atrie's worklist.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static bool
+answer_delays_on(trie_node *answer, trie *atrie)
+{ delay_info *di;
+
+  if ( DL_IS_DELAY_LIST(di=answer->data.delayinfo) )
+  { delay *d = baseBuffer(&di->delays, delay);
+    delay *z = topBuffer(&di->delays, delay);
+
+    for(; d < z; d++)
+    { if ( d->variant == atrie )
+	return true;
+    }
+  }
+
+  return false;
+}
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Propagate <wl,panswer> with truth `result` to the answers that delay on
+this table.
+
+(*) Only the answers that delay on `panswer` are resolved by the loop.  An
+answer that delays on another answer of this table still does and must
+keep its entry in wl->delays: that buffer is how an abolish of this table
+finds the tables depending on it (destroy_depending_worklists()) and how
+the next propagation finds the answers to simplify.  We therefore walk the
+buffer rather than draining it, deleting only the entries that no longer
+delay on this table.  propagate_to_answer() may delete entries itself (and
+destroy the answer), so we re-examine the buffer after each step.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
 static int
 propagate_result(spf_agenda *agenda,
 		 worklist *wl, trie_node *panswer, int result)
-{ DEBUG(MSG_TABLING_SIMPLIFY,
+{ size_t i = 0;
+
+  DEBUG(MSG_TABLING_SIMPLIFY,
 	{ print_delay(result ? "Propagating true" : "Propagating false",
 		      wl->table->data.variant, panswer);
 	  Sdprintf("  %zd dependent answers\n",
 		   entriesBuffer(&wl->delays, trie_node*));
 	});
 
-  while( !isEmptyBuffer(&wl->delays) )
-  { trie_node *answer = popBuffer(&wl->delays, trie_node*);
+  while( i < (size_t)entriesBuffer(&wl->delays, trie_node*) )
+  { trie_node *answer = fetchBuffer(&wl->delays, i, trie_node*);
 
     propagate_to_answer(agenda, wl, panswer, result, answer);
+
+    if ( i < (size_t)entriesBuffer(&wl->delays, trie_node*) &&
+	 fetchBuffer(&wl->delays, i, trie_node*) == answer )
+    { if ( answer_delays_on(answer, wl->table) )	/* (*) */
+	i++;
+      else
+	delete_answer(&wl->delays, answer);
+    }
   }
 
   return true;
@@ -2328,6 +2393,35 @@ is_variant_trie(trie *trie)
 }
 
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+clear_variant_table() destroys all tables of a variant table.
+
+(*) Emptying the variant trie releases the tables one by one.  After
+releasing a table, clear_node() drops the reference to its answer trie,
+which atom-GC (running in the gc thread) may reclaim immediately.  If a
+table that is released later holds a conditional answer that delays on
+it, destroy_delay_info() uses the answer trie from the delay element to
+remove this answer from its worklist and thus accesses freed memory.  We
+therefore first destroy the delay info of all tables, while the variant
+trie keeps all answer tries alive.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static void *
+destroy_delay_info_table(trie_node *node, void *ctx)
+{ (void)ctx;
+
+  if ( node->value )
+  { trie *atrie = symbol_trie(word2atom(node->value));
+    worklist *wl = atrie->data.worklist;
+
+    if ( WL_IS_WORKLIST(wl) && wl->undefined )
+      destroy_delay_info_worklist(wl);
+  }
+
+  return NULL;
+}
+
+
 static void
 clear_variant_table(trie **vtriep)
 { trie *vtrie;
@@ -2336,6 +2430,7 @@ clear_variant_table(trie **vtriep)
   { vtrie->magic = TRIE_CMAGIC;
     if ( ison(vtrie, TRIE_ISSHARED) )
       release_trie(vtrie);			/* acquired in variant_table() */
+    map_trie_node(&vtrie->root, destroy_delay_info_table, NULL); /* (*) */
     trie_empty(vtrie);
     PL_unregister_atom(vtrie->symbol);
     *vtriep = NULL;
@@ -2979,6 +3074,18 @@ clean_worklist(worklist *wl)
 }
 
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Complete the worklist `wl`.  If `destroy`, the worklist is not needed any
+more.  Otherwise  it is  kept because  the table  has conditional
+answers or other answers delay on it.
+
+(*) The SCC is completed and will be  freed by '$tbl_free_component'/1
+while this worklist  survives it.  Clear the  reference: simplification
+can  reach a  completed  worklist  through the  delay  lists (see
+propagate_to_answer()), and the tables  that are re-activated get a new
+component from tbl_add_worklist().
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
 #define complete_worklist(wl, destroy) LDFUNC(complete_worklist, wl, destroy)
 static void
 complete_worklist(DECL_LD worklist *wl, int destroy)
@@ -2995,6 +3102,7 @@ complete_worklist(DECL_LD worklist *wl, int destroy)
 		      });
   } else
   { clean_worklist(wl);
+    wl->component = NULL;		/* (*) */
 
     COMPLETE_WORKLIST(atrie,
 		      { set(atrie, TRIE_COMPLETE);
@@ -8282,6 +8390,19 @@ PRED_IMPL("$tbl_reeval_wait", 2, tbl_reeval_wait, 0)
  * @error `deadlock` if claiming the table would cause a deadlock.
  */
 
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Prepare the answers of a table for re-evaluation: mark them as deleted and
+remove the delay list of the conditional ones.  Re-derived answers clear
+TN_IDG_DELETED (see '$tbl_wkl_add_answer'/4) and get a fresh delay list.
+
+(*) wl->undefined counts the conditional answers of this table and we just
+removed the delay list of this one.  Leaving it counted makes the table
+claim undefined answers it no longer has, which stops
+propagate_to_answer() from ever deciding a negative delay on this table:
+answers of other tables delaying on tnot(this) then remain conditional
+although this table was re-evaluated to definitely false.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
 static void *
 reeval_prep_node(trie_node *n, void *ctx)
 { trie *atrie = ctx;
@@ -8291,9 +8412,13 @@ reeval_prep_node(trie_node *n, void *ctx)
     clear(n, TN_IDG_ADDED);
 
     if ( answer_is_conditional(n) )
-    { destroy_delay_info(atrie, n, true);
+    { worklist *wl;
+
+      destroy_delay_info(atrie, n, true);
       n->data.delayinfo = NULL;
       clear(n, TN_IDG_UNCONDITIONAL);
+      if ( WL_IS_WORKLIST(wl=atrie->data.worklist) && wl->undefined > 0 )
+	wl->undefined--;		/* (*) */
     } else
     { set(n, TN_IDG_UNCONDITIONAL);
     }

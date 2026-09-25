@@ -335,7 +335,9 @@ static void	assign_variant_fonts(TerminalImage ti, FontObj bold,
 static void	rlc_destroy_buffer(RlcData b);
 static bool	rlc_caret_xy(RlcData b, int *x, int *y);
 static void	rlc_resize_pixel_units(RlcData b, int w, int h);
-static RlcData	rlc_make_buffer(int w, int h);
+static void	rlc_pixels_to_cells(RlcData b, int w, int h,
+				    int *cols, int *rows);
+static RlcData	rlc_make_buffer(int h);
 static int	rlc_count_lines(RlcData b, int from, int to);
 static void	rlc_add_line(RlcData b);
 static void	rlc_open_line(RlcData b);
@@ -344,6 +346,7 @@ static text_flags rlc_eol_flags(const RlcTextLine tl);
 static void	rlc_caret_down(RlcData b, int arg);
 static void	rlc_init_tabs(RlcData b);
 static void	rlc_erase_display(RlcData b);
+static void	rlc_erase_tail(RlcData b, RlcTextLine tl, bool bce);
 static void	rlc_restore_screen(RlcData b);
 static void	rlc_save_screen(RlcData b);
 static void	rlc_update_scrollbar(RlcData b);
@@ -384,6 +387,7 @@ static void	rlc_free_links(RlcData b, href *links);
 static void	rlc_check_links(RlcTextLine tl);
 static void	rlc_link_cells(RlcData b, RlcTextLine tl, int start, int len);
 static void	rlc_link_end(RlcData b);
+static bool	rlc_href_armed(RlcData b, int line, href *hr);
 static bool	rlc_copy(RlcData b, Name to);
 static void	rlc_request_redraw(RlcData b);
 static void	rlc_redraw(RlcData b, int x, int y, int w, int h);
@@ -407,7 +411,7 @@ static bool	rlc_client_owns_terminal(RlcData b);
 static bool	rlc_foreground_directory(RlcData b, char *buf, size_t size);
 static int	rlc_interrupt_char(RlcData b);
 static int	rlc_suspend_char(RlcData b);
-static bool	rlc_caret_to_click(RlcData b, int x, int y);
+static bool	rlc_caret_to_selection_end(RlcData b, int x, int y);
 static void	rlc_caret_to(RlcData b, int line, int chr);
 static int	rlc_cluster_distance(RlcData b, int l1, int c1,
 				     int l2, int c2);
@@ -548,13 +552,17 @@ initialiseTerminalImage(TerminalImage ti, Int w, Int h)
   assign_variant_fonts(ti, ti->bold_font, ti->italic_font,
 		       ti->bold_italic_font);
 
-  // compute width in characters from w
-  int cw = (double)valInt(w)/c_width('m', ti->font);
-
-  RlcData b = rlc_make_buffer(cw, valInt(ti->save_lines));
+  RlcData b = rlc_make_buffer(valInt(ti->save_lines));
   ti->data = b;
   b->object = ti;
   rlc_init_text_dimensions(b, ti->font);
+  /* The size in cells follows from the size in pixels.  Later only a
+   * change of either makes us compute it again, so a terminal that is
+   * never resized had 25 rows whatever its height.  The buffer is still
+   * empty: there is nothing to rewrap.
+   */
+  rlc_pixels_to_cells(b, valInt(w), valInt(h), &b->width, &b->window_size);
+  b->scroll_bottom = b->window_size-1;
 
   succeed;
 }
@@ -1082,6 +1090,7 @@ rlc_drag_extend_selection(TerminalImage ti)
     y = h-1;
 
   rlc_extend_selection(b, b->drag_x, y);
+  rlc_caret_to_selection_end(b, b->drag_x, y);
 }
 
 static void
@@ -1117,6 +1126,19 @@ dragScrollTerminalImage(TerminalImage ti)
 
   succeed;
 }
+
+/* Following a link is Control-click, except on MacOS, where that asks
+ * for the popup menu (see isPopupEvent()).  There it is Command-click,
+ * which is what Terminal.app and iTerm2 use to open a URL.  Option is
+ * not available: a terminal sends it to the application as the Meta
+ * modifier and MacOS uses Option-drag for a rectangular selection.
+ */
+
+#ifdef __APPLE__
+#define BUTTON_follow_link (BUTTON_gui)
+#else
+#define BUTTON_follow_link (BUTTON_control)
+#endif
 
 static status
 eventTerminalImage(TerminalImage ti, EventObj ev)
@@ -1174,11 +1196,17 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
   if ( isAEvent(ev, NAME_msLeftDown) )
   { RlcData b = ti->data;
     Int x, y;
+
+    if ( isPopupEvent(ev) )		/* MacOS Control-click asks for the */
+      fail;				/* menu, not for a selection */
+
     endIsearchTerminalImage(ti, OFF);	/* the mouse takes the selection */
     get_xy_event(ev, ti, ON, &x, &y);
     if ( rlc_fold_at_gutter(ti, valInt(x), valInt(y)) )
       succeed;				/* ->msLeftUp does the folding */
     stopDragScrollTerminalImage(ti);
+    b->caret_asked.valid = false;	/* a new gesture starts from the */
+					/* caret as it is now */
     /* Keep the drag ours when the pointer leaves the terminal, so
      * dragging past its edge can scroll.  The window drops the focus
      * again on the button going up.
@@ -1198,6 +1226,11 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
       } else
 	rlc_start_selection(b, valInt(x), valInt(y));
     }
+    /* Track the pointer with the caret from here, as an editor does:
+     * pressing puts it at the click and dragging carries it along, so
+     * that it ends up at the end of the selection.
+     */
+    rlc_caret_to_selection_end(b, valInt(x), valInt(y));
     succeed;
   }
   if ( isAEvent(ev, NAME_msLeftUp) )
@@ -1209,16 +1242,18 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
     if ( (fold=rlc_fold_at_gutter(ti, valInt(x), valInt(y))) )
       return send(fold, NAME_toggleFold, EAV);
     static const uchar_t *lnk;
-    if ( (valInt(ev->buttons) & BUTTON_control) &&
+    if ( (valInt(ev->buttons) & BUTTON_follow_link) &&
 	 (lnk=rlc_clicked_link(b, valInt(x), valInt(y))) &&
 	 notNil(ti->link_message) )
     { Name href = TCHAR2Name(lnk);
       clickedLinkTerminalImage(ti, href);
-    } else if ( rlc_has_selection(b) )
-    { if ( isOn(getClassVariableValueObject(ti, NAME_autoCopy)) )
+    } else
+    { rlc_caret_to_selection_end(b, valInt(x), valInt(y));
+      if ( rlc_has_selection(b) &&
+	   isOn(getClassVariableValueObject(ti, NAME_autoCopy)) )
 	send(ti, NAME_copy, EAV);
-    } else				/* a click, not a drag */
-      rlc_caret_to_click(b, valInt(x), valInt(y));
+    }
+    b->caret_asked.valid = false;	/* the gesture is over */
     /* Not from rlc_set_selection(): the tally is over the whole
      * scroll-back, which is too much to count for every motion event of
      * a drag, and a number that flickers while the selection is still
@@ -1239,7 +1274,9 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
     { Int x, y;
 
       get_xy_event(ev, ti, ON, &x, &y);
+      b->caret_asked.valid = false;	/* not part of a left drag */
       rlc_extend_selection(b, valInt(x), valInt(y));
+      rlc_caret_to_selection_end(b, valInt(x), valInt(y));
       if ( rlc_has_selection(b) &&
 	   getClassVariableValueObject(ti, NAME_autoCopy) )
 	send(ti, NAME_copy, EAV);
@@ -1251,13 +1288,15 @@ eventTerminalImage(TerminalImage ti, EventObj ev)
   fail;
 }
 
-/* 1..12 if `id' is a function key event, else 0. */
+/* 1..24 if `id' is a function key event, else 0. */
 
 static int
 function_key_number(Any id)
 { const Name fkeys[] =
-  { NAME_f1, NAME_f2, NAME_f3,  NAME_f4,  NAME_f5,  NAME_f6,
-    NAME_f7, NAME_f8, NAME_f9,  NAME_f10, NAME_f11, NAME_f12
+  { NAME_f1,  NAME_f2,  NAME_f3,  NAME_f4,  NAME_f5,  NAME_f6,
+    NAME_f7,  NAME_f8,  NAME_f9,  NAME_f10, NAME_f11, NAME_f12,
+    NAME_f13, NAME_f14, NAME_f15, NAME_f16, NAME_f17, NAME_f18,
+    NAME_f19, NAME_f20, NAME_f21, NAME_f22, NAME_f23, NAME_f24
   };
 
   for(size_t i=0; i<sizeof(fkeys)/sizeof(*fkeys); i++)
@@ -1279,6 +1318,13 @@ function_key_number(Any id)
  * user started: a key the window keeps for itself is one that program
  * can never be given.
  *
+ * Page Up and Page Down go the same way, and also while the alternate
+ * screen is up: `less', `man', `vim' and the pagers of this world are
+ * read with those keys and there is no scroll back for the window to
+ * scroll for as long as one of them owns the screen.  Shift is the
+ * user's way out, as it is for the wheel (see rlc_alt_scroll()): it
+ * keeps the key on this side and scrolls what scroll back there is.
+ *
  * Meta combinations do not produce a control character, so the
  * window's own bindings keep working throughout.  Ctrl+Shift does
  * produce one -- the keymap ignores the shift -- and is dealt with in
@@ -1288,7 +1334,13 @@ function_key_number(Any id)
 
 static bool
 clientOwnsKeyTerminalImage(TerminalImage ti, EventObj ev)
-{ if ( !rlc_client_owns_terminal(ti->data) )
+{ RlcData b = ti->data;
+
+  if ( ev->id == NAME_pageUp || ev->id == NAME_pageDown )
+    return ( !(valInt(ev->buttons) & BUTTON_shift) &&
+	     (rlc_alt_screen(b) || rlc_client_owns_terminal(b)) );
+
+  if ( !rlc_client_owns_terminal(b) )
     return false;
 
   return ( (isInteger(ev->id) && valInt(ev->id) < 32) ||
@@ -1329,8 +1381,8 @@ final_seq(char *buf, size_t size, int final, int mod, bool app)
   return buf;
 }
 
-/* Keys xterm reports as `CSI <num> ~': Delete and F5..F12.  With a
- * modifier the number is followed by `; <mod>'.
+/* Keys xterm reports as `CSI <num> ~': Insert, Delete, Find, Select and
+ * F5..F12.  With a modifier the number is followed by `; <mod>'.
  */
 
 static const char *
@@ -1341,6 +1393,17 @@ tilde_seq(char *buf, size_t size, int num, int mod)
     snprintf(buf, size, S_ESC"[%d~", num);
 
   return buf;
+}
+
+/* The same modifier parameter with the shift bit set.  It is 1 plus a
+ * bit per modifier, so a key that had none becomes 2 (shift alone).
+ */
+
+static int
+shifted_modifier(int mod)
+{ int m = mod ? mod-1 : 0;
+
+  return (m|0x1)+1;
 }
 
 static status
@@ -1440,8 +1503,37 @@ typedTerminalImage(TerminalImage ti, EventObj ev)
   { seq = final_seq(buf, sizeof(buf), 'H', mod, b->app_escape);
   } else if ( ev->id == NAME_delete )
   { seq = tilde_seq(buf, sizeof(buf), 3, mod);
+  } else if ( ev->id == NAME_pageUp || ev->id == NAME_pageDown )
+  { /* The unmodified keys are bound to ->cursor_page_up and
+     * ->cursor_page_down, which only get here through the binding
+     * being skipped for a client that owns them.  A modified one has
+     * no binding and arrives here whether or not there is a client to
+     * read it; without one we scroll, as the plain key does.
+     */
+    if ( !clientOwnsKeyTerminalImage(ti, ev) )
+      return send(ti, ev->id == NAME_pageUp ? NAME_cursorPageUp
+					    : NAME_cursorPageDown, EAV);
+
+    seq = tilde_seq(buf, sizeof(buf), ev->id == NAME_pageUp ? 5 : 6, mod);
+  } else if ( ev->id == NAME_insert )
+  { seq = tilde_seq(buf, sizeof(buf), 2, mod);
+  } else if ( ev->id == NAME_find )	/* the VT220 editing keys that */
+  { seq = tilde_seq(buf, sizeof(buf), 1, mod);	/* are not Home and End */
+  } else if ( ev->id == NAME_select )
+  { seq = tilde_seq(buf, sizeof(buf), 4, mod);
+  } else if ( ev->id == NAME_begin )	/* the middle of the keypad */
+  { seq = final_seq(buf, sizeof(buf), 'E', mod, b->app_escape);
   } else if ( (fn=function_key_number(ev->id)) )
   { static const int tilde[] = {15,17,18,19,20,21,23,24}; /* F5..F12 */
+
+    /* F13..F24 are Shift+F1..F12: that is what the terminfo entry for
+     * xterm says they send (kf13=\E[1;2P ... kf24=\E[24;2~), and it is
+     * what a keyboard without that second row produces for them.
+     */
+    if ( fn > 12 )
+    { fn -= 12;
+      mod = shifted_modifier(mod);
+    }
 
     if ( fn <= 4 )
       seq = final_seq(buf, sizeof(buf), 'P'+fn-1, mod, true);
@@ -2455,7 +2547,7 @@ getCellStyleTerminalImage(TerminalImage ti, Int column, Int row)
   if ( tl->text && cell < tl->size && tl->text[cell].flags.link )
   { for(href *hr = tl->links; hr; hr = hr->next)
     { if ( cell >= hr->start && cell <= hr->start + hr->length )
-      { Style ls = ( hr == b->armed_href &&
+      { Style ls = ( rlc_href_armed(b, line, hr) &&
 		     notNil(ti->link_armed_style) &&
 		     !isDefault(ti->link_armed_style)
 		     ? ti->link_armed_style : ti->link_style );
@@ -2931,6 +3023,12 @@ cursorHomeTerminalImage(TerminalImage ti)
   rlc_send(ti->data, seq, strlen(seq));
   succeed;
 }
+
+/* ->cursor_page_up, ->cursor_page_down: scroll the scroll back by a
+ * page.  These are what the Page Up and Page Down keys are bound to
+ * while the window owns them; a client that owns them instead is sent
+ * `CSI 5~'/`CSI 6~' by ->typed.
+ */
 
 static status
 cursorPageUpTerminalImage(TerminalImage ti)
@@ -4592,15 +4690,19 @@ rlc_translate_mouse(RlcData b, int x, int y, int *line, int *chr)
 }
 
 
-/* Move the client's caret to a clicked position.
+/* Move the client's caret to where the mouse points.
  *
  * The line being edited belongs to the client, not to us, so we cannot
  * put the caret anywhere: we can only ask, and the request every line
  * editor understands is cursor-left and cursor-right.  Count the
- * grapheme clusters between the caret and the click and send that
+ * grapheme clusters between the caret and the target and send that
  * many.  Only inside the logical line the caret is on -- the line
  * being edited -- so a click anywhere else still just starts a
  * selection.
+ *
+ * The caret follows the pointer for the whole gesture, as it does in an
+ * editor: to the click on the way down, along with a drag, and so to
+ * the end of a selection that the drag makes.
  *
  * And only while a line editor is there to understand the request.
  * The client that asks for a single character -- the Prolog tracer at
@@ -4694,23 +4796,23 @@ rlc_input_start(RlcData b, int line, int *sl, int *sc)
 }
 
 
-/* rlc_caret_to()
- *	Walk the caret of the line being edited to (line, chr) by handing
- *	the client cursor keys.  We do not move it ourselves: the program
- *	on the terminal owns the line, and only it knows what a step
- *	across a grapheme cluster costs.
+/* rlc_caret_move()
+ *	Walk the caret of the line being edited from (fl, fc) to
+ *	(line, chr) by handing the client cursor keys.  We do not move it
+ *	ourselves: the program on the terminal owns the line, and only it
+ *	knows what a step across a grapheme cluster costs.
  */
 
 static void
-rlc_caret_to(RlcData b, int line, int chr)
+rlc_caret_move(RlcData b, int fl, int fc, int line, int chr)
 { const char *seq;
   int n, i;
 
-  if ( rlc_sel_lt(b, line, chr, b->caret_y, b->caret_x) )
-  { n = rlc_cluster_distance(b, line, chr, b->caret_y, b->caret_x);
+  if ( rlc_sel_lt(b, line, chr, fl, fc) )
+  { n = rlc_cluster_distance(b, line, chr, fl, fc);
     seq = b->app_escape ? S_ESC"OD" : S_ESC"[D";
   } else
-  { n = rlc_cluster_distance(b, b->caret_y, b->caret_x, line, chr);
+  { n = rlc_cluster_distance(b, fl, fc, line, chr);
     seq = b->app_escape ? S_ESC"OC" : S_ESC"[C";
   }
 
@@ -4719,15 +4821,45 @@ rlc_caret_to(RlcData b, int line, int chr)
 }
 
 
+/* rlc_caret_to()
+ *	Ask for the caret at (line, chr), counting from where it is now.
+ */
+
+static void
+rlc_caret_to(RlcData b, int line, int chr)
+{ rlc_caret_move(b, b->caret_y, b->caret_x, line, chr);
+}
+
+
+/* rlc_caret_track()
+ *	The same, for the mouse.  A drag asks on every motion event,
+ *	which is faster than the round trip through the client: counting
+ *	from the caret on the screen would count the keys still under way
+ *	a second time and walk past the pointer.  Count from where those
+ *	keys leave it instead.  Only for as long as the gesture lasts:
+ *	->ms_left_down drops the bookkeeping, so anything else that moves
+ *	the caret in between is no concern of ours.
+ */
+
+static void
+rlc_caret_track(RlcData b, int line, int chr)
+{ int fl = b->caret_asked.valid ? b->caret_asked.line : b->caret_y;
+  int fc = b->caret_asked.valid ? b->caret_asked.chr  : b->caret_x;
+
+  rlc_caret_move(b, fl, fc, line, chr);
+  b->caret_asked.line  = line;
+  b->caret_asked.chr   = chr;
+  b->caret_asked.valid = true;
+}
+
+
 static bool
-rlc_caret_to_click(RlcData b, int x, int y)
-{ int line, chr;
-  int sl, sc;
+rlc_caret_to_position(RlcData b, int line, int chr)
+{ int sl, sc;
 
   if ( !rlc_editing_line(b) )		/* nobody is editing a line */
     return false;
 
-  rlc_translate_mouse(b, x, y, &line, &chr);
   if ( !rlc_between(b, b->first, b->last, line) ||
        rlc_logical_start(b, line) != rlc_logical_start(b, b->caret_y) )
     return false;
@@ -4738,9 +4870,42 @@ rlc_caret_to_click(RlcData b, int x, int y)
     chr  = sc;				/* the start of the input */
   }
 
-  rlc_caret_to(b, line, chr);
+  rlc_caret_track(b, line, chr);
 
   return true;
+}
+
+
+/* rlc_caret_to_selection_end()
+ *	Put the caret where the pointer at (x, y) leaves the selection it
+ *	is making: at the end of it the pointer is at, as dragging over
+ *	text does in an editor.  For a selection by the character that is
+ *	the pointer itself; for one by word or line it is the end of the
+ *	word or the line the pointer is in, which is the end of the
+ *	selection away from where the gesture started.
+ *
+ *	Nothing happens if that end is not in the line being edited: a
+ *	selection made over the output above it is not the caret's
+ *	business.
+ */
+
+static bool
+rlc_caret_to_selection_end(RlcData b, int x, int y)
+{ int line, chr;
+
+  rlc_translate_mouse(b, x, y, &line, &chr);
+
+  if ( b->sel_unit != SEL_CHAR && rlc_has_selection(b) )
+  { if ( rlc_sel_lt(b, line, chr, b->sel_org_line, b->sel_org_char) )
+    { line = b->sel_start_line;
+      chr  = b->sel_start_char;
+    } else
+    { line = b->sel_end_line;
+      chr  = b->sel_end_char;
+    }
+  }
+
+  return rlc_caret_to_position(b, line, chr);
 }
 
 
@@ -6419,7 +6584,7 @@ rlc_paint_text(RlcData b,
   int armed_from = 0, armed_to = 0;
   if ( b->armed_href && tl->text )
   { for(href *hr = tl->links; hr; hr = hr->next)
-    { if ( hr == b->armed_href )
+    { if ( rlc_href_armed(b, (int)(tl - b->lines), hr) )
       { int f = hr->start - cell_from;
 	int e = f + hr->length + 1;	/* href->length is inclusive */
 	if ( f < 0   ) f = 0;
@@ -6808,10 +6973,20 @@ rlc_normalise(RlcData b)
 }
 
 
+/* Columns and rows that fit in `w' by `h' pixels. */
+
+static void
+rlc_pixels_to_cells(RlcData b, int w, int h, int *cols, int *rows)
+{ *cols = max(20, w/b->cw)-2;		/* 1 character space for margins */
+  *rows = max(1, h/b->ch);
+}
+
+
 static void
 rlc_resize_pixel_units(RlcData b, int w, int h)
-{ int nw = max(20, w/b->cw)-2;		/* 1 character space for margins */
-  int nh = max(1, h/b->ch);
+{ int nw, nh;
+
+  rlc_pixels_to_cells(b, w, h, &nw, &nh);
 
   DEBUG(NAME_term,
 	Cprintf("rlc_resize_pixel_units(%p, %d, %d) (%dx%d)\n",
@@ -6885,7 +7060,7 @@ chars_columns(const text_char *chars, int len)
 		 *******************************/
 
 static RlcData
-rlc_make_buffer(int w, int h)
+rlc_make_buffer(int h)
 { RlcData b = rlc_malloc(sizeof(rlc_data));
   int i;
 
@@ -6893,7 +7068,7 @@ rlc_make_buffer(int w, int h)
   b->magic = RLC_MAGIC;
 
   b->height         = h;
-  b->width          = w;
+  b->width          = 80;		/* until we know the pixel size */
   b->window_size    = 25;
   b->scroll_top     = 0;
   b->scroll_bottom  = b->window_size-1;
@@ -7061,6 +7236,42 @@ move_link_positions(RlcTextLine tl, int offset)
     hr->start += offset;
 }
 
+/* Remove the first `drop` cells of `line`, and the links that lived in
+ * them.  Rewrapping the oldest line of a full ring has nowhere to put
+ * the part that no longer fits (see rlc_resize()), so there the head of
+ * the line is what scrolls off.
+ */
+
+static void
+rlc_drop_line_head(RlcData b, int line, int drop)
+{ RlcTextLine tl = &b->lines[line];
+  href *next;
+
+  assert(drop > 0 && drop <= tl->size);
+
+  memmove(tl->text, &tl->text[drop], (tl->size-drop)*sizeof(text_char));
+  tl->size -= drop;
+  tl->text  = rlc_realloc(tl->text, tl->size == 0
+				      ? sizeof(text_char)
+				      : tl->size*sizeof(text_char));
+  tl->adjusted = true;
+
+  for(href *hr = tl->links; hr; hr=next)
+  { next = hr->next;
+
+    if ( hr->start + hr->length <= drop )	/* gone with the head */
+    { unlink_href(tl, hr);
+      rlc_free_link(b, hr);
+    } else if ( hr->start < drop )		/* partly gone */
+    { hr->length -= drop - hr->start;
+      hr->start   = 0;
+    } else
+      hr->start -= drop;
+  }
+
+  rlc_check_links(tl);
+}
+
 /* When two hrefs merge, retarget b->armed_href so hover survives the
  * splice.  Anything else that frees an href will fall back to clearing
  * armed_href in rlc_free_link. */
@@ -7130,7 +7341,18 @@ move_links_soft(RlcData b, RlcTextLine from, RlcTextLine to)
       hr->next = to->links;
       to->links = hr;
     } else if ( hr->start + hr->length > from->size )
-    { rlc_add_link(to, hr->link, 0, hr->start + hr->length - from->size);
+    { int moved = hr->start + hr->length - from->size;
+      href *hr2;
+
+      for(hr2 = to->links; hr2; hr2=hr2->next)
+      { if ( hr2->start == moved && ucscmp(hr->link, hr2->link) == 0 )
+	  break;
+      }
+      if ( hr2 )			/* `to` holds the rest of the link */
+      { hr2->start = 0;
+	hr2->length += moved;
+      } else
+	rlc_add_link(to, hr->link, 0, moved);
       hr->length = from->size - hr->start;
     }
   next_link:
@@ -7345,7 +7567,16 @@ rlc_resize(RlcData b, int w, int h)
 			     tl->softreturn ? "(soft)" : ""));
     if ( tl->size > w )
     { DEBUG(NAME_term, Cprintf("  Truncate\n"));
-      if ( !tl->softreturn )		/* hard --> soft */
+      if ( !tl->softreturn && i == b->first && PrevLine(b, i) == b->last )
+      { /* The oldest line must be wrapped, but the ring is full: the only
+	 * line rlc_shift_lines_down() can give up is this one, and it
+	 * would throw away the very text we are rewrapping.  The line the
+	 * wrap needs is the line we do not have, so the head of the line
+	 * scrolls off, leaving what its last wrapped line would hold.
+	 */
+	DEBUG(NAME_term, Cprintf("    drop head of oldest line\n"));
+	rlc_drop_line_head(b, i, tl->size - w);
+      } else if ( !tl->softreturn )	/* hard --> soft */
       { DEBUG(NAME_term,
 	      Cprintf("    hard -> soft\n");
 	      Dprint_lines(b, i, i));
@@ -7499,18 +7730,22 @@ rlc_copy_links(const href *links)
 }
 
 
+/* Let go of a line.  This resets it also if it has no text: a line an
+ * insert (IL) or a scroll opened has none, but an erase with a background
+ * colour (see rlc_erase_line()) records that on it, and a line that kept
+ * it painted the next text written in its slot over that background.
+ */
+
 static void
 rlc_free_line(RlcData b, int line)
 { RlcTextLine tl = &b->lines[line];
-  if ( tl->text )
-  { rlc_free(tl->text);
-    rlc_reinit_line(b, line);
-  }
   href *links = tl->links;
+
+  if ( tl->text )
+    rlc_free(tl->text);
+  rlc_reinit_line(b, line);
   if ( links )
-  { tl->links = NULL;
     rlc_free_links(b, links);
-  }
 }
 
 
@@ -7564,6 +7799,7 @@ rlc_open_line(RlcData b)
   b->lines[i].adjusted   = false;
   b->lines[i].size       = 0;
   b->lines[i].softreturn = false;
+  b->lines[i].eol_erased = false;
   b->lines[i].folded     = false;
   b->lines[i].fold_head  = false;
   b->lines[i].line_no    = i;
@@ -8001,6 +8237,10 @@ rlc_region_size(RlcData b, int line, int bottom)
  * bottom (ANSI DL).  Both are the same walk over the region, run from
  * opposite ends: copying towards the end content moves to means each
  * line is read before it is overwritten.
+ *
+ * As in xterm, the empty lines take the current background colour
+ * (`bce'), as does a line a line feed scrolls into the window (see
+ * rlc_caret_down()).
  */
 
 static void
@@ -8032,7 +8272,7 @@ rlc_scroll_region(RlcData b, int line, int shift)
   { int l = rlc_add_lines(b, from, (move+i)*step);
 
     rlc_reinit_line(b, l);
-    b->lines[l].changed |= CHG_CHANGED;
+    rlc_erase_tail(b, &b->lines[l], true); /* bce: takes the background */
   }
 
   if ( b->folds )			/* the fold bits travelled with the */
@@ -8175,7 +8415,10 @@ rlc_caret_down(RlcData b, int arg)
       continue;				/* the caret stays where it is */
     }
     if ( b->caret_y == b->last )
-      rlc_add_line(b);			/* rlc_open_line() clears its flags */
+    { rlc_add_line(b);			/* rlc_open_line() clears its flags */
+      if ( rlc_window_row(b, b->last) >= b->window_size )
+	rlc_erase_tail(b, &b->lines[b->last], true); /* scrolls in: bce */
+    }
     b->caret_y = NextLine(b, b->caret_y);
     /* Do NOT clear softreturn here.  Moving the caret says nothing
      * about how the line it lands on ends, and a client that walks
@@ -8646,6 +8889,27 @@ rlc_blank_cells(RlcData b, RlcTextLine tl, int from, int to)
 }
 
 
+/** Record the erase of the tail of a line, which has been truncated
+ * already.  If `bce' holds and a background colour is in effect, the
+ * cells to the right of the text are painted in it.
+ */
+
+static void
+rlc_erase_tail(RlcData b, RlcTextLine tl, bool bce)
+{ if ( bce && b->sgr_flags.bg != PAL_DEFAULT )
+  { tl->eol_flags       = b->sgr_flags;
+    tl->eol_flags.width = 1;
+    tl->eol_flags.link  = 0;		/* no href covers the padding */
+    tl->eol_erased      = true;
+  } else
+  { tl->eol_erased      = false;
+  }
+
+  tl->softreturn = false;		/* what wrapped is gone */
+  tl->changed |= CHG_CHANGED|CHG_CLEAR;
+}
+
+
 /** Erase in line (EL): 0 erases from the caret to the end of the line,
  * 1 from the start of the line up to and including the caret and 2 the
  * whole line.  The caret does not move.
@@ -8686,17 +8950,7 @@ rlc_erase_line(RlcData b, int mode)
       return;
   }
 
-  if ( bce && b->sgr_flags.bg != PAL_DEFAULT )
-  { tl->eol_flags       = b->sgr_flags;
-    tl->eol_flags.width = 1;
-    tl->eol_flags.link  = 0;		/* no href covers the padding */
-    tl->eol_erased      = true;
-  } else
-  { tl->eol_erased      = false;
-  }
-
-  tl->softreturn = false;		/* what wrapped is gone */
-  tl->changed |= CHG_CHANGED|CHG_CLEAR;
+  rlc_erase_tail(b, tl, bce);
 }
 
 /** Flags to paint the cells to the right of the text of a line with.
@@ -8726,8 +8980,7 @@ rlc_erase_above(RlcData b)
   { RlcTextLine tl = &b->lines[line];
 
     tl->size = 0;
-    tl->softreturn = false;
-    tl->changed |= CHG_CHANGED|CHG_CLEAR;
+    rlc_erase_tail(b, tl, true);
     if ( line == b->last )		/* the caret is off screen */
       return;
   }
@@ -9250,6 +9503,67 @@ rlc_link_cells(RlcData b, RlcTextLine tl, int start, int len)
     hr->length += len;
   else
     rlc_add_link(tl, b->link_url, start, len);
+}
+
+/* A link that wraps has an href on each line it covers.  Find the href
+ * on the line before (dir < 0) or after (dir > 0) `*line` that continues
+ * `hr` across the soft return, updating `*line`, or NULL.
+ */
+
+static href *
+rlc_href_continued(RlcData b, int *line, href *hr, int dir)
+{ RlcTextLine tl = &b->lines[*line];
+  int l;
+
+  if ( dir < 0 )
+  { if ( hr->start != 0 || *line == b->first )
+      return NULL;
+    l = PrevLine(b, *line);
+    RlcTextLine pl = &b->lines[l];
+    if ( !pl->softreturn )
+      return NULL;
+    for(href *h = pl->links; h; h = h->next)
+    { if ( h->start + h->length == pl->size &&
+	   ucscmp(h->link, hr->link) == 0 )
+      { *line = l;
+	return h;
+      }
+    }
+  } else
+  { if ( !tl->softreturn || hr->start + hr->length != tl->size ||
+	 *line == b->last )
+      return NULL;
+    l = NextLine(b, *line);
+    for(href *h = b->lines[l].links; h; h = h->next)
+    { if ( h->start == 0 && ucscmp(h->link, hr->link) == 0 )
+      { *line = l;
+	return h;
+      }
+    }
+  }
+
+  return NULL;
+}
+
+/* True if `hr` on `line` is part of the hovered link: the href under the
+ * mouse or one that continues it on the lines it wraps over.
+ */
+
+static bool
+rlc_href_armed(RlcData b, int line, href *hr)
+{ if ( !b->armed_href )
+    return false;
+
+  for(int dir = -1; dir <= 1; dir += 2)
+  { int l = line;
+
+    for(href *h = hr; h; h = rlc_href_continued(b, &l, h, dir))
+    { if ( h == b->armed_href )
+	return true;
+    }
+  }
+
+  return false;
 }
 
 		 /*******************************
@@ -9775,7 +10089,7 @@ report_directory(RlcData b, Name dir, Name host)
  * <-blocks of the terminal, which is what lets a block be copied, jumped
  * to or folded away long after it was printed.  The mouse takes its own
  * two things from the same marks: whether the client is reading a line
- * right now and where that line starts.  See rlc_caret_to_click().
+ * right now and where that line starts.  See rlc_caret_to_position().
  *
  * The marks arrive more often than the commands do.  `A' and `B' live
  * inside the prompt string of the client, so it emits them again every
@@ -10127,12 +10441,17 @@ osc_command(RlcData b, int param, const uchar_t *link)
       if ( link[0] == '?' && link[1] == 0 )
       { COLORRGBA rgba = fill_rgba(param == 10 ? ti->colour : ti->background);
 	char buf[64];
+	/* Four hex digits per channel, the 8 bit value doubled, as
+	 * xterm reports them.  Two would be just as valid an X colour
+	 * name, but termenv, which is what a Go client asks with, only
+	 * accepts a reply of the length xterm's has.
+	 */
 	snprintf(buf, sizeof(buf),
-		 S_ESC"]%d;rgb:%02x/%02x/%02x"S_ESC"\\",
+		 S_ESC"]%d;rgb:%02x%02x/%02x%02x/%02x%02x"S_ESC"\\",
 		 param,
-		 (unsigned)ColorRValue(rgba),
-		 (unsigned)ColorGValue(rgba),
-		 (unsigned)ColorBValue(rgba));
+		 (unsigned)ColorRValue(rgba), (unsigned)ColorRValue(rgba),
+		 (unsigned)ColorGValue(rgba), (unsigned)ColorGValue(rgba),
+		 (unsigned)ColorBValue(rgba), (unsigned)ColorBValue(rgba));
 	rlc_send(b, buf, strlen(buf));
       } else
       { COLORRGBA rgba;
@@ -10845,6 +11164,40 @@ open_pty_slave(RlcData b)
 }
 
 /**
+ * Open one of the three client streams on the slave side of our pty.
+ *
+ * The descriptor is read-write whichever direction the stream itself
+ * runs in.  A terminal is one device that a program both reads and
+ * writes, and on a real one stdin, stdout and stderr are the same
+ * read-write description; code that asks the terminal a question
+ * relies on that.  Writing the query to stdout and reading the answer
+ * from it is what termenv does (the OSC 10/11 colour queries of every
+ * Go TUI, `gh' among them), and a write-only stdout makes that read
+ * fail with EBADF.  The answer then stays in the input queue and the
+ * next program to read stdin finds an escape sequence it never asked
+ * for.
+ *
+ * Unlike the descriptor, the stream keeps the direction asked for:
+ * only the client's stdin is an input stream.  The descriptor is the
+ * part a child process inherits, and the part that has to look like a
+ * terminal.
+ */
+
+static IOSTREAM *
+open_pty_client_stream(RlcData b, const char *mode)
+{ int fd = open(b->pty.slave_name, O_RDWR|O_NOCTTY);
+
+  if ( fd < 0 )
+    return NULL;
+
+  IOSTREAM *s = Sfdopen(fd, mode);
+  if ( !s )
+    close(fd);
+
+  return s;
+}
+
+/**
  * Establish  a pty  pair between  the xpce  terminal and  the client.
  * Normally,  the client  is a  Prolog  thread, but  this design  also
  * allows  forking and  attaching  an arbitrary  process  to our  xpce
@@ -11212,9 +11565,9 @@ getPrologStreamTerminalImage(Any obj,
 	 !rlc_open_pty_pair(b) )
       return false;
 
-    i = Sopen_file(b->pty.slave_name, "r");
-    o = Sopen_file(b->pty.slave_name, "w");
-    e = Sopen_file(b->pty.slave_name, "w");
+    i = open_pty_client_stream(b, "r");
+    o = open_pty_client_stream(b, "w");
+    e = open_pty_client_stream(b, "w");
 
     if ( i && o && e )
     { set_stream_properties(i,o,e);

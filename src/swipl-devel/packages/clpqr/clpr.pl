@@ -79,11 +79,33 @@ user:portray_message(warning,import(_,_,clpr,private)).
 :- use_module(clpqr/dump).
 :- use_module(clpqr/geler).
 :- use_module(clpqr/itf).
-:- use_module(clpqr/ordering).
 :- use_module(clpqr/project).
 :- use_module(clpqr/redund).
 :- use_module(library(ugraphs)).
 
+
+:- use_module(clpqr/ordering, [ordering/2]).
+
+%%	ordering(+Spec) is det.
+%
+%	Specify the preferred variable ordering  of   answer constraints. A
+%	variable that comes first in Spec  is   the  one the answer constraint
+%	defines, i.e. the one on its  left   hand  side. Spec is either a list
+%	of variables or a term A<B or  A>B.   As  ordering/1 interns variables
+%	the solver does not know yet, it  may   be  stated before or after the
+%	constraints it talks about.
+
+ordering(Spec) :-
+	ordering(clpr, Spec).
+
+		 /*******************************
+		 *	       SANDBOX		*
+		 *******************************/
+
+:- multifile
+	sandbox:safe_primitive/1.
+
+sandbox:safe_primitive(clpr:ordering(_)).
 
 		 /*******************************
 		 *	 TOPLEVEL PRINTING	*

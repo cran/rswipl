@@ -103,16 +103,14 @@ renormalize_log(N,L0,L2,Lin) :-
 % Renormalizes a term in X: if X is a nonvar, the term becomes a scalar.
 
 renormalize_log_one(X,Term,Res) :-
-	var(X),
 	Term = l(X*K,_),
-	get_attr(X,clpqr_itf,Att),
-	arg(5,Att,order(OrdX)), % Order might have changed
-	Res = [0.0,0.0,l(X*K,OrdX)].
-renormalize_log_one(X,Term,Res) :-
-	nonvar(X),
-	Term = l(X*K,_),
-	Xk is X*K,
-	normalize_scalar(Xk,Res).
+	(   var(X)
+	->  get_attr(X,clpqr_itf,Att),
+	    arg(5,Att,order(OrdX)), % Order might have changed
+	    Res = [0.0,0.0,l(X*K,OrdX)]
+	;   Xk is X*K,
+	    normalize_scalar(Xk,Res)
+	).
 
 % ----------------------------- sparse vector stuff ---------------------------- %
 

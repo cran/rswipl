@@ -90,7 +90,7 @@
 {Rel} :-
 	var(Rel),
 	!,
-	throw(instantiation_error({Rel},1)).
+	instantiation_error(Rel).
 {R,Rs} :-
 	!,
 	{R},{Rs}.
@@ -209,6 +209,13 @@ submit_eq_b(v(_,[X^P])) :-
 	P > 0,
 	!,
 	X = 0.
+% case b3b: n*X^P = 0 with P < 0 has no solution
+submit_eq_b(v(_,[X^P])) :-
+	var(X),
+	integer(P),
+	P < 0,
+	!,
+	fail.
 % case b2: non-linear is invertible: NL(X) = 0 => X - inv(NL)(0) = 0
 submit_eq_b(v(_,[NL^1])) :-
 	nonvar(NL),
@@ -239,7 +246,6 @@ submit_eq_c(A,B,Rest) :-	% c2
 	linear(Rest),
 	!,
 	Hom = [A,B|Rest],
-	% 'solve_='(Hom).
 	nf_length(Hom,0,Len),
 	log_deref(Len,Hom,[],HomD),
 	solve(HomD).
@@ -263,6 +269,17 @@ submit_eq_c1([],v(K,[X^P]),I) :-
 	    !,
 	    X is -K rdiv I
 	).
+% case c11b: i+k*X^p=0 for an integer p other than 1 and -1.  This is the
+% isolating axiom for X = Y^Z with X and Z known.  X is a p-th root of
+% -i/k, of which there are two when p is even.  Unlike CLP(R) we must not
+% approximate: a root that is not rational does not exist in Q at all, so
+% {X^2 =:= 2} has no solution and fails.
+submit_eq_c1([],v(K,[X^P]),I) :-
+	var(X),
+	integer(P),
+	!,
+	V is -I rdiv K,
+	nth_root(P,V,X).
 % case c12: non-linear, invertible: cNL(X)^1+k=0 => inv(NL)(-k/c) = 0 ;
 %				    cNL(X)^-1+k=0 => inv(NL)(-c/k) = 0
 submit_eq_c1([],v(K,[NL^P]),I) :-
@@ -283,7 +300,6 @@ submit_eq_c1(Rest,B,I) :-
 	var(Y),
 	linear(Rest),
 	!,
-	% 'solve_='( [v(I,[]),B|Rest]).
 	Hom = [B|Rest],
 	nf_length(Hom,0,Len),
 	normalize_scalar(I,Nonvar),
@@ -485,6 +501,35 @@ wait_linear_retry(Nf0,Var,Goal) :-
 	;   term_variables(Nf,Vars),
 	    geler(clpq,Vars,wait_linear_retry(Nf,Var,Goal))
 	).
+% nth_root(P,V,X)
+%
+% X is a rational P-th root of V, so that X**P =:= V.  Fails if there is
+% none.  An even P has two roots, which are returned on backtracking.
+
+nth_root(P,V,X) :-
+	(   V =:= 0
+	->  P > 0,
+	    X = 0
+	;   P mod 2 =:= 0
+	->  V > 0,
+	    exact_root(P,V,R),
+	    (   X = R
+	    ;   X is -R
+	    )
+	;   exact_root(P,V,X)
+	).
+
+% exact_root(P,V,R)
+%
+% R is the principal P-th root of V, provided that root is rational.
+% (**)/2 is exact on rationals whenever the root is and returns a float
+% otherwise, so rational/1 is what decides this.
+
+exact_root(P,V,R) :-
+	catch(R is V**(1 rdiv P), _, fail),
+	rational(R),
+	R**P =:= V.
+
 % -----------------------------------------------------------------------
 
 % nl_invertible(F,X,Y,Res)
@@ -501,13 +546,47 @@ nl_invertible(exp(B,C),X,A,Res) :-
 	    Kb > 0,
 	    Kb =\= 1,
 	    X = C, % note delayed unification
-	    Res is rational(log(A)) rdiv rational(log(Kb))
+	    log_q(A,Kb,Res)
 	;   nf_constant(C,Kc),
 	    A =\= 0,
 	    Kc > 0,
 	    X = B, % note delayed unification
-	    Res is rational(A**(1 rdiv Kc))
+	    % ** is exact on rationals whenever the root is
+	    Res is rationalize(A**(1 rdiv Kc))
 	).
+
+% log_q(A,Kb,Res)
+%
+% Res is log(A)/log(Kb).  This is in general irrational and thus not
+% representable in Q, so we evaluate the quotient in floating point and
+% first look for an exact rational answer with a small denominator.  Only
+% when there is none do we fall back on the simplest rational that maps
+% back to the same float.  Note that plain rational/1 on the float is not
+% good enough: log(1000)/log(10) is 2.9999999999999996, whose exact value
+% is a ratio of two 16 digit integers rather than 3.
+
+log_q(A,Kb,Res) :-
+	Float is log(A)/log(Kb),
+	(   exact_log(Float,A,Kb,Exact)
+	->  Res = Exact
+	;   Res is rationalize(Float)
+	).
+
+% exact_log(Float,A,Kb,Exact)
+%
+% Exact is a rational N/D with D =< 16 that is close to Float and satisfies
+% Kb**Exact =:= A.  The bound on N keeps the verification cheap.
+
+exact_log(Float,A,Kb,Exact) :-
+	between(1,16,D),
+	Scaled is Float*D,
+	N is round(Scaled),
+	abs(Scaled-N) < 1.0e-9,
+	abs(N) =< 1024,
+	Try is N rdiv D,
+	catch(Kb**Try =:= A, _, fail),
+	!,
+	Exact = Try.
 
 % -----------------------------------------------------------------------
 
@@ -524,11 +603,7 @@ nf(X,Norm) :-
 	!,
 	Norm = [v(1,[X^1])].
 nf(X,Norm) :-
-	number(X),
-	!,
-	nf_number(X,Norm).
-nf(X,Norm) :-
-	rational(X),
+	number(X),		% includes the rationals
 	!,
 	nf_number(X,Norm).
 %
@@ -851,27 +926,14 @@ nf_power(N,Sum,Norm) :-
 	compare(Rel,N,0),
 	(   Rel = (<)
 	->  Pn is -N,
-	    % nf_power_pos(Pn,Sum,Inorm),
 	    binom(Sum,Pn,Inorm),
 	    nf_div(Inorm,[v(1,[])],Norm)
 	;   Rel = (>)
-	->  % nf_power_pos(N,Sum,Norm)
-	    binom(Sum,N,Norm)
+	->  binom(Sum,N,Norm)
 	;   Rel = (=)
 	->  % 0^0 is indeterminate but we say 1
 	    Norm = [v(1,[])]
 	).
-%
-% N>0
-%
-% iterative method: X^N = X*(X^N-1)
-nf_power_pos(1,Sum,Norm) :-
-	!,
-	Sum = Norm.
-nf_power_pos(N,Sum,Norm) :-
-	N1 is N-1,
-	nf_power_pos(N1,Sum,Pn1),
-	nf_mul(Sum,Pn1,Norm).
 %
 % N>0
 %
@@ -956,12 +1018,15 @@ repair_p_log(N,P0,P2,R,L0,L2) :-
 	repair_p_log(Q,P1,P2,Rq,L1,L2),
 	pmerge(Rp,Rq,R).
 
-repair_p(Term,P,[Term^P],L0,L0) :- var(Term).
-repair_p(Term,P,[],L0,L1) :-
-	nonvar(Term),
-	repair_p_one(Term,TermN),
-	nf_power(P,TermN,TermNP),
-	nf_mul(TermNP,L0,L1).
+repair_p(Term,P,R,L0,L1) :-
+	(   var(Term)
+	->  R = [Term^P],
+	    L1 = L0
+	;   R = [],
+	    repair_p_one(Term,TermN),
+	    nf_power(P,TermN,TermNP),
+	    nf_mul(TermNP,L0,L1)
+	).
 %
 % An undigested term a/b is distinguished from an
 % digested one by the fact that its arguments are
@@ -1072,13 +1137,12 @@ exp2term(P,X,Term) :-
 	Term = X^P.
 
 pe2term(X,Term) :-
-	var(X),
-	Term = X.
-pe2term(X,Term) :-
-	nonvar(X),
-	X =.. [F|Args],
-	pe2term_args(Args,Argst),
-	Term =.. [F|Argst].
+	(   var(X)
+	->  Term = X
+	;   X =.. [F|Args],
+	    pe2term_args(Args,Argst),
+	    Term =.. [F|Argst]
+	).
 
 pe2term_args([],[]).
 pe2term_args([A|As],[T|Ts]) :-
@@ -1116,11 +1180,30 @@ transg(resubmit_ne(Nf)) -->
 	    nf2term(Nf,Term)
 	},
 	[clpq:{Term=\=Z}].
-transg(wait_linear_retry(Nf,Res,Goal)) -->
+transg(wait_linear_retry(Nf,_Res,Goal)) -->
 	{
 	    nf2term(Nf,Term)
 	},
-	[clpq:{Term=Res},Goal].
+	pending_goal(Goal,Term).
+
+% pending_goal(Continuation,Term)
+%
+% Expresses the continuation of a delayed optimisation as the user level
+% goal that created it.  We cannot emit the continuation itself: it expects
+% its argument to be the *normal form* of Term, which wait_linear/3 unifies
+% it with, and a unification with a normal form is not something {}/1 can
+% express.  An unknown continuation is dropped rather than reported wrongly.
+
+pending_goal(bv_q:minimize_lin(_),Term) -->
+	!,
+	[clpq:minimize(Term)].
+pending_goal(bv_q:inf_lin(_,Inf,Vector,Vertex),Term) -->
+	!,
+	[clpq:inf(Term,Inf,Vector,Vertex)].
+pending_goal(bb_q:bb_inf_internal(Is,_,Inf,Vertex),Term) -->
+	!,
+	[clpq:bb_inf(Is,Term,Inf,Vertex)].
+pending_goal(_,_) --> [].
 
 		 /*******************************
 		 *	       SANDBOX		*

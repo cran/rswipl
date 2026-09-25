@@ -45,46 +45,19 @@
 
 :- use_module(library(apply), [maplist/2]).
 
-% l2conj(List,Conj)
-%
-% turns a List into a conjunction of the form (El,Conj) where Conj
-% is of the same form recursively and El is an element of the list
-
-l2conj([X|Xs],Conj) :-
-	(   X = [],
-	    Conj = X
-	;   Xs = [_|_],
-	    Conj = (X,Xc),
-	    l2conj(Xs,Xc)
-	).
-
-% nonexhausted(Goals,OutList,OutListTail)
-%
-% removes the goals that have already run from Goals
-% and puts the result in the difference list OutList
-
-nonexhausted(run(Mutex,G)) -->
-	(   { var(Mutex) }
-	->  [G]
-	;   []
-	).
-nonexhausted((A,B)) -->
-	nonexhausted(A),
-	nonexhausted(B).
-
 attr_unify_hook(g(CLP,goals(Gx),_),Y) :-
 	!,
-	(   var(Y),
-	    (   get_attr(Y,clpqr_geler,g(A,B,C))
+	(   var(Y)
+	->  (   get_attr(Y,clpqr_geler,g(A,B,C))
 	    ->  ignore((CLP \== A,throw(error(permission_error(
 		    'apply CLP(Q) constraints on','CLP(R) variable',Y),
-		    context(_))))),
+		    context(_,_))))),
 		(   % possibly mutual goals. these need to be run.
 		    % other goals are run as well to remove redundant goals.
 		    B = goals(Gy)
 		->  Later = [Gx,Gy],
 		    (   C = n
-		    ->  del_attr(Y,geler)
+		    ->  del_attr(Y,clpqr_geler)
 		    ;   put_attr(Y,clpqr_geler,g(CLP,n,C))
 		    )
 		;   % no goals in Y, so no mutual goals of X and Y, store
@@ -96,8 +69,7 @@ attr_unify_hook(g(CLP,goals(Gx),_),Y) :-
 	    ;	Later = [],
 		put_attr(Y,clpqr_geler,g(CLP,goals(Gx),n))
 	    )
-	;   nonvar(Y),
-	    Later = [Gx]
+	;   Later = [Gx]
 	),
 	maplist(call,Later).
 attr_unify_hook(_,_). % no goals in X
@@ -123,7 +95,7 @@ collect_nonlin([X|Xs]) -->
 % trans(Goals,OutList,OutListTail)
 %
 % transforms the goals (of the form run(Mutex,Goal)
-% that are in Goals (in the conjunction form, see also l2conj)
+% that are in Goals (a conjunction)
 % that have not been run (Mutex = variable) into a readable output format
 % and notes that they're done (Mutex = 'done'). Because of the Mutex
 % variable, each goal is only added once (so not for each variable).
@@ -154,11 +126,12 @@ transg(G) --> [G].
 % that when X = Y and X and Y are in the same goal, that goal
 % is called only once.
 
-run(Mutex,_) :- nonvar(Mutex).
 run(Mutex,G) :-
-	var(Mutex),
-	Mutex = done,
-	call(G).
+	(   var(Mutex)
+	->  Mutex = done,
+	    call(G)
+	;   true
+	).
 
 % geler(Vars,Goal)
 %
@@ -182,7 +155,7 @@ attach([V|Vs],CLP,Goal) :-
 	(   get_attr(V,clpqr_geler,g(A,B,C))
 	->  (   CLP \== A
 	    ->  throw(error(permission_error('apply CLP(Q) constraints on',
-		    'CLP(R) variable',V),context(_)))
+		    'CLP(R) variable',V),context(_,_)))
 	    ;   (   B = goals(Goals)
 	        ->  put_attr(V,clpqr_geler,g(A,goals((Goal,Goals)),C))
 	        ;   put_attr(V,clpqr_geler,g(A,goals(Goal),C))

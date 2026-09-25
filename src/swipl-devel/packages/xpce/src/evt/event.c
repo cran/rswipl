@@ -370,6 +370,31 @@ isDownEvent(EventObj e)
 }
 
 
+/* Test whether the event asks for a popup (context) menu.  Normally
+ * this is the right button going down.  On MacOS, Control-click on the
+ * left button is the documented alternative for the secondary click,
+ * so we accept that as well.  Note that MacOS itself does not rewrite
+ * the event: AppKit delivers a plain left-button-down with the control
+ * modifier and only its contextual menu layer treats it as a secondary
+ * click.  We do the same, leaving Control-left available to the
+ * gestures that already claim it (browser toggle-select, PceDraw).
+ */
+
+status
+isPopupEvent(EventObj e)
+{ if ( isAEvent(e, NAME_msRightDown) )
+    succeed;
+
+#ifdef __APPLE__
+  if ( isAEvent(e, NAME_msLeftDown) &&
+       (valInt(e->buttons) & BUTTON_control) )
+    succeed;
+#endif
+
+  fail;
+}
+
+
 Name
 getButtonEvent(EventObj e)
 { if ( isAEvent(e, NAME_msLeft) )
@@ -1067,6 +1092,8 @@ static senddecl send_event[] =
      NAME_classify, "Test if event is a button-down event"),
   SM(NAME_isDrag, 0, NULL, isDragEvent,
      NAME_classify, "Test if event is a button-drag event"),
+  SM(NAME_isPopup, 0, NULL, isPopupEvent,
+     NAME_classify, "Test if event requests a popup menu"),
   SM(NAME_isUp, 0, NULL, isUpEvent,
      NAME_classify, "Test if event is a button-up event"),
   SM(NAME_post, 2, T_post, postEvent,
@@ -1176,6 +1203,18 @@ static struct namepair
   { NAME_f10,		NAME_functionKey },
   { NAME_f11,		NAME_functionKey },
   { NAME_f12,		NAME_functionKey },
+  { NAME_f13,		NAME_functionKey },
+  { NAME_f14,		NAME_functionKey },
+  { NAME_f15,		NAME_functionKey },
+  { NAME_f16,		NAME_functionKey },
+  { NAME_f17,		NAME_functionKey },
+  { NAME_f18,		NAME_functionKey },
+  { NAME_f19,		NAME_functionKey },
+  { NAME_f20,		NAME_functionKey },
+  { NAME_f21,		NAME_functionKey },
+  { NAME_f22,		NAME_functionKey },
+  { NAME_f23,		NAME_functionKey },
+  { NAME_f24,		NAME_functionKey },
 					/* Mouse button events */
   { NAME_button,	NAME_mouse },
   { NAME_wheel,		NAME_mouse },
@@ -1213,6 +1252,9 @@ static struct namepair
   { NAME_help,		NAME_namedFunction },
   { NAME_break,		NAME_namedFunction },
   { NAME_pause,		NAME_namedFunction },
+  { NAME_cut,		NAME_namedFunction },
+  { NAME_copy,		NAME_namedFunction },
+  { NAME_paste,		NAME_namedFunction },
   { NAME_BS,		NAME_namedFunction }, /* Add node for these ASCII? */
   { NAME_TAB,		NAME_namedFunction },
   { NAME_DEL,		NAME_namedFunction },

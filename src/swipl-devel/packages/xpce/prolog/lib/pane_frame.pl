@@ -722,7 +722,11 @@ keyboard_focus(F, W:[window]*) :->
     ->  send_super(F, keyboard_focus, SD)
     ;   send_super(F, keyboard_focus, W),
         (   send(W, instance_of, window)
-        ->  send(F, pane_changed)
+        ->  (   get(W, container, tab_frame, Tab)
+            ->  send(Tab, remember_focus, W)
+            ;   true
+            ),
+            send(F, pane_changed)
         ;   true
         )
     ).
@@ -2543,6 +2547,27 @@ close_pane(P) :->
         ;   true
         )
     ;   send(P, destroy)
+    ).
+
+last_in_frame(P) :->
+    "Succeed if closing me would leave my frame empty"::
+    last_in_frame(P).
+
+%!  last_in_frame(+Window) is semidet.
+%
+%   True when Window is all its frame shows.  A window inside a group is
+%   so if it is the only window of its tab, that tab the only tab of the
+%   group, and the group all the frame shows.
+
+last_in_frame(W) :-
+    get(W, container, tab_frame, Tab),
+    (   send(Tab, instance_of, pane_tab)
+    ->  get(W, frame, Frame),
+        get(Frame?panes, size, 1)
+    ;   get(Tab?windows, size, 1),
+        get(Tab, container, tabbed_window, Group),
+        get(Group?tabs, size, 1),
+        last_in_frame(Group)
     ).
 
 event(P, Ev:event) :->

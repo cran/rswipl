@@ -27,3 +27,5 @@ swipl_plugin(clpqr_priv
 	     NOINDEX
 	     PL_LIB_SUBDIR clpqr
 	     PL_LIBS ${CLPQRPRIV})
+
+test_libs(clpq clpr)

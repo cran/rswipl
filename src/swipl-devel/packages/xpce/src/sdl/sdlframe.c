@@ -47,6 +47,7 @@
 			       fr->members->head->value )
 
 bool		ws_draw_frame(FrameObj fr);
+static void	ws_restore_text_input(FrameObj fr);
 
 
 WsFrame
@@ -112,6 +113,48 @@ uncreate_windows_frame(FrameObj fr)
   }
 }
 
+#ifdef __APPLE__
+/**
+ * Hand the keyboard to another frame of the same application.
+ *
+ * Closing a window is the window system's business: it knows its own
+ * focus policy, which on X11 may well be "whatever the pointer is now
+ * over", and an application that raises a window of its own on top of
+ * that is fighting the user.  AppKit has no such policy to respect --
+ * it activates the next window of the application itself -- but it does
+ * not do so for the windows SDL creates, and closing the window opened
+ * with Command-N leaves the one it was opened from visible but inactive,
+ * with no caret and no keys.  Do it ourselves on MacOS only.
+ *
+ * Cocoa reports a new key window while SDL_DestroyWindow() is still
+ * running, so SDL already knows whether anything took over; leave it
+ * alone if it did.  Called only for a frame that had the keyboard: the
+ * window the user was working in is the one to give it back to, and
+ * closing a background window must raise nothing at all.
+ *
+ * @param fr Pointer to the FrameObj whose window has just been destroyed.
+ */
+
+static void
+ws_pass_on_input_focus(FrameObj fr)
+{ FrameObj next;
+
+  if ( SDL_GetKeyboardFocus() )		/* the platform found one after all */
+    return;
+
+  if ( (next=getNextFocusFrame(fr)) )
+  { WsFrame wfr = next->ws_ref;
+
+    if ( wfr && wfr->ws_window )
+    { DEBUG(NAME_keyboard,
+	    Cprintf("%s went away with the keyboard; passing it to %s\n",
+		    pp(fr), pp(next)));
+      SDL_RaiseWindow(wfr->ws_window);
+    }
+  }
+}
+#endif /*__APPLE__*/
+
 /**
  * Uncreate or destroy the specified frame.
  *
@@ -123,12 +166,19 @@ ws_uncreate_frame(FrameObj fr)
 
   if ( f && f->ws_window )
   { ASSERT_SDL_MAIN();
+#ifdef __APPLE__
+    bool had_focus = SDL_GetKeyboardFocus() == f->ws_window;
+#endif
     deleteChain(ChangedFrames, fr);
     SDL_DestroyRenderer(f->ws_renderer);
     SDL_DestroyWindow(f->ws_window);
     unalloc(sizeof(*f), f);
     fr->ws_ref = NULL;
     uncreate_windows_frame(fr);
+#ifdef __APPLE__
+    if ( had_focus )
+      ws_pass_on_input_focus(fr);
+#endif
   }
 
   ws_event_destroyed_target(fr);
@@ -151,6 +201,52 @@ sdl_parent_window(FrameObj fr, FrameObj *frp)
   return NULL;
 }
 
+#ifdef __APPLE__
+/* SDL's popup constraining is disabled on MacOS (see ws_create_frame()),
+   so we must keep popups inside the display ourselves.  Popup positions
+   are relative to the parent, so we first translate to global
+   coordinates, clamp against the usable bounds of the display holding
+   the popup's origin and translate back.
+*/
+
+static void
+constrain_popup(SDL_Window *parent, int *x, int *y, int w, int h)
+{ int gx = *x, gy = *y;
+
+  for(SDL_Window *p = parent; p; p = SDL_GetWindowParent(p))
+  { int px, py;
+
+    if ( !SDL_GetWindowPosition(p, &px, &py) )
+      return;
+    gx += px;
+    gy += py;
+    if ( !(SDL_GetWindowFlags(p) & (SDL_WINDOW_POPUP_MENU|SDL_WINDOW_TOOLTIP)) )
+      break;
+  }
+
+  SDL_Point pt = { gx, gy };
+  SDL_DisplayID id = SDL_GetDisplayForPoint(&pt);
+  SDL_Rect r;
+
+  if ( !id || !SDL_GetDisplayUsableBounds(id, &r) )
+    return;
+
+  int nx = gx, ny = gy;
+  if ( nx + w > r.x + r.w ) nx = r.x + r.w - w;
+  if ( ny + h > r.y + r.h ) ny = r.y + r.h - h;
+  if ( nx < r.x ) nx = r.x;
+  if ( ny < r.y ) ny = r.y;
+
+  DEBUG(NAME_popup,
+	if ( nx != gx || ny != gy )
+	  Cprintf("Constrain popup %dx%d from %d,%d to %d,%d\n",
+		  w, h, gx, gy, nx, ny));
+
+  *x += nx - gx;
+  *y += ny - gy;
+}
+#endif
+
 /**
  * Create the specified frame.
  *
@@ -171,6 +267,9 @@ ws_create_frame(FrameObj fr)
 
   if ( fr->kind == NAME_popup && parent )
   { focusable = false;
+#ifdef __APPLE__
+    constrain_popup(parent, &x, &y, w, h);
+#endif
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_PARENT_POINTER,
 			   parent);
@@ -834,9 +933,21 @@ static bool SDLCALL
 live_resize_watch(void *closure, SDL_Event *ev)
 { (void)closure;
 
+  /* (*) The watch runs at SDL_PushEvent() time, so an SDL call made
+   * while we are painting -- SDL_SetWindowSize() from a `frame ->size'
+   * that a ->compute or a ->_redraw_area asks for, say -- arrives here
+   * with a drawing context open on a window.  Laying out and painting
+   * from under that context paints the window a second time inside its
+   * own redraw, clipped to what the outer one was given, and a window
+   * that the layout resizes has the backing store its open context
+   * draws into destroyed by ws_geometry_window().  The event stays in
+   * the queue, so the main loop deals with it when the paint is done.
+   */
+
   if ( !live_resize_event(ev) ||
        !SDL_IsMainThread() ||	/* watches may be called from any thread */
-       in_live_resize )
+       in_live_resize ||
+       getRedrawing() )		/* we are painting; see (*) */
     return true;
 
   in_live_resize++;
@@ -978,6 +1089,7 @@ sdl_frame_event(SDL_Event *ev)
       }
       case SDL_EVENT_WINDOW_FOCUS_GAINED:
       { PceWindow sw = ws_grabbing_window();
+	status rc;
 
 	ws_menubar_activate_frame(fr);	/* show this frame's native menu */
 	if ( sw )
@@ -997,7 +1109,9 @@ sdl_frame_event(SDL_Event *ev)
 		Cprintf("Input focus on %s (not grabbing)\n",
 			pp(fr)));
 	}
-	return send(fr, NAME_inputFocus, ON, EAV);
+	rc = send(fr, NAME_inputFocus, ON, EAV);
+	ws_restore_text_input(fr);
+	return rc;
       }
       case SDL_EVENT_WINDOW_FOCUS_LOST:
       { PceWindow sw = ws_grabbing_window();
@@ -1094,6 +1208,7 @@ ws_enable_text_input(Graphical gr, BoolObj enable)
       DEBUG(NAME_keyboard,
 	    Cprintf("ws_enable_text_input() %s -> %s: %s\n",
 		    pp(gr), pp(fr), pp(enable)));
+      wfr->text_input = isOn(enable);	/* what we must restore below */
       if ( isOn(enable) )
 	return SDL_StartTextInput(wfr->ws_window);
       else
@@ -1102,6 +1217,42 @@ ws_enable_text_input(Graphical gr, BoolObj enable)
   }
 
   fail;
+}
+
+
+/**
+ * Put the platform text input state back to what xpce last asked for.
+ *
+ * Called when the frame regains the keyboard.  `frame ->input_focus' is
+ * edge triggered: a frame that already believes it has the focus runs
+ * neither ->input_focus nor, through it, ws_enable_text_input(), so
+ * nothing re-issues SDL_StartTextInput().  FOCUS_LOST above does stop
+ * text input while a window of _another_ frame holds a grab, leaving
+ * xpce's idea of the focus alone on purpose.  If that grab is gone when
+ * the focus returns -- a confirmer, a popup or a completer that closed
+ * while we were away -- the frame is left looking focussed, caret and
+ * all, while SDL sends no SDL_EVENT_TEXT_INPUT for it: typing printable
+ * characters does nothing, and only taking the focus away and back
+ * (which does change ->input_focus) revives it.
+ *
+ * @param fr Pointer to the FrameObj that just gained the focus.
+ */
+static void
+ws_restore_text_input(FrameObj fr)
+{ WsFrame wfr = fr->ws_ref;
+
+  if ( wfr && wfr->ws_window )
+  { ASSERT_SDL_MAIN();
+    if ( wfr->text_input != SDL_TextInputActive(wfr->ws_window) )
+    { DEBUG(NAME_keyboard,
+	    Cprintf("ws_restore_text_input() %s: %s\n",
+		    pp(fr), wfr->text_input ? "on" : "off"));
+      if ( wfr->text_input )
+	SDL_StartTextInput(wfr->ws_window);
+      else
+	SDL_StopTextInput(wfr->ws_window);
+    }
+  }
 }
 
 /**
@@ -1290,6 +1441,14 @@ ws_geometry_frame(FrameObj fr, Int x, Int y, Int w, Int h, DisplayObj dsp)
       { ix += valInt(dsp->area->x);
 	iy += valInt(dsp->area->y);
       }
+#ifdef __APPLE__
+      SDL_Window *parent;
+      if ( fr->kind == NAME_popup && (parent=sdl_parent_window(fr, NULL)) )
+      { int iw = isDefault(w) ? valInt(fr->area->w) : valInt(w);
+	int ih = isDefault(h) ? valInt(fr->area->h) : valInt(h);
+	constrain_popup(parent, &ix, &iy, iw, ih);
+      }
+#endif
 
 #if O_HDPX
       float scale = ws_pixel_density_display(fr);

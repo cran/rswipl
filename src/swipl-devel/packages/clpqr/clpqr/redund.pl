@@ -79,18 +79,10 @@ not_memq([Y|Ys],X) :-
 
 % redundancy_vars(Vs)
 %
-% Does the same thing as redundancy_vs/1 but has some extra timing facilities that
-% may be used.
+% Removes redundant bounds from the variables in Vs.
 
 redundancy_vars(Vs) :-
-	!,
 	redundancy_vs(Vs).
-redundancy_vars(Vs) :-
-	statistics(runtime,[Start|_]),
-	redundancy_vs(Vs),
-	statistics(runtime,[End|_]),
-	Duration is End-Start,
-	format(user_error,"% Redundancy elimination took ~d msec~n",Duration).
 
 
 % redundancy_vs(Vs)

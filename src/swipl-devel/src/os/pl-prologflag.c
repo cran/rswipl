@@ -51,6 +51,7 @@
 #include "../pl-tabling.h"
 #include "../pl-fli.h"
 #include "../pl-write.h"
+#include "../pl-read.h"
 #include "../pl-pro.h"
 #include "../pl-wam.h"
 #include "../pl-trace.h"
@@ -485,6 +486,23 @@ setRationalSyntax(atom_t a, unsigned int *flagp)
   return true;
 }
 
+/* setVarPrefix() sets the var_prefix flag of module `m`.  `a` is
+ * normalized: `true` is an alias for '_'.
+ */
+
+static bool
+setVarPrefix(term_t value, atom_t *a, Module m)
+{ int c;
+
+  if ( !get_var_prefix_ex(value, &c) )
+    return false;
+
+  m->var_prefix = c;
+  *a = c ? codeToAtom(c) : ATOM_false;
+
+  return true;
+}
+
 bool
 setVarTagFlag(atom_t a, unsigned int *flagp)
 { GET_LD
@@ -699,6 +717,22 @@ setOccursCheck(atom_t a)
 
     PL_put_atom(value, a);
     return PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_occurs_check, value);
+  }
+}
+
+
+static bool
+setIncomparable(atom_t a)
+{ GET_LD
+
+  if ( a == ATOM_arbitrary || a == ATOM_error )
+  { LD->prolog_flag.incomparable_error = (a == ATOM_error);
+    return true;
+  } else
+  { term_t value = PL_new_term_ref();
+
+    PL_put_atom(value, a);
+    return PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_incomparable, value);
   }
 }
 
@@ -1207,11 +1241,6 @@ set_flag_value(DECL_LD prolog_flag *f, Module m, atom_t k, term_t value)
 	  set(m, M_CHARESCAPE);
 	else
 	  clear(m, M_CHARESCAPE);
-      } else if ( k == ATOM_var_prefix )
-      { if ( val )
-	  set(m, M_VARPREFIX);
-	else
-	  clear(m, M_VARPREFIX);
       } else if ( k == ATOM_debug )
       { if ( val )
 	{ rval = debugmode(NULL, true, NULL, DBG_ALL);
@@ -1278,6 +1307,8 @@ set_flag_value(DECL_LD prolog_flag *f, Module m, atom_t k, term_t value)
       { rval = setRationalSyntax(a, &m->flags);
       } else if ( k == ATOM_var_tag )
       { rval = setVarTagFlag(a, &m->flags);
+      } else if ( k == ATOM_var_prefix )
+      { rval = setVarPrefix(value, &a, m);
       } else if ( k == ATOM_unknown )
       { rval = setUnknown(value, a, m);
       } else if ( k == ATOM_unknown_option )
@@ -1288,6 +1319,8 @@ set_flag_value(DECL_LD prolog_flag *f, Module m, atom_t k, term_t value)
       { rval = setWriteAttributes(a);
       } else if ( k == ATOM_occurs_check )
       { rval = setOccursCheck(a);
+      } else if ( k == ATOM_incomparable )
+      { rval = setIncomparable(a);
       } else if ( k == ATOM_access_level )
       { rval = setAccessLevelFromAtom(a);
       } else if ( k == ATOM_encoding )
@@ -1901,7 +1934,8 @@ unify_prolog_flag_value(DECL_LD Module m, atom_t key,
 { if ( key == ATOM_character_escapes )
   { return PL_unify_bool(val, ison(m, M_CHARESCAPE));
   } else if ( key == ATOM_var_prefix )
-  { return PL_unify_bool(val, ison(m, M_VARPREFIX));
+  { return PL_unify_atom(val, m->var_prefix ? codeToAtom(m->var_prefix)
+					     : ATOM_false);
   } else if ( key == ATOM_double_quotes )
   { atom_t v;
 
@@ -2469,7 +2503,7 @@ initPrologFlags(void)
   setPrologFlag("character_escapes", FT_BOOL, true, PLFLAG_CHARESCAPE);
   setPrologFlag("character_escapes_unicode", FT_BOOL, true,
 		PLFLAG_CHARESCAPE_UNICODE);
-  setPrologFlag("var_prefix", FT_BOOL, false, PLFLAG_VARPREFIX);
+  setPrologFlag("var_prefix", FT_ATOM, "false");
   setPrologFlag("unicode_atoms", FT_ATOM, "accept");
   setPrologFlag("atom_normalize_hook", FT_BOOL, false, 0);
   setPrologFlag("char_conversion", FT_BOOL, false, PLFLAG_CHARCONVERSION);
@@ -2479,6 +2513,7 @@ initPrologFlags(void)
   setPrologFlag("write_attributes", FT_ATOM, "ignore");
   setPrologFlag("stream_type_check", FT_ATOM, "loose");
   setPrologFlag("occurs_check", FT_ATOM, "false");
+  setPrologFlag("incomparable", FT_ATOM, "arbitrary");
   setPrologFlag("shift_check", FT_BOOL, false,  PLFLAG_SHIFT_CHECK);
   setPrologFlag("access_level", FT_ATOM, "user");
   setPrologFlag("double_quotes", FT_ATOM,
@@ -2612,6 +2647,9 @@ static void
 setTmpDirPrologFlag(void)
  { char envbuf[PATH_MAX];
    char plbuf[PATH_MAX];
+#ifdef O_XOS
+   char longbuf[PATH_MAX];
+#endif
    char *td = NULL;
 
 #ifdef __unix__
@@ -2629,7 +2667,15 @@ setTmpDirPrologFlag(void)
       file named any other way.
    */
    if ( PrologPath(td, plbuf, sizeof(plbuf)) )
-     td = plbuf;
+   { td = plbuf;
+#ifdef O_XOS
+     /* %TEMP% is often an 8+3 name (C:\Users\RUNNER~1\...), while a
+	file loaded from it is known by its long, on-disk name.
+     */
+     if ( _xos_case_canonical_filename(plbuf, longbuf, sizeof(longbuf)) )
+       td = longbuf;
+#endif
+   }
 
    setPrologFlag("tmp_dir", FT_ATOM, td);
 }

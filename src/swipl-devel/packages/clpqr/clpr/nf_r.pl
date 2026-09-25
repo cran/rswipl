@@ -157,7 +157,7 @@ entailed(C) :-
 negate(Rel,_) :-
 	var(Rel),
 	!,
-	throw(instantiation_error(entailed(Rel),1)).
+	instantiation_error(Rel).
 negate((A,B),(Na;Nb)) :-
 	!,
 	negate(A,Na),
@@ -245,7 +245,6 @@ submit_eq_c(A,B,Rest) :-	% c2
 	linear(Rest),
 	!,
 	Hom = [A,B|Rest],
-	% 'solve_='(Hom).
 	nf_length(Hom,0,Len),
 	log_deref(Len,Hom,[],HomD),
 	solve(HomD).
@@ -332,7 +331,6 @@ submit_eq_c1(Rest,B,I) :-
 	var(Y),
 	linear(Rest),
 	!,
-	% 'solve_='( [v(I,[]),B|Rest]).
 	Hom = [B|Rest],
 	nf_length(Hom,0,Len),
 	normalize_scalar(I,Nonvar),
@@ -686,9 +684,9 @@ monash_constant(X,_) :-
 	var(X),
 	!,
 	fail.
-monash_constant(p,3.14259265).
-monash_constant(pi,3.14259265).
-monash_constant(e,2.71828182).
+monash_constant(p,X)  :- X is pi.
+monash_constant(pi,X) :- X is pi.
+monash_constant(e,X)  :- X is e.
 monash_constant(zero,1.0e-10).
 
 %
@@ -912,27 +910,14 @@ nf_power(N,Sum,Norm) :-
 	compare(Rel,N,0),
 	(   Rel = (<)
 	->  Pn is -N,
-	    % nf_power_pos(Pn,Sum,Inorm),
 	    binom(Sum,Pn,Inorm),
 	    nf_div(Inorm,[v(1.0,[])],Norm)
 	;   Rel = (>)
-	->  % nf_power_pos(N,Sum,Norm)
-	    binom(Sum,N,Norm)
+	->  binom(Sum,N,Norm)
 	;   Rel = (=)
 	->  % 0^0 is indeterminate but we say 1
 	    Norm = [v(1.0,[])]
 	).
-%
-% N>0
-%
-% iterative method: X^N = X*(X^N-1)
-nf_power_pos(1,Sum,Norm) :-
-	!,
-	Sum = Norm.
-nf_power_pos(N,Sum,Norm) :-
-	N1 is N-1,
-	nf_power_pos(N1,Sum,Pn1),
-	nf_mul(Sum,Pn1,Norm).
 %
 % N>0
 %
@@ -1017,12 +1002,15 @@ repair_p_log(N,P0,P2,R,L0,L2) :-
 	repair_p_log(Q,P1,P2,Rq,L1,L2),
 	pmerge(Rp,Rq,R).
 
-repair_p(Term,P,[Term^P],L0,L0) :- var(Term).
-repair_p(Term,P,[],L0,L1) :-
-	nonvar(Term),
-	repair_p_one(Term,TermN),
-	nf_power(P,TermN,TermNP),
-	nf_mul(TermNP,L0,L1).
+repair_p(Term,P,R,L0,L1) :-
+	(   var(Term)
+	->  R = [Term^P],
+	    L1 = L0
+	;   R = [],
+	    repair_p_one(Term,TermN),
+	    nf_power(P,TermN,TermNP),
+	    nf_mul(TermNP,L0,L1)
+	).
 %
 % An undigested term a/b is distinguished from an
 % digested one by the fact that its arguments are
@@ -1134,13 +1122,12 @@ exp2term(P,X,Term) :-
 	Term = X^P.
 
 pe2term(X,Term) :-
-	var(X),
-	Term = X.
-pe2term(X,Term) :-
-	nonvar(X),
-	X =.. [F|Args],
-	pe2term_args(Args,Argst),
-	Term =.. [F|Argst].
+	(   var(X)
+	->  Term = X
+	;   X =.. [F|Args],
+	    pe2term_args(Args,Argst),
+	    Term =.. [F|Argst]
+	).
 
 pe2term_args([],[]).
 pe2term_args([A|As],[T|Ts]) :-
@@ -1178,14 +1165,30 @@ transg(resubmit_ne(Nf)) -->
 	    nf2term(Nf,Term)
 	},
 	[clpr:{Term=\=Z}].
-transg(wait_linear_retry(Nf,Res,Goal)) -->
+transg(wait_linear_retry(Nf,_Res,Goal)) -->
 	{
 	    nf2term(Nf,Term)
 	},
-	[clpr:{Term=Res},Goal].
+	pending_goal(Goal,Term).
 
-integerp(X) :-
-	floor(X)=:=X.
+% pending_goal(Continuation,Term)
+%
+% Expresses the continuation of a delayed optimisation as the user level
+% goal that created it.  We cannot emit the continuation itself: it expects
+% its argument to be the *normal form* of Term, which wait_linear/3 unifies
+% it with, and a unification with a normal form is not something {}/1 can
+% express.  An unknown continuation is dropped rather than reported wrongly.
+
+pending_goal(bv_r:minimize_lin(_),Term) -->
+	!,
+	[clpr:minimize(Term)].
+pending_goal(bv_r:inf_lin(_,Inf,Vector,Vertex),Term) -->
+	!,
+	[clpr:inf(Term,Inf,Vector,Vertex)].
+pending_goal(bb_r:bb_inf_internal(Is,_,Eps,Inf,Vertex),Term) -->
+	!,
+	[clpr:bb_inf(Is,Term,Inf,Vertex,Eps)].
+pending_goal(_,_) --> [].
 
 integerp(X,I) :-
 	floor(X)=:=X,

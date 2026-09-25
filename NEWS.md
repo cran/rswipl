@@ -1,3 +1,9 @@
+# rswipl 10.1.16
+
+see https://swi-prolog.discourse.group/t/ann-swi-prolog-10-1-16/
+
+solves an ASAN problem reported by BDR
+
 # rswipl 10.1.15
 
 see https://swi-prolog.discourse.group/t/ann-swi-prolog-10.1.15/

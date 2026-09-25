@@ -44,6 +44,7 @@
 	    bb_inf/5,
 	    vertex_value/2
 	]).
+:- use_module(library(error), [type_error/2]).
 :- use_module(bv_r,
 	[
 	    deref/2,
@@ -85,35 +86,40 @@ bb_inf(Is,Term,Inf,Vertex,Eps) :-
 % all variables in Is are to be integers. Eps denotes the margin in which
 % we accept a number as an integer (to deal with rounding errors etc.).
 
-bb_inf_internal(Is,Lin,Eps,_,_) :-
-	bb_intern(Is,IsNf,Eps),
-	nb_delete(prov_opt),
-	repair(Lin,LinR),	% bb_narrow ...
-	deref(LinR,Lind),
-	var_with_def_assign(Dep,Lind),
-	determine_active_dec(Lind),
-	bb_loop(Dep,IsNf,Eps),
-	fail.
-bb_inf_internal(_,_,_,Inf,Vertex) :-
-	catch(nb_getval(prov_opt,InfVal-Vertex),_,fail),
-	{Inf =:= InfVal},
-	nb_delete(prov_opt).
+% The incumbent must survive the backtracking that drives the search, but
+% it must not survive the call itself.  It is therefore kept in a mutable
+% term that is local to this call rather than in a global variable, which
+% would clobber a global of the same name in the calling program and would
+% make nested calls interfere.
 
-% bb_loop(Opt,Is,Eps)
+bb_inf_internal(Is,Lin,Eps,Inf,Vertex) :-
+	State = state(none),
+	(   bb_intern(Is,IsNf,Eps),
+	    repair(Lin,LinR),	% bb_narrow ...
+	    deref(LinR,Lind),
+	    var_with_def_assign(Dep,Lind),
+	    determine_active_dec(Lind),
+	    bb_loop(Dep,IsNf,Eps,State),
+	    fail
+	;   arg(1,State,InfVal-Vertex),
+	    {Inf =:= InfVal}
+	).
+
+% bb_loop(Opt,Is,Eps,State)
 %
 % Minimizes the value of Opt where variables Is have to be integer values.
 % Eps denotes the rounding error that is acceptable. This predicate can be
 % backtracked to try different strategies.
 
-bb_loop(Opt,Is,Eps) :-
+bb_loop(Opt,Is,Eps,State) :-
 	bb_reoptimize(Opt,Inf),
-	bb_better_bound(Inf),
+	bb_better_bound(State,Inf),
 	vertex_value(Is,Ivs),
 	(   bb_first_nonint(Is,Ivs,Eps,Viol,Floor,Ceiling)
 	->  bb_branch(Viol,Floor,Ceiling),
-	    bb_loop(Opt,Is,Eps)
+	    bb_loop(Opt,Is,Eps,State)
 	;   round_values(Ivs,RoundVertex),
-	    nb_setval(prov_opt,Inf-RoundVertex) % new provisional optimum
+	    nb_setarg(1,State,Inf-RoundVertex) % new provisional optimum
 	).
 
 % bb_reoptimize(Obj,Inf)
@@ -123,18 +129,21 @@ bb_loop(Opt,Is,Eps) :-
 % different optimum. The added inequalities may also have led to binding.
 
 bb_reoptimize(Obj,Inf) :-
-	var(Obj),
-	iterate_dec(Obj,Inf).
-bb_reoptimize(Obj,Inf) :-
-	nonvar(Obj),
-	Inf = Obj.
+	(   var(Obj)
+	->  iterate_dec(Obj,Inf)
+	;   Inf = Obj
+	).
 
-% bb_better_bound(Inf)
+% bb_better_bound(State,Inf)
 %
 % Checks if the new infimum Inf is better than the previous one (if such exists).
 
-bb_better_bound(Inf) :-
-	catch((nb_getval(prov_opt,Inc-_),Inf - Inc < -1.0e-10),_,true).
+bb_better_bound(State,Inf) :-
+	arg(1,State,Best),
+	(   Best = Inc-_
+	->  Inf - Inc < -1.0e-10
+	;   true
+	).
 
 % bb_branch(V,U,L)
 %
@@ -226,7 +235,7 @@ bb_intern([v(One,[V^1])],X,_,_) :-
 	bb_narrow_lower(X),
 	bb_narrow_upper(X).
 bb_intern(_,_,Term,_) :-
-	throw(instantiation_error(bb_inf(Term,_,_),1)).
+	type_error(var, Term).
 
 % bb_narrow_lower(X)
 %

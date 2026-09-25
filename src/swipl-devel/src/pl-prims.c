@@ -1781,7 +1781,7 @@ compare_mixed_float_rational(DECL_LD word w1, word w2)
 
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-compareStandard(Word p1, Word p2, int eq)
+compare_std(Word p1, Word p2, cmp_mode mode, Word *c1, Word *c2)
 
     Rules:
 
@@ -1793,15 +1793,34 @@ compareStandard(Word p1, Word p2, int eq)
     number:	value
     Term:	arity / alphabetically / recursive
 
-If eq == true, only test for equality. In this case expensive inequality
-tests (alphabetical order) are skipped and the call returns NOTEQ.
+`mode` selects one of three comparisons:
+
+  - CMP_MODE_EQUAL only tests for equality.  In this case expensive
+    inequality tests (alphabetical order) are skipped and the call
+    returns CMP_NOTEQ.
+  - CMP_MODE_ORDER implements the full standard order of terms.
+  - CMP_MODE_PARTIAL implements the standard order, but refuses to
+    decide a comparison that involves a variable, as binding that
+    variable may invalidate the result.  It returns CMP_UNDECIDED and
+    fills *c1 and *c2 with the two subterms it could not compare.  As
+    the standard order is lexicographic, this first undecided pair
+    decides the entire comparison, unless the two subterms become
+    equal, in which case the walk continues after them.
+
+Only CMP_MODE_PARTIAL uses `c1` and `c2`; the other modes pass NULL.
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 
-#define compare_primitives(p1, p2, eq) \
-	LDFUNC(compare_primitives, p1, p2, eq)
+typedef enum
+{ CMP_MODE_EQUAL = 0,			/* ==/2, \==/2 */
+  CMP_MODE_ORDER,			/* compare/3, @</2, ... */
+  CMP_MODE_PARTIAL			/* partial_compare/3 */
+} cmp_mode;
+
+#define compare_primitives(p1, p2, mode) \
+	LDFUNC(compare_primitives, p1, p2, mode)
 
 static cmpex_t
-compare_primitives(DECL_LD Word p1, Word p2, bool eq)
+compare_primitives(DECL_LD Word p1, Word p2, cmp_mode mode)
 { word t1, t2;
   word w1, w2;
 
@@ -1810,7 +1829,10 @@ compare_primitives(DECL_LD Word p1, Word p2, bool eq)
 
   if ( w1 == w2 )
   { if ( isVar(w1) )
+    { if ( mode == CMP_MODE_PARTIAL && p1 != p2 )
+	return CMP_UNDECIDED;
       return SCALAR_TO_CMP(p1, p2);
+    }
     return CMPEX_EQUAL;
   }
 
@@ -1818,7 +1840,7 @@ compare_primitives(DECL_LD Word p1, Word p2, bool eq)
   t2 = tag(w2);
 
   if ( t1 != t2 )
-  { if ( eq )
+  { if ( mode == CMP_MODE_EQUAL )
       return CMP_NOTEQ;
 
     if ( (t1|t2) == (TAG_INTEGER|TAG_FLOAT) && /* quick test first */
@@ -1831,6 +1853,9 @@ compare_primitives(DECL_LD Word p1, Word p2, bool eq)
 
     static_assert(TAG_VAR == 0 && TAG_ATTVAR==1,
 		  "Think twice before reordering the tags");
+    if ( mode == CMP_MODE_PARTIAL &&
+	 (t1 <= TAG_ATTVAR || t2 <= TAG_ATTVAR) )
+      return CMP_UNDECIDED;		/* binding the variable decides */
     if ( (t1|t2) > TAG_ATTVAR )			/* actually `t1 > TAG_ATTVAR || t2 > TAG_ATTVAR` */
       return t1 < t2 ? CMPEX_LESS : CMPEX_GREATER;
   }
@@ -1838,6 +1863,8 @@ compare_primitives(DECL_LD Word p1, Word p2, bool eq)
   switch(t1)
   { case TAG_VAR:
     case TAG_ATTVAR:
+      if ( mode == CMP_MODE_PARTIAL && p1 != p2 )
+	return CMP_UNDECIDED;
       return SCALAR_TO_CMP(p1, p2);
     case TAG_INTEGER:
     { number n1, n2;
@@ -1849,7 +1876,7 @@ compare_primitives(DECL_LD Word p1, Word p2, bool eq)
 
       get_rational(w1, &n1);
       get_rational(w2, &n2);
-      if ( eq && (n1.type != n2.type) )
+      if ( mode == CMP_MODE_EQUAL && (n1.type != n2.type) )
 	return CMP_NOTEQ;
       rc = cmpNumbers(&n1, &n2);
       clearNumber(&n1);
@@ -1860,15 +1887,17 @@ compare_primitives(DECL_LD Word p1, Word p2, bool eq)
     case TAG_FLOAT:
     { if ( equalIndirect(w1,w2) )
 	return CMPEX_EQUAL;
-      else if ( eq )
+      else if ( mode == CMP_MODE_EQUAL )
 	return CMP_NOTEQ;
       else
 	return compare_neq_floats(valFloat(w1), valFloat(w2));
     }
     case TAG_ATOM:
-      return eq ? CMP_NOTEQ : (cmpex_t)compareAtoms(word2atom(w1), word2atom(w2));
+      return mode == CMP_MODE_EQUAL ? CMP_NOTEQ
+				    : (cmpex_t)compareAtoms(word2atom(w1),
+							    word2atom(w2));
     case TAG_STRING:
-      return compareStrings(w1, w2, eq);
+      return compareStrings(w1, w2, mode == CMP_MODE_EQUAL);
     case TAG_COMPOUND:
       return CMP_COMPOUND;
     default:
@@ -1878,8 +1907,8 @@ compare_primitives(DECL_LD Word p1, Word p2, bool eq)
 }
 
 static cmpex_t
-compare_functors(word f1, word f2, bool eq)
-{ if ( eq )
+compare_functors(word f1, word f2, cmp_mode mode)
+{ if ( mode == CMP_MODE_EQUAL )
   { return CMP_NOTEQ;
   } else
   { FunctorDef fd1 = valueFunctor(f1);
@@ -1892,11 +1921,12 @@ compare_functors(word f1, word f2, bool eq)
   }
 }
 
-#define do_compare(agenda, f1, f2, eq) \
-	LDFUNC(do_compare, agenda, f1, f2, eq)
+#define do_compare(agenda, f1, f2, mode, c1, c2, linked) \
+	LDFUNC(do_compare, agenda, f1, f2, mode, c1, c2, linked)
 
 static cmpex_t
-do_compare(DECL_LD term_agendaLR *agenda, Functor f1, Functor f2, bool eq)
+do_compare(DECL_LD term_agendaLR *agenda, Functor f1, Functor f2,
+	   cmp_mode mode, Word *c1, Word *c2, bool *linked)
 { Word p1, p2;
 
   goto compound;
@@ -1907,25 +1937,32 @@ do_compare(DECL_LD term_agendaLR *agenda, Functor f1, Functor f2, bool eq)
     deRef(p1);
     deRef(p2);
 
-    if ( (rc=compare_primitives(p1, p2, eq)) != CMP_COMPOUND )
+    if ( (rc=compare_primitives(p1, p2, mode)) != CMP_COMPOUND )
     { if ( rc == CMPEX_EQUAL )
 	continue;
+      if ( rc == CMP_UNDECIDED )
+      { *c1 = p1;
+	*c2 = p2;
+      }
       return rc;
     } else
     { f1 = (Functor)valPtr(*p1);
       f2 = (Functor)valPtr(*p2);
 
 #if O_CYCLIC
-      while ( isRef(f1->definition) )
-	f1 = (Functor)unRef(f1->definition);
-      while ( isRef(f2->definition) )
-	f2 = (Functor)unRef(f2->definition);
-      if ( f1 == f2 )
-	continue;
+      if ( isRef(f1->definition) || isRef(f2->definition) )
+      { *linked = true;
+	while ( isRef(f1->definition) )
+	  f1 = (Functor)unRef(f1->definition);
+	while ( isRef(f2->definition) )
+	  f2 = (Functor)unRef(f2->definition);
+	if ( f1 == f2 )
+	  continue;
+      }
 #endif
 
       if ( f1->definition != f2->definition )
-      { return compare_functors(f1->definition, f2->definition, eq);
+      { return compare_functors(f1->definition, f2->definition, mode);
       } else
       { size_t arity;
 
@@ -1946,32 +1983,203 @@ do_compare(DECL_LD term_agendaLR *agenda, Functor f1, Functor f2, bool eq)
 }
 
 
-cmpex_t
-compareStandard(DECL_LD Word p1, Word p2, bool eq)
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+compare_fast() compares two terms using  a single walk over both terms.
+The result is always correct for CMP_MODE_EQUAL and if both terms are
+acyclic.  Otherwise, if `*linked` is set, the order may be wrong.  See
+compare_descend().
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+#define compare_fast(p1, p2, mode, c1, c2, linked) \
+	LDFUNC(compare_fast, p1, p2, mode, c1, c2, linked)
+
+static cmpex_t
+compare_fast(DECL_LD Word p1, Word p2, cmp_mode mode,
+	     Word *c1, Word *c2, bool *linked)
 { cmpex_t rc;
 
   deRef(p1);
   deRef(p2);
 
-  if ( (rc=compare_primitives(p1, p2, eq)) != CMP_COMPOUND )
-  { return rc;
+  if ( (rc=compare_primitives(p1, p2, mode)) != CMP_COMPOUND )
+  { if ( rc == CMP_UNDECIDED )
+    { *c1 = p1;
+      *c2 = p2;
+    }
+    return rc;
   } else
   { Functor f1 = (Functor)valPtr(*p1);
     Functor f2 = (Functor)valPtr(*p2);
 
     if ( f1->definition != f2->definition )
-    { return compare_functors(f1->definition, f2->definition, eq);
+    { return compare_functors(f1->definition, f2->definition, mode);
     } else
     { term_agendaLR agenda;
 
       initCyclic();
       initTermAgendaLR0(&agenda);
-      rc = do_compare(&agenda, f1, f2, eq);
+      rc = do_compare(&agenda, f1, f2, mode, c1, c2, linked);
       clearTermAgendaLR(&agenda);
       exitCyclic();
 
       return rc;
     }
+  }
+}
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+compare_descend() is the slow but sound ordering of two terms.  It is
+used if do_compare() found the terms different, but did so after
+following a link made by linkTermsCyclic().  Such a link assumes that
+two compounds whose comparison is still in progress are equal.  That
+is fine for ==/2, but if the two compounds turn out to differ, an order
+derived from the assumption may be wrong.  See #1529.  If both terms
+are acyclic, a link can only lead to a pair whose comparison completed,
+i.e., a pair that is equal.  In that case the fast result is correct
+and we do not get here.
+
+At each compound this skips the leading arguments that are equal
+(==/2, which is decidable for rational trees) and descends into the
+first argument pair that is not.  This either ends at a pair that is
+not a pair of compounds with the same functor, which decides the order,
+or it cycles forever.  In the latter case there is no order that is
+consistent with the definition of the standard order (see the manual)
+and we return CMP_INCOMPARABLE, filling *c1 and *c2 with the pair at
+which the descent cycles.  Cycles are detected using Brent's algorithm
+on the sequence of compound pairs.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+#define compare_descend(p1, p2, mode, c1, c2) \
+	LDFUNC(compare_descend, p1, p2, mode, c1, c2)
+
+static cmpex_t
+compare_descend(DECL_LD Word p1, Word p2, cmp_mode mode,
+		Word *c1, Word *c2)
+{ Functor s1 = NULL, s2 = NULL;
+  size_t power = 1, steps = 0;
+
+  for(;;)
+  { cmpex_t rc;
+    Functor f1, f2;
+    size_t i, arity;
+
+    deRef(p1);
+    deRef(p2);
+
+    if ( (rc=compare_primitives(p1, p2, mode)) != CMP_COMPOUND )
+    { if ( rc == CMP_UNDECIDED )
+      { *c1 = p1;
+	*c2 = p2;
+      }
+      return rc;
+    }
+
+    f1 = (Functor)valPtr(*p1);
+    f2 = (Functor)valPtr(*p2);
+    if ( f1->definition != f2->definition )
+      return compare_functors(f1->definition, f2->definition, mode);
+
+    if ( f1 == s1 && f2 == s2 )
+    { *c1 = p1;
+      *c2 = p2;
+      return CMP_INCOMPARABLE;
+    }
+    if ( ++steps == power )
+    { s1 = f1;
+      s2 = f2;
+      power *= 2;
+      steps = 0;
+    }
+
+    arity = arityFunctor(f1->definition);
+					/* the pair differs, so the last */
+    for(i=0; i+1 < arity; i++)		/* argument need not be tested */
+    { bool linked = false;
+
+      if ( (rc=compare_fast(&f1->arguments[i], &f2->arguments[i],
+			    CMP_MODE_EQUAL, NULL, NULL,
+			    &linked)) != CMPEX_EQUAL )
+      { if ( rc == CMP_ERROR )
+	  return rc;
+	break;
+      }
+    }
+
+    p1 = &f1->arguments[i];
+    p2 = &f2->arguments[i];
+  }
+}
+
+
+#define compare_std(p1, p2, mode, c1, c2) \
+	LDFUNC(compare_std, p1, p2, mode, c1, c2)
+
+static cmpex_t
+compare_std(DECL_LD Word p1, Word p2, cmp_mode mode, Word *c1, Word *c2)
+{ bool linked = false;
+  cmpex_t rc = compare_fast(p1, p2, mode, c1, c2, &linked);
+
+  if ( linked && mode != CMP_MODE_EQUAL &&
+       rc != CMPEX_EQUAL && rc != CMP_ERROR &&
+       !(is_acyclic(p1) == true && is_acyclic(p2) == true) )
+  { Word i1 = NULL, i2 = NULL;
+    cmpex_t rc2 = compare_descend(p1, p2, mode, &i1, &i2);
+
+    if ( rc2 == CMP_UNDECIDED || rc2 == CMP_INCOMPARABLE )
+    { if ( mode == CMP_MODE_PARTIAL ||
+	   (rc2 == CMP_INCOMPARABLE && LD->prolog_flag.incomparable_error) )
+      { *c1 = i1;
+	*c2 = i2;
+	rc = rc2;
+      }					/* else keep the fast result */
+    } else
+    { rc = rc2;
+    }
+  }
+
+  return rc;
+}
+
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+compareStandard() compares two terms in the standard order.  If `eq` is
+true, it only tests for equality.  If the terms are incomparable and the
+flag `incomparable` is `error`, it raises an exception and returns
+CMP_ERROR.
+
+compareStandardOrder() is the ordering part for callers that cannot
+raise an exception during the comparison, such as sorting.  In the case
+above it returns CMP_INCOMPARABLE, filling *c1 and *c2 with the pair of
+subterms to pass to raiseIncomparable().
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+cmpex_t
+compareStandardOrder(DECL_LD Word p1, Word p2, Word *c1, Word *c2)
+{ return compare_std(p1, p2, CMP_MODE_ORDER, c1, c2);
+}
+
+
+cmpex_t
+raiseIncomparable(DECL_LD Word c1, Word c2)
+{ PL_error(NULL, 0, NULL, ERR_INCOMPARABLE, c1, c2);
+
+  return CMP_ERROR;
+}
+
+
+cmpex_t
+compareStandard(DECL_LD Word p1, Word p2, bool eq)
+{ if ( eq )
+  { return compare_std(p1, p2, CMP_MODE_EQUAL, NULL, NULL);
+  } else
+  { Word c1, c2;
+    cmpex_t rc = compare_std(p1, p2, CMP_MODE_ORDER, &c1, &c2);
+
+    if ( rc == CMP_INCOMPARABLE )
+      return raiseIncomparable(c1, c2);
+
+    return rc;
   }
 }
 
@@ -2018,6 +2226,71 @@ PRED_IMPL("compare", 3, compare, PL_FA_ISO)
 
     return PL_unify_atom(A1, a);
   }
+}
+
+
+/** partial_compare(?Order, @Term1, @Term2) is semidet.
+
+As compare/3, but only decides the  order   if  this  decision is stable
+under further instantiation. If the order   depends on a variable, unify
+\arg{Order} with undecided(Sub1,Sub2), where \arg{Sub1} and \arg{Sub2}
+are the first pair of subterms that  could  not be compared. As the
+standard order compares terms lexicographically,  this pair decides the
+entire comparison unless the two become equal (==/2).
+*/
+
+static
+PRED_IMPL("partial_compare", 3, partial_compare, 0)
+{ PRED_LD
+  term_t cv;
+  Word d, p1, p2;
+  Word c1 = NULL, c2 = NULL;
+  cmpex_t val;
+
+  if ( !(cv=PL_new_term_refs(2)) ||	/* Both may GC or shift, so they */
+       !ensureStackSpace(2, 2) )	/* run before we take Word pointers */
+    return false;
+
+  d  = valTermRef(A1);
+  p1 = valTermRef(A2);
+  p2 = p1+1;
+
+  deRef(d);
+  if ( !canBind(*d) )			/* Order is given: validate */
+  { if ( isAtom(*d) )
+    { atom_t a = word2atom(*d);
+
+      if ( a != ATOM_smaller && a != ATOM_equals && a != ATOM_larger )
+	return PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_partial_order, A1);
+    } else if ( !(isTerm(*d) &&
+		  (functorTerm(*d) == FUNCTOR_undecided2 ||
+		   functorTerm(*d) == FUNCTOR_incomparable2)) )
+    { return PL_error(NULL, 0, NULL, ERR_DOMAIN, ATOM_partial_order, A1);
+    }
+  }
+
+  if ( (val=compare_std(p1, p2, CMP_MODE_PARTIAL, &c1, &c2)) == CMP_ERROR )
+    return false;
+
+  if ( val == CMP_UNDECIDED || val == CMP_INCOMPARABLE )
+  { /* compare_std() returns dereferenced pointers.  Either may be a
+       variable on the local stack, which linkValG() globalises.  The
+       space reserved above covers both, so neither call can GC or shift
+       the stacks and invalidate the other culprit.
+    */
+    *valTermRef(cv+0) = linkValG(c1);
+    *valTermRef(cv+1) = linkValG(c2);
+
+    return PL_unify_term(A1,
+			 PL_FUNCTOR, val == CMP_UNDECIDED ? FUNCTOR_undecided2
+							  : FUNCTOR_incomparable2,
+			   PL_TERM, cv+0,
+			   PL_TERM, cv+1);
+  }
+
+  return PL_unify_atom(A1, val < 0 ? ATOM_smaller :
+			   val > 0 ? ATOM_larger :
+				     ATOM_equals);
 }
 
 
@@ -3919,8 +4192,10 @@ unifiable(DECL_LD term_t t1, term_t t2, term_t subst)
   int rc;
 
   if ( PL_is_variable(t1) )
-  { if ( PL_compare(t1, t2) == 0 )
+  { if ( (rc=PL_compare(t1, t2)) == CMP_EQUAL )
     { return PL_unify_atom(subst, ATOM_nil);
+    } else if ( rc == CMP_ERROR )
+    { return false;
     } else
     { if ( !unifiable_occurs_check(t1, t2) )
 	fail;
@@ -6320,6 +6595,7 @@ BeginPredDefs(prims)
   PRED_DEF("==", 2, equal, PL_FA_ISO)
   PRED_DEF("\\==", 2, nonequal, PL_FA_ISO)
   PRED_DEF("compare", 3, compare, PL_FA_ISO)
+  PRED_DEF("partial_compare", 3, partial_compare, 0)
   PRED_DEF("@<", 2, std_lt, PL_FA_ISO)
   PRED_DEF("@=<", 2, std_leq, PL_FA_ISO)
   PRED_DEF("@>", 2, std_gt, PL_FA_ISO)

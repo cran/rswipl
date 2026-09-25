@@ -65,7 +65,8 @@ test_epilog_tabs :-
                 epilog_tabs,
                 epilog_split,
                 epilog_move,
-                epilog_close
+                epilog_close,
+                epilog_focus
               ]).
 
                  /*******************************
@@ -514,6 +515,29 @@ test(closing_one_terminal_leaves_the_others) :-
     tabs(F, ['Prolog'-1]),
     terminals(F, 1).
 
+%       \C-x 0 closes a terminal as long as the window shows something
+%       else.
+
+test(delete_window_leaves_the_others) :-
+    epilog(F, W),
+    send(W, split, horizontally),
+    send(W?terminal, delete_window),
+    tabs(F, ['Prolog'-1]),
+    terminals(F, 1).
+
+test(delete_window_closes_the_only_terminal_of_a_tab) :-
+    epilog(F, W),
+    send(W, new_tab),
+    tabs(F, ['Prolog'-1, 'Prolog 2'-1]),
+    send(W?terminal, delete_window),
+    tabs(F, ['Prolog 2'-1]).
+
+test(delete_window_keeps_the_last_terminal) :-
+    epilog(F, W),
+    send(W?terminal, delete_window),
+    tabs(F, ['Prolog'-1]),
+    terminals(F, 1).
+
 test(closing_a_tab_closes_its_terminals) :-
     epilog(F, W),
     send(W, split, horizontally),
@@ -546,3 +570,38 @@ test(closing_the_last_terminal_ends_the_window) :-
     \+ object(F).
 
 :- end_tests(epilog_close).
+
+
+                 /*******************************
+                 *            FOCUS             *
+                 *******************************/
+
+/* Who is told that a terminal has the keyboard.
+
+A terminal in a window of the IDE tells the frame, which brings its tab
+to the front; a terminal that is in none only notes that it is the one
+being worked in.  A terminal is in none more often than it looks:
+`epilog_window ->initialise' gives every window a plain frame of its own
+by naming it, and the window keeps that frame until it is put in a tab
+and again after it is taken back out.  Telling *that* frame anything
+about terminals is an error -- see `prolog_terminal ->event'.
+*/
+
+:- begin_tests(epilog_focus).
+
+test(focus_in_a_window_of_the_ide_makes_the_terminal_current) :-
+    epilog(F, W),
+    send(W, split, horizontally),
+    get(F, current_pane, New),
+    New \== W,
+    get(W, terminal, PT),
+    pce_catch_error(no_behaviour, send(W, input_focus, @on)),
+    get(F, current_terminal, PT).
+
+test(focus_on_a_terminal_in_no_window_of_the_ide_is_silent) :-
+    new(W, epilog_window),
+    get(W, terminal, PT),
+    pce_catch_error(no_behaviour, send(W, input_focus, @on)),
+    current_epilog(PT).
+
+:- end_tests(epilog_focus).

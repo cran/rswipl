@@ -39,6 +39,8 @@
 :- module(clpqr_ordering,
 	  [ combine/3,
 	    ordering/1,
+	    ordering/2,
+	    intern_vars/1,
 	    arrangement/2
 	  ]).
 :- use_module(class,
@@ -62,53 +64,125 @@
 	    append/3
 	]).
 
-ordering(X) :-
+% ordering(Spec) and ordering(CLP,Spec)
+%
+% Records the requested variable ordering in the priority graph of the
+% class the variables belong to.  A variable that comes first in the
+% ordering is the one that should be *defined* by the answer constraint,
+% i.e. appear on its left hand side; see arrange_pivot/1 in project.pl.
+%
+% CLP is the solver to intern variables into that the solver does not know
+% yet.  This is what makes it legal to state an ordering before the
+% constraints it talks about.  ordering/1 has no such information and
+% silently ignores an ordering over variables it cannot place.
+
+ordering(Spec) :-
+	ordering(_CLP,Spec).
+
+ordering(_,X) :-
 	var(X),
 	!,
 	fail.
-ordering(A>B) :-
+ordering(CLP,A>B) :-
 	!,
-	ordering(B<A).
-ordering(A<B) :-
-	join_class([A,B],Class),
+	ordering(CLP,B<A).
+ordering(CLP,A<B) :-
+	join_class(CLP,[A,B],Class),
 	class_get_prio(Class,Ga),
 	!,
 	add_edges([],[A-B],Gb),
 	combine(Ga,Gb,Gc),
+	check_acyclic(Gc,A<B),
 	class_put_prio(Class,Gc).
-ordering(Pb) :-
+ordering(CLP,Pb) :-
 	Pb = [_|Xs],
-	join_class(Pb,Class),
+	join_class(CLP,Pb,Class),
 	class_get_prio(Class,Ga),
 	!,
-	(   Xs = [],
-	    add_vertices([],Pb,Gb)
-	;   Xs=[_|_],
-	    gen_edges(Pb,Es,[]),
+	(   Xs == []
+	->  add_vertices([],Pb,Gb)
+	;   gen_edges(Pb,Es,[]),
 	    add_edges([],Es,Gb)
 	),
 	combine(Ga,Gb,Gc),
+	check_acyclic(Gc,Pb),
 	class_put_prio(Class,Gc).
-ordering(_).
+ordering(_,_).
+
+% check_acyclic(Graph,Spec)
+%
+% Raises an error if Spec has made the priority graph cyclic, i.e. if the
+% orderings stated so far contradict each other.  Reporting this here
+% rather than when the answer is projected lets us name the culprit.
+
+check_acyclic(G,Spec) :-
+	(   normalize(G,Gn),
+	    top_sort(Gn,_)
+	->  true
+	;   throw(error(cyclic_ordering(Spec),_))
+	).
 
 arrangement(Class,Arr) :-
 	class_get_prio(Class,G),
 	normalize(G,Gn),
 	top_sort(Gn,Arr),
 	!.
-arrangement(_,_) :- throw(unsatisfiable_ordering).
+% The orderings of two classes can each be acyclic and still be cyclic
+% after the classes are merged, so this has to be checked here as well.
+% In that case there is no single culprit to report.
+arrangement(_,_) :-
+	throw(error(cyclic_ordering(_),_)).
 
-join_class([],_).
-join_class([X|Xs],Class) :-
-	(   var(X)
-	->  clp_type(X,CLP),
-	    (   CLP = clpr
+% intern_vars(Vars)
+%
+% Puts every variable of Vars that the solver knows about into one and the
+% same class, merging the classes they belonged to before.  Anything else --
+% a nonvar, a variable the solver has never seen, or one of the auxiliary
+% variables that carry a clpqr_class attribute -- is skipped.
+%
+% dump/3 uses this to make its target variables reachable from the linear
+% store before projecting.  Unlike join_class/2 it never fails, because a
+% target that carries no constraints at all is perfectly legal.
+
+intern_vars(Vars) :-
+	intern_vars(Vars,_).
+
+intern_vars([],_).
+intern_vars([X|Xs],Class) :-
+	(   var(X),
+	    clp_type(X,CLP)
+	->  (   CLP == clpr
 	    ->  bv_r:var_intern(X,Class)
 	    ;   bv_q:var_intern(X,Class)
 	    )
 	;   true
 	),
-	join_class(Xs,Class).
+	intern_vars(Xs,Class).
+
+% join_class(CLP,Vars,Class)
+%
+% Puts all variables of Vars in the class Class.  A variable the solver
+% does not know yet is interned into CLP; if CLP is unbound as well there
+% is no way to tell whether it belongs to CLP(Q) or CLP(R) and this fails,
+% which makes ordering/2 fall through to its catch-all clause.
+
+join_class(_,[],_).
+join_class(CLP,[X|Xs],Class) :-
+	(   var(X)
+	->  (   clp_type(X,Type)
+	    ->  true
+	    ;   Type = CLP
+	    ),
+	    var_intern(Type,X,Class)
+	;   true
+	),
+	join_class(CLP,Xs,Class).
+
+var_intern(clpr,X,Class) :-
+	!,
+	bv_r:var_intern(X,Class).
+var_intern(clpq,X,Class) :-
+	bv_q:var_intern(X,Class).
 
 % combine(Ga,Gb,Gc)
 %
@@ -195,9 +269,27 @@ group([L-Ll|Ls],K,Kl,Res) :-
 
 
 		 /*******************************
+		 *	       MESSAGES		*
+		 *******************************/
+
+:- multifile
+	prolog:error_message//1.
+
+prolog:error_message(cyclic_ordering(Spec)) -->
+	[ 'CLP(Q,R): the requested variable ordering is cyclic'-[] ],
+	cyclic_culprit(Spec).
+
+cyclic_culprit(Spec) -->
+	{ var(Spec) },
+	!.
+cyclic_culprit(Spec) -->
+	[ ' (on adding ~p)'-[Spec] ].
+
+		 /*******************************
 		 *	       SANDBOX		*
 		 *******************************/
 :- multifile
 	sandbox:safe_primitive/1.
 
 sandbox:safe_primitive(clpqr_ordering:ordering(_)).
+sandbox:safe_primitive(clpqr_ordering:ordering(_,_)).

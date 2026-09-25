@@ -42,6 +42,7 @@
 
 test_json :-
     run_tests([ json_read,
+                json_write,
                 json_convert,
                 json_http
               ]).
@@ -91,6 +92,25 @@ test(empty, X == json([])) :-
 
 
 :- end_tests(json_read).
+
+
+                 /*******************************
+                 *            WRITE             *
+                 *******************************/
+
+:- begin_tests(json_write).
+
+test(string, A == '"hello"') :-
+    atom_json_term(A, hello, [width(0)]).
+test(control, A == '"\\u0001"') :-
+    atom_json_term(A, '\u0001', [width(0)]).
+
+% Characters outside the BMP must be emitted as such, also on systems
+% with a 16 bit wchar_t (Windows).  See issue #1528.
+test(non_bmp, A == '{"x":"\U0001F60A"}') :-
+    atom_json_term(A, json([x='\U0001F60A']), [width(0)]).
+
+:- end_tests(json_write).
 
 
                  /*******************************

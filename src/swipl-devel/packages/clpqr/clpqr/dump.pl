@@ -37,15 +37,14 @@
 
 
 :- module(clpqr_dump,
-	  [ dump/3,
-	    projecting_assert/1
+	  [ dump/3
 	  ]).
 :- use_module(class, [class_allvars/2]).
 :- use_module(geler, [collect_nonlin/3]).
 :- use_module(library(assoc), [empty_assoc/1, put_assoc/4, assoc_to_list/2]).
 :- use_module(itf, [dump_linear/3, dump_nonzero/3]).
 :- use_module(project, [project_attributes/2]).
-:- use_module(ordering, [ordering/1]).
+:- use_module(ordering, [intern_vars/1]).
 :- use_module(library(error), [must_be/2]).
 
 %!  dump(+Target,-NewVars,-Constraints) is det.
@@ -61,52 +60,34 @@ dump(Target,NewVars,Constraints) :-
 	must_be(list(var), Target),
 	copy_term_clpq(Target, NewVars, Constraints).
 
-:- meta_predicate projecting_assert(:).
-
-projecting_assert(Module:Clause) :-
-	copy_term_clpq(Clause,Copy,Constraints),
-	l2c(Constraints,Conj),			% fails for []
-	(   Sm = clpq
-	;   Sm = clpr
-	),			% proper module for {}/1
-	!,
-	(   Copy = (H:-B)
-	->  % former rule
-	    assert(Module:(H:-Sm:{Conj},B))
-	;   % former fact
-	    assert(Module:(Copy:-Sm:{Conj}))
-	).
-projecting_assert(Clause) :-	% not our business
-	assert(Clause).
-
 copy_term_clpq(Term,Copy,Constraints) :-
+	copy_term_clpq(Term,Copy,Constraints,_Pending).
+
+% copy_term_clpq(Term,Copy,Constraints,Pending)
+%
+% Pending are the goals of delayed optimisations (see wait_linear/3) that
+% are waiting for their expression to become linear.  They are *not*
+% constraints -- calling them inside {}/1 raises a type error -- so they
+% are kept apart from Constraints.  attribute_goals//1 emits them as
+% ordinary goals; dump/3 ignores them.
+
+copy_term_clpq(Term,Copy,Constraints,Pending) :-
 	State = state(-),
-	(   copy_term_clpq_(Term, NV, Cs),
-	    nb_setarg(1, State, NV/Cs),
+	(   copy_term_clpq_(Term, NV, Cs, Ps),
+	    nb_setarg(1, State, NV/Cs/Ps),
 	    fail
-	;   arg(1, State, Copy/Constraints)
+	;   arg(1, State, Copy/Constraints/Pending)
 	).
 
-copy_term_clpq_(Term, Copy, Constraints) :-
+copy_term_clpq_(Term, Copy, Constraints, Pending) :-
 	term_variables(Term,Target),		 % get all variables in Term
-	ordering(Target),
+	intern_vars(Target),			 % make them reachable from the store
 	related_linear_vars(Target,All),	 % get all variables of the classes of the variables in Term
-	nonlin_crux(All,Nonlin),		 % get a list of all the nonlinear goals of these variables
+	nonlin_crux(All,Nonlin,Goals),		 % get a list of all the nonlinear goals of these variables
 	project_attributes(Target,All),
 	related_linear_vars(Target,Again),	 % project drops/adds vars
 	all_attribute_goals(Again,Gs,Nonlin),
-	copy_term_nat(Term/Gs,Copy/Constraints). % strip constraints
-
-% l2c(Lst,Conj)
-%
-% converts a list to a round list: [a,b,c] -> (a,b,c) and [a] becomes a
-
-l2c([X|Xs],Conj) :-
-	(   Xs = []
-	->  Conj = X
-	;   Conj = (X,Xc),
-	    l2c(Xs,Xc)
-	).
+	copy_term_nat(Term/Gs/Goals,Copy/Constraints/Pending). % strip constraints
 
 % related_linear_vars(Vs,All)
 %
@@ -162,28 +143,33 @@ cpvars([X|Xs]) -->
 	),
 	cpvars(Xs).
 
-% nonlin_crux(All,Gss)
+% nonlin_crux(All,Constraints,Goals)
 %
 % Collects all pending non-linear constraints of variables in All.
 % This marks all nonlinear goals of the variables as run and cannot
 % be reversed manually.
 
-nonlin_crux(All,Gss) :-
+nonlin_crux(All,Constraints,Goals) :-
 	collect_nonlin(All,Gs,[]),	% collect the nonlinear goals of variables All
 					% this marks the goals as run and cannot be reversed manually
-	nonlin_strip(Gs,Gss).
+	nonlin_strip(Gs,Constraints,Goals).
 
-% nonlin_strip(Gs,Solver,Res)
+% nonlin_strip(Gs,Constraints,Goals)
 %
-% Removes the goals from Gs that are not from solver Solver.
+% Splits the module qualified goals Gs into the constraints, with the {}/1
+% and the module qualification removed, and the remaining goals.  The
+% latter are the continuations of delayed optimisations; they keep their
+% qualification so that they remain callable.
 
-nonlin_strip([],[]).
-nonlin_strip([_:What|Gs],Res) :-
+nonlin_strip([],[],[]).
+nonlin_strip([M:What|Gs],Cs,Goals) :-
 	(   What = {G}
-	->  Res = [G|Gss]
-	;   Res = [What|Gss]
+	->  Cs = [G|Cst],
+	    Goals = Goalst
+	;   Cs = Cst,
+	    Goals = [M:What|Goalst]
 	),
-	nonlin_strip(Gs,Gss).
+	nonlin_strip(Gs,Cst,Goalst).
 
 all_attribute_goals([]) --> [].
 all_attribute_goals([V|Vs]) -->
@@ -199,24 +185,65 @@ all_attribute_goals([V|Vs]) -->
 
 clpqr_itf:attribute_goals(V) -->
 	(   { term_attvars(V, Vs),
-	      dump(Vs, NVs, List),
-	      List \== [],
-	      NVs = Vs,
-	      del_itf(Vs),
-	      list_to_conj(List, Conj)
+	      Vs \== [],
+	      user_vars(Vs, Target),
+	      Target \== [],
+	      copy_term_clpq(Target, NTarget, List, Pending),
+	      ( List \== [] ; Pending \== [] ),
+	      NTarget = Target,
+	      del_solver_atts(Vs)
 	    }
-	->  [ {}(Conj) ]
+	->  constraint_goal(List),
+	      Pending			% delayed optimisations, see above
 	;   []
 	).
+
+% user_vars(+Vars, -Target)
+%
+% Target are the variables of Vars that the user can actually see, i.e.
+% all but the ones the solver introduced for itself (see
+% var_with_def_intern/4 in bv_q.pl).  Projecting onto Target rather than
+% onto Vars is what turns the raw content of the tableau, slack variables
+% and all, into the constraints the user wrote down.
+%
+% term_attvars/2 walks through attributes, so Vars is the whole connected
+% component regardless of how little of it the copied term mentions.  The
+% answer is therefore not projected onto that term; it is projected onto
+% the user-level variables of its component, which is the most that this
+% interface allows.
+
+user_vars([], []).
+user_vars([V|Vs], Target) :-
+	(   get_attr(V, clpqr_itf, Att),
+	    arg(7, Att, aux)
+	->  Target = Target1
+	;   Target = [V|Target1]
+	),
+	user_vars(Vs, Target1).
+
+constraint_goal([]) --> !.
+constraint_goal(List) -->
+	{ list_to_conj(List, Conj) },
+	[ {}(Conj) ].
 
 clpqr_class:attribute_goals(_) --> [].
 
 clpqr_geler:attribute_goals(V) --> clpqr_itf:attribute_goals(V).
 
-del_itf([]).
-del_itf([H|T]) :-
+% del_solver_atts(Vars)
+%
+% dump/3 above reports the constraints on all of Vars at once, so the
+% solver attributes are removed from all of them to stop attribute_goals//1
+% reporting the same conjunction again for the next variable.  Both
+% attributes must go: a variable that only carries a delayed non-linear
+% goal has no clpqr_itf attribute at all, and removing only that one made
+% such constraints appear once per variable.
+
+del_solver_atts([]).
+del_solver_atts([H|T]) :-
 	del_attr(H, clpqr_itf),
-	del_itf(T).
+	del_attr(H, clpqr_geler),
+	del_solver_atts(T).
 
 
 list_to_conj([], true) :- !.

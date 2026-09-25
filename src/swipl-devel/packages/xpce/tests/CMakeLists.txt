@@ -7,6 +7,7 @@ test_libs(editor_placeholder   OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(text_item            OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(tab_frame            OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(fixed_graphicals     OPTIONS ${XPCE_TEST_OPTIONS})
+test_libs(font_alias           OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(pane_frame           OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(pane_layouts         OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(barchart             OPTIONS ${XPCE_TEST_OPTIONS})
@@ -25,13 +26,17 @@ endif()
 test_libs(no_display           OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(number_conversion    OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(object_reference     OPTIONS ${XPCE_TEST_OPTIONS})
+test_libs(popup_event          OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(scrollbar            OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(terminal_osc         OPTIONS ${XPCE_TEST_OPTIONS})
+test_libs(terminal_client      OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(terminal_bce         OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(terminal_margin      OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(terminal_palette     OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(terminal_glyphs      OPTIONS ${XPCE_TEST_OPTIONS})
 test_libs(terminal_width       OPTIONS ${XPCE_TEST_OPTIONS})
+test_libs(terminal_rewrap      OPTIONS ${XPCE_TEST_OPTIONS})
+test_libs(redraw_reentrance    OPTIONS ${XPCE_TEST_OPTIONS})
 
 set(XPCE_EXTRA_TESTS xpce:colour
                      xpce:text_image
@@ -39,6 +44,7 @@ set(XPCE_EXTRA_TESTS xpce:colour
                      xpce:text_item
                      xpce:tab_frame
                      xpce:fixed_graphicals
+                     xpce:font_alias
                      xpce:pane_frame
                      xpce:pane_layouts
                      xpce:barchart
@@ -51,13 +57,28 @@ set(XPCE_EXTRA_TESTS xpce:colour
                      xpce:no_display
                      xpce:number_conversion
                      xpce:object_reference
+                     xpce:popup_event
                      xpce:scrollbar
                      xpce:terminal_osc
+                     xpce:terminal_client
                      xpce:terminal_bce
                      xpce:terminal_margin
                      xpce:terminal_palette
                      xpce:terminal_glyphs
-                     xpce:terminal_width)
+                     xpce:terminal_width
+                     xpce:terminal_rewrap
+                     xpce:redraw_reentrance)
+
+# process_encoding checks the bytes on the wire using od and iconv
+
+if(NOT WIN32)
+  find_program(PROG_OD od)
+  find_program(PROG_ICONV iconv)
+  if(PROG_OD AND PROG_ICONV)
+    test_libs(process_encoding OPTIONS ${XPCE_TEST_OPTIONS})
+    list(APPEND XPCE_EXTRA_TESTS xpce:process_encoding)
+  endif()
+endif()
 
 if(EPILOG)
   list(APPEND XPCE_EXTRA_TESTS xpce:epilog_tabs xpce:mixed_panes

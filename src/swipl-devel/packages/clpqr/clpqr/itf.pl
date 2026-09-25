@@ -103,14 +103,14 @@ attr_unify_hook(t(CLP,n,n,n,n,n,n,n,_,_,_),Y) :-
 	(   get_attr(Y,clpqr_itf,AttY),
 	    \+ arg(1,AttY,CLP)
 	->  throw(error(permission_error('mix CLP(Q) variables with',
-		'CLP(R) variables:',Y),context(_)))
+		'CLP(R) variables:',Y),context(_,_)))
 	;   true
 	).
 attr_unify_hook(t(CLP,Ty,St,Li,Or,Cl,_,No,_,_,_),Y) :-
 	(   get_attr(Y,clpqr_itf,AttY),
 	    \+ arg(1,AttY,CLP)
 	->  throw(error(permission_error('mix CLP(Q) variables with',
-		'CLP(R) variables:',Y),context(_)))
+		'CLP(R) variables:',Y),context(_,_)))
 	;   true
 	),
 	do_checks(CLP,Y,Ty,St,Li,Or,Cl,No,Later),

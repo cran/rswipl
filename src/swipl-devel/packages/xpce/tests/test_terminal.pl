@@ -480,6 +480,22 @@ term_click_elsewhere(T) :-
     Last is Rows-1,
     term_click(T, 0, Last, 0).
 
+%!  term_press(+T, +Col, +Row) is det.
+%!  term_release(+T, +Col, +Row) is det.
+%
+%   The two halves of a click on their own, for a test that looks at
+%   what the button going down does before it comes up again.
+
+term_press(terminal(_, xpce(_, TI)), Col, Row) :-
+    cell_pixel(TI, Col, Row, X, Y),
+    send(TI, event, new(_, event(ms_left_down, TI, X, Y, 0, 0))),
+    drive(0.3).
+
+term_release(terminal(_, xpce(_, TI)), Col, Row) :-
+    cell_pixel(TI, Col, Row, X, Y),
+    send(TI, event, new(_, event(ms_left_up, TI, X, Y, 0, 0))),
+    drive(0.3).
+
 term_move(terminal(_, xpce(_, TI)), Col, Row) :-
     cell_pixel(TI, Col, Row, X, Y),
     ignore(send(TI, event, new(_, event(loc_move, TI, X, Y, 0, 0)))),
@@ -1640,8 +1656,11 @@ term_terminfo(terminal(epilog, _), TERM) :-
 
 %!  click(+Terminal, +Col, +Row) is det.
 %!  drag(+Terminal, +Col1, +Row1, +Col2, +Row2) is det.
+%!  press(+Terminal, +Col, +Row) is det.
+%!  release(+Terminal, +Col, +Row) is det.
 %
-%   Synthesise a left-button click, and a press-move-release.
+%   Synthesise a left-button click, a press-move-release, and either
+%   half of a click on its own.
 
 click(T, Col, Row) :-
     term_click(T, Col, Row).
@@ -1651,6 +1670,12 @@ click(T, Col, Row, Buttons) :-
 
 drag(T, Col1, Row1, Col2, Row2) :-
     term_drag(T, Col1, Row1, Col2, Row2).
+
+press(T, Col, Row) :-
+    term_press(T, Col, Row).
+
+release(T, Col, Row) :-
+    term_release(T, Col, Row).
 
 move(T, Col, Row) :-
     term_move(T, Col, Row).
@@ -3252,7 +3277,13 @@ test(click_moves_the_caret, [setup(test_begin(T))]) :-
                "caret went from ~w to ~w, expected ~w~n", [C1, C2, C1+8]),
         assertion(C2 =:= C1+8)
     ),
-    click(T, 20, R),                    % clicking again changes nothing
+    %  Clicking the same cell again changes nothing.  By way of a
+    %  click somewhere else: two clicks on one cell are a double click
+    %  here whatever the time between them (see term_double_click/3),
+    %  and a double click selects a word and takes the caret to the end
+    %  of it.
+    click(T, 12, R),
+    click(T, 20, R),
     assert_cursor(T, C2, R).
 
 test(click_moves_the_caret_without_bracketed_paste,
@@ -3369,11 +3400,45 @@ test(click_while_reading_one_char, [setup(test_begin(T))]) :-
     assertion(wait_until(marker_on_screen(T, 'got 120'), 15)),
     assertion(wait_for_prompt(T)).
 
-test(drag_selects_and_leaves_the_caret, [setup(test_begin(T))]) :-
+test(press_moves_the_caret, [setup(test_begin(T))]) :-
+    %  The caret goes where the button goes down.  Waiting for it to
+    %  come up again is what no editor does, and it is the press that
+    %  says where a selection dragged from here starts.
     type(T, 'hello world, this is the input line'),
     drive(0.3),
+    cursor(T, End, R),
+    press(T, 12, R),
+    cursor(T, C1, R1),
+    assertion(R1 =:= R),
+    assertion(C1 < End),
+    release(T, 12, R),
+    assert_cursor(T, C1, R).
+
+test(drag_carries_the_caret, [setup(test_begin(T))]) :-
+    %  Dragging a selection out of the line being edited takes the
+    %  caret along and leaves it at the end of the selection.  Asserted
+    %  as a distance rather than a column, as in click_moves_the_caret.
+    type(T, 'hello world, this is the input line'),
+    drive(0.3),
+    cursor(T, _End, R),
+    click(T, 10, R),
+    cursor(T, C1, _),
+    drag(T, 14, R, 22, R),              % press four cells on, drag eight
+    cursor(T, C2, R2),
+    assertion(R2 =:= R),
+    assertion(C2 =:= C1+12),
+    assertion(term_has_selection(T)).
+
+test(drag_outside_the_input_line, [setup(test_begin(T))]) :-
+    %  A selection made over the output above the input is not the
+    %  caret's business, as a click there is not.
+    rows_above(T, 2),
+    type(T, 'hello'),
+    drive(0.3),
     cursor(T, C, R),
-    drag(T, 10, R, 20, R),
+    Above is R-2,
+    assertion(Above >= 0),
+    drag(T, 2, Above, 8, Above),
     assert_cursor(T, C, R),
     assertion(term_has_selection(T)).
 
@@ -6247,6 +6312,113 @@ test(application_mode_leaves_modifiers_alone,
     hit(T, cursor_up),
     hit(T, cursor_up, Control),
     assertion(client_reads(T, '^[OA^[[1;5A')).
+
+test(page_keys_go_to_the_client,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  The page keys used to scroll the scroll back whatever was
+    %  running, which left `less', `man', `vim' and every other client
+    %  that is paged with them a key short.
+    hit(T, page_up),
+    hit(T, page_down),
+    assertion(client_reads(T, '^[[5~^[[6~')).
+
+test(modified_page_keys,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    button_control(Control),
+    hit(T, page_up, Control),
+    assertion(client_reads(T, '^[[5;5~')).
+
+test(shift_page_keys_stay_at_the_window,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  Shift is the user's way out, as it is for the wheel: it keeps
+    %  the key on this side, where it scrolls what scroll back there
+    %  is, and the client never sees it.
+    button_shift(Shift),
+    hit(T, page_up, Shift),
+    hit(T, page_down, Shift),
+    assertion(client_reads(T, '')).
+
+test(page_keys_scroll_at_the_prompt, [setup(test_begin(T))]) :-
+    %  Nothing owns the terminal here, so the keys are the window's
+    %  own again: there is scroll back to scroll and nobody else to
+    %  read them.
+    scrollback(T, 60),
+    row_text(T, 0, Before),
+    hit(T, page_up),
+    row_text(T, 0, After),
+    assertion(Before \== After).
+
+test(f13_to_f16_are_the_shifted_ss3_keys,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  The second row of function keys, which full size PC keyboards
+    %  and the Mac have.  xterm's terminfo spells them as Shift+F1..F12
+    %  -- kf13=\E[1;2P through kf24=\E[24;2~ -- which is also what a
+    %  keyboard without that row produces for them.
+    forall(member(K, [f13,f14,f15,f16]),
+           hit(T, K)),
+    assertion(client_reads(T, '^[[1;2P^[[1;2Q^[[1;2R^[[1;2S')).
+
+test(f17_to_f24_are_the_shifted_numbered_keys,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    forall(member(K, [f17,f18,f19,f20,f21,f22,f23,f24]),
+           hit(T, K)),
+    assertion(client_reads(
+                  T, '^[[15;2~^[[17;2~^[[18;2~^[[19;2~\c
+                      ^[[20;2~^[[21;2~^[[23;2~^[[24;2~')).
+
+test(modified_second_row_function_keys,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  A modifier joins the shift the key already carries: Ctrl+F13 is
+    %  Ctrl+Shift+F1, which is the 6 in `CSI 1;6P'.
+    button_control(Control),
+    button_shift(Shift),
+    hit(T, f13, Control),
+    hit(T, f17, Shift),
+    assertion(client_reads(T, '^[[1;6P^[[15;2~')).
+
+test(the_other_editing_keys,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  Insert, Find and Select: the VT220 editing keys that are not
+    %  Home, End, Page Up, Page Down and Delete.  Insert in particular
+    %  is on every keyboard and reached no client at all.
+    hit(T, insert),
+    hit(T, find),
+    hit(T, select),
+    assertion(client_reads(T, '^[[2~^[[1~^[[4~')).
+
+test(the_middle_of_the_keypad,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  KP_5 with NumLock off.  It takes SS3 in application mode, as
+    %  the cursor keys do.
+    hit(T, begin),
+    assertion(client_reads(T, '^[[E')).
+
+test(the_clipboard_keys_are_the_windows_own,
+     [ setup(fkeys_begin(T)),
+       cleanup(stop_foreground(T))
+     ]) :-
+    %  Cut, Copy and Paste act on the window -- there is no sequence to
+    %  send a client for them -- so the client must not see them.  Copy
+    %  needs something to take, which is what the selection is for.
+    term_select(T, 0, 10),
+    hit(T, copy),
+    assertion(client_reads(T, '')).
 
 test(debugger_keys_go_to_the_client,
      [ setup(fkeys_begin(T)),

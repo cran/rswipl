@@ -139,6 +139,51 @@ tail_colours(TI, Colours) :-
             ),
             Colours).
 
+%!  column_colours(+Terminal, -Colours) is det.
+%
+%   Colours of every other pixel of the column halfway across the
+%   window, top to bottom.  Unlike tail_colours/2 this reaches the
+%   bottom row, which is where a line feed scrolls a line in.
+
+column_colours(TI, Colours) :-
+    get(TI, window, W),
+    get(W, frame, F),
+    get(F, image, Img),
+    get(Img, size, size(Width, Height)),
+    X is Width//2,
+    Last is Height-1,
+    findall(rgb(R,G,B),
+            ( between(0, Last, Y),
+              Y mod 2 =:= 0,
+              get(Img, pixel(X, Y), Colour),
+              get(Colour, red, R),
+              get(Colour, green, G),
+              get(Colour, blue, B)
+            ),
+            Colours).
+
+%!  painted(+Terminal) is semidet.
+%
+%   True if the background of bg/1 shows somewhere in the middle
+%   column of the window.
+
+painted(TI) :-
+    settle(TI),
+    column_colours(TI, Colours),
+    memberchk(rgb(38,38,38), Colours).
+
+%!  to_last_row(+Terminal) is det.
+%
+%   Put the caret on the last row of an empty window.
+
+to_last_row(TI) :-
+    get(TI, rows, Rows),
+    N is Rows-1,
+    length(NLs, N),
+    maplist(=('\r\n'), NLs),
+    atomic_list_concat(['\e[2J\e[H'|NLs], Seq),
+    send(TI, insert, Seq).
+
                 /*******************************
                 *             TESTS            *
                 *******************************/
@@ -229,5 +274,68 @@ test(background_survives_the_alternate_screen,
     settle(TI),
     tail_colours(TI, Restored),
     assertion(Restored == Painted).
+
+% The painted tail belongs to the line, so letting go of the line must
+% let go of it too.  A line opened by an insert (IL) has no text, and
+% erasing it with a background colour left that erase in the slot after
+% the display was cleared: the next line written there came up with the
+% old background behind it.  This is the input box of a full screen
+% client showing up at rows it no longer occupies.
+
+test(erase_does_not_outlive_the_line,
+     [setup(terminal(TI)), cleanup(destroy_terminal(TI))]) :-
+    bg(Bg),
+    send(TI, insert, 'text\r\n.\r\n'),
+    settle(TI),
+    tail_colours(TI, Plain),
+    atomic_list_concat(['\e[2J\e[H\e[L', Bg, '\e[2K\e[0m'], Erase),
+    send(TI, insert, Erase),
+    send(TI, insert, '\e[2J\e[H'),
+    send(TI, insert, 'text\r\n.\r\n'),
+    settle(TI),
+    tail_colours(TI, Reused),
+    assertion(Reused == Plain).
+
+% The lines a scroll brings in are erased, and so take the background
+% colour as an erase does.  This is what xterm does.
+
+test(inserted_line_takes_background,
+     [setup(terminal(TI)), cleanup(destroy_terminal(TI))]) :-
+    bg(Bg),
+    send(TI, insert, 'text\r\n.\r\n\e[H'),
+    atomic_list_concat([Bg, '\e[L\e[0m'], Seq),
+    send(TI, insert, Seq),
+    painted(TI).
+
+test(region_scroll_takes_background,
+     [setup(terminal(TI)), cleanup(destroy_terminal(TI))]) :-
+    bg(Bg),
+    atomic_list_concat(['a\r\nb\r\nc\e[1;3r\e[3H', Bg, '\n\e[0m'], Seq),
+    send(TI, insert, Seq),
+    painted(TI).
+
+test(line_feed_scrolls_in_background,
+     [setup(terminal(TI)), cleanup(destroy_terminal(TI))]) :-
+    bg(Bg),
+    to_last_row(TI),
+    atomic_list_concat([Bg, '\r\n\e[0m'], Seq),
+    send(TI, insert, Seq),
+    painted(TI).
+
+% Only a line that scrolls in: a line feed onto a row the window has
+% room for leaves it as it is, as the row exists in xterm already.
+
+test(line_feed_in_window_keeps_default,
+     [setup(terminal(TI)), cleanup(destroy_terminal(TI)), fail]) :-
+    bg(Bg),
+    atomic_list_concat([Bg, '\r\n\r\n\e[0m'], Seq),
+    send(TI, insert, Seq),
+    painted(TI).
+
+test(plain_line_feed_keeps_default,
+     [setup(terminal(TI)), cleanup(destroy_terminal(TI)), fail]) :-
+    to_last_row(TI),
+    send(TI, insert, '\r\n'),
+    painted(TI).
 
 :- end_tests(terminal_bce).

@@ -35,6 +35,22 @@
 #include <SWI-Stream.h>
 #include <SWI-Prolog.h>
 #include <string.h>
+#include <wchar.h>
+
+/* This package has no config.h, so SIZEOF_WCHAR_T is not defined.  Derive
+   it from WCHAR_MAX.  Getting this wrong on Windows (16 bit wchar_t) makes
+   us pass surrogates to Sputcode() rather than the code point.
+*/
+
+#ifndef SIZEOF_WCHAR_T
+#if WCHAR_MAX <= 0xffff
+#define SIZEOF_WCHAR_T 2
+#else
+#define SIZEOF_WCHAR_T 4
+#endif
+#endif
+
+#define IS_UTF16_SURROGATE(c) ((c) >= 0xD800 && (c) <= 0xDFFF)
 
 
 		 /*******************************
@@ -214,6 +230,12 @@ json_put_code(IOSTREAM *out, int pc, int c)
     } else
     { TRYPUTC(c, out);
     }
+  } else if ( IS_UTF16_SURROGATE(c) )
+  { /* Cannot be represented in UTF-8.  Emit the escape ourselves rather
+       than relying on the representation error handling of the stream. */
+    TRYPUTC('\\', out);
+    if ( Sfprintf(out, "u%04x", c) < 0 )
+      return -1;
   } else
   { TRYPUTC(c, out);
   }
@@ -286,8 +308,9 @@ json_write_string(term_t stream, term_t text)
     int pc=0, c;
 
     TRYPUTC('"', out);
-    while((wp = get_wchar(wp, &c)) <= we)
-    { if ( json_put_code(out, pc, c) < 0 )
+    while(wp < we)
+    { wp = get_wchar(wp, &c);
+      if ( json_put_code(out, pc, c) < 0 )
       { rc = FALSE; goto out;
       }
       pc = c;

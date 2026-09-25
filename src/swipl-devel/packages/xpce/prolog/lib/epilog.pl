@@ -334,8 +334,7 @@ epilog_attach(Options) :-
     thread_get_message('$epilog'(PT, PTY)),
     prolog_listen(this_thread_exit, terminated),
     set_prolog_flag(query_debug_settings, debug(false, false)),
-    set_prolog_flag(hyperlink_term, true),
-    set_prolog_flag(color_term, true),
+    set_terminal_flags,
     attach_terminal(PT, PTY, []),
     asserta(current_prolog_terminal(Thread, PT)),
     asserta(attached_terminal(PT, RestoreContext)).
@@ -581,6 +580,9 @@ binding('\\C-x',     prefix_or_cut).  % cut when there is a selection
 binding('\\C-x8',    prefix).
 binding('\\C-x8RET', insert_symbol).
 binding('\\C-x8s',   insert_symbol).
+binding('\\C-x2',    split_horizontally). % Emacs compatibility
+binding('\\C-x3',    split_vertically).
+binding('\\C-x0',    delete_window).
 binding('\\C-\\S-o', split_horizontally). % Terminator compatibility
 binding('\\C-\\S-e', split_vertically).
 binding('\\C-\\S-i', new_window).
@@ -652,8 +654,8 @@ initialise(PT) :->
                 menu_item(select_all,
                           message(Terminal, select_all),
                           end_group := @on),
-                menu_item(consult_linked_file,
-                          message(Terminal, consult_link),
+                menu_item(link,
+                          message(Terminal, link_action),
                           end_group := @on),
                 menu_item(copy_command,
                           message(Terminal, copy_block, command)),
@@ -818,23 +820,50 @@ connect(PT, TID:[name|int], Title:[name]) :<-
 update_popup(PT, P:popup, Ev:event) :->
     "Update the popup"::
     update_block_items(PT, P, Ev),
-    get(P, member, consult_linked_file, Item),
+    get(P, member, link, Item),
     (   get(PT, link, Ev, Link),
-        link_file_location(Link, File, _Location)
+        link_action(Link, _Action, Label)
     ->  send(Item, active, @on),
         send(PT, slot, current_link, Link),
-        file_base_name(File, Base),
-        send(Item, label, string('Consult %s', Base))
+        send(Item, label, Label)
     ;   send(Item, active, @off),
         send(PT, slot, current_link, @nil),
-        send(Item, label, 'Consult linked file')
+        send(Item, label, 'Linked file')
     ).
 
-consult_link(PT) :->
-    "Consult linked file"::
+link_action(PT) :->
+    "Consult, open or copy the link the popup was on"::
     get(PT, current_link, Link),
+    Link \== @nil,
+    link_action(Link, Action, _Label),
+    run_link_action(Action, PT).
+
+%!  link_action(+Link, -Action, -Label) is semidet.
+%
+%   What the popup offers for Link:  consult   a  Prolog  file, open any
+%   other file with the desktop's application for it  and copy the link
+%   of anything else, typically an http(s):// URL.
+
+link_action(Link, consult(File), Label) :-
     link_file_location(Link, File, _Location),
+    file_name_extension(_, Ext, File),
+    user:prolog_file_type(Ext, prolog),
+    !,
+    file_base_name(File, Base),
+    format(string(Label), 'Consult ~w', [Base]).
+link_action(Link, open(File), Label) :-
+    link_file_location(Link, File, _Location),
+    !,
+    file_base_name(File, Base),
+    format(string(Label), 'Open ~w', [Base]).
+link_action(Link, copy(Link), "Copy link").
+
+run_link_action(consult(File), PT) :-
     send(PT, inject, consult(File), @on, signal).
+run_link_action(open(File), _PT) :-
+    desktop_open(File).
+run_link_action(copy(Link), _PT) :-
+    send(@display, copy, Link).
 
 :- pce_group(blocks).
 
@@ -1265,16 +1294,35 @@ event(T, Ev:event) :->
     "Handle popup and drag-and-drop"::
     (   send_super(T, event, Ev)
     ->  (   send(Ev, is_a, activate_keyboard_focus)
-        ->  send(T?frame, current_terminal, T)
+        ->  activated(T)
         ;   send(Ev, is_a, 'RET')
         ->  set_active_terminal(T)
         ;   true
         )
-    ;   send(Ev, is_a, ms_right_down)
+    ;   send(Ev, is_popup)
     ->  send(T, show_popup, Ev)
     ;   drop_target_event(T, Ev,
                           'Drop Prolog source file(s) to consult',
                           epilog_consult_drop)
+    ).
+
+%!  activated(+Terminal) is det.
+%
+%   Terminal was given the keyboard.  Tell the window it is a pane of, so
+%   that the window knows which of its terminals the user is working in.
+%
+%   The window need not be a pane_frame: `epilog_window ->initialise' asks
+%   class window for a frame by giving it a title, so a terminal that is
+%   in no window of the IDE -- one taken out of its tab, or not yet put in
+%   one -- still has a plain frame, and a plain frame knows nothing about
+%   terminals.  Then all there is to do is note that this is the terminal
+%   being worked in, which is what `pane_frame ->current_terminal' ends
+%   with as well.
+
+activated(T) :-
+    (   get(T?window, pane_frame, Frame)
+    ->  send(Frame, current_terminal, T)
+    ;   set_active_terminal(T)
     ).
 
 set_active_terminal(PT) :-
@@ -1292,6 +1340,14 @@ split_horizontally(T) :->
 split_vertically(T) :->
     "Split terminal vertically"::
     send(T, split, vertically).
+
+delete_window(T) :->
+    "Close this terminal, unless it is all its window shows"::
+    get(T, window, Window),
+    (   send(Window, last_in_frame)
+    ->  send(T, report, status, 'Single terminal')
+    ;   send(Window, close_pane)
+    ).
 
 new_tab(T) :->
     "Open a new terminal in a tab of this window"::
@@ -1527,8 +1583,7 @@ inject_item(PT, Goal) :-
 
 thread_run_interactor(PT, Creator, PTY, Init, Goal, CWD, Title, History) :-
     set_prolog_flag(query_debug_settings, debug(false, false)),
-    set_prolog_flag(hyperlink_term, true),
-    set_prolog_flag(color_term, true),
+    set_terminal_flags,
     set_prolog_flag(console_menu, true),
     Error = error(Formal,_),
     (   catch(attach_terminal(PT, PTY, History), Error, true)
@@ -1543,6 +1598,19 @@ thread_run_interactor(PT, Creator, PTY, Init, Goal, CWD, Title, History) :-
         )
     ;   thread_send_message(Creator, false)
     ).
+
+%!  set_terminal_flags is det.
+%
+%   Tell library(ansi_term) that our terminal  handles colour and OSC 8
+%   hyperlinks.  Both flags are set  _globally_.   Using
+%   set_prolog_flag/2  would  only  affect  the  calling  thread  once  a
+%   second thread has been created, while  other threads write to the
+%   same terminal.  Notably, goals  handed   to  in_pce_thread/1  run in
+%   the xpce event thread, which predates the terminal.
+
+set_terminal_flags :-
+    create_prolog_flag(hyperlink_term, true, [type(boolean)]),
+    create_prolog_flag(color_term,     true, [type(boolean)]).
 
 attach_terminal(PT, PTY, History) :-
     exists_source(library(editline)),
